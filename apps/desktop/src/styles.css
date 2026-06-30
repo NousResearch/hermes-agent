@@ -164,6 +164,14 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
+    --context-usage-system: color-mix(in srgb, var(--ui-base) 55%, transparent);
+    --context-usage-tools: var(--ui-purple);
+    --context-usage-rules: var(--ui-green);
+    --context-usage-skills: var(--ui-yellow);
+    --context-usage-mcp: color-mix(in srgb, var(--ui-red) 72%, var(--ui-purple));
+    --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
+    --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
+    --context-usage-conversation: var(--ui-cyan);
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -283,6 +291,16 @@
     --dt-accent-foreground: var(--ui-text-primary);
     --dt-border: var(--ui-stroke-secondary);
     --dt-input: var(--ui-stroke-primary);
+    /* THE single knob for input-field borders: the resting alpha (% of the ring
+       color). Hover doubles it; focus/open go full. 0% = invisible at rest. */
+    --dt-input-border: 7%;
+    /* Knob for input-field background fill: alpha (% of --dt-card) across all
+       states. 100% = fully opaque, lower = translucent over the blurred chrome. */
+    --dt-input-bg: 0%;
+    /* Classic recessed "inset" — a crisp 1px inner shadow at the TOP edge.
+       :root.dark bumps the alpha since a dark card swallows shadow. Removed on
+       focus (the focus border carries the state). */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -405,6 +423,10 @@
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
+    /* Dark mode: a dark card needs a stronger black inset to show the recess. */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    /* Dark needs a lighter resting border than light mode. */
+    --dt-input-border: 4%;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
@@ -686,7 +708,8 @@ button {
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],
-[data-slot='dialog-content'] {
+[data-slot='dialog-content'],
+[data-slot='thread-timeline-popover'] {
   border-color: var(--ui-stroke-secondary);
   background: color-mix(in srgb, var(--ui-bg-elevated) 96%, transparent);
   box-shadow: var(--shadow-md);
@@ -744,9 +767,8 @@ code {
 }
 
 /* Arc-style multicolor action surface (static, not animated). Reusable on any
-   Button via className. Unlayered so it beats Tailwind's bg-*/text-* variant
-   utilities. */
-.btn-arc {
+   Button via className. Unlayered so it beats Tailwind's bg-*/
+text-* variant utilities. */ .btn-arc {
   background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
   color: #fff;
   border-color: transparent;
@@ -757,30 +779,27 @@ code {
 }
 
 /* Shared input chrome — mirrors composer hover/focus FX. Unlayered to beat Tailwind utilities. */
+/* Border strength is driven by the single --dt-input-border alpha knob (× the
+   theme's tuned ring color); hover doubles it and focus triples it. Only the
+   border-color animates — animating the translucent background over the window's
+   backdrop-blur flickers (badly on textareas), so the bg fill snaps instead.
+   (:focus is declared after :hover so a focused+hovered field shows focus.) */
 .desktop-input-chrome {
-  --ring-pct: 18%;
-  --ring-fall: var(--dt-input);
-  background: color-mix(in srgb, var(--dt-card) 68%, transparent);
-  border-color: color-mix(
-    in srgb,
-    var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
-    var(--ring-fall)
-  );
-  box-shadow: none;
-  transition:
-    background-color 200ms ease-out,
-    border-color 200ms ease-out;
+  background: color-mix(in srgb, var(--dt-card) var(--dt-input-bg), transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) var(--dt-input-border), transparent);
+  box-shadow: var(--dt-input-inset);
+  transition: border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
-  --ring-pct: 30%;
-  background: color-mix(in srgb, var(--dt-card) 86%, transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) calc(var(--dt-input-border) * 2), transparent);
 }
 
-.desktop-input-chrome:focus {
-  --ring-pct: 45%;
-  --ring-fall: transparent;
-  background: var(--dt-card);
+/* `[data-state='open']` keeps the trigger looking focused while its dropdown is
+   open — Radix moves focus into the list, so the trigger itself loses :focus. */
+.desktop-input-chrome:focus,
+.desktop-input-chrome[data-state='open'] {
+  border-color: var(--dt-composer-ring);
   box-shadow: none;
   outline: none;
 }
@@ -1514,8 +1533,12 @@ code {
   width: 5.5rem;
   height: 7rem;
   border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
-  background:
-    radial-gradient(120% 90% at 32% 26%, color-mix(in srgb, var(--ui-accent) 14%, #fff) 0%, #f4ecd8 46%, #e4d3ad 100%);
+  background: radial-gradient(
+    120% 90% at 32% 26%,
+    color-mix(in srgb, var(--ui-accent) 14%, #fff) 0%,
+    #f4ecd8 46%,
+    #e4d3ad 100%
+  );
   box-shadow:
     inset -0.45rem -0.6rem 1.1rem color-mix(in srgb, #000 16%, transparent),
     inset 0.35rem 0.4rem 0.7rem color-mix(in srgb, #fff 70%, transparent),
@@ -1568,7 +1591,11 @@ code {
   height: 0.8rem;
   border-radius: 50%;
   /* Lighter on light backgrounds (~20% less ink); dark mode keeps it grounded. */
-  background: radial-gradient(circle, color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%, transparent 72%);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%,
+    transparent 72%
+  );
   animation: pet-egg-shadow 2.4s ease-in-out infinite;
 }
 

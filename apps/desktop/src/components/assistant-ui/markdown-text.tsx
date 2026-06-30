@@ -73,9 +73,8 @@ function preprocessWithTailRepair(text: string): string {
 // (virtualizer scroll, session switch) and whenever multiple surfaces render
 // the same content (deferred + smooth reveal republish). A small module-level
 // LRU keyed by the exact source string removes all of those repeat parses
-// with zero correctness risk (same input → same output). Streaming tail
-// growth misses the cache by design (every flush is a new string) — that
-// single lex is the irreducible cost.
+// with zero correctness risk for stable content. Active streaming bypasses
+// this cache so skipped intermediate renders cannot seed a partial block split.
 const BLOCK_CACHE_MAX = 64
 const BLOCK_CACHE_MIN_LENGTH = 1024
 const blockCache = new Map<string, string[]>()
@@ -103,6 +102,10 @@ function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   }
 
   return blocks
+}
+
+export function markdownBlockParserForStreamingState(isStreaming: boolean): typeof parseMarkdownIntoBlocks {
+  return isStreaming ? parseMarkdownIntoBlocks : parseMarkdownIntoBlocksCached
 }
 
 async function mediaSrc(path: string): Promise<string> {
@@ -639,7 +642,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       // independently deferred via `defer={isStreaming}` on the
       // SyntaxHighlighter component.
       parseIncompleteMarkdown={false}
-      parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
+      parseMarkdownIntoBlocksFn={markdownBlockParserForStreamingState(isStreaming)}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
     />

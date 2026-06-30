@@ -1,6 +1,15 @@
+import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
 import { describe, expect, it } from 'vitest'
 
+import { markdownBlockParserForStreamingState } from '@/components/assistant-ui/markdown-text'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+
+describe('markdownBlockParserForStreamingState', () => {
+  it('bypasses the block cache while streaming', () => {
+    expect(markdownBlockParserForStreamingState(true)).toBe(parseMarkdownIntoBlocks)
+    expect(markdownBlockParserForStreamingState(false)).not.toBe(parseMarkdownIntoBlocks)
+  })
+})
 
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {

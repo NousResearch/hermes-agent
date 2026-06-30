@@ -1076,6 +1076,7 @@ export interface Translations {
       copyPath: string
       removeFromSidebar: string
       createFailed: string
+      staleBackend: string
       deleteConfirm: string
       startWork: string
       newWorktreeTitle: string

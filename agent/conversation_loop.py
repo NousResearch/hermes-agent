@@ -103,6 +103,23 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _codex_response_finish_reason(response: Any) -> str:
+    """Map Codex Responses terminal status details to chat-style finish reasons."""
+    status = getattr(response, "status", None)
+    incomplete_details = getattr(response, "incomplete_details", None)
+    incomplete_reason = None
+    if isinstance(incomplete_details, dict):
+        incomplete_reason = incomplete_details.get("reason")
+    else:
+        incomplete_reason = getattr(incomplete_details, "reason", None)
+
+    if status == "incomplete" and incomplete_reason == "content_filter":
+        return "content_filter"
+    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+        return "length"
+    return "stop"
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -1466,17 +1483,7 @@ def run_conversation(
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
-                    status = getattr(response, "status", None)
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        finish_reason = "length"
-                    else:
-                        finish_reason = "stop"
+                    finish_reason = _codex_response_finish_reason(response)
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)

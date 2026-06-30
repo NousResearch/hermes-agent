@@ -2078,6 +2078,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             text,
         )
 
+        # Strikethrough: ~~text~~ → ~text~ (Chat uses single tildes).
+        text = re.sub(
+            r"~~(.+?)~~",
+            lambda m: _ph(f"~{m.group(1)}~"),
+            text,
+        )
+
         # Markdown links [text](url) → <url|text> (Slack-style angle-bracket).
         text = re.sub(
             r"\[([^\]]+)\]\(([^)]+)\)",

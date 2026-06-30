@@ -2396,6 +2396,17 @@ class TestFormatMessage:
         out = GoogleChatAdapter.format_message("hello **world**")
         assert out == "hello *world*"
 
+    def test_strikethrough_double_tilde_to_single(self):
+        """~~text~~ → ~text~ (Chat's strikethrough uses single tildes).
+
+        Standard Markdown / LLM output emits double-tilde; Chat renders
+        single-tilde, so doubled tildes reach the user as literal text.
+        Inline-code-protected `~~keep~~` stays intact.
+        """
+        assert GoogleChatAdapter.format_message("~~deleted~~") == "~deleted~"
+        assert GoogleChatAdapter.format_message("this is ~~gone~~ now") == "this is ~gone~ now"
+        assert GoogleChatAdapter.format_message("see `~~keep~~`") == "see `~~keep~~`"
+
     def test_bold_italic_combo_to_chat_dialect(self):
         """***x*** → *_x_* (bold-italic compound)."""
         out = GoogleChatAdapter.format_message("***fancy*** word")

@@ -14,7 +14,12 @@ through.
 import os
 from unittest.mock import patch
 
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_cli.model_switch import (
+    list_authenticated_providers,
+    parse_model_flags,
+    switch_model,
+)
+from hermes_cli.providers import resolve_provider_full
 
 
 # -- Only KIMI_CN_API_KEY set ------------------------------------------------
@@ -117,3 +122,55 @@ def test_kimi_aliases_not_listed_separately():
             f"Alias slug '{bad_slug}' must not appear in picker (resolved to "
             f"canonical profile)"
         )
+
+
+@patch.dict(os.environ, {
+    "KIMI_API_KEY": "sk-intl-fake",
+    "KIMI_CN_API_KEY": "sk-cn-fake",
+}, clear=False)
+def test_resolve_provider_full_preserves_kimi_cn_provider_identity():
+    """Explicit kimi-coding-cn must not collapse to shared models.dev alias.
+
+    Regression: resolve_provider_full('kimi-coding-cn') used normalize_provider(),
+    which mapped both kimi-coding and kimi-coding-cn to the models.dev alias
+    'kimi-for-coding'. That silently rewired CN users to the international
+    endpoint and KIMI_API_KEY.
+    """
+    pdef = resolve_provider_full("kimi-coding-cn", None, None)
+    assert pdef is not None
+    assert pdef.id == "kimi-coding-cn"
+    assert pdef.base_url == "https://api.moonshot.cn/v1"
+    assert pdef.api_key_env_vars == ("KIMI_CN_API_KEY",)
+
+
+@patch.dict(os.environ, {
+    "KIMI_API_KEY": "sk-intl-fake",
+    "KIMI_CN_API_KEY": "sk-cn-fake",
+}, clear=False)
+def test_switch_model_with_explicit_kimi_cn_provider_stays_on_cn_endpoint():
+    """/model ... --provider kimi-coding-cn must stay on moonshot.cn.
+
+    This hits the real switch path used by gateway /model: parse flags first,
+    then call switch_model() with explicit_provider. The result must not rewrite
+    the target provider/base_url back to the international Kimi endpoint.
+    """
+    model_input, explicit_provider, *_ = parse_model_flags(
+        "kimi-k2.6 —provider kimi-coding-cn"
+    )
+    result = switch_model(
+        raw_input=model_input,
+        current_provider="deepseek",
+        current_model="deepseek-v4-flash",
+        current_base_url="https://api.deepseek.com/v1",
+        current_api_key="***",
+        is_global=False,
+        explicit_provider=explicit_provider,
+        user_providers={},
+        custom_providers=None,
+    )
+
+    assert result.success is True
+    assert result.target_provider == "kimi-coding-cn"
+    assert result.new_model == "kimi-k2.6"
+    assert result.base_url == "https://api.moonshot.cn/v1"
+    assert result.api_key == "sk-cn-fake"

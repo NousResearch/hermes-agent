@@ -1064,7 +1064,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not self._self_is_explicitly_mentioned(message):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -1093,11 +1093,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
-                    _self_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
+                _raw_self_mention = self._self_is_explicitly_mentioned(message)
+                if not isinstance(message.channel, discord.DMChannel) and (
+                    message.mentions or _raw_self_mention
+                ):
+                    _self_mentioned = _raw_self_mention
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
@@ -4625,6 +4625,30 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _raw_mentioned_user_ids(self, message: Any) -> set:
+        """Extract Discord user-mention IDs directly from raw message content.
+
+        Covers both raw forms — ``<@ID>`` and the legacy ``<@!ID>`` nickname
+        form — which ``message.mentions`` does not always populate (mobile,
+        edited, or relayed messages can carry the mention in the content while
+        leaving the resolved ``mentions`` list empty).
+        """
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
+
+    def _self_is_explicitly_mentioned(self, message: Any) -> bool:
+        """Return True when this bot is explicitly @mentioned in the message.
+
+        Treats the bot as mentioned if it is either present in the resolved
+        ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
+        form in the message content.
+        """
+        if not self._client or not self._client.user:
+            return False
+        if self._client.user in getattr(message, "mentions", []):
+            return True
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -5655,10 +5679,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if self._client.user:
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -5707,7 +5732,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -6016,6 +6041,23 @@ class DiscordAdapter(BasePlatformAdapter):
         # When channel_context is present, a bare mention means "catch me up"
         # — the context IS the message, so skip the placeholder.
         if (not event_text or not event_text.strip()) and not _channel_context:
+            # Bare mention-only ping (e.g. "@Bot" with nothing else, including
+            # raw <@!ID> forms) with no media, no injected text, and no backfill
+            # context: drop it instead of spawning a fake empty-text turn.
+            # mention_prefix was computed (and message.content stripped) above,
+            # so reuse it rather than re-reading the now-stripped content.
+            if (
+                mention_prefix
+                and not media_urls
+                and not pending_text_injection
+            ):
+                logger.info(
+                    "[%s] Ignoring mention-only message from %s in %s",
+                    self.name,
+                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                    getattr(message.channel, "id", "unknown"),
+                )
+                return
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel

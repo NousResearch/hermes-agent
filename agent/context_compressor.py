@@ -1073,6 +1073,23 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Do not trigger compression while the summary LLM is in cooldown.
+        # On a 429/transient failure _generate_summary() sets a cooldown and
+        # returns None; compress() then inserts a static fallback marker and
+        # returns. Tokens stay above threshold, so without this guard every
+        # subsequent turn re-fires _compress_context() — re-inserting the
+        # marker and re-entering the loop, making the CLI appear frozen until
+        # the cooldown expires (issue #11529). Manual /compress passes
+        # force=True, which clears this cooldown in compress() before running,
+        # so it still retries immediately.
+        _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
+        if _cooldown_remaining > 0:
+            if not self.quiet_mode:
+                logger.debug(
+                    "Compression deferred — summary LLM in cooldown for %.0fs more",
+                    _cooldown_remaining,
+                )
+            return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:

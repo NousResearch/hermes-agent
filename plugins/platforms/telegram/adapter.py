@@ -423,6 +423,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # also probes get_webhook_info().pending_update_count and escalates to
         # recovery after two consecutive stuck probes (#42909).
         self._polling_pending_stuck_count: int = 0
+        # Consecutive heartbeat probes that found the updater stopped entirely
+        # (running=False) while we are in polling mode with no reconnect in
+        # flight. Distinct from the wedged-but-running case above: the long-poll
+        # task is simply gone, so neither the connectivity probe nor PTB's
+        # error_callback ever fires and the gateway silently stops receiving
+        # messages with the process still alive (#55769).
+        self._polling_not_running_count: int = 0
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -1879,20 +1886,61 @@ class TelegramAdapter(BasePlatformAdapter):
         not trip a needless recovery. Recovery reuses
         ``_handle_polling_network_error`` — the same ladder PTB's own
         ``error_callback`` feeds — so no new restart machinery is introduced.
+
+        This also covers the harsher case where the updater has stopped
+        entirely (``running=False``) with no reconnect in flight: the long-poll
+        task is gone rather than wedged, so even ``get_webhook_info`` can't
+        report a queue against a live consumer. We detect the stopped updater
+        directly and feed the same ladder (#55769).
         """
-        # Only meaningful in polling mode with a running updater; in webhook
-        # mode Telegram pushes updates and holds no server-side queue.
+        # Only meaningful in polling mode; in webhook mode Telegram pushes
+        # updates and holds no server-side queue.
         if self._webhook_mode:
             return
+        # A reconnect already in flight owns recovery — don't double-trigger,
+        # and don't misread its brief stop()->start_polling() window (where
+        # updater.running is transiently False) as a dead updater below.
+        if self._polling_error_task and not self._polling_error_task.done():
+            self._polling_not_running_count = 0
+            return
         updater = getattr(self._app, "updater", None) if self._app else None
-        if updater is None or not getattr(updater, "running", False):
+        if updater is None:
             self._polling_pending_stuck_count = 0
             return
+        if not getattr(updater, "running", False):
+            # We are in polling mode with no reconnect in flight, yet PTB's
+            # updater has stopped entirely. This is distinct from the
+            # wedged-but-running consumer handled below: the long-poll task is
+            # gone, get_me()/get_webhook_info() on the general request path
+            # still succeed, so no error_callback or connectivity probe ever
+            # fires and the gateway silently stops receiving messages while the
+            # process stays alive (#55769). Escalate through the same reconnect
+            # ladder as a wedged consumer, debounced over two consecutive probes
+            # so a just-starting updater never trips it.
+            self._polling_pending_stuck_count = 0
+            self._polling_not_running_count += 1
+            logger.warning(
+                "[%s] Telegram polling heartbeat: updater stopped while in "
+                "polling mode (stuck probe %d/2)",
+                self.name, self._polling_not_running_count,
+            )
+            if self._polling_not_running_count >= 2:
+                self._polling_not_running_count = 0
+                logger.warning(
+                    "[%s] Telegram updater is not running (long-poll task "
+                    "gone); triggering polling restart",
+                    self.name,
+                )
+                loop = asyncio.get_running_loop()
+                self._polling_error_task = loop.create_task(
+                    self._handle_polling_network_error(
+                        RuntimeError("Telegram updater stopped while in polling mode")
+                    )
+                )
+            return
+        self._polling_not_running_count = 0
         get_webhook_info = getattr(bot, "get_webhook_info", None)
         if not callable(get_webhook_info):
-            return
-        # A reconnect already in flight owns recovery — don't double-trigger.
-        if self._polling_error_task and not self._polling_error_task.done():
             return
         try:
             info = await asyncio.wait_for(get_webhook_info(), probe_timeout)  # type: ignore[arg-type]

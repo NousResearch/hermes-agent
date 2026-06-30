@@ -20,7 +20,7 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments } from '@/store/composer'
+import { $composerAttachments } from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -37,7 +37,6 @@ import {
   setComposerPoppedOut
 } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
-import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
@@ -62,6 +61,7 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
@@ -966,79 +966,10 @@ export function ChatBar({
     handleInputDrop
   } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, requestMainFocus })
 
-  // Hand a worktree off to the controller: open a fresh session anchored there,
-  // carrying the composer draft as its first turn. Clearing here means the draft
-  // travels to the new session instead of getting stashed under this one.
-  const openInWorktree = useCallback(
-    (path: string) => {
-      const text = draftRef.current
-      clearDraft()
-      clearComposerAttachments()
-      requestStartWorkSession(path, text)
-    },
-    [clearDraft]
-  )
-
-  // Branch off into a NEW worktree (base = branch name, or current HEAD). A
-  // create failure throws back to the row (which toasts) before we touch the
-  // draft; a missing cwd / remote backend no-ops (the row hides the affordance).
-  const handleBranchOff = useCallback(
-    async (branch: string, base?: string) => {
-      const repoPath = cwd?.trim()
-      const result = repoPath && (await startWorkInRepo(repoPath, { base, branch, name: branch }))
-
-      if (result) {
-        openInWorktree(result.path)
-      }
-    },
-    [cwd, openInWorktree]
-  )
-
-  // Convert an EXISTING branch into a fresh worktree + session (no new branch).
-  // Mirrors handleBranchOff's hand-off: create the worktree, then open a session
-  // anchored there carrying the draft.
-  const handleConvertBranch = useCallback(
-    async (branch: string, path?: null | string, isDefault?: boolean) => {
-      if (path?.trim()) {
-        openInWorktree(path)
-
-        return
-      }
-
-      const repoPath = cwd?.trim()
-
-      if (repoPath && isDefault) {
-        await switchBranchInRepo(repoPath, branch)
-        openInWorktree(repoPath)
-
-        return
-      }
-
-      const result = repoPath && (await startWorkInRepo(repoPath, { existingBranch: branch }))
-
-      if (result) {
-        openInWorktree(result.path)
-      }
-    },
-    [cwd, openInWorktree]
-  )
-
-  const handleListBranches = useCallback(async () => {
-    const repoPath = cwd?.trim()
-
-    return repoPath ? listRepoBranches(repoPath) : []
-  }, [cwd])
-
-  const handleSwitchBranch = useCallback(
-    async (branch: string) => {
-      const repoPath = cwd?.trim()
-
-      if (repoPath) {
-        await switchBranchInRepo(repoPath, branch)
-      }
-    },
-    [cwd]
-  )
+  // Branch / worktree hand-offs (CodingStatusRow). Owns the worktree open +
+  // branch-off/convert/list/switch actions; draft travels into the new session.
+  const { handleBranchOff, handleConvertBranch, handleListBranches, handleSwitchBranch, openInWorktree } =
+    useComposerBranch({ clearDraft, cwd, draftRef })
 
   // Esc cancels the in-flight turn when the CHAT has focus — not just the
   // composer input (which has its own handler above). Clicking into the

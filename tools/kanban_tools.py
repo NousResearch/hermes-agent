@@ -179,6 +179,9 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+
+
 def _goal_judge_available() -> bool:
     """True when an auxiliary client is configured for the goal judge.
 
@@ -684,6 +687,30 @@ def _handle_block(args: dict, **kw) -> str:
             conn.close()
             return tool_error(
                 f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
+        # Goal-mode block gate (Issue #38696, sibling of the kanban_complete
+        # judge gate in #38367). kanban_block is a second exit path out of
+        # the goal loop — run_kanban_goal_loop() treats ANY `blocked` status
+        # as terminal, identically to `done`, regardless of kind. Without
+        # this, a worker that learns kanban_complete is gated can just call
+        # kanban_block(reason="anything") to escape the loop instead.
+        # Restrict goal_mode tasks to the kinds that represent a genuine
+        # external blocker the worker cannot resolve itself; `capability`
+        # and `transient` (or an unset kind) route back through
+        # kanban_complete, which the judge now gates.
+        task = kb.get_task(conn, tid)
+        if (
+            task
+            and task.goal_mode
+            and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
+        ):
+            conn.close()
+            return tool_error(
+                f"goal_mode tasks can only block with kind in "
+                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
+                f"If the task is actually finished or cannot proceed for "
+                f"another reason, call kanban_complete instead — the "
+                f"completion judge will evaluate it."
             )
         try:
             ok = kb.block_task(

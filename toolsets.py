@@ -33,9 +33,10 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
-    # Read the desktop GUI's embedded terminal pane (gated on HERMES_DESKTOP
-    # via check_fn in tools/read_terminal_tool.py — hidden outside the GUI).
-    "read_terminal",
+    # Read the desktop GUI's embedded terminal pane, and close an agent's
+    # read-only terminal tab (both gated on HERMES_DESKTOP via check_fn —
+    # hidden outside the GUI).
+    "read_terminal", "close_terminal",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -51,6 +52,11 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # NOTE: the desktop Project tools (project_list/create/switch) are
+    # deliberately NOT here. They only make sense where a GUI can follow the
+    # move, so they live in the `project` toolset and are enabled solely by the
+    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
+    # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
     # Clarifying questions
@@ -133,18 +139,19 @@ TOOLSETS = {
         "description": (
             "Video generation tools. Single ``video_generate`` tool covers "
             "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url) — the active backend auto-routes. Configure via "
+            "image_url), plus reference-to-video. Provider-specific edit/"
+            "extend workflows may appear as separate tools. Configure via "
             "``hermes tools`` → Video Generation."
         ),
-        "tools": ["video_generate"],
+        "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
         "includes": []
     },
 
     "computer_use": {
         "description": (
-            "Background macOS desktop control via cua-driver — screenshots, "
-            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
-            "or keyboard focus. Works with any tool-capable model."
+            "Background desktop control via cua-driver (macOS/Windows/Linux) — "
+            "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
+            "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
         "includes": []
@@ -153,12 +160,6 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
-        "includes": []
-    },
-    
-    "moa": {
-        "description": "Advanced reasoning and problem-solving tools",
-        "tools": ["mixture_of_agents"],
         "includes": []
     },
     
@@ -220,6 +221,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "project": {
+        "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
+        "tools": ["project_list", "project_create", "project_switch"],
         "includes": []
     },
     
@@ -340,7 +347,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process", "read_terminal",
+            "terminal", "process", "read_terminal", "close_terminal",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",

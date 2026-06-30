@@ -78,10 +78,13 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=windows_hide_flags(),
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -92,6 +95,7 @@ def _kill_port_process(port: int) -> None:
                             subprocess.run(
                                 ["taskkill", "/PID", parts[4], "/F"],
                                 capture_output=True, timeout=5,
+                                creationflags=windows_hide_flags(),
                             )
                         except subprocess.SubprocessError:
                             pass
@@ -264,8 +268,37 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    IMAGE_CACHE_DIR,
+    AUDIO_CACHE_DIR,
+    VIDEO_CACHE_DIR,
+    DOCUMENT_CACHE_DIR,
 )
 from utils import env_int
+
+
+def _is_allowed_bridge_path(url: str) -> bool:
+    """Return True only when an absolute path from the bridge resolves inside a
+    known Hermes media cache directory.
+
+    The Baileys bridge is a local subprocess that downloads inbound media and
+    hands back absolute file paths. A compromised or buggy bridge could hand
+    back an arbitrary path (e.g. ``/etc/passwd``) which would otherwise be
+    attached verbatim and sent to the model. Resolve the path (following any
+    symlinks) and require it to live under one of the real cache roots — this
+    covers both the canonical ``cache/<kind>`` layout and the legacy
+    ``<kind>_cache`` layout that ``get_hermes_dir`` may return.
+    """
+    try:
+        resolved = Path(url).resolve()
+    except (OSError, ValueError):
+        return False
+    for root in (IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR):
+        try:
+            if resolved.is_relative_to(Path(root).resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _file_content_hash(path: Path) -> str:
@@ -337,6 +370,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # Default bridge location resolved via shared helper
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -410,7 +444,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Start the WhatsApp bridge.
         
@@ -598,7 +632,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
+                start_new_session=True,
                 env=bridge_env,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
@@ -1211,9 +1245,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
-                    cached_urls.append(url)
-                    media_types.append("image/jpeg")
-                    print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("image/jpeg")
+                        print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
@@ -1226,20 +1263,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
-                    cached_urls.append(url)
-                    media_types.append("audio/ogg")
-                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("audio/ogg")
+                        print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
-                    cached_urls.append(url)
-                    ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
-                    media_types.append(mime)
-                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        ext = Path(url).suffix.lower()
+                        mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        media_types.append(mime)
+                        print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge document path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
-                    cached_urls.append(url)
-                    media_types.append("video/mp4")
-                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("video/mp4")
+                        print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
@@ -1315,6 +1361,31 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+_WA_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_WA_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+_WA_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+
+
+def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> str:
+    """Map a local media file to the bridge /send-media ``mediaType``.
+
+    Returns one of ``image`` | ``video`` | ``audio`` | ``document`` so the
+    Baileys bridge renders the right native WhatsApp message kind. Voice notes
+    and audio files route to ``audio``; ``force_document`` (the [[as_document]]
+    directive) forces every file to ``document`` regardless of extension.
+    """
+    if force_document:
+        return "document"
+    ext = os.path.splitext(file_path)[1].lower()
+    if is_voice or ext in _WA_AUDIO_EXTS:
+        return "audio"
+    if ext in _WA_IMAGE_EXTS:
+        return "image"
+    if ext in _WA_VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1338,22 +1409,55 @@ async def _standalone_send(
     try:
         bridge_port = extra.get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
+        media = media_files or []
+        text = message or ""
+        last_message_id = None
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://localhost:{bridge_port}/send",
-                json={"chatId": normalized_chat_id, "message": message},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 200:
+            # 1) Text first (skip the /send call when this chunk is media-only).
+            if text.strip():
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send",
+                    json={"chatId": normalized_chat_id, "message": text},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
                     data = await resp.json()
-                    return {
-                        "success": True,
-                        "platform": "whatsapp",
-                        "chat_id": normalized_chat_id,
-                        "message_id": data.get("messageId"),
-                    }
-                body = await resp.text()
-                return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
+                    last_message_id = data.get("messageId")
+
+            # 2) Each media file as a native attachment via /send-media. The
+            # bridge maps mediaType -> image/video/audio/document message kinds
+            # so PNG/JPEG/WebP/GIF arrive as inline images, MP4 as a video
+            # bubble, and ogg/opus as a voice note — not a file/document.
+            for media_path, is_voice in media:
+                if not os.path.exists(media_path):
+                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                media_type = _bridge_media_type(media_path, is_voice, force_document)
+                payload: Dict[str, Any] = {
+                    "chatId": normalized_chat_id,
+                    "filePath": media_path,
+                    "mediaType": media_type,
+                }
+                if media_type == "document":
+                    payload["fileName"] = os.path.basename(media_path)
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send-media",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp media error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    last_message_id = data.get("messageId") or last_message_id
+
+        return {
+            "success": True,
+            "platform": "whatsapp",
+            "chat_id": normalized_chat_id,
+            "message_id": last_message_id,
+        }
     except Exception as e:
         return {"error": f"WhatsApp send failed: {e}"}
 

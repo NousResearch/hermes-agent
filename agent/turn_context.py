@@ -28,8 +28,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
-from agent.model_metadata import estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,34 @@ def _compression_made_progress(
     if new_len < orig_len:
         return True
     return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
+
+
+def _should_run_preflight_estimate(
+    messages: List[Dict[str, Any]],
+    protect_first_n: int,
+    protect_last_n: int,
+    threshold_tokens: int,
+) -> bool:
+    """Cheap gate for the (expensive) full preflight token estimate.
+
+    Returns ``True`` when either:
+      (a) message count exceeds the protected ranges (the historical gate), or
+      (b) a cheap char-based estimate already crosses the configured threshold
+          — the few-but-huge case from issue #27405 that the count-only gate
+          would silently skip (a handful of very large messages never trips
+          the count condition, so compression was never attempted and the
+          turn hit a hard context-overflow error).
+
+    Branch (b) uses ``estimate_messages_tokens_rough`` (the shared char-based
+    estimator) so a single large base64 image isn't mistaken for ~250K tokens.
+    It intentionally undercounts vs. the full request estimate — it omits the
+    system prompt and tool schemas — because it is only a *hint* deciding
+    whether to pay for the authoritative ``estimate_request_tokens_rough``,
+    which (together with ``should_compress``) makes the real decision.
+    """
+    if len(messages) > protect_first_n + protect_last_n + 1:
+        return True
+    return estimate_messages_tokens_rough(messages) >= threshold_tokens
 
 
 @dataclass
@@ -111,7 +143,13 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    agent._ensure_db_session()
+    # NOTE: the DB session row is created later, AFTER the system prompt is
+    # restored/built (see _ensure_db_session() below the system-prompt block).
+    # Creating it here — before _cached_system_prompt is populated — inserts a
+    # row with system_prompt=NULL on a fresh API/gateway agent that carries
+    # client-managed history, which then trips the "stored system prompt is
+    # null; rebuilding from scratch" warning and a needless first-turn prefix
+    # cache miss. (Issue #45499.)
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
@@ -278,6 +316,11 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Create the DB session row now that _cached_system_prompt is populated, so
+    # the persisted snapshot is written non-NULL on the first turn (Issue
+    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
+    agent._ensure_db_session()
+
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
         agent._persist_session(messages, conversation_history)
@@ -289,10 +332,14 @@ def build_turn_context(
         )
 
     # ── Preflight context compression ──
-    if (
-        agent.compression_enabled
-        and len(messages) > agent.context_compressor.protect_first_n
-                            + agent.context_compressor.protect_last_n + 1
+    # Gate the (expensive) full token estimate behind a cheap pre-check.
+    # See ``_should_run_preflight_estimate`` for the OR semantics that fix
+    # issue #27405 (a few very large messages slipping past the count gate).
+    if agent.compression_enabled and _should_run_preflight_estimate(
+        messages,
+        agent.context_compressor.protect_first_n,
+        agent.context_compressor.protect_last_n,
+        agent.context_compressor.threshold_tokens,
     ):
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
@@ -313,6 +360,12 @@ def build_turn_context(
             if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+
         if _preflight_deferred:
             logger.info(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
@@ -320,6 +373,13 @@ def build_turn_context(
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compression_cooldown:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(
@@ -354,7 +414,9 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     break  # Cannot compress further: neither rows nor tokens moved
-                conversation_history = None
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
@@ -392,6 +454,9 @@ def build_turn_context(
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
+    agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

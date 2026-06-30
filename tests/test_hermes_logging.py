@@ -818,6 +818,85 @@ class TestAddRotatingHandler:
                 h.close()
 
 
+class TestWindowsConcurrentLogLockTimeout:
+    """Windows concurrent-log-handler lock timeouts stay inside logging."""
+
+    def _make_logger_and_handler(self, log_path: Path):
+        logger = logging.getLogger(f"_test_concurrent_lock_timeout_{log_path.stem}")
+        logger.handlers.clear()
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        return logger, handler
+
+    def test_helper_only_matches_windows_concurrent_lock_timeout(self):
+        with patch.object(hermes_logging.sys, "platform", "win32"):
+            assert hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("some other logging failure")
+            )
+
+        with patch.object(hermes_logging.sys, "platform", "linux"):
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+
+    def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
+        """Mirror CLH's real control flow.
+
+        ``concurrent-log-handler``'s ``emit()`` wraps its whole body in
+        ``try/except Exception: self.handleError(record)``, so the lock
+        RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
+        to ``handleError`` with the exception live in ``sys.exc_info()``.  We
+        invoke ``handleError`` the same way CLH would and assert no traceback
+        reaches stderr (the slash-worker surface)."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
+        )
+        try:
+            with patch.object(hermes_logging.sys, "platform", "win32"):
+                try:
+                    raise RuntimeError("Cannot acquire lock after 20 attempts")
+                except RuntimeError:
+                    handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "Cannot acquire lock after 20 attempts" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_other_errors_routed_to_handle_error_still_print(self, tmp_path, capsys):
+        """An unrelated failure routed through ``handleError`` must still emit the
+        normal stdlib logging-error output — only the known CLH timeout is silent."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
+        )
+        try:
+            with patch.object(hermes_logging.sys, "platform", "win32"):
+                try:
+                    raise RuntimeError("unexpected logging failure")
+                except RuntimeError:
+                    handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "unexpected logging failure" in captured.err
+            assert "--- Logging error ---" in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+
 class TestReadLoggingConfig:
     """_read_logging_config() reads from config.yaml."""
 

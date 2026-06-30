@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import pytest
+import time
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -8,6 +9,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
 )
+from hermes_state import SessionDB
 
 
 @pytest.fixture()
@@ -682,6 +684,47 @@ class TestAuthFailureAborts:
         assert c._last_summary_auth_failure is False
         assert c._last_compress_aborted is False
         assert len(result) < len(msgs)  # middle window dropped
+
+    def test_generate_summary_flags_network_failure(self):
+        """A connection/network error on the summary call flags
+        _last_summary_network_failure (#29559)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=ConnectionError("Connection error."),
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_network_failure is True
+        assert c._last_summary_auth_failure is False
+
+    def test_compress_aborts_on_network_failure_despite_flag_false(self):
+        """#29559/#25585: abort_on_summary_failure=False (default), but a
+        transient connection error must ABORT — messages returned unchanged,
+        _last_compress_aborted=True — NOT drop the middle window. Retrying once
+        the network recovers beats discarding context for a transient blip."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=ConnectionError("Connection error."),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        # Session must NOT be compressed/rotated — same messages back.
+        assert result == msgs
+        assert len(result) == len(msgs)
+        assert c._last_compress_aborted is True
+        assert c._last_summary_network_failure is True
+        # Did NOT fall through to the static-fallback (drop-the-middle) path.
+        assert c._last_summary_fallback_used is False
 
     def test_aux_model_auth_failure_recovers_on_main_no_abort(self):
         """A 401 from a DISTINCT auxiliary summary_model retries on the main
@@ -1422,6 +1465,75 @@ class TestAbortOnSummaryFailure:
         assert c._last_compress_aborted is False
         assert c._summary_failure_cooldown_until == 0.0
         assert len(result) < len(msgs)
+
+    def test_force_true_bypasses_persisted_session_cooldown(self, tmp_path):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        mock_llm.assert_called()
+        assert c._last_compress_aborted is False
+        assert len(result) < len(msgs)
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_aux_fallback_clears_persisted_session_cooldown_before_retry(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c.summary_model = "aux/model"
+
+        c._fallback_to_main_for_compression(Exception("provider down"), "failed")
+
+        assert c.summary_model == ""
+        assert c._summary_failure_cooldown_until == 0.0
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_success_clears_persisted_session_cooldown(self, tmp_path):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c._summary_failure_cooldown_until = 0.0
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
+            result = c.compress(msgs, current_tokens=999999)
+
+        mock_llm.assert_called()
+        assert c._last_compress_aborted is False
+        assert len(result) < len(msgs)
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_session_end_does_not_clear_persisted_session_cooldown(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c.on_session_end("s1", [])
+
+        assert db.get_compression_failure_cooldown("s1") is not None
 
 
 class TestSummaryPrefixNormalization:

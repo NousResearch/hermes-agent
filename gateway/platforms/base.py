@@ -1010,9 +1010,47 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
 )
 
 
+# Canonical cache subdirectories that hold deliverable artifacts. Used both
+# for the top-level safe roots above and to enumerate per-profile cache roots
+# at check time (see _media_delivery_allowed_roots).
+_MEDIA_DELIVERY_CACHE_SUBDIRS = (
+    "images",
+    "audio",
+    "videos",
+    "documents",
+    "screenshots",
+)
+
+
+def _profile_cache_roots() -> List[Path]:
+    """Return per-profile canonical cache roots under the shared Hermes root.
+
+    Profile gateways write generated artifacts to
+    ``<root>/profiles/<name>/cache/{images,audio,...}``. The static safe-roots
+    list only covers the *active* HERMES_HOME's cache, so a gateway running at
+    the root (e.g. ``HERMES_HOME=/opt/data``) while the model emits a
+    profile-scoped path silently fails delivery. Enumerated dynamically at
+    check time so profiles created after startup are covered, and so the
+    resolved profile path is allowlisted *before* the ``/root`` system denylist
+    is consulted (which otherwise wins when HERMES_HOME is symlinked under a
+    denied prefix and $HOME is not that prefix). See issue #31733.
+    """
+    roots: List[Path] = []
+    profiles_dir = _HERMES_ROOT / "profiles"
+    try:
+        profile_dirs = [p for p in profiles_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return roots
+    for profile_dir in profile_dirs:
+        for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS:
+            roots.append(profile_dir / "cache" / subdir)
+    return roots
+
+
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    roots.extend(_profile_cache_roots())
     extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
     for chunk in extra_roots.split(os.pathsep):
         for raw_root in chunk.split(","):
@@ -1066,12 +1104,48 @@ def _media_delivery_denied_paths() -> List[Path]:
         denied.append(home / sub)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above.
+    # explicitly allowlisted above (matched BEFORE this denylist in
+    # validate_media_delivery_path, so generated media still delivers).
+    #
+    # These are the per-file credential / secret stores that live at the
+    # HERMES_HOME root. The set mirrors the canonical read guard in
+    # agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
+    # delivery (read/exfil) side can't trail the write side: a credential the
+    # agent is forbidden to write or read must also never be auto-attached to a
+    # chat reply. Enumerated explicitly per-file rather than denying the whole
+    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
+    # stay deliverable (see #32090, #34425).
+    _ROOT_CREDENTIAL_FILES = (
+        ".env",
+        "auth.json",
+        "auth.lock",
+        "credentials",
+        "config.yaml",
+        # Anthropic PKCE / OAuth refresh credential store.
+        ".anthropic_oauth.json",
+        # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
+        # every turn, which defeated the strict-mode recency window) plus the
+        # pending-exchange session/verifier file.
+        "google_token.json",
+        "google_oauth_pending.json",
+        os.path.join("auth", "google_oauth.json"),
+        # Webhook subscription HMAC secrets.
+        "webhook_subscriptions.json",
+        # Bitwarden Secrets Manager plaintext disk cache.
+        os.path.join("cache", "bws_cache.json"),
+    )
+    # Directory trees whose every child is credential material. (MCP OAuth
+    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
+    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
+    # overlap.)
+    _ROOT_CREDENTIAL_DIRS = (
+        "pairing",
+    )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
-        denied.append(hermes_root / ".env")
-        denied.append(hermes_root / "auth.json")
-        denied.append(hermes_root / "credentials")
-        denied.append(hermes_root / "config.yaml")
+        for rel in _ROOT_CREDENTIAL_FILES:
+            denied.append(hermes_root / rel)
+        for rel in _ROOT_CREDENTIAL_DIRS:
+            denied.append(hermes_root / rel)
     return denied
 
 
@@ -1190,9 +1264,12 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     # Non-strict mode (default): accept anything not on the denylist.
-    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
-    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the
+    # credential/secret stores under the Hermes root (~/.hermes/.env,
+    # auth.json, .anthropic_oauth.json, google_token.json, pairing/, ...) —
+    # so the obvious prompt-injection / credential-exfil sites
+    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``,
+    # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
             return None
@@ -1704,6 +1781,9 @@ class SendResult:
     # stream consumer can send the missing tail instead of marking a clipped
     # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # Server-requested retry delay in seconds (e.g. Telegram FloodWait retry_after).
+    # When present, _send_with_retry() honors this instead of its default backoff.
+    retry_after: Optional[float] = None
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -2077,6 +2157,14 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Whether this adapter's ``send()`` splits long content into multiple
+    # messages via ``truncate_message()``.  When True, the delivery router
+    # (gateway/delivery.py) skips gateway-level truncation and lets the
+    # adapter chunk natively — preserving full output on platforms that
+    # support multi-message delivery (Discord, Telegram, …).  Default False
+    # (conservative); adapters verified to chunk in ``send()`` set True.
+    splits_long_messages: bool = False
+
     # The command prefix users can always TYPE on this platform to reach
     # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
     # as plain message text).  Platforms where typing a leading "/" is
@@ -2194,6 +2282,38 @@ class BasePlatformAdapter(ABC):
         Adapters that own their access policy override this to return ``True``.
         Adapters that delegate access control to the gateway leave it ``False``
         (the default).
+        """
+        return False
+
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Whether inbound on this adapter was already authorized UPSTREAM.
+
+        Distinct from ``enforces_own_access_policy``: that flag describes an
+        adapter that enforces a LOCAL, config-driven access surface
+        (``dm_policy: allowlist`` / ``allow_from``) the gateway can mirror. This
+        flag describes an adapter whose authorization is performed by a TRUSTED
+        UPSTREAM over an authenticated transport — there is no local policy to
+        consult, and the env allowlist (``{PLATFORM}_ALLOWED_USERS``) does not
+        apply because the sender identity isn't a platform account the operator
+        configures here.
+
+        The relay adapter is the sole user: it fronts the Team Gateway
+        connector over a per-instance-authenticated WebSocket, and the connector
+        performs owner-only author-binding resolution BEFORE delivering — a
+        message only reaches this gateway because the connector resolved it to
+        THIS instance's bound user (``user_instance_binding``). The author id is
+        read off the event the connector observed, never gateway-asserted. So an
+        inbound relay event carries an authorization decision already made by a
+        trusted, authenticated upstream; default-denying it (no env allowlist ⇒
+        deny) is incorrect.
+
+        This is NOT a fail-open: it is authorization DELEGATED to a trusted
+        upstream that authenticated the transport (the relay WS secret) and
+        enforced owner-only binding, as opposed to authorization being ABSENT.
+        It only takes effect for an adapter that explicitly overrides this to
+        ``True``; every network-exposed direct adapter leaves it ``False`` and
+        the env-allowlist default-deny continues to apply unchanged.
         """
         return False
 
@@ -2472,7 +2592,7 @@ class BasePlatformAdapter(ABC):
             + '. Stop the other gateway first.'
         )
         logger.error('[%s] %s', self.name, message)
-        self._set_fatal_error(f'{scope}_lock', message, retryable=False)
+        self._set_fatal_error(f'{scope}_lock', message, retryable=True)
         return False
 
     def _release_platform_lock(self) -> None:
@@ -2552,10 +2672,21 @@ class BasePlatformAdapter(ABC):
         self._session_store = session_store
     
     @abstractmethod
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Connect to the platform and start receiving messages.
-        
+
+        Args:
+            is_reconnect: False on a cold first boot (the gateway is
+                starting this platform for the first time); True when the
+                reconnect watcher is re-establishing a platform that was
+                previously running and dropped after an outage. Adapters
+                that buffer a server-side update queue (e.g. Telegram's Bot
+                API) should preserve that queue when ``is_reconnect`` is
+                True so messages sent during the outage are delivered rather
+                than silently discarded. Adapters with no such queue may
+                ignore the flag.
+
         Returns True if connection was successful.
         """
         pass
@@ -3713,9 +3844,16 @@ class BasePlatformAdapter(ABC):
             return result
 
         if is_network:
-            # Retry with exponential backoff for transient errors
+            # Retry with exponential backoff for transient errors.
+            # Honor server-requested retry_after (e.g. Telegram FloodWait)
+            # when present — it is authoritative over our backoff schedule.
+            server_retry_after = result.retry_after
             for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                if server_retry_after is not None:
+                    delay = server_retry_after + random.uniform(0, 1)
+                    server_retry_after = None  # only honor once per send
+                else:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,
@@ -3731,6 +3869,8 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                if result.retry_after is not None:
+                    server_retry_after = result.retry_after
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
@@ -4195,7 +4335,8 @@ class BasePlatformAdapter(ABC):
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.
-        self._apply_topic_recovery(event)
+        # Offloaded: the sync hook must not block the loop.
+        await asyncio.to_thread(self._apply_topic_recovery, event)
 
         session_key = build_session_key(
             event.source,
@@ -4270,11 +4411,11 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
 
-            # Clarify text-capture bypass: if the agent is blocked on a
-            # clarify_tool call awaiting a free-form text response (open-
-            # ended clarify, or user picked "Other"), the next non-command
-            # message in this session MUST reach the runner so the
-            # clarify-intercept can resolve it and unblock the agent.
+            # Clarify reply bypass: if the agent is blocked on a
+            # clarify_tool call, the next non-command message in this
+            # session MUST reach the runner so typed numeric choices,
+            # exact choices, and free-form "Other" answers can resolve the
+            # clarify-intercept and unblock the agent.
             #
             # Without this bypass: the message gets queued in
             # _pending_messages as a follow-up turn instead of reaching the
@@ -4287,7 +4428,10 @@ class BasePlatformAdapter(ABC):
                 try:
                     from tools import clarify_gateway as _clarify_mod
                     _has_text_clarify = (
-                        _clarify_mod.get_pending_for_session(session_key) is not None
+                        _clarify_mod.get_pending_for_session(
+                            session_key,
+                            include_choice_prompts=True,
+                        ) is not None
                     )
                 except Exception:
                     _has_text_clarify = False
@@ -4418,21 +4562,26 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
-        # Start continuous typing indicator (refreshes every 2 seconds)
+        # Start continuous typing indicator (refreshes every 2 seconds).
+        # Gated per-platform: when typing_indicator=False the refresh loop is
+        # never spawned, so no "typing…" / "is thinking…" status is shown.
+        # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
-        try:
-            _keep_typing_sig = inspect.signature(self._keep_typing)
-        except (TypeError, ValueError):
-            _keep_typing_sig = None
-        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
-            _keep_typing_kwargs["stop_event"] = interrupt_event
-        typing_task = asyncio.create_task(
-            self._keep_typing(
-                event.source.chat_id,
-                **_keep_typing_kwargs,
+        typing_task: Optional[asyncio.Task] = None
+        if getattr(self.config, "typing_indicator", True):
+            _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
+            try:
+                _keep_typing_sig = inspect.signature(self._keep_typing)
+            except (TypeError, ValueError):
+                _keep_typing_sig = None
+            if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+                _keep_typing_kwargs["stop_event"] = interrupt_event
+            typing_task = asyncio.create_task(
+                self._keep_typing(
+                    event.source.chat_id,
+                    **_keep_typing_kwargs,
+                )
             )
-        )
 
         async def _stop_typing_task() -> None:
             await self._stop_typing_refresh(
@@ -4812,8 +4961,11 @@ class BasePlatformAdapter(ABC):
                     ),
                     metadata=_thread_metadata,
                 )
-            except Exception:
-                pass  # Last resort — don't let error reporting crash the handler
+            except Exception as notify_err:
+                logger.error(
+                    "[%s] Failed to send error notification to user: %s",
+                    self.name, notify_err, exc_info=True,
+                )  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
@@ -4929,8 +5081,27 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    del self._session_tasks[session_key]
-                    self._release_session_guard(session_key, guard=interrupt_event)
+                    self._cleanup_finished_session_task(session_key, interrupt_event)
+    
+    def _cleanup_finished_session_task(
+        self, session_key: str, interrupt_event: Optional[asyncio.Event]
+    ) -> None:
+        """Release the session guard for a finished owner task, then drop its
+        ``_session_tasks`` entry ONLY if the guard was actually released.
+
+        Release-then-conditional-delete is the #48300 fix: when a concurrent
+        path (reset/new command, drain handoff) swapped ``_active_sessions[key]``
+        to a different guard, ``_release_session_guard`` skips on the guard
+        mismatch and the lock stays installed. If we deleted ``_session_tasks``
+        unconditionally (the old order), ``_session_task_is_stale`` would later
+        see no owner task and report "not stale", so the orphaned guard would
+        never be healed — a permanent session deadlock. Keeping the done-task
+        entry when the guard survives lets the on-entry self-heal detect the
+        stale lock and clear it on the next inbound message.
+        """
+        self._release_session_guard(session_key, guard=interrupt_event)
+        if session_key not in self._active_sessions:
+            self._session_tasks.pop(session_key, None)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

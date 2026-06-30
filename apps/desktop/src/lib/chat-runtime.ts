@@ -155,6 +155,13 @@ export function pathLabel(path: string): string {
 }
 
 export function attachmentDisplayText(attachment: ComposerAttachment): string | null {
+  // Session switches / draft restores can leave undefined holes in the
+  // composer attachments array (see AttachmentList's filter(Boolean) + #49624).
+  // Every consumer funnels through here, so guard the chokepoint too.
+  if (!attachment) {
+    return null
+  }
+
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
   }
@@ -188,6 +195,10 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * through to `attachmentDisplayText`.
  */
 export function optimisticAttachmentRef(attachment: ComposerAttachment): string | null {
+  if (!attachment) {
+    return null
+  }
+
   if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
     return attachment.previewUrl
   }
@@ -241,9 +252,7 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return typeof row.message === 'string' ? { type: 'send', message: row.message, notice: str(row.notice) } : null
 
     case 'prefill':
-      return typeof row.message === 'string'
-        ? { type: 'prefill', message: row.message, notice: str(row.notice) }
-        : null
+      return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
 
     default:
       return null

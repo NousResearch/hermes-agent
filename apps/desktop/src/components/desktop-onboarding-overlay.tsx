@@ -8,18 +8,10 @@ import { Codicon } from '@/components/ui/codicon'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
+import { RowButton } from '@/components/ui/row-button'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import {
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  KeyRound,
-  Loader2,
-  Terminal
-} from '@/lib/icons'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, KeyRound, Loader2, Terminal } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -216,8 +208,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
       return
     }
 
-    const reduce =
-      typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
     if (reduce) {
       confirmOnboardingModel(ctx)
@@ -522,13 +513,7 @@ function ChooseLaterLink() {
   const { t } = useI18n()
 
   return (
-    <Button
-      className="font-medium"
-      onClick={() => dismissFirstRunOnboarding()}
-      size="xs"
-      type="button"
-      variant="text"
-    >
+    <Button className="font-medium" onClick={() => dismissFirstRunOnboarding()} size="xs" type="button" variant="text">
       {t.onboarding.chooseLater}
     </Button>
   )
@@ -591,13 +576,13 @@ export function KeyProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 
   return (
-    <button className={PROVIDER_ROW_CLASS} onClick={onClick} type="button">
+    <RowButton className={PROVIDER_ROW_CLASS} onClick={onClick}>
       <div className="min-w-0">
         <span className="text-[length:var(--conversation-text-font-size)] font-semibold">OpenRouter</span>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.openRouterPitch}</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-    </button>
+    </RowButton>
   )
 }
 
@@ -613,7 +598,7 @@ export function ProviderRow({
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
-    <button className={PROVIDER_ROW_CLASS} onClick={() => onSelect(provider)} type="button">
+    <RowButton className={PROVIDER_ROW_CLASS} onClick={() => onSelect(provider)}>
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
@@ -624,7 +609,7 @@ export function ProviderRow({
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-    </button>
+    </RowButton>
   )
 }
 
@@ -650,20 +635,13 @@ export function ApiKeyForm({
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (
-    envKey: string,
-    value: string,
-    name: string,
-    apiKey?: string
-  ) => Promise<{ message?: string; ok: boolean }>
+  onSave: (envKey: string, value: string, name: string, apiKey?: string) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const { t } = useI18n()
 
-  const [option, setOption] = useState<ApiKeyOption>(
-    () => options.find(o => o.envKey === initialEnvKey) ?? options[0]
-  )
+  const [option, setOption] = useState<ApiKeyOption>(() => options.find(o => o.envKey === initialEnvKey) ?? options[0])
 
   const [value, setValue] = useState('')
   // Optional endpoint API key, only used by the local / custom endpoint option
@@ -731,13 +709,7 @@ export function ApiKeyForm({
   return (
     <div className="grid gap-4">
       {canGoBack ? (
-        <Button
-          className="-mt-1 self-start font-medium"
-          onClick={onBack}
-          size="xs"
-          type="button"
-          variant="text"
-        >
+        <Button className="-mt-1 self-start font-medium" onClick={onBack} size="xs" type="button" variant="text">
           <ChevronLeft className="size-3" />
           {t.onboarding.backToSignIn}
         </Button>
@@ -837,9 +809,7 @@ function FlowPanel({
   }
 
   if (flow.status === 'success') {
-    return (
-      <DecodedLabel text={t.onboarding.connectedPicking(title)} />
-    )
+    return <DecodedLabel text={t.onboarding.connectedPicking(title)} />
   }
 
   if (flow.status === 'confirming_model') {

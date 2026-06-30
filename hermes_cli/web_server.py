@@ -13928,6 +13928,21 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _ws_ping_val(env_val, host, *, default=30):
+    """Resolve WebSocket ping interval/timeout.
+
+    Returns None (disabled) for localhost when no env override is set,
+    the env value when explicitly provided (0 means disabled), or
+    ``default`` for remote hosts.
+    """
+    if env_val is not None:
+        v = float(env_val)
+        return None if v <= 0 else v
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return float(default)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -14054,11 +14069,11 @@ def start_server(
         # mode.
         proxy_headers=bool(app.state.auth_required),
         # Detect half-open WS connections (reverse-proxy 524, dropped
-        # tunnels) within ~20-40s so WebSocketDisconnect fires the
-        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.
-        ws_ping_interval=20.0,
-        ws_ping_timeout=20.0,
+        # tunnels).  Disabled for localhost (no silent drops on loopback);
+        # enabled with generous defaults for remote.  Set env to 0 to disable,
+        # or any positive value to override.
+        ws_ping_interval=_ws_ping_val(os.environ.get("HERMES_WS_PING_INTERVAL"), host),
+        ws_ping_timeout=_ws_ping_val(os.environ.get("HERMES_WS_PING_TIMEOUT"), host, default=60),
     )
     server = uvicorn.Server(config)
 

@@ -9,6 +9,10 @@ vi.mock('../lib/memory.js', () => ({
 // @hermes/ink is dynamically imported only on the dump path; stub the eviction.
 vi.mock('@hermes/ink', () => ({ evictInkCaches: vi.fn() }))
 
+vi.mock('node:v8', () => ({
+  getHeapStatistics: vi.fn(() => ({ heap_size_limit: 8 * 1024 ** 3 }))
+}))
+
 import { startMemoryMonitor } from '../lib/memoryMonitor.js'
 
 const GB = 1024 ** 3

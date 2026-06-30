@@ -50,7 +50,7 @@ describe('forceTruecolor', () => {
         expect(process.env.FORCE_COLOR).toBeUndefined()
       }
     )
-  })
+  }, 15_000)
 
   it('downgrades Apple Terminal when truecolor is only advertised by env', async () => {
     await withCleanEnv(

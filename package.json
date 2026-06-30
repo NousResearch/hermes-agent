@@ -29,7 +29,18 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
-    "lodash": "4.18.1"
+    "@babel/core": "7.29.7",
+    "dompurify": "3.4.11",
+    "form-data": "4.0.6",
+    "joi": "18.2.3",
+    "js-yaml": "4.3.0",
+    "lodash": "4.18.1",
+    "node-gyp": {
+      "undici": "6.27.0"
+    },
+    "shell-quote": "1.9.0",
+    "tar": "7.5.19",
+    "undici": "7.28.0"
   },
   "engines": {
     "node": ">=20.0.0"

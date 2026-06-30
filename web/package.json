@@ -47,6 +47,6 @@
     "three": "^0.180.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.6"
   }
 }

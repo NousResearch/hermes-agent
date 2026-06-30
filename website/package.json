@@ -35,8 +35,27 @@
     "typescript": "~5.6.2"
   },
   "overrides": {
+    "@babel/core": "7.29.7",
+    "body-parser": "1.20.5",
+    "brace-expansion": "1.1.13",
+    "dompurify": "3.4.11",
+    "express": "4.22.2",
+    "gray-matter": {
+      "js-yaml": "3.15.0"
+    },
+    "http-proxy-middleware": "2.0.10",
+    "joi": "17.13.4",
+    "js-yaml": "4.2.0",
+    "launch-editor": "2.14.1",
+    "path-to-regexp": "0.1.13",
+    "picomatch": "2.3.2",
+    "postcss": "8.5.10",
+    "qs": "6.15.3",
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "undici": "7.28.0",
+    "uuid": "^14.0.0",
+    "webpack-dev-server": "5.2.5",
+    "ws": "7.5.11"
   },
   "browserslist": {
     "production": [

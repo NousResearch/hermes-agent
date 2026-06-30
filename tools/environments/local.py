@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -134,6 +135,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
+        "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
@@ -203,6 +205,202 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # Hermes venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+
+
+_CLAUDE_DIRECT_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]\s*)(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)*)?"
+    r"(?:command\s+)?(?:/Users/[^\s;|&]+/\.local/bin/|/usr/local/bin/|/opt/homebrew/bin/)?claude(?=\s|$)"
+)
+_CLAUDE_EVAL_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]\s*)eval\s+['\"][^'\"]{0,400}(?:^|[;&|\n(]\s*)?"
+    r"(?:/Users/[^\s;|&]+/\.local/bin/|/usr/local/bin/|/opt/homebrew/bin/)?claude(?=\s|$)"
+)
+
+
+def _load_claude_code_oauth_token() -> str:
+    """Return the user's Claude Code subscription token without printing it.
+
+    ``CLAUDE_CODE_OAUTH_TOKEN`` is normally stripped from terminal subprocesses
+    with the rest of Hermes' provider secrets. Claude Code is the exception:
+    running ``claude`` without this token from a headless/LaunchAgent context can
+    fall through to the shared macOS Keychain / ``~/.claude/.credentials.json``
+    stores and clear them on auth failure, logging out the user's interactive
+    sessions. Pull from the live process first, then from ``~/.hermes/.env``.
+    """
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        from hermes_cli.config import get_env_value
+
+        token = (get_env_value("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+        if token:
+            return token
+    except Exception:
+        pass
+
+    # Profile homes may not carry their own copy. the user's fleet-level token is
+    # deliberately stored in the root Hermes env file and shared into profile /
+    # cron / worker spawns at runtime.
+    try:
+        root_env = Path.home() / ".hermes" / ".env"
+        for line in root_env.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+                continue
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+    except Exception:
+        pass
+    return ""
+
+
+def _write_claude_auth_failure_notice(surface: str, reason: str, command: str = "") -> None:
+    """Write a non-secret failure notice to the agent inbox if available."""
+    try:
+        import datetime as _dt
+        import uuid as _uuid
+
+        home = Path.home()
+        candidates = [
+            home / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "agent-inbox",
+        ]
+        try:
+            from hermes_constants import get_hermes_home
+
+            candidates.append(get_hermes_home() / "agent-inbox")
+        except Exception:
+            pass
+        inbox = next((p for p in candidates if p.exists() and p.is_dir()), None)
+        if inbox is None:
+            return
+        now = _dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        path = inbox / f"{now}-from-hermes-to-claude-claude-oauth-spawn-guard-{_uuid.uuid4().hex[:8]}.md"
+        command_hint = command.strip().replace("`", "'")[:1000]
+        path.write_text(
+            "---\n"
+            "from: hermes\n"
+            "to: claude\n"
+            f"date: {_dt.datetime.now().isoformat(timespec='seconds')}\n"
+            "thread: claude-oauth-logout\n"
+            "status: new\n"
+            "priority: high\n"
+            "---\n\n"
+            "# Claude spawn guard blocked a tokenless launch\n\n"
+            f"Surface: `{surface}`\n\n"
+            f"Reason: {reason}\n\n"
+            "No Claude credential values were printed. Hermes refused to run `claude` without "
+            "`CLAUDE_CODE_OAUTH_TOKEN` so the process could not fall back to and potentially "
+            "clear the shared macOS Keychain or `~/.claude/.credentials.json` stores.\n\n"
+            + (f"Command hint:\n\n```\n{command_hint}\n```\n" if command_hint else ""),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.debug("Failed to write Claude auth guard inbox notice", exc_info=True)
+
+
+def _claude_agent_config_dir(run_env: dict, *, surface: str) -> str:
+    """Return an isolated Claude Code config dir for Hermes-spawned agents.
+
+    Even with ``CLAUDE_CODE_OAUTH_TOKEN`` present, keep headless agent runs away
+    from the shared GUI Keychain / ``~/.claude/.credentials.json`` fallback path.
+    Claude Code honors ``CLAUDE_CONFIG_DIR``; pointing it under the active
+    Hermes home means a failed/revoked token can only damage an agent-owned
+    scratch auth store, not the user's interactive login.
+    """
+    base = run_env.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    safe_surface = re.sub(r"[^A-Za-z0-9_.-]+", "-", surface or "agent").strip(".-") or "agent"
+    path = Path(base) / "claude-code-agent-config" / safe_surface
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+    except OSError:
+        logger.debug("Failed to create isolated Claude config dir %s", path, exc_info=True)
+    return str(path)
+
+
+def _command_directly_invokes_claude(command: str) -> bool:
+    return bool(
+        command
+        and (
+            _CLAUDE_DIRECT_COMMAND_RE.search(command)
+            or _CLAUDE_EVAL_COMMAND_RE.search(command)
+        )
+    )
+
+
+def _extract_eval_payloads(command: str) -> list[str]:
+    """Return simple single-quoted eval payloads from Hermes wrapped commands."""
+    payloads: list[str] = []
+    for match in re.finditer(r"(?m)^eval '((?:'\\''|[^'])*)'", command or ""):
+        payloads.append(match.group(1).replace("'\\''", "'"))
+    return payloads
+
+
+def _command_references_claude_script(command: str, *, cwd: str = "") -> bool:
+    """Best-effort detector for shell/python wrappers that launch Claude Code."""
+    candidates = [command or "", *_extract_eval_payloads(command or "")]
+    script_suffixes = {".sh", ".bash", ".zsh", ".fish", ".py"}
+    for candidate in candidates:
+        try:
+            tokens = shlex.split(candidate)
+        except ValueError:
+            continue
+        for token in tokens:
+            if token in {"bash", "sh", "zsh", "fish", "python", "python3"}:
+                continue
+            path = Path(token)
+            if not path.is_absolute():
+                if not cwd:
+                    continue
+                path = Path(cwd) / token
+            try:
+                if not path.is_file() or path.stat().st_size > 1_000_000:
+                    continue
+                if path.suffix not in script_suffixes and not os.access(path, os.X_OK):
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if _CLAUDE_DIRECT_COMMAND_RE.search(text):
+                return True
+    return False
+
+
+def _command_may_spawn_claude(command: str, *, cwd: str = "") -> bool:
+    return _command_directly_invokes_claude(command) or _command_references_claude_script(command, cwd=cwd)
+
+
+def _inject_claude_code_oauth_for_agent_spawns(run_env: dict, *, command: str = "", surface: str = "terminal", cwd: str = "") -> None:
+    """Ensure agent-spawned Claude Code uses the subscription OAuth token.
+
+    Terminal commands can launch ``claude`` indirectly through shell scripts, so
+    when the token exists we pass it into the subprocess environment for the
+    whole local command. The rest of the Anthropic provider env remains stripped
+    to avoid paid API-key override. If Hermes can tell the command directly runs
+    ``claude`` and no token is available, fail before spawning anything.
+    """
+    may_spawn_claude = _command_may_spawn_claude(command, cwd=cwd)
+    token = _load_claude_code_oauth_token()
+    if token and not may_spawn_claude:
+        return
+    if token:
+        run_env.pop("ANTHROPIC_API_KEY", None)
+        run_env.pop("ANTHROPIC_TOKEN", None)
+        run_env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        run_env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        run_env["CLAUDE_CONFIG_DIR"] = _claude_agent_config_dir(run_env, surface=surface)
+        return
+    if may_spawn_claude:
+        reason = "CLAUDE_CODE_OAUTH_TOKEN was absent from the Hermes process and ~/.hermes/.env"
+        _write_claude_auth_failure_notice(surface, reason, command)
+        raise RuntimeError(
+            "Refusing to run `claude` without CLAUDE_CODE_OAUTH_TOKEN; "
+            "this prevents tokenless Claude Code from touching shared Keychain/file credentials."
+        )
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -598,7 +796,7 @@ def _path_env_key(run_env: dict) -> str | None:
     return None
 
 
-def _make_run_env(env: dict) -> dict:
+def _make_run_env(env: dict, *, command: str = "", cwd: str = "") -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
@@ -625,6 +823,13 @@ def _make_run_env(env: dict) -> dict:
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
+
+    _inject_claude_code_oauth_for_agent_spawns(
+        run_env,
+        command=command,
+        surface="terminal",
+        cwd=cwd,
+    )
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.
@@ -802,9 +1007,6 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
-
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
@@ -831,6 +1033,9 @@ class LocalEnvironment(BaseEnvironment):
             self.cwd = safe_cwd
 
         _popen_cwd = self.cwd
+
+        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        run_env = _make_run_env(self.env, command=cmd_string, cwd=_popen_cwd)
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 

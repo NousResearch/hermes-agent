@@ -34,7 +34,7 @@ def _make_fake_popen(captured: dict):
     return fake_popen
 
 
-def _run_with_env(extra_os_env=None, self_env=None):
+def _run_with_env(extra_os_env=None, self_env=None, *, command="echo hello", claude_token=""):
     """Execute a command via LocalEnvironment with mocked Popen
     and return the env dict passed to the subprocess."""
     captured = {}
@@ -51,9 +51,11 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
     with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
          patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
+         patch("tools.environments.local._load_claude_code_oauth_token", return_value=claude_token), \
+         patch("tools.environments.local._write_claude_auth_failure_notice"), \
          patch("tools.terminal_tool._interrupt_event", fake_interrupt), \
          patch.dict(os.environ, test_environ, clear=True):
-        env.execute("echo hello")
+        env.execute(command)
 
     return captured.get("env", {})
 
@@ -80,7 +82,7 @@ class TestProviderEnvBlocklist:
         must also be blocked — not just the hand-written extras."""
         registry_vars = {
             "ANTHROPIC_TOKEN": "ant-tok",
-            "CLAUDE_CODE_OAUTH_TOKEN": "cc-tok",
+            "ANTHROPIC_AUTH_TOKEN": "auth-tok",
             "ZAI_API_KEY": "zai-key",
             "Z_AI_API_KEY": "z-ai-key",
             "GLM_API_KEY": "glm-key",
@@ -94,6 +96,46 @@ class TestProviderEnvBlocklist:
 
         for var in registry_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
+
+    def test_claude_code_oauth_token_is_injected_for_terminal_claude_spawns(self):
+        """Claude Code is the exception to provider-var stripping.
+
+        Hermes terminal commands may launch ``claude`` indirectly via shell
+        scripts. Passing the subscription token prevents headless Claude Code
+        from falling back to and clearing shared Keychain/file credentials.
+        """
+        result_env = _run_with_env(
+            command="claude -p 'Reply OK'",
+            extra_os_env={
+                "ANTHROPIC_API_KEY": "paid-api-key-must-not-win",
+                "ANTHROPIC_TOKEN": "stale-token-must-not-win",
+                "ANTHROPIC_AUTH_TOKEN": "auth-token-must-not-win",
+            },
+            claude_token="oauth-test-token",
+        )
+
+        assert result_env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test-token"
+        assert result_env["CLAUDE_CONFIG_DIR"].endswith("/claude-code-agent-config/terminal")
+        assert "ANTHROPIC_API_KEY" not in result_env
+        assert "ANTHROPIC_TOKEN" not in result_env
+        assert "ANTHROPIC_AUTH_TOKEN" not in result_env
+
+    def test_claude_code_oauth_token_does_not_leak_to_unrelated_commands(self):
+        result_env = _run_with_env(command="echo no-claude-here", claude_token="oauth-test-token")
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in result_env
+
+    def test_claude_script_gets_oauth_token(self, tmp_path):
+        script = tmp_path / "run_claude_shards.sh"
+        script.write_text("#!/usr/bin/env bash\nclaude -p 'Reply OK'\n")
+        result_env = _run_with_env(command=f"bash {script}", claude_token="oauth-test-token")
+
+        assert result_env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test-token"
+        assert result_env["CLAUDE_CONFIG_DIR"].endswith("/claude-code-agent-config/terminal")
+
+    def test_direct_claude_command_without_oauth_token_fails_before_spawn(self):
+        with pytest.raises(RuntimeError, match="Refusing to run `claude` without CLAUDE_CODE_OAUTH_TOKEN"):
+            _run_with_env(command="claude -p 'Reply OK'", claude_token="")
 
     def test_bedrock_bearer_token_is_stripped(self):
         """The Bedrock-specific bearer token is a Hermes inference secret

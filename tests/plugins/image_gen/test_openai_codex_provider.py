@@ -204,6 +204,25 @@ class TestGenerate:
         assert content[1]["image_url"].startswith("data:image/png;base64,")
         assert content[2] == {"type": "input_image", "image_url": "https://example.com/ref.png"}
 
+    def test_generate_clamps_reference_images_to_cap(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured["input_images"] = input_images
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        refs = [f"https://example.com/ref-{idx}.png" for idx in range(20)]
+        result = provider.generate("combine the references", reference_image_urls=refs)
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 16
+        assert len(captured["input_images"]) == 16
+        assert captured["input_images"][-1]["image_url"] == "https://example.com/ref-15.png"
+
     def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         text_path = tmp_path / "not-image.txt"

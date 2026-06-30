@@ -2084,17 +2084,25 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 for tc in msg.get("tool_calls") or []:
                     cid = _ra().AIAgent._get_tool_call_id_static(tc)
                     if cid in missing_results:
-                        patched.append({
+                        stub: Dict[str, Any] = {
                             "role": "tool",
-                            "name": _ra().AIAgent._get_tool_call_name_static(tc),
                             "content": "[Result unavailable — see context summary above]",
                             "tool_call_id": cid,
-                        })
+                        }
+                        tool_name = _ra().AIAgent._get_tool_call_name_static(tc)
+                        if tool_name:
+                            stub["name"] = tool_name
+                        patched.append(stub)
         messages = patched
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
+    # 3. Strip empty 'name' fields from tool messages.
+    #    Some providers (PackyAPI/GPT-5.5) reject name="" with HTTP 400.
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("name") == "":
+            del msg["name"]
     return messages
 
 

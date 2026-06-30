@@ -1537,7 +1537,7 @@ class AIAgent:
         # threading.Thread starts with an empty context, so the review would
         # resolve get_hermes_home() to the launch/default profile and write
         # MEMORY.md / skill review into the wrong profile in single-process
-        # multi-profile runtimes (desktop tui_gateway) — see #54937.
+        # multi-profile runtimes (desktop tui_gateway, multiplexed gateway) — see #54937.
         t = threading.Thread(
             target=propagate_context_to_thread(target), daemon=True, name="bg-review"
         )

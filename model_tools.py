@@ -148,7 +148,8 @@ def _run_async(coro):
         # _HERMES_HOME_OVERRIDE profile scope) and approval/sudo callbacks into
         # the worker thread.  Without this, any async tool that resolves
         # get_hermes_home() inside its coroutine falls back to the launch/default
-        # profile in single-process multi-profile runtimes (desktop tui_gateway),
+        # profile in single-process multi-profile runtimes (desktop tui_gateway
+        # and the multiplexed gateway),
         # leaking one profile's reads/writes into another.
         from tools.thread_context import propagate_context_to_thread
 

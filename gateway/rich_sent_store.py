@@ -29,7 +29,7 @@ def _store_path() -> str:
     # (set_hermes_home_override) is honored.  Reading os.environ["HERMES_HOME"]
     # directly bypassed the override and leaked every profile's rich-sent index
     # into the launch/default profile in single-process multi-profile runtimes
-    # (desktop tui_gateway).
+    # (desktop tui_gateway and the multiplexed gateway).
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()

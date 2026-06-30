@@ -252,7 +252,7 @@ def dispatch_async_delegation(
         # Capture the dispatching turn's ContextVars (notably the
         # _HERMES_HOME_OVERRIDE profile scope) so the detached child resolves
         # get_hermes_home() under the right profile in single-process
-        # multi-profile runtimes (desktop tui_gateway).
+        # multi-profile runtimes (desktop tui_gateway, multiplexed gateway).
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:

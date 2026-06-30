@@ -59,6 +59,12 @@ MUTATING_TOOL_NAMES = frozenset(
     }
 )
 
+# Mutating by classification, but a repeated identical-*result* call makes no
+# real progress — `todo` rewriting the same list is a planning loop, not work.
+# These are tracked for no-progress like idempotent reads so the circuit breaker
+# fires even though the calls "succeed" and the tool mutates state in principle.
+NO_PROGRESS_TOOL_NAMES = frozenset({"todo"})
+
 
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
@@ -79,6 +85,7 @@ class ToolCallGuardrailConfig:
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    no_progress_tools: frozenset[str] = field(default_factory=lambda: NO_PROGRESS_TOOL_NAMES)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -260,8 +267,8 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
-            record = self._no_progress.get(signature)
+        if self._tracks_no_progress(tool_name):
+            record = self._no_progress.get(self._no_progress_key(tool_name, signature))
             if record is not None:
                 _result_hash, repeat_count = record
                 if repeat_count >= self.config.no_progress_block_after:
@@ -269,9 +276,9 @@ class ToolCallGuardrailController:
                         action="block",
                         code="idempotent_no_progress_block",
                         message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
+                            f"Blocked {tool_name}: it returned the same result "
+                            f"{repeat_count} times with no progress. Stop repeating it "
+                            "unchanged; use the result already provided or change strategy."
                         ),
                         tool_name=tool_name,
                         count=repeat_count,
@@ -298,7 +305,7 @@ class ToolCallGuardrailController:
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
-            self._no_progress.pop(signature, None)
+            self._no_progress.pop(self._no_progress_key(tool_name, signature), None)
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
@@ -347,16 +354,17 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
+        if not self._tracks_no_progress(tool_name):
+            self._no_progress.pop(self._no_progress_key(tool_name, signature), None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        key = self._no_progress_key(tool_name, signature)
         result_hash = _result_hash(result)
-        previous = self._no_progress.get(signature)
+        previous = self._no_progress.get(key)
         repeat_count = 1
         if previous is not None and previous[0] == result_hash:
             repeat_count = previous[1] + 1
-        self._no_progress[signature] = (result_hash, repeat_count)
+        self._no_progress[key] = (result_hash, repeat_count)
 
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
@@ -378,6 +386,26 @@ class ToolCallGuardrailController:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _tracks_no_progress(self, tool_name: str) -> bool:
+        """Tools whose repeated identical-result calls signal no progress:
+        idempotent reads (same args, same result), plus planning tools like
+        `todo` that are mutating-in-name but no-op-in-effect when the rendered
+        result is unchanged."""
+        if tool_name in self.config.no_progress_tools:
+            return True
+        return self._is_idempotent(tool_name)
+
+    def _no_progress_key(
+        self, tool_name: str, signature: ToolCallSignature
+    ) -> ToolCallSignature:
+        """Key the no-progress counter. Idempotent reads loop on identical args,
+        so key on the full signature. A planning tool loops on identical *result*
+        even as its args jitter, so collapse args to one per-tool slot and let the
+        result hash drive detection."""
+        if tool_name in self.config.no_progress_tools:
+            return ToolCallSignature(tool_name=tool_name, args_hash="*")
+        return signature
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

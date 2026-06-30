@@ -66,7 +66,7 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
-export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArrayPreserved)
 export const $sidebarSessionOrderIds = persistentAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],

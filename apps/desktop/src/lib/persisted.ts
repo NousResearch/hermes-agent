@@ -30,6 +30,19 @@ export const Codecs = {
     },
     encode: value => (value.length === 0 ? null : JSON.stringify(value))
   } as Codec<string[]>,
+  // Like stringArray but never removes the key on empty — writes "[]" instead.
+  // Use for user-curated lists (e.g. pinned sessions) where an absent key is
+  // indistinguishable from "lost all data" and recovery is impossible.
+  stringArrayPreserved: {
+    decode: raw => {
+      const parsed = JSON.parse(raw) as unknown
+
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
+        : []
+    },
+    encode: value => JSON.stringify(value)
+  } as Codec<string[]>,
   // Mirrors storedStringRecord/persistStringRecord: keeps only string values.
   stringRecord: {
     decode: raw => {

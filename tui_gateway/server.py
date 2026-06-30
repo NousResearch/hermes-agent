@@ -2380,6 +2380,14 @@ def _load_enabled_toolsets() -> list[str] | None:
     cfg = None
     fallback_notice = None
 
+    # Check if project toolset is disabled via config (#54433).
+    _disabled = set()
+    try:
+        _cfg = _load_cfg()
+        _disabled = set(_cfg.get("agent", {}).get("disabled_toolsets") or [])
+    except Exception:
+        pass
+
     # Coding posture (base Hermes): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
     # The desktop app and `hermes --tui` both land here. See
@@ -2396,7 +2404,11 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                # Skip if project is in disabled_toolsets (#54433).
+                _base = set(selection)
+                if "project" not in _disabled:
+                    _base.add("project")
+                return sorted(_base)
         except Exception:
             pass
 
@@ -2513,7 +2525,10 @@ def _load_enabled_toolsets() -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
         # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        # Skip if project is in disabled_toolsets (#54433).
+        if "project" not in _disabled:
+            return sorted(enabled | {"project"})
+        return sorted(enabled)
     except Exception:
         if fallback_notice is not None:
             print(

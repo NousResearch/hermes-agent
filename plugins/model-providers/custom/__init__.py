@@ -4,6 +4,7 @@ Covers any endpoint registered as provider="custom", including local
 Ollama instances. Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
   - reasoning_config disabled → extra_body.think = False
+  - reasoning_config enabled → extra_body.reasoning passthrough (#55276)
 """
 
 from typing import Any
@@ -11,9 +12,12 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Effort levels accepted by the OpenAI-compatible reasoning format.
+_REASONING_EFFORT_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
+
 
 class CustomProfile(ProviderProfile):
-    """Custom/Ollama local provider — think=false and num_ctx support."""
+    """Custom/Ollama local provider — think=false, num_ctx, and reasoning passthrough."""
 
     def build_api_kwargs_extras(
         self,
@@ -30,12 +34,24 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
+
             if _effort == "none" or _enabled is False:
+                # Disable thinking (Ollama convention)
                 extra_body["think"] = False
+            elif _enabled and _effort:
+                # Pass through reasoning config for OpenAI-compatible
+                # backends (vLLM, Qwen3, etc.) that accept the standard
+                # extra_body.reasoning format.  Previously this was
+                # silently dropped for custom providers, leaving users
+                # with zero effect from their reasoning_effort setting.
+                # (#55276)
+                extra_body["reasoning"] = {
+                    "enabled": True,
+                    "effort": _effort if _effort in _REASONING_EFFORT_LEVELS else "medium",
+                }
 
         return extra_body, {}
 

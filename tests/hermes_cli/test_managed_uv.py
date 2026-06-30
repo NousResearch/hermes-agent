@@ -102,6 +102,19 @@ class TestEnsureUv:
             # TestEnsureUvUpdateBoundary for why.
             assert not path
 
+    def test_wrong_platform_binary_returns_none(self, tmp_path):
+        """OSError (ENOEXEC) from a non-native binary after install is non-fatal."""
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._install_uv") as mock_install:
+            def fake_install(target):
+                _make_executable(target)
+            mock_install.side_effect = fake_install
+            with patch("hermes_cli.managed_uv.subprocess.run",
+                       side_effect=OSError(8, "Exec format error")):
+                from hermes_cli.managed_uv import _ensure_uv_path
+                result = _ensure_uv_path()
+                assert result is None
+
 
 class TestEnsureUvUpdateBoundary:
     """``ensure_uv()`` must answer to both the single-value and the legacy
@@ -228,6 +241,16 @@ class TestUpdateManagedUv:
             result = update_managed_uv()
             # Still returns the path — failure is non-fatal
             assert result == str(tmp_path / "bin" / "uv")
+
+    def test_wrong_platform_binary_returns_none(self, tmp_path):
+        """OSError (ENOEXEC) from a non-native binary is non-fatal."""
+        _make_executable(tmp_path / "bin" / "uv")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run",
+                   side_effect=OSError(8, "Exec format error")):
+            from hermes_cli.managed_uv import update_managed_uv
+            result = update_managed_uv()
+            assert result is None
 
 
 # ---------------------------------------------------------------------------

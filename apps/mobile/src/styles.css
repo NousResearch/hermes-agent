@@ -1679,6 +1679,19 @@ html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
 html.hermes-mobile-standalone [data-slot='aui_intro'] {
   padding-inline: 1.1rem;
   padding-block: 0;
+  transition:
+    opacity 140ms ease-out,
+    transform 140ms ease-out;
+}
+
+/* When the composer is focused (keyboard up), fade the intro out and lift
+   it above the viewport so it doesn't compete with the keyboard sheet. The
+   composer itself is already translated by --keyboard-inset; this just
+   gets the empty-state out of the way. */
+html.hermes-mobile-standalone:has([data-slot='composer-root'] textarea:focus) [data-slot='aui_intro'] {
+  opacity: 0;
+  transform: translateY(-2rem);
+  pointer-events: none;
 }
 
 

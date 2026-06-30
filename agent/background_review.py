@@ -163,7 +163,7 @@ _MEMORY_REVIEW_PROMPT = (
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
+    "Evaluate this turn: write long-term essential core info to memory.md, store important on-demand info to memory provider tools. "
     "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 

@@ -39,6 +39,7 @@ import os
 import queue
 import sys
 import threading
+from uuid import uuid4
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -293,8 +294,11 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
 RETAIN_SCHEMA = {
     "name": "hindsight_retain",
     "description": (
-        "Store information to long-term memory. Hindsight automatically "
-        "extracts structured facts, resolves entities, and indexes for retrieval."
+        "This tool grants one dedicated extra memory record. Hindsight's auto_retain "
+        "continuously maintains memories in the background — do not use this tool for "
+        "routine memory retention. All long-term essential core information must be "
+        "stored in memory.md; saving such content through this tool is prohibited "
+        "under all circumstances."
     ),
     "parameters": {
         "type": "object",
@@ -1707,21 +1711,47 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
-                item = self._build_retain_kwargs(
-                    content,
-                    context=context,
-                    tags=args.get("tags"),
+                # Build a unique filename to prevent document overwrites.
+                # Each call creates a new Hindsight document via file retain.
+                agent_name = self._agent_identity or "hermes"
+                channel = self._platform or "unknown"
+                user = (self._user_id or self._user_name or "unknown")
+                session = self._session_id or "unknown"
+                uid = str(uuid4())
+                # Sanitize components for filesystem safety
+                safe_agent = agent_name.replace("/", "_").replace(":", "_")
+                safe_channel = channel.replace("/", "_").replace(":", "_")
+                safe_user = user.replace("/", "_").replace(":", "_")
+                safe_session = session.replace("/", "_").replace(":", "_")
+                filename = f"{safe_agent}_{safe_channel}_{safe_user}_{safe_session}_{uid}.md"
+
+                file_content = content.encode("utf-8")
+
+                logger.debug(
+                    "Tool hindsight_retain: bank=%s, filename=%s, content_len=%d, context=%s",
+                    self._bank_id, filename, len(content), context,
                 )
-                # aretain_batch takes bank_id/retain_async as call args, not item keys.
-                item.pop("bank_id", None)
-                item.pop("retain_async", None)
-                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
+
+                # Build file metadata with optional tags
+                file_meta = {
+                    "context": context or "memory retain",
+                }
+                tags = args.get("tags")
+                if tags:
+                    file_meta["tags"] = tags
+
                 self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                    lambda client: client.files.file_retain(
+                        bank_id=self._bank_id,
+                        files=[(filename, file_content)],
+                        request=json.dumps({
+                            "files_metadata": [file_meta]
+                        }),
+                    )
                 )
-                logger.debug("Tool hindsight_retain: success")
-                return json.dumps({"result": "Memory stored successfully."})
+
+                logger.debug("Tool hindsight_retain file retain: success (%s)", filename)
+                return json.dumps({"result": "Memory stored successfully as a new document."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to store memory: {e}")

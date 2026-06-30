@@ -203,6 +203,17 @@ class TestReadClaudeCodeCredentials:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
+    def test_returns_none_for_non_object_credentials_file(self, tmp_path, monkeypatch):
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text("[]")
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+        assert read_claude_code_credentials() is None
+
 
 class TestIsClaudeCodeTokenValid:
     def test_valid_token(self):
@@ -519,6 +530,15 @@ class TestReadClaudeCodeCredentialsFromKeychain:
         monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="not-json\n")
+            result = _read_claude_code_credentials_from_keychain()
+        assert result is None
+
+    def test_non_object_json_stdout_returns_none(self, monkeypatch):
+        import agent.anthropic_adapter as mod
+
+        monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]\n")
             result = _read_claude_code_credentials_from_keychain()
         assert result is None
 

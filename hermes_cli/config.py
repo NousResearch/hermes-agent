@@ -6827,6 +6827,8 @@ def save_env_value(key: str, value: str):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
     value = value.replace("\n", "").replace("\r", "")
+    # Strip ASCII control characters (NUL, etc.) that cause ValueError on Windows
+    value = "".join(ch for ch in value if ch >= " " or ch == "	")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()

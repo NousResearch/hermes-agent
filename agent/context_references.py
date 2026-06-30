@@ -152,13 +152,24 @@ async def preprocess_context_references_async(
     blocks: list[str] = []
     injected_tokens = 0
 
-    for ref in refs:
-        warning, block = await _expand_reference(
-            ref,
-            cwd_path,
-            url_fetcher=url_fetcher,
-            allowed_root=allowed_root_path,
+    # Expand all references concurrently. Each _expand_reference is independent
+    # (no shared state during expansion) — a message with several @url: refs
+    # would otherwise pay one full web_extract round-trip per ref in series.
+    # gather preserves positional order, so we reassemble warnings/blocks in the
+    # original ref order exactly as the prior serial loop did; the token-budget
+    # check below is unchanged (it runs once, after all refs are expanded).
+    expanded = await asyncio.gather(
+        *(
+            _expand_reference(
+                ref,
+                cwd_path,
+                url_fetcher=url_fetcher,
+                allowed_root=allowed_root_path,
+            )
+            for ref in refs
         )
+    )
+    for warning, block in expanded:
         if warning:
             warnings.append(warning)
         if block:
@@ -328,9 +339,9 @@ async def _fetch_url_content(
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
-    raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
+    raw = await web_extract_tool([url], format="markdown")
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = payload.get("results", [])
     if not docs:
         return ""
     doc = docs[0]

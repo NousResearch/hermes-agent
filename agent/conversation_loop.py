@@ -1475,6 +1475,8 @@ def run_conversation(
                         incomplete_reason = getattr(incomplete_details, "reason", None)
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
                         finish_reason = "length"
+                    elif status == "incomplete" and incomplete_reason == "content_filter":
+                        finish_reason = "content_filter"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":

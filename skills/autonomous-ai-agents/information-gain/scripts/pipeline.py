@@ -41,6 +41,10 @@ except ImportError as e:  # pragma: no cover - environment guard
         f"{_ASK!r}. Install the ask skill or set ASK_SCRIPTS_DIR / HERMES_HOME."
     ) from e
 
+# Sibling pure-math module, used to dedup sampled candidate questions.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import voi  # noqa: E402
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434/api/chat")
 OLLAMA_TAGS_URL = OLLAMA_URL.replace("/api/chat", "/api/tags")
 MAX_WORKERS = int(os.environ.get("INFOGAIN_MAX_WORKERS", "8"))
@@ -113,11 +117,13 @@ def extract_json(text):
     raise ValueError("no parseable JSON in model output")
 
 
-def _call_json(model, prompt, timeout, num_predict, retries=1, sink=None):
+def _call_json(model, prompt, timeout, num_predict, retries=1, sink=None, temperature=0.0):
     """raw_chat + extract_json with one retry that nudges toward strict JSON.
 
-    If `sink` is a list, append one trace dict (model / prompt / raw output /
-    elapsed / attempts / error) for 'show your work' diagnostics. No-op otherwise.
+    `temperature` is forwarded to the model — keep it 0 for stable scoring stages,
+    raise it for generation to sample the model's distribution. If `sink` is a list,
+    append one trace dict (model / prompt / raw output / elapsed / attempts / error)
+    for 'show your work' diagnostics.
     """
     last_err = None
     last_raw = ""
@@ -126,7 +132,8 @@ def _call_json(model, prompt, timeout, num_predict, retries=1, sink=None):
         content = prompt if attempt == 0 else (
             prompt + "\n\nReturn ONLY valid JSON. No prose, no markdown fences."
         )
-        r = raw_chat(model, content, timeout=timeout, num_predict=num_predict)
+        r = raw_chat(model, content, timeout=timeout, num_predict=num_predict,
+                     temperature=temperature)
         last_raw, last_elapsed = r["content"], r["elapsed"]
         if r["error"]:
             last_err = r["error"]
@@ -255,29 +262,57 @@ def frame_and_plan(problem, model, timeout=180, sink=None):
     return obj, None
 
 
-def generate_questions(problem, framing, model, n, avoid=None, timeout=180, sink=None):
-    """Stage 1. Returns (list_of_records, error). Each record: question/type/why/target."""
-    obj, err = _call_json(model, questions_prompt(problem, framing, n, avoid),
-                          timeout, num_predict=900, sink=sink)
-    items = []
-    if isinstance(obj, dict):
-        items = obj.get("questions") or []
-    elif isinstance(obj, list):
-        items = obj
+def _parse_question_items(obj):
+    items = obj.get("questions") if isinstance(obj, dict) else (obj if isinstance(obj, list) else [])
     out = []
-    for q in items:
+    for q in (items or []):
         if not isinstance(q, dict):
             continue
         text = (q.get("question") or "").strip()
         if not text:
             continue
-        out.append({
-            "question": text,
-            "type": (q.get("type") or "other").strip(),
-            "why": (q.get("why") or "").strip(),
-            "target": (q.get("target") or "").strip(),
-        })
-    return out, (None if out else (err or "no questions generated"))
+        out.append({"question": text,
+                    "type": (q.get("type") or "other").strip(),
+                    "why": (q.get("why") or "").strip(),
+                    "target": (q.get("target") or "").strip()})
+    return out
+
+
+def generate_questions(problem, framing, model, n, avoid=None, timeout=180, sink=None,
+                       samples=1, temperature=0.0):
+    """Stage 1. Draw `samples` independent generations at `temperature`, union + dedup.
+
+    With samples>1 and temperature>0 this Monte-Carlo-samples the model's own
+    distribution over "what matters" — breadth emerges from the model's uncertainty
+    (the tail of the distribution), with NO human-seeded topic list. samples=1,
+    temperature=0 is the deterministic (focus) path: a single greedy generation.
+    Returns (deduped_records, error).
+    """
+    prompt = questions_prompt(problem, framing, n, avoid)
+    samples = max(1, int(samples))
+
+    def _one(_i):
+        local = [] if sink is not None else None
+        obj, err = _call_json(model, prompt, timeout, num_predict=900, sink=local,
+                              temperature=temperature)
+        return _parse_question_items(obj), (local[0] if local else None), err
+
+    if samples == 1:
+        runs = [_one(0)]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(samples, MAX_WORKERS)) as ex:
+            runs = list(ex.map(_one, range(samples)))
+
+    all_recs, errs = [], []
+    for recs, cap, err in runs:
+        all_recs.extend(recs)
+        if sink is not None and cap:
+            sink.append(cap)
+        if err:
+            errs.append(err)
+    union = voi.dedupe(all_recs)
+    return union, (None if union else (errs[0] if errs else "no questions generated"))
 
 
 def project_answers(problem, framing, rec, model, m, timeout=120, capture=False):

@@ -187,6 +187,18 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(len(qs), 1)
         self.assertEqual(qs[0]["target"], "t1")
 
+    def test_generate_questions_multisample_union_dedup(self):
+        # two independent samples; t2 appears in both -> deduped; union covers t1,t2,t3
+        obj1 = {"questions": [{"question": "Q-A", "type": "scope", "why": "w", "target": "t1"},
+                              {"question": "Q-B", "type": "data", "why": "w", "target": "t2"}]}
+        obj2 = {"questions": [{"question": "Q-B variant", "type": "data", "why": "w", "target": "t2"},
+                              {"question": "Q-C", "type": "risk", "why": "w", "target": "t3"}]}
+        with mock.patch.object(pipeline, "_call_json", side_effect=[(obj1, None), (obj2, None)]):
+            qs, err = pipeline.generate_questions("p", {"goal": "g"}, "fast", 4,
+                                                  samples=2, temperature=0.9)
+        self.assertIsNone(err)
+        self.assertEqual(sorted(q["target"] for q in qs), ["t1", "t2", "t3"])
+
     def test_project_then_judge_roundtrip(self):
         rec = {"question": "Which DB?"}
         with self._mock_raw('{"derivable_prob":0.2,"answers":[{"answer":"pg","prob":0.6},'
@@ -314,6 +326,9 @@ class TestModeConfig(unittest.TestCase):
                          infogain.MODES["breadth"]["questions_per_round"])
         self.assertEqual(cfg["discard_threshold"], 0.30)
         self.assertEqual(cfg["hard_cap"], 18)
+        # breadth gets its coverage from sampling the model's distribution
+        self.assertEqual(cfg["gen_samples"], 3)
+        self.assertGreater(cfg["gen_temperature"], 0.0)
 
     def test_cli_flag_overrides_mode(self):
         cfg = self._cfg(["--mode", "breadth", "--questions-per-round", "3", "a problem"])

@@ -42,6 +42,8 @@ DEFAULTS = {
     "pre_answer_threshold": 0.60,
     "refill_floor": 0.30,
     "questions_per_round": 6,
+    "gen_samples": 1,
+    "gen_temperature": 0.0,
     "answers_per_question": 5,
     "max_rounds": 3,
     "mmr_lambda": 0.4,
@@ -51,7 +53,7 @@ DEFAULTS = {
     "judge_timeout": 150,
 }
 _INT = {"min_bucket_size", "target_bucket_size", "hard_cap", "questions_per_round",
-        "answers_per_question", "max_rounds", "plan_timeout", "gen_timeout",
+        "answers_per_question", "max_rounds", "gen_samples", "plan_timeout", "gen_timeout",
         "answer_timeout", "judge_timeout"}
 _MODEL_KEYS = ("plan_model", "question_gen_model", "answer_model", "value_judge_model")
 
@@ -63,8 +65,13 @@ _MODEL_KEYS = ("plan_model", "question_gen_model", "answer_model", "value_judge_
 MODES = {
     "focus": {},
     "breadth": {
-        "questions_per_round": 10,
-        "max_rounds": 4,
+        # Breadth comes from SAMPLING the model's question distribution (3 independent
+        # draws at high temperature, unioned + deduped) — not from a seeded topic list.
+        # More rounds + the avoid-list still add cross-round novelty.
+        "gen_samples": 3,
+        "gen_temperature": 0.9,
+        "questions_per_round": 8,
+        "max_rounds": 3,
         "target_bucket_size": 14,
         "hard_cap": 18,
         "discard_threshold": 0.30,
@@ -126,7 +133,8 @@ def run(problem, cfg, progress=None, trace=False):
         gen_sink = [] if trace else None
         new_qs, _ = pipeline.generate_questions(
             problem, framing, qg_model, cfg["questions_per_round"], avoid,
-            cfg["gen_timeout"], sink=gen_sink)
+            cfg["gen_timeout"], sink=gen_sink,
+            samples=cfg["gen_samples"], temperature=cfg["gen_temperature"])
         dropped = [q["question"] for q in new_qs if voi.is_duplicate(q, seen)]
         fresh = [q for q in new_qs if not voi.is_duplicate(q, seen)]
         seen.extend(fresh)

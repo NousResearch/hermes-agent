@@ -16,6 +16,13 @@ from providers.base import OMIT_TEMPERATURE, ProviderProfile
 class KimiProfile(ProviderProfile):
     """Kimi/Moonshot — temperature omitted, thinking xor reasoning_effort."""
 
+    def _is_coding_endpoint(self, base_url: str | None) -> bool:
+        """True for the Anthropic-shaped api.kimi.com/coding endpoint, which
+        only allows thinking {"type": "enabled"} (vs the OpenAI-compat /v1
+        endpoint, which accepts both enabled and disabled)."""
+        eff = (base_url or self.base_url or "")
+        return "/coding" in eff
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -40,7 +47,16 @@ class KimiProfile(ProviderProfile):
 
         enabled = reasoning_config.get("enabled", True)
         if enabled is False:
-            extra_body["thinking"] = {"type": "disabled"}
+            # The api.kimi.com/coding endpoint (Anthropic Messages-shaped) only
+            # accepts thinking {"type": "enabled"} and 400s on {"type":
+            # "disabled"} ("invalid thinking: only type=enabled is allowed for
+            # this model"). Thinking can't be turned off there, so emit the legal
+            # enabled toggle rather than a request the server rejects. The
+            # OpenAI-compat /v1 endpoint still honours disabled.
+            if self._is_coding_endpoint(context.get("base_url")):
+                extra_body["thinking"] = {"type": "enabled"}
+            else:
+                extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
         # Enabled: prefer an explicit effort; only fall back to extra_body

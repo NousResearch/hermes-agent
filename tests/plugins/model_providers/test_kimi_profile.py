@@ -84,6 +84,17 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
+    def test_coding_endpoint_never_disables_thinking(self, kimi_profile):
+        """api.kimi.com/coding (Anthropic-shaped) 400s on thinking
+        {"type": "disabled"} ("only type=enabled is allowed for this model"),
+        so a disable request must degrade to the legal enabled toggle there."""
+        for rc in ({"enabled": False}, {"enabled": False, "effort": "high"}):
+            extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+                reasoning_config=rc, base_url="https://api.kimi.com/coding"
+            )
+            assert extra_body == {"thinking": {"type": "enabled"}}
+            assert top_level == {}
+
     @pytest.mark.parametrize(
         "reasoning_config",
         [

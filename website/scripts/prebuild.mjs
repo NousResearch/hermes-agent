@@ -32,6 +32,11 @@ const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
+// Prefer the hermes-agent venv (it has pyyaml + the agent packages these
+// scripts import); honor an explicit $PYTHON override; fall back to bare
+// python3 last (which on many machines lacks pyyaml -> empty Skills Hub).
+const venvPython = resolve(scriptDir, "../../venv/bin/python");
+const PYTHON = process.env.PYTHON ?? (existsSync(venvPython) ? venvPython : "python3");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
@@ -52,7 +57,7 @@ function runPython(script, label) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
+  const r = spawnSync(PYTHON, [script], { stdio: "inherit", cwd: websiteDir });
   if (r.error && r.error.code === "ENOENT") {
     console.warn(`[prebuild] ${label} skipped (python3 not found)`);
     return false;
@@ -126,7 +131,7 @@ await ensureUnifiedIndex();
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
-  const r = spawnSync("python3", [extractScript], {
+  const r = spawnSync(PYTHON, [extractScript], {
     stdio: "inherit",
     cwd: websiteDir,
   });

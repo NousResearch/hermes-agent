@@ -21,4 +21,4 @@ const byName = new Map<string, SlashCommand>(
   SLASH_COMMANDS.flatMap(cmd => [cmd.name, ...(cmd.aliases ?? [])].map(name => [name, cmd] as const))
 )
 
-export const findSlashCommand = (name: string) => byName.get(name.toLowerCase())
+export const lookupSlashCommand = (name: string) => byName.get(name.toLowerCase())

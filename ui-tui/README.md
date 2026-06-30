@@ -94,7 +94,7 @@ npm run test:watch
 ### Slash command subsystem (`src/app/slash/`)
 
 - `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
-- `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
+- `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `lookupSlashCommand(name)` for case-insensitive lookup
 - `commands/core.ts` — general TUI commands
 - `commands/billing.ts` — `/billing`: manage Nous terminal billing — buy credits, auto-reload, limits
 - `commands/credits.ts` — `/credits`
@@ -362,7 +362,7 @@ ui-tui/
 
       slash/
         types.ts                    SlashCommand interface and SlashRunCtx execution context
-        registry.ts                 SLASH_COMMANDS assembly and findSlashCommand lookup
+        registry.ts                 SLASH_COMMANDS assembly and lookupSlashCommand lookup
         commands/
           billing.ts                /billing — manage Nous terminal billing
           core.ts                   general TUI commands

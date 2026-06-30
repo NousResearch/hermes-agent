@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest'
 
 import Text from './components/Text.js'
 import Ink from './ink.js'
-import { CURSOR_HOME, ERASE_SCREEN } from './termio/csi.js'
+import { needsAltScreenResizeScrollbackClear } from './terminal.js'
+import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK } from './termio/csi.js'
 
 class FakeTty extends EventEmitter {
   chunks: string[] = []
@@ -46,7 +47,15 @@ describe('Ink resize healing', () => {
     ink.onRender()
     await tick()
 
-    expect(stdout.chunks.join('')).toContain(ERASE_SCREEN + CURSOR_HOME)
+    // Apple Terminal additionally clears scrollback (CSI 3J) BETWEEN the erase
+    // and the home cursor, so the heal isn't a fixed string. Mirror the source's
+    // patch selection so this assertion holds on every terminal instead of
+    // failing under TERM_PROGRAM=Apple_Terminal.
+    const expectedHeal = needsAltScreenResizeScrollbackClear()
+      ? ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
+      : ERASE_SCREEN + CURSOR_HOME
+
+    expect(stdout.chunks.join('')).toContain(expectedHeal)
 
     ink.unmount()
   })

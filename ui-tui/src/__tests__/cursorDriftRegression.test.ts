@@ -68,7 +68,10 @@ describe('cursor-drift regression — composer cursorLayout matches Ink renderin
         ).toEqual(expected)
       }
     }
-  })
+    // Exhaustive walk: ~600 chars × 7 widths = thousands of wrap-ansi calls on
+    // growing strings. Correct but heavy; the per-keystroke production path runs
+    // this once, not in a loop. Give it headroom over the 5s default.
+  }, 20000)
 
   it('keeps cursor on the same row when text exactly fills the terminal width', () => {
     // wrap-ansi does NOT push exact-fill text onto a phantom next line.

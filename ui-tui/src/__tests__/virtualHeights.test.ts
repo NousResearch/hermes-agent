@@ -18,10 +18,18 @@ describe('virtual height estimates', () => {
   })
 
   it('uses compound user prompt width when estimating user message wrapping', () => {
-    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
+    // The user-prompt width is folded into the gutter, narrowing the body the
+    // message wraps into. Use cols=40 so transcriptBodyWidth stays ABOVE its
+    // intentional Math.max(20, …) floor for both prompts — at small widths
+    // (e.g. cols=26) the floor clamps both bodies to 20 and the prompt width
+    // legitimately can't show through.
+    //   '❯'   → gutter 2 → body 34 → ceil(66/34)=2 wrapped rows
+    //   'Ψ >' → gutter 4 → body 32 → ceil(66/32)=3 wrapped rows
+    // plus 2 rows each for the user message's top/bottom blank lines.
+    const msg: Msg = { role: 'user', text: 'x'.repeat(66) }
 
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+    expect(estimatedMsgHeight(msg, 40, { compact: false, details: false, userPrompt: '❯' })).toBe(4)
+    expect(estimatedMsgHeight(msg, 40, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(5)
   })
 
   it('adds one row for a group-boundary lead gap', () => {

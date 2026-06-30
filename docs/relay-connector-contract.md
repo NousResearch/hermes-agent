@@ -156,7 +156,8 @@ present (may be `null`); the rest are included only when set.
 | `chat_topic` | string\|null | yes | Channel topic/description (Discord, Slack). |
 | `user_id_alt` | string | no | Platform-specific stable alt id (Signal UUID, Feishu union_id). |
 | `chat_id_alt` | string | no | Alternate chat id (e.g. Signal group internal id). |
-| `guild_id` | string | no | Discord guild / Slack workspace / Matrix server scope. **REQUIRED for Discord server isolation.** Session-key discriminator. |
+| `scope_id` | string | no | Platform-neutral **scope** discriminator: Discord guild / Slack workspace / Matrix server. **REQUIRED for Discord/Slack scope isolation.** Session-key discriminator. (Canonical name as of the D-Q2.5 wire migration.) |
+| `guild_id` | string | no | **Deprecated alias for `scope_id`** — still emitted and read during the cross-repo dual-read/dual-write overlap; readers resolve `scope_id ?? guild_id`. Dropped once both repos deploy on `scope_id`. |
 | `parent_chat_id` | string | no | Parent channel when `chat_id` refers to a thread. |
 | `message_id` | string | no | Id of the triggering message (for pin/reply/react). |
 

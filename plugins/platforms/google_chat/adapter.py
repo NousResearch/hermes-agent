@@ -2103,12 +2103,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:
             self._clarify_state[clarify_id] = session_key
-            try:
-                from tools.clarify_gateway import mark_awaiting_text
-
-                mark_awaiting_text(clarify_id)
-            except Exception as exc:
-                logger.warning("[GoogleChat] mark_awaiting_text failed: %s", exc)
             return result
         return await super().send_clarify(
             chat_id, question, choices, clarify_id, session_key, metadata

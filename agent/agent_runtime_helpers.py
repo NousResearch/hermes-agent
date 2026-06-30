@@ -2363,6 +2363,54 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Repair tool_calls whose function.name is empty/missing ---
+    # Some providers (and partially-streamed responses) emit a tool_call with
+    # id="call_xxx" but function.name="". Downstream Responses-API adapters
+    # silently DROP such function_call items while still emitting the matching
+    # function_call_output, producing the gateway's HTTP 400
+    # "No tool call found for function call output with call_id ...".
+    #
+    # We do NOT drop the call: hermes' own dispatch loop intentionally keeps an
+    # empty-name call paired with a synthesized anti-priming tool result
+    # ("tool name was empty", see #47967) so weak models self-correct instead of
+    # being fed the full tool catalog. Dropping the call here would (a) orphan
+    # that result and strip the anti-priming signal, and (b) still leave any
+    # provider-side orphan. Instead, rename the blank name to a non-empty
+    # sentinel so the call and its result stay PAIRED — the adapter no longer
+    # drops the function_call, so there is no orphaned output and no 400, while
+    # the result content the model needs is preserved.
+    _EMPTY_NAME_SENTINEL = "invalid_tool_call"
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls") or []
+        if not tcs:
+            continue
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn else None
+            if isinstance(name, str) and name.strip():
+                continue
+            _ra().logger.warning(
+                "Pre-call sanitizer: repairing tool_call with empty "
+                "function.name -> %r (id=%s)",
+                _EMPTY_NAME_SENTINEL,
+                _ra().AIAgent._get_tool_call_id_static(tc),
+            )
+            if isinstance(fn, dict):
+                fn["name"] = _EMPTY_NAME_SENTINEL
+            elif fn is not None and hasattr(fn, "name"):
+                try:
+                    fn.name = _EMPTY_NAME_SENTINEL
+                except Exception:
+                    pass
+            elif isinstance(tc, dict):
+                tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":

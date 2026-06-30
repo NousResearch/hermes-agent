@@ -100,8 +100,22 @@ def _load_xai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
+def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide which model to use and return ``(model_id, meta)``.
+
+    Priority:
+    1. Caller-supplied ``caller_model`` (from ``generate(**kwargs)`` via
+       ``image_gen.model`` config key) — mirrors how the openrouter provider
+       threads ``kwargs.get("model")`` into its own resolver.
+    2. ``XAI_IMAGE_MODEL`` env override.
+    3. ``image_gen.model`` in config.yaml (already read by the caller into
+       ``caller_model``; this branch handles the legacy path where config is
+       read directly here rather than forwarded by the caller).
+    4. Hard-coded default.
+    """
+    if caller_model and caller_model in _MODELS:
+        return caller_model, _MODELS[caller_model]
+
     env_override = os.environ.get("XAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -234,7 +248,7 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id, meta = _resolve_model()
+        model_id, meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()

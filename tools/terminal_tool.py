@@ -948,6 +948,7 @@ from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
+from tools.environments.coder import CoderEnvironment as _CoderEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
@@ -1213,7 +1214,7 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "coder"})
 
 
 def _is_unusable_container_cwd(cwd: str) -> bool:
@@ -1276,7 +1277,7 @@ def _get_env_config() -> Dict[str, Any]:
     # root-like cwd.
     if env_type == "local":
         default_cwd = _safe_getcwd()
-    elif env_type == "ssh":
+    elif env_type in ("ssh", "coder"):
         default_cwd = "~"
     else:
         default_cwd = "/root"
@@ -1288,6 +1289,10 @@ def _get_env_config() -> Dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
+    coder_url = os.getenv("CODER_URL", "")
+    coder_api_key = os.getenv("CODER_API_KEY", "")
+    coder_organization = os.getenv("CODER_ORGANIZATION", "")
+    coder_workspace = os.getenv("CODER_WORKSPACE", "")
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
@@ -1311,6 +1316,8 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
+        "coder_forward_env": _parse_env_var("TERMINAL_CODER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
+        "coder_workspace_startup_timeout": _parse_env_var("TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT", "180"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
@@ -1324,6 +1331,11 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        # Coder-specific config
+        "coder_url": coder_url,
+        "coder_api_key": coder_api_key,
+        "coder_organization": coder_organization,
+        "coder_workspace": coder_workspace,
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1513,10 +1525,24 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "coder":
+        if not cc.get("coder_url") or not cc.get("coder_api_key"):
+            raise ValueError("Coder environment requires CODER_URL and CODER_API_KEY")
+        return _CoderEnvironment(
+            base_url=cc["coder_url"],
+            task_id=task_id,
+            api_key=cc["coder_api_key"],
+            workspace_name=cc.get("coder_workspace") or None,
+            cwd=cwd,
+            timeout=timeout,
+            forward_env=cc.get("coder_forward_env", []),
+            workspace_startup_timeout=cc.get("coder_workspace_startup_timeout"),
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'ssh', or 'coder'"
         )
 
 
@@ -2179,7 +2205,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "coder"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -2194,6 +2220,12 @@ def terminal_tool(
                                 "docker_extra_args": config.get("docker_extra_args", []),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "coder_url": config.get("coder_url", ""),
+                                "coder_api_key": config.get("coder_api_key", ""),
+                                "coder_organization": config.get("coder_organization", ""),
+                                "coder_workspace": config.get("coder_workspace", ""),
+                                "coder_forward_env": config.get("coder_forward_env", []),
+                                "coder_workspace_startup_timeout": config.get("coder_workspace_startup_timeout", 180),
                             }
 
                         local_config = None
@@ -2581,7 +2613,7 @@ def terminal_tool(
             retry_count = 0
             result = None
             command_cwd = None
-            
+
             while retry_count <= max_retries:
                 try:
                     command_cwd = _resolve_command_cwd(
@@ -2663,7 +2695,7 @@ def terminal_tool(
                         break
             except Exception:
                 pass
-            
+
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes
             MAX_OUTPUT_CHARS = get_max_bytes()
@@ -2844,10 +2876,18 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "coder":
+            if not config.get("coder_url") or not config.get("coder_api_key"):
+                logger.error(
+                    "Coder backend selected but CODER_URL and CODER_API_KEY must both be set."
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, ssh, coder.",
                 env_type,
             )
             return False

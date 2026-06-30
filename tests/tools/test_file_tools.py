@@ -589,6 +589,62 @@ class TestSensitivePathCheck:
         result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
         assert result["status"] == "ok"
 
+class TestGetFileOpsCoderBackend:
+    def test_coder_backend_passes_coder_config_to_create_environment(self):
+        from tools import file_tools
+
+        file_tools._file_ops_cache.clear()
+
+        config = {
+            "env_type": "coder",
+            "cwd": "~",
+            "timeout": 180,
+            "host_cwd": None,
+            "coder_url": "http://127.0.0.1:7080",
+            "coder_api_key": "token",
+            "coder_organization": "org",
+            "coder_workspace": "ws",
+            "coder_forward_env": ["GITHUB_TOKEN"],
+            "coder_workspace_startup_timeout": 240,
+            "container_cpu": 1,
+            "container_memory": 5120,
+            "container_disk": 51200,
+            "container_persistent": True,
+            "docker_volumes": [],
+            "docker_mount_cwd_to_workspace": False,
+            "docker_forward_env": [],
+            "docker_run_as_host_user": False,
+        }
+
+        with patch("tools.terminal_tool._resolve_container_task_id", return_value="default"), \
+             patch("tools.terminal_tool._get_env_config", return_value=config), \
+             patch("tools.terminal_tool._create_environment") as mock_create, \
+             patch("tools.terminal_tool._start_cleanup_thread"), \
+             patch("tools.file_tools.ShellFileOperations") as mock_shell_ops:
+            mock_env = MagicMock()
+            mock_create.return_value = mock_env
+            mock_shell_ops.return_value = MagicMock()
+
+            try:
+                file_tools._get_file_ops(task_id="default")
+            finally:
+                file_tools._file_ops_cache.clear()
+                from tools.terminal_tool import _active_environments, _env_lock, _last_activity
+
+                with _env_lock:
+                    _active_environments.pop("default", None)
+                    _last_activity.pop("default", None)
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["env_type"] == "coder"
+        assert kwargs["container_config"]["coder_url"] == "http://127.0.0.1:7080"
+        assert kwargs["container_config"]["coder_api_key"] == "token"
+        assert kwargs["container_config"]["coder_organization"] == "org"
+        assert kwargs["container_config"]["coder_workspace"] == "ws"
+        assert kwargs["container_config"]["coder_forward_env"] == ["GITHUB_TOKEN"]
+        assert kwargs["container_config"]["coder_workspace_startup_timeout"] == 240
+
 
 class TestPatchSchemaShape:
     """PATCH_SCHEMA must advertise per-mode required params via description

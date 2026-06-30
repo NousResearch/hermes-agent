@@ -1082,6 +1082,11 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        "coder_url": "",
+        "coder_organization": "",
+        "coder_workspace": "",
+        "coder_forward_env": [],
+        "coder_workspace_startup_timeout": 180,
         "cwd": ".",  # Use current directory
         "timeout": 180,
         # Bounded grace period (seconds) between SIGTERM and an escalated
@@ -6243,6 +6248,11 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    "coder_url": "CODER_URL",
+    "coder_organization": "CODER_ORGANIZATION",
+    "coder_workspace": "CODER_WORKSPACE",
+    "coder_forward_env": "TERMINAL_CODER_FORWARD_ENV",
+    "coder_workspace_startup_timeout": "TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT",
 }
 
 
@@ -7284,7 +7294,16 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
-    
+    elif terminal.get('backend') == 'coder':
+        coder_url = str(terminal.get('coder_url') or get_env_value('CODER_URL') or '')
+        coder_organization = str(terminal.get('coder_organization') or get_env_value('CODER_ORGANIZATION') or '')
+        coder_workspace = str(terminal.get('coder_workspace') or get_env_value('CODER_WORKSPACE') or '')
+        coder_api_key = get_env_value('CODER_API_KEY')
+        print(f"  Coder URL:    {coder_url or '(not set)'}")
+        print(f"  Organization: {coder_organization or '(default)'}")
+        print(f"  Workspace:    {coder_workspace or '(per-session)'}")
+        print(f"  API key:      {'configured' if coder_api_key else '(not set)'}")
+
     # Timezone
     print()
     print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))

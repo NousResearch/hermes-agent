@@ -216,6 +216,55 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
 
+def test_get_or_create_env_passes_coder_container_config(monkeypatch):
+    import tools.code_execution_tool as code_execution_tool
+    import tools.terminal_tool as terminal_tool
+
+    class _DummyLock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    config = {
+        "env_type": "coder",
+        "cwd": "~",
+        "timeout": 30,
+        "coder_url": "https://coder.example",
+        "coder_api_key": "secret-token",
+        "coder_organization": "acme",
+        "coder_workspace": "shared-dev",
+        "coder_forward_env": ["GITHUB_TOKEN"],
+        "coder_workspace_startup_timeout": 240,
+    }
+
+    create_env = MagicMock(return_value=object())
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_env_lock", _DummyLock())
+    monkeypatch.setattr(terminal_tool, "_creation_locks_lock", _DummyLock())
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_create_environment", create_env)
+
+    _env, env_type = code_execution_tool._get_or_create_env("coder-test")
+
+    assert env_type == "coder"
+    assert create_env.called
+    cc = create_env.call_args.kwargs["container_config"]
+    assert cc["coder_url"] == "https://coder.example"
+    assert cc["coder_api_key"] == "secret-token"
+    assert cc["coder_organization"] == "acme"
+    assert cc["coder_workspace"] == "shared-dev"
+    assert cc["coder_forward_env"] == ["GITHUB_TOKEN"]
+    assert cc["coder_workspace_startup_timeout"] == 240
+
+
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""

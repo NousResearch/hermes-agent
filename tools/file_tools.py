@@ -918,7 +918,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
+            if env_type in {"docker", "singularity", "modal", "daytona", "coder"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
@@ -928,6 +928,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "coder_url": config.get("coder_url", ""),
+                    "coder_api_key": config.get("coder_api_key", ""),
+                    "coder_organization": config.get("coder_organization", ""),
+                    "coder_workspace": config.get("coder_workspace", ""),
+                    "coder_forward_env": config.get("coder_forward_env", []),
+                    "coder_workspace_startup_timeout": config.get("coder_workspace_startup_timeout", 180),
                 }
 
             ssh_config = None

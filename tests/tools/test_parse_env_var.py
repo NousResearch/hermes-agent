@@ -39,6 +39,14 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_parses_coder_forward_env_json(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "coder",
+            "TERMINAL_CODER_FORWARD_ENV": '["GITHUB_TOKEN", "NPM_TOKEN"]',
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["coder_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:
@@ -52,6 +60,26 @@ class TestParseEnvVar:
 
         assert result is fake_env
         assert mock_docker.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+
+    def test_create_environment_passes_coder_forward_env(self):
+        fake_env = object()
+        with patch.object(_tt_mod, "_CoderEnvironment", return_value=fake_env) as mock_coder:
+            result = _tt_mod._create_environment(
+                "coder",
+                image="ignored",
+                cwd="~",
+                timeout=180,
+                container_config={
+                    "coder_url": "https://coder.example",
+                    "coder_api_key": "secret-token",
+                    "coder_forward_env": ["GITHUB_TOKEN"],
+                    "coder_workspace_startup_timeout": 240,
+                },
+            )
+
+        assert result is fake_env
+        assert mock_coder.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+        assert mock_coder.call_args.kwargs["workspace_startup_timeout"] == 240
 
     def test_falls_back_to_default(self):
         with patch.dict("os.environ", {}, clear=False):

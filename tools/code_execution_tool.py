@@ -658,7 +658,7 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if env_type in {"docker", "singularity", "modal", "daytona", "coder"}:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -666,6 +666,12 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "coder_url": config.get("coder_url", ""),
+                "coder_api_key": config.get("coder_api_key", ""),
+                "coder_organization": config.get("coder_organization", ""),
+                "coder_workspace": config.get("coder_workspace", ""),
+                "coder_forward_env": config.get("coder_forward_env", []),
+                "coder_workspace_startup_timeout": config.get("coder_workspace_startup_timeout", 180),
             }
 
         ssh_config = None
@@ -718,11 +724,14 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     quoted_remote_path = shlex.quote(remote_path)
-    env.execute(
+    result = env.execute(
         f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
     )
+    exit_code = result.get("returncode", -1)
+    if exit_code != 0:
+        raise RuntimeError(f"Failed to ship file to remote environment: {exit_code}")
 
 
 def _env_temp_dir(env: Any) -> str:

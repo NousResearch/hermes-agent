@@ -406,6 +406,13 @@ class BaseEnvironment(ABC):
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            returncode = result.get("returncode", 0)
+            if returncode != 0:
+                output = result.get("output") or ""
+                detail = output.strip().splitlines()[-1] if output.strip() else "no output"
+                raise RuntimeError(
+                    f"snapshot bootstrap exited with code {returncode}: {detail}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(
@@ -908,6 +915,9 @@ class BaseEnvironment(ABC):
         )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
+
+        if result.get("returncode", 0) != 0:
+            logger.warning(f"_run_bash failed: wrapped_command={wrapped} resultcode={result['returncode']}")
 
         return result
 

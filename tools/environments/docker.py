@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.forward_env import (
+    collect_forwarded_env_values,
+    load_hermes_env_vars,
+    normalize_forward_env_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +40,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
-    """Return a deduplicated list of valid environment variable names."""
-    normalized: list[str] = []
-    seen: set[str] = set()
-
-    for item in forward_env or []:
-        if not isinstance(item, str):
-            logger.warning("Ignoring non-string docker_forward_env entry: %r", item)
-            continue
-
-        key = item.strip()
-        if not key:
-            continue
-        if not _ENV_VAR_NAME_RE.match(key):
-            logger.warning("Ignoring invalid docker_forward_env entry: %r", item)
-            continue
-        if key in seen:
-            continue
-
-        seen.add(key)
-        normalized.append(key)
-
-    return normalized
+    return normalize_forward_env_names(forward_env, config_name="docker_forward_env")
 
 
 def _normalize_env_dict(env: dict | None) -> dict[str, str]:
@@ -91,13 +74,7 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
-    """Load ~/.hermes/.env values without failing Docker command execution."""
-    try:
-        from hermes_cli.config import load_env
-
-        return load_env() or {}
-    except Exception:
-        return {}
+    return load_hermes_env_vars()
 
 
 # Docker label values must match [a-zA-Z0-9_.-] and stay ≤63 chars to round-trip
@@ -982,25 +959,13 @@ class DockerEnvironment(BaseEnvironment):
         them into the snapshot.  Subsequent execute() calls don't need -e flags.
         """
         exec_env: dict[str, str] = dict(self._env)
-
-        explicit_forward_keys = set(self._forward_env)
-        passthrough_keys: set[str] = set()
-        try:
-            from tools.env_passthrough import get_all_passthrough
-            passthrough_keys = set(get_all_passthrough())
-        except Exception:
-            pass
-        # Explicit docker_forward_env entries are an intentional opt-in and must
-        # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
-        hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        for key in sorted(forward_keys):
-            value = os.getenv(key)
-            if not value:
-                value = hermes_env.get(key)
-            if value:
-                exec_env[key] = value
+        exec_env.update(
+            collect_forwarded_env_values(
+                self._forward_env,
+                config_name="docker_forward_env",
+                dotenv_loader=_load_hermes_env_vars,
+            )
+        )
 
         args = []
         for key in sorted(exec_env):

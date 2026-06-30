@@ -74,7 +74,16 @@ jobs:
               continue
             fi
 
-            # Limit number of reruns to prevent infinite loops
+            # Skip runs that have already exceeded the global retry budget across all
+            # healer invocations. run_attempt==1 is the original run; each rerun
+            # increments it, so run_attempt==4 means 3 reruns have already been done.
+            ATTEMPT=$(gh api /repos/$REPO/actions/runs/$RUN_ID --jq '.run_attempt' 2>/dev/null || echo "1")
+            if [ "${ATTEMPT:-1}" -ge "$MAX_RERUNS" ] 2>/dev/null; then
+              echo "Run $RUN_ID already at attempt $ATTEMPT/$MAX_RERUNS — skipping, needs manual review"
+              continue
+            fi
+
+            # Limit number of reruns per healer invocation to avoid hammering CI
             if [ $RERUN_COUNT -ge $MAX_RERUNS ]; then
               echo "Reached maximum reruns ($MAX_RERUNS), stopping"
               break

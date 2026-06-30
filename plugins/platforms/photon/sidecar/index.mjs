@@ -937,8 +937,12 @@ const server = http.createServer(async (req, res) => {
       if (!target) {
         return badRequest(res, "message not found");
       }
+      if (typeof target.read === "function") {
+        await target.read();
+        return ok(res, { method: "message.read" });
+      }
       await space.send(imessageRead(target));
-      return ok(res, {});
+      return ok(res, { method: "space.send(read)" });
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};

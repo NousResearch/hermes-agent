@@ -5227,9 +5227,9 @@ def _is_service_running() -> bool:
         if gateway_windows.is_installed():
             # "installed" doesn't necessarily mean "running" on Windows. The
             # canonical check is whether a gateway process actually exists.
-            return len(find_gateway_pids()) > 0
+            return bool(find_gateway_pids())
     # Check for manual processes
-    return len(find_gateway_pids()) > 0
+    return bool(find_gateway_pids())
 
 
 def _setup_weixin():

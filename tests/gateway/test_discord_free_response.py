@@ -411,6 +411,74 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_free_response_matches_channel_name(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123, name="cypher"),
+        content="name-configured channel without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "name-configured channel without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_matches_hash_channel_name(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "#cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123, name="cypher"),
+        content="hash-name-configured channel without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_parent_channel_name_matches_thread_gates(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "#cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=123, name="cypher")
+    thread = FakeThread(channel_id=456, name="topic", parent=parent)
+    message = make_message(channel=thread, content="thread message without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.thread_id == "456"
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_matches_channel_name(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "cypher")
+
+    adapter._auto_create_thread = AsyncMock()
+    message = make_message(channel=FakeTextChannel(channel_id=123, name="cypher"), content="hello")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
     """Setting auto_thread to false skips thread creation."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")

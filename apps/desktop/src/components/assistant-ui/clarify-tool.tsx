@@ -13,7 +13,7 @@ import {
   useState
 } from 'react'
 
-import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
@@ -25,7 +25,7 @@ import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 
-import { selectMessageRunning } from './tool-fallback-model'
+import { selectMessageRunning } from './tool/fallback-model'
 
 interface ClarifyArgs {
   question?: string

@@ -1019,7 +1019,24 @@ const server = http.createServer(async (req, res) => {
       }
       const content =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      if (advancedCreateClient) {
+      try {
+        // Match OpenClaw/Spectrum's canonical edit path first. The direct
+        // advanced SDK edit endpoint returned upstream 500s in live canaries,
+        // while Spectrum routes edits through its provider send action.
+        if (typeof target.edit === "function") {
+          await target.edit(content);
+          return ok(res, { messageId, edited: true, method: "message.edit" });
+        }
+        await space.send(editContent(content, target));
+        return ok(res, { messageId, edited: true, method: "space.send(edit)" });
+      } catch (spectrumError) {
+        if (!advancedCreateClient) throw spectrumError;
+        console.error(
+          "photon-sidecar: Spectrum edit failed; trying advanced edit fallback: " +
+            (spectrumError && spectrumError.stack
+              ? spectrumError.stack
+              : String(spectrumError))
+        );
         const targetMsg = advancedTargetMessage(messageId);
         const advancedResult = await withAdvancedIMessageClient(space, (client) =>
           client.messages.edit(advancedChatId(space), targetMsg.messageGuid, text, {
@@ -1035,12 +1052,6 @@ const server = http.createServer(async (req, res) => {
           method: "advanced.messages.edit",
         });
       }
-      if (typeof target.edit === "function") {
-        await target.edit(content);
-        return ok(res, { messageId, edited: true, method: "message.edit" });
-      }
-      await space.send(editContent(content, target));
-      return ok(res, { messageId, edited: true, method: "space.send(edit)" });
     }
     if (req.url === "/unsend") {
       if (!nativeUnsendEnabled) {
@@ -1065,7 +1076,26 @@ const server = http.createServer(async (req, res) => {
       if (target.direction && target.direction !== "outbound") {
         return badRequest(res, "only outbound messages can be unsent");
       }
-      if (advancedCreateClient) {
+      try {
+        // Prefer Spectrum's message method/canonical wrapper shape for parity
+        // with OpenClaw, but keep the advanced route as a fallback because it
+        // returned an explicit accepted response in live canaries.
+        if (typeof target.unsend === "function") {
+          await target.unsend();
+          knownMessages.delete(messageId);
+          return ok(res, { messageId, unsent: true, method: "message.unsend" });
+        }
+        await space.send(unsendContent(target));
+        knownMessages.delete(messageId);
+        return ok(res, { messageId, unsent: true, method: "space.send(unsend)" });
+      } catch (spectrumError) {
+        if (!advancedCreateClient) throw spectrumError;
+        console.error(
+          "photon-sidecar: Spectrum unsend failed; trying advanced unsend fallback: " +
+            (spectrumError && spectrumError.stack
+              ? spectrumError.stack
+              : String(spectrumError))
+        );
         const targetMsg = advancedTargetMessage(messageId);
         await withAdvancedIMessageClient(space, (client) =>
           client.messages.unsend(advancedChatId(space), targetMsg.messageGuid, {
@@ -1080,14 +1110,6 @@ const server = http.createServer(async (req, res) => {
           method: "advanced.messages.unsend",
         });
       }
-      if (typeof target.unsend === "function") {
-        await target.unsend();
-        knownMessages.delete(messageId);
-        return ok(res, { messageId, unsent: true, method: "message.unsend" });
-      }
-      await space.send(unsendContent(target));
-      knownMessages.delete(messageId);
-      return ok(res, { messageId, unsent: true, method: "space.send(unsend)" });
     }
     if (req.url === "/send-poll") {
       if (!nativePollsEnabled) {

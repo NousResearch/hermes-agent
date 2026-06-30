@@ -884,10 +884,18 @@ class GatewayStreamConsumer:
         chunks: list[str] = []
         remaining = text
         while len_fn(remaining) > limit:
+            # ``_cp_budget`` is the codepoint offset whose length under
+            # ``len_fn`` fits within ``limit``. When ``len_fn`` measures a unit
+            # other than codepoints (e.g. Telegram's UTF-16 code units), the
+            # no-newline fallback and the half-limit check must use that
+            # codepoint budget — NOT ``limit`` itself, which is in the custom
+            # unit. Slicing ``remaining[:limit]`` by codepoints would emit a
+            # chunk of up to ``2 * limit`` UTF-16 units for astral text (emoji),
+            # which the platform then rejects as too long.
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            if split_at < _cp_budget // 2:
+                split_at = _cp_budget
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:

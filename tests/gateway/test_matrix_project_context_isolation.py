@@ -494,7 +494,10 @@ async def test_matrix_resume_lists_only_current_room_by_default():
 
     result = await runner._handle_resume_command(_event("/resume", source_b))
 
-    assert "Project B Plan" in result
+    # Current session (Project B Plan) is excluded from the numbered list
+    # (#54326). Room scoping still filters out room A. Result is empty
+    # because room B's only session is the current one.
+    assert "Project B Plan" not in result
     assert "Project A Plan" not in result
 
 
@@ -511,4 +514,5 @@ async def test_matrix_resume_all_lists_room_names():
 
     assert "Project A Plan" in result
     assert PROJECT_A_NAME in result
-    assert "Project B Plan" in result
+    # Current session (Project B Plan) is excluded from the numbered list (#54326)
+    assert "Project B Plan" not in result

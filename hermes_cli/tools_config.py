@@ -7,6 +7,16 @@ that need API keys, run through provider-aware configuration.
 
 Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
+
+Plugin toolsets follow a two-key contract.  ``platform_toolsets.<platform>``
+is the live allowlist the model sees.  ``known_plugin_toolsets.<platform>``
+is a ledger of which plugin toolsets ``hermes tools`` has already shown for
+that platform -- it exists only to tell "brand-new plugin, default it on"
+apart from "operator saw it and deselected it".  Listing a toolset under
+``known_plugin_toolsets`` therefore HIDES it unless it also appears in
+``platform_toolsets.<platform>``.  To surface a plugin's tools, add the
+toolset to ``platform_toolsets.<platform>`` (or run ``hermes tools`` and
+enable it).
 """
 
 import json as _json
@@ -38,6 +48,11 @@ logger = logging.getLogger(__name__)
 # runtime check in _get_platform_tools warns once per platform instead of on
 # every tool resolution for a persistently-corrupt config (#38798).
 _warned_invalid_platform_toolsets: Set[str] = set()
+
+# "<platform>:<toolset>" pairs already surfaced as a known-but-disabled plugin
+# toolset.  _get_platform_tools runs on every tool resolution (per turn), so
+# the diagnostic is emitted once per pair instead of on every call.
+_warned_known_plugin_disabled: Set[str] = set()
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -1595,7 +1610,29 @@ def _get_platform_tools(
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
-            # else: known but not in config = user disabled it
+            else:
+                # Known but absent from platform_toolsets[platform]: the
+                # opt-out half of the contract.  Once `hermes tools` saves a
+                # selection for a platform, every plugin toolset is recorded in
+                # known_plugin_toolsets; one left out of platform_toolsets is
+                # treated as deliberately deselected and its tools stay hidden
+                # from the model.  This is intentional — but it is also the
+                # most common reason a freshly written plugin's tools never
+                # reach the model: the toolset became "known" (any prior
+                # `hermes tools` save) yet was never added to
+                # platform_toolsets.<platform>.  Listing it in
+                # known_plugin_toolsets alone is NOT enough.  Surface it once
+                # so the disabled state is diagnosable, not silent.
+                _seen_key = f"{platform}:{pts}"
+                if _seen_key not in _warned_known_plugin_disabled:
+                    _warned_known_plugin_disabled.add(_seen_key)
+                    logger.info(
+                        "Plugin toolset '%s' is known but not enabled for "
+                        "platform '%s'; its tools are hidden from the model. "
+                        "Run `hermes tools` and enable it, or add '%s' to "
+                        "platform_toolsets.%s in config.yaml to surface it.",
+                        pts, platform, pts, platform,
+                    )
 
     # Context-engine tools are runtime-provided by the active engine, so they
     # are not part of any static platform composite. When a non-default engine

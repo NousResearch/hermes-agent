@@ -1756,3 +1756,39 @@ def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolset
     assert "todo" not in config["platform_toolsets"]["cli"]
     # disabled_toolsets is untouched by a disable action.
     assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+def test_known_plugin_disabled_logs_once_per_pair(caplog):
+    """A known-but-not-enabled plugin toolset emits an info log exactly once
+    per (platform, toolset) pair, and the toolset remains hidden (#55793)."""
+    import hermes_cli.tools_config as _tc
+
+    # Reset the dedup set so the test is deterministic regardless of prior runs.
+    _tc._warned_known_plugin_disabled.discard("cli:fake_plugin")
+
+    config = {
+        "platform_toolsets": {"cli": ["terminal"]},
+        "known_plugin_toolsets": {"cli": ["terminal", "fake_plugin"]},
+    }
+
+    # Stub _get_plugin_toolset_keys to include our fake plugin.
+    with patch.object(_tc, "_get_plugin_toolset_keys", return_value={"fake_plugin"}):
+        with caplog.at_level(logging.INFO, logger="hermes_cli.tools_config"):
+            # First call — should log once.
+            result1 = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+            hits1 = [
+                r for r in caplog.records
+                if "fake_plugin" in r.getMessage() and "known but not enabled" in r.getMessage()
+            ]
+            assert len(hits1) == 1, f"expected exactly one info log, got {len(hits1)}"
+            assert "fake_plugin" not in result1, "toolset must remain hidden"
+
+            # Second call — dedup suppresses the log.
+            caplog.clear()
+            result2 = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+            hits2 = [
+                r for r in caplog.records
+                if "fake_plugin" in r.getMessage() and "known but not enabled" in r.getMessage()
+            ]
+            assert len(hits2) == 0, f"expected deduped (zero) logs, got {len(hits2)}"
+            assert "fake_plugin" not in result2, "toolset must remain hidden on second call"
+

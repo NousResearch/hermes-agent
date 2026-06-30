@@ -201,9 +201,11 @@ _LONG_HANDLERS = frozenset(
         # round-trips per call — so it must never block the reader thread.
         "pet.generate",
         "pet.hatch",
+        "pet.info",
         "pet.select",
         "pet.thumb",
         "plugins.manage",
+        "process.list",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -211,6 +213,8 @@ _LONG_HANDLERS = frozenset(
         "projects.project_sessions",
         "session.branch",
         "session.compress",
+        "session.info",
+        "session.list",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -220,7 +224,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4

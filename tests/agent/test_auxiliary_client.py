@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     _OPENROUTER_MODEL,
     OPENROUTER_BASE_URL,
     _resolve_auto,
+    _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
@@ -106,6 +107,65 @@ class TestAuxiliaryMaxTokensParam:
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+
+class TestResolveTaskProviderModel:
+    @pytest.mark.parametrize(
+        "provider",
+        [
+            "anthropic",
+            "minimax-oauth",
+            "nous",
+            "openai-codex",
+            "qwen-oauth",
+            "xai-oauth",
+        ],
+    )
+    def test_explicit_base_url_preserves_first_class_provider_identity(self, provider):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider=provider,
+            model="test-model",
+            base_url="https://provider.example/v1",
+            api_key="resolved-token",
+        )
+
+        assert resolved_provider == provider
+        assert model == "test-model"
+        assert base_url == "https://provider.example/v1"
+        assert api_key == "resolved-token"
+        assert api_mode is None
+
+    @pytest.mark.parametrize("provider", ["", "auto", "custom", "custom:local", "unknown-provider"])
+    def test_explicit_base_url_without_first_class_provider_routes_as_custom(self, provider):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider=provider,
+            model="test-model",
+            base_url="https://provider.example/v1",
+            api_key="resolved-token",
+        )
+
+        assert resolved_provider == "custom"
+        assert model == "test-model"
+        assert base_url == "https://provider.example/v1"
+        assert api_key == "resolved-token"
+        assert api_mode is None
+
+    def test_direct_openai_alias_with_base_url_still_routes_as_custom(self):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="vision",
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="https://proxy.example/v1",
+            api_key="sk-test",
+        )
+
+        assert resolved_provider == "custom"
+        assert model == "gpt-4o-mini"
+        assert base_url == "https://proxy.example/v1"
+        assert api_key == "sk-test"
+        assert api_mode is None
 
 
 class TestBuildCallKwargsMaxTokens:

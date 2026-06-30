@@ -752,6 +752,47 @@ def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch)
     assert result["final_response"] == "Recovered"
 
 
+def test_run_conversation_codex_length_uses_configured_fallback(monkeypatch):
+    """Codex length stops cannot be fixed by raising max_output_tokens.
+    Use the configured fallback before falling into generic truncation failure."""
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0, "fallback": 0}
+    agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"}]
+    agent._fallback_index = 0
+
+    def _codex_length_response(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            return SimpleNamespace(
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Partial")],
+                    )
+                ],
+                usage=SimpleNamespace(input_tokens=5, output_tokens=1, total_tokens=6),
+                status="completed",
+                model="gpt-5-codex",
+                finish_reason="length",
+            )
+        return _codex_message_response("Recovered on fallback")
+
+    def _activate_fallback(reason=None):
+        calls["fallback"] += 1
+        agent._fallback_index = len(agent._fallback_chain)
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _codex_length_response)
+    monkeypatch.setattr(agent, "_try_activate_fallback", _activate_fallback)
+
+    result = agent.run_conversation("Say hello")
+
+    assert calls == {"api": 2, "fallback": 1}
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered on fallback"
+
+
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"api": 0, "refresh": 0}

@@ -4827,6 +4827,9 @@ class TestRunConversation:
         # (up to 3), not immediately fire thinking-exhaustion.
         assert result["api_calls"] == 3
         assert result["completed"] is False
+        assert result["final_response"] is not None
+        assert "internal response limit" in result["final_response"]
+        assert "Response remained truncated" not in result["final_response"]
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)
@@ -4849,6 +4852,9 @@ class TestRunConversation:
         assert result["completed"] is False
         assert result["partial"] is True
         assert "truncated due to output length limit" in result["error"]
+        assert result["final_response"] is not None
+        assert "internal response limit" in result["final_response"]
+        assert "Response truncated due to output length limit" not in result["final_response"]
         mock_handle_function_call.assert_not_called()
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
@@ -4960,6 +4966,9 @@ class TestRunConversation:
         assert result["completed"] is False
         assert result["partial"] is True
         assert "truncated due to output length limit" in result["error"]
+        assert result["final_response"] is not None
+        assert "internal response limit" in result["final_response"]
+        assert "Response truncated due to output length limit" not in result["final_response"]
         mock_handle_function_call.assert_not_called()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):

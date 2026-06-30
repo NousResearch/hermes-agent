@@ -23,7 +23,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
+from agent.auxiliary_client import (
+    call_llm,
+    _get_task_timeout,
+    _is_connection_error,
+    aux_interrupt_protection,
+)
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -33,6 +38,15 @@ from agent.model_metadata import (
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+# Large live compactions can hand the auxiliary summarizer a six-figure-token
+# source context.  Telegram auto-compression may locally prune/truncate that
+# source before serializing the summarizer prompt, so scale by the larger of the
+# serialized prompt estimate and the original source pressure.  The configured
+# auxiliary.compression.timeout remains the operator-controlled floor.
+_COMPRESSION_SUMMARY_TIMEOUT_MIN_SECONDS = 120.0
+_COMPRESSION_SUMMARY_TIMEOUT_CAP_SECONDS = 600.0
+_COMPRESSION_SUMMARY_TIMEOUT_TOKENS_PER_SECOND = 500.0
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
@@ -633,6 +647,7 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._summary_source_tokens = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
@@ -658,6 +673,7 @@ class ContextCompressor(ContextEngine):
         owning session ends.
         """
         self._previous_summary = None
+        self._summary_source_tokens = None
 
     def update_model(
         self,
@@ -904,6 +920,11 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        # Source pre-compression token pressure for the in-flight summary call.
+        # Kept on the instance instead of adding a _generate_summary parameter so
+        # existing tests and monkeypatches that patch _generate_summary with the
+        # historical (turns_to_summarize, focus_topic=None) shape keep working.
+        self._summary_source_tokens: Optional[int] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1450,6 +1471,36 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
+    @staticmethod
+    def _summary_call_timeout(prompt: str, source_tokens: int | None = None) -> float:
+        """Return an adaptive timeout for the compression LLM call.
+
+        ``auxiliary.compression.timeout`` remains the operator-controlled floor,
+        but large compactions need more than the 120s default.  Scale by the
+        larger of the serialized summarizer-prompt estimate and the original
+        source-context token pressure so Telegram auto-compression does not
+        undersize the primary Codex call after local pruning/truncation.
+        """
+        try:
+            configured = float(_get_task_timeout("compression"))
+        except Exception:
+            configured = _COMPRESSION_SUMMARY_TIMEOUT_MIN_SECONDS
+        if configured <= 0:
+            configured = _COMPRESSION_SUMMARY_TIMEOUT_MIN_SECONDS
+        try:
+            prompt_tokens = estimate_messages_tokens_rough([
+                {"role": "user", "content": prompt}
+            ])
+        except Exception:
+            prompt_tokens = 0
+        source_token_floor = int(source_tokens or 0)
+        token_basis = max(0, int(prompt_tokens or 0), source_token_floor)
+        scaled = float(token_basis) / float(_COMPRESSION_SUMMARY_TIMEOUT_TOKENS_PER_SECOND)
+        return min(
+            _COMPRESSION_SUMMARY_TIMEOUT_CAP_SECONDS,
+            max(_COMPRESSION_SUMMARY_TIMEOUT_MIN_SECONDS, configured, scaled),
+        )
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -1655,7 +1706,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
+                "timeout": self._summary_call_timeout(
+                    prompt,
+                    source_tokens=getattr(self, "_summary_source_tokens", None),
+                ),
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
@@ -2503,7 +2557,11 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        self._summary_source_tokens = int(display_tokens or 0)
+        try:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        finally:
+            self._summary_source_tokens = None
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

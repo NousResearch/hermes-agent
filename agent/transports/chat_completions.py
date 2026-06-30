@@ -423,7 +423,45 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                if not (
+                    reasoning_config
+                    and isinstance(reasoning_config, dict)
+                    and reasoning_config.get("enabled") is False
+                ):
+                    from hermes_constants import (
+                        canonicalize_reasoning_effort,
+                        codex_reasoning_effort_wire_value,
+                        xai_reasoning_effort_wire_value,
+                    )
+
+                    _reasoning_effort = "medium"
+                    if reasoning_config and isinstance(reasoning_config, dict):
+                        _raw_effort = reasoning_config.get("effort") or ""
+                        _model_l = str(model or "").strip().lower()
+                        if provider_name in {"xai", "xai-oauth"} or "grok" in _model_l:
+                            _reasoning_effort = (
+                                xai_reasoning_effort_wire_value(_raw_effort) or "medium"
+                            )
+                        elif (
+                            provider_name in {"openai", "openai-codex", "codex"}
+                            or "gpt-5" in _model_l
+                            or "codex" in _model_l
+                        ):
+                            _reasoning_effort = (
+                                codex_reasoning_effort_wire_value(_raw_effort) or "medium"
+                            )
+                        else:
+                            _canonical = canonicalize_reasoning_effort(_raw_effort) or "medium"
+                            if _canonical == "minimal":
+                                _reasoning_effort = "low"
+                            elif _canonical in {"xhigh", "max"}:
+                                # Unknown OpenAI-compatible reasoning endpoints
+                                # are safest with low/medium/high. Known
+                                # providers override this through profiles.
+                                _reasoning_effort = "high"
+                            else:
+                                _reasoning_effort = _canonical
+                    extra_body["reasoning"] = {"enabled": True, "effort": _reasoning_effort}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

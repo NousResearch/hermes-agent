@@ -757,11 +757,12 @@ class _CodexCompletionsAdapter:
                     # to the default rather than being forwarded to the
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
-                    effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
+                    from hermes_constants import codex_reasoning_effort_wire_value
+
+                    effort = (
+                        codex_reasoning_effort_wire_value(reasoning_cfg.get("effort") or "medium")
+                        or "medium"
+                    )
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",
@@ -829,16 +830,10 @@ class _CodexCompletionsAdapter:
                     close()
                 except Exception:
                     logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
-            # The cached auxiliary client wraps this same ``self._client``
-            # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
-            # this instance).  After we close the httpx transport above, the
-            # cache must drop that entry — otherwise the next auxiliary call
-            # (compression retry, memory flush, etc.) reuses the dead client
-            # and fails fast with a connection error.  See issue #23432.
-            try:
-                _evict_cached_client_instance(self._client)
-            except Exception:
-                logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
+            # Keep the timer callback minimal.  It may fire while the stream
+            # iterator is between events; expensive cache eviction here can hold
+            # the GIL long enough to defeat the total-timeout regression test.
+            # Eviction happens on the main thread when the timeout propagates.
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
@@ -943,6 +938,15 @@ class _CodexCompletionsAdapter:
                 )
         except Exception as exc:
             if timed_out.is_set():
+                # The cached auxiliary client wraps this same ``self._client``
+                # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
+                # this instance).  After closing the httpx transport above, drop
+                # that cache entry so compression retry / memory flush doesn't
+                # reuse a dead client.  See issue #23432.
+                try:
+                    _evict_cached_client_instance(self._client)
+                except Exception:
+                    logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
                 raise TimeoutError(_timeout_message()) from exc
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
@@ -5417,6 +5421,37 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
+    provider_l = str(provider or "").strip().lower()
+    model_l = str(model or "").strip().lower()
+    if provider_l == "gemini" or model_l.startswith(("gemini", "google/gemini")):
+        from hermes_constants import gemini_thinking_config_for_reasoning
+
+        _reasoning_cfg = merged_extra.get("reasoning")
+        _thinking_config = gemini_thinking_config_for_reasoning(model, _reasoning_cfg)
+        if _thinking_config:
+            # Gemini does not understand OpenAI/OpenRouter-style
+            # extra_body.reasoning. Translate it to the native thinking_config
+            # field and drop the generic key so both native and strict
+            # OpenAI-compatible Gemini routes avoid unknown-field 400s.
+            merged_extra.pop("reasoning", None)
+            if str(base_url or "").strip().rstrip("/").lower().endswith("/openai"):
+                google_extra = (
+                    merged_extra.setdefault("extra_body", {})
+                    .setdefault("google", {})
+                )
+                google_extra.setdefault("thinking_config", {
+                    "include_thoughts": _thinking_config.get("includeThoughts"),
+                    **(
+                        {"thinking_level": _thinking_config["thinkingLevel"]}
+                        if "thinkingLevel" in _thinking_config else {}
+                    ),
+                    **(
+                        {"thinking_budget": _thinking_config["thinkingBudget"]}
+                        if "thinkingBudget" in _thinking_config else {}
+                    ),
+                })
+            else:
+                merged_extra.setdefault("thinking_config", _thinking_config)
     if provider == "nous":
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:

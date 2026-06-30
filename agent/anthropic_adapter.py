@@ -57,16 +57,12 @@ logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"max": 32000, "xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
-# Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
-# Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
-# We preserve xhigh as xhigh on 4.7+ (the recommended default for coding/
-# agentic work) and downgrade it to max on pre-4.7 adaptive models (which
-# is the strongest level they accept).  "minimal" is a legacy alias that
-# maps to low on every model.  See:
-# https://platform.claude.com/docs/en/about-claude/models/migration-guide
+# Anthropic adaptive-thinking wire efforts are provider-specific. Hermes keeps
+# Codex's ``xhigh`` as a first-class stored/config value, but Claude's strongest
+# tier is ``max``; map high-end Codex aliases to ``max`` at the provider edge.
 ADAPTIVE_EFFORT_MAP = {
     "max":     "max",
-    "xhigh":   "xhigh",
+    "xhigh":   "max",
     "high":    "high",
     "medium":  "medium",
     "low":     "low",
@@ -2518,7 +2514,12 @@ def build_anthropic_kwargs(
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
-            effort = str(reasoning_config.get("effort", "medium")).lower()
+            from hermes_constants import anthropic_reasoning_effort_wire_value
+
+            effort = (
+                anthropic_reasoning_effort_wire_value(reasoning_config.get("effort", "medium"))
+                or "medium"
+            )
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
@@ -2526,8 +2527,9 @@ def build_anthropic_kwargs(
                     "display": "summarized",
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-                # Downgrade xhigh→max on models that don't list xhigh as a
-                # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
+                # Defensively downgrade xhigh→max on models that don't list
+                # xhigh as a supported level. The normal provider-edge mapper
+                # already sends max for high-end Hermes/Codex aliases.
                 if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
                     adaptive_effort = "max"
                 kwargs["output_config"] = {

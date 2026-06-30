@@ -552,26 +552,43 @@ VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 LEGACY_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 CODEX_GPT55_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 ANTHROPIC_46_REASONING_EFFORTS = ("low", "medium", "high", "max")
-ANTHROPIC_MODERN_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ANTHROPIC_MODERN_REASONING_EFFORTS = ("low", "medium", "high", "max")
 GEMINI_FLASH_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 GEMINI_STANDARD_REASONING_EFFORTS = ("low", "medium", "high")
 GEMINI_PRO_STRICT_REASONING_EFFORTS = ("low", "high")
-_REASONING_EFFORT_LABELS = {
-    "none": "None",
-    "minimal": "Minimal",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "xhigh": "Extra High",
-    "max": "Max",
-}
+_REASONING_EFFORT_LABELS = {effort: effort for effort in VALID_REASONING_EFFORTS}
+_REASONING_EFFORT_LABELS["none"] = "none"
 _REASONING_ALIASES = {
+    "minimal": "minimal",
+    "minimum": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "med": "medium",
+    "high": "high",
     "extra_high": "xhigh",
     "extra-high": "xhigh",
     "extra high": "xhigh",
     "extrahigh": "xhigh",
+    "xhigh": "xhigh",
+    "x high": "xhigh",
+    "x-high": "xhigh",
+    "max": "max",
     "maximum": "max",
 }
+
+
+def canonicalize_reasoning_effort(effort: str | None) -> str | None:
+    """Return Hermes' canonical provider-style reasoning effort value.
+
+    Hermes stores provider-style tags (``minimal``, ``low``, ``medium``,
+    ``high``, ``xhigh``, ``max``).  Older UI/config spellings such as
+    ``extra_high`` remain accepted as hidden compatibility aliases.
+    """
+    if effort is None or not str(effort).strip():
+        return None
+    raw = str(effort).strip().lower()
+    squashed = " ".join(raw.replace("_", " ").replace("-", " ").split())
+    return _REASONING_ALIASES.get(raw) or _REASONING_ALIASES.get(squashed)
 
 
 def _normalize_model_id_for_reasoning(model: str) -> str:
@@ -738,8 +755,7 @@ def normalize_reasoning_effort_for_model(
     ``xhigh`` is the canonical value for the user-facing "Extra High" tier;
     ``max`` is a distinct strongest tier on providers that expose it.
     """
-    value = str(effort or "").strip().lower()
-    value = _REASONING_ALIASES.get(value, value)
+    value = canonicalize_reasoning_effort(effort)
     if value in reasoning_efforts_for_model(provider, model):
         return value
     return None
@@ -762,7 +778,7 @@ def resolve_reasoning_effort_for_request(
     normalized = normalize_reasoning_effort_for_model(effort or "", provider, model)
     if normalized is not None:
         return normalized
-    value = _REASONING_ALIASES.get(str(effort or "").strip().lower(), str(effort or "").strip().lower())
+    value = canonicalize_reasoning_effort(effort) or str(effort or "").strip().lower()
     if value == "minimal" and _is_anthropic_reasoning_model(provider, model):
         # ``minimal`` is a legacy Hermes UI/config tier.  Anthropic adaptive
         # thinking exposes ``low`` as its smallest wire effort; the direct
@@ -781,26 +797,115 @@ def resolve_reasoning_effort_for_request(
             return "xhigh"
         if value == "minimal":
             return "low"
-    if value == "xhigh" and _is_anthropic_46_reasoning_model(provider, model):
+    if value == "xhigh" and _is_anthropic_reasoning_model(provider, model):
         return "max"
     if default is not None:
         return normalize_reasoning_effort_for_model(default, provider, model)
     return None
 
 
-def reasoning_effort_display_label(effort: str | None) -> str:
-    """Return the human-facing title for a canonical reasoning effort.
+def codex_reasoning_effort_wire_value(effort: str | None) -> str | None:
+    """Return the OpenAI Codex/GPT-5.5 ``reasoning.effort`` wire value."""
+    canonical = canonicalize_reasoning_effort(effort)
+    if canonical == "minimal":
+        return "low"
+    if canonical in {"low", "medium", "high", "xhigh"}:
+        return canonical
+    if canonical == "max":
+        return "xhigh"
+    return None
 
-    Hermes stores and sends ``xhigh`` as the canonical/wire enum, but user
-    surfaces should say "Extra High" for parity with Desktop and vendor UX.
-    Unknown values are title-cased defensively so future enum additions don't
-    leak lower-case strings into Telegram/gateway status text.
-    """
+
+def anthropic_reasoning_effort_wire_value(effort: str | None) -> str | None:
+    """Return the Anthropic/Claude adaptive-thinking wire effort."""
+    canonical = canonicalize_reasoning_effort(effort)
+    if canonical == "minimal":
+        return "low"
+    if canonical in {"xhigh", "max"}:
+        return "max"
+    if canonical in {"low", "medium", "high"}:
+        return canonical
+    return None
+
+
+def xai_reasoning_effort_wire_value(effort: str | None) -> str | None:
+    """Return the current xAI Responses reasoning-effort wire value."""
+    canonical = canonicalize_reasoning_effort(effort)
+    if canonical == "minimal":
+        return "low"
+    if canonical in {"xhigh", "max"}:
+        return "high"
+    if canonical in {"low", "medium", "high"}:
+        return canonical
+    return None
+
+
+def gemini_thinking_config_for_reasoning(
+    model: str,
+    reasoning_config: dict | None,
+) -> dict | None:
+    """Translate Hermes reasoning config to Gemini native thinkingConfig."""
+    if reasoning_config is None or not isinstance(reasoning_config, dict):
+        return None
+
+    normalized_model = (model or "").strip().lower()
+    if normalized_model.startswith("google/"):
+        normalized_model = normalized_model.split("/", 1)[1]
+
+    if not normalized_model.startswith("gemini"):
+        return None
+
+    if reasoning_config.get("enabled") is False:
+        return {"includeThoughts": False}
+
+    raw_effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
+    if raw_effort == "none":
+        return {"includeThoughts": False}
+
+    canonical = canonicalize_reasoning_effort(raw_effort) or "medium"
+    thinking_config: dict = {"includeThoughts": True}
+
+    # Gemini 2.5 exposes budget controls, not the 3.x named thinking levels.
+    # ``includeThoughts`` alone requests visible thought parts without guessing
+    # a numeric budget.
+    if normalized_model.startswith("gemini-2.5-"):
+        return thinking_config
+
+    if normalized_model.startswith(("gemini-3", "gemini-3.1", "gemini-3.5")):
+        if "flash" in normalized_model:
+            if canonical == "minimal":
+                thinking_config["thinkingLevel"] = "minimal"
+            elif canonical == "low":
+                thinking_config["thinkingLevel"] = "low"
+            elif canonical in {"high", "xhigh", "max"}:
+                thinking_config["thinkingLevel"] = "high"
+            else:
+                thinking_config["thinkingLevel"] = "medium"
+        elif "pro" in normalized_model:
+            if canonical == "low":
+                thinking_config["thinkingLevel"] = "low"
+            elif canonical in {"high", "xhigh", "max"}:
+                thinking_config["thinkingLevel"] = "high"
+            else:
+                thinking_config["thinkingLevel"] = "medium"
+
+    return thinking_config
+
+
+def gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
+    """Backward-compatible alias for Gemini reasoning config translation."""
+    return gemini_thinking_config_for_reasoning(model, reasoning_config)
+
+
+def reasoning_effort_display_label(effort: str | None) -> str:
+    """Return the provider-style display tag for a reasoning effort."""
     raw = str(effort or "").strip()
     if not raw:
         return ""
-    normalized = _REASONING_ALIASES.get(raw.lower(), raw.lower())
-    return _REASONING_EFFORT_LABELS.get(normalized, raw.replace("_", " ").replace("-", " ").title())
+    normalized = canonicalize_reasoning_effort(raw)
+    if normalized:
+        return _REASONING_EFFORT_LABELS.get(normalized, normalized)
+    return raw
 
 
 def format_reasoning_effort_labels(efforts: tuple[str, ...] | list[str]) -> str:
@@ -821,11 +926,11 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     if not effort or not effort.strip():
         return None
     effort = effort.strip().lower()
-    effort = _REASONING_ALIASES.get(effort, effort)
     if effort == "none":
         return {"enabled": False}
-    if effort in VALID_REASONING_EFFORTS:
-        return {"enabled": True, "effort": effort}
+    canonical = canonicalize_reasoning_effort(effort)
+    if canonical in VALID_REASONING_EFFORTS:
+        return {"enabled": True, "effort": canonical}
     return None
 
 

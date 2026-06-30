@@ -109,6 +109,43 @@ class TestPreflightDeferral:
         assert compressor.should_defer_preflight_to_real_usage(95_000) is False
 
 
+class TestSummaryCallTimeout:
+    def test_uses_source_context_tokens_when_prompt_was_pruned(self):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=120.0),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=20_000),
+        ):
+            timeout = ContextCompressor._summary_call_timeout(
+                "serialized prompt after pruning",
+                source_tokens=195_874,
+            )
+
+        assert timeout == pytest.approx(391.748, abs=0.001)
+
+    def test_uses_configured_floor_for_small_contexts(self):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=120.0),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=20_000),
+        ):
+            timeout = ContextCompressor._summary_call_timeout(
+                "small prompt",
+                source_tokens=50_000,
+            )
+
+        assert timeout == 120.0
+
+    def test_caps_very_large_contexts_below_gateway_runtime(self):
+        with (
+            patch("agent.context_compressor._get_task_timeout", return_value=120.0),
+            patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=20_000),
+        ):
+            timeout = ContextCompressor._summary_call_timeout(
+                "small prompt",
+                source_tokens=1_000_000,
+            )
+
+        assert timeout == 600.0
+
 
 class TestCompress:
     def _make_messages(self, n):

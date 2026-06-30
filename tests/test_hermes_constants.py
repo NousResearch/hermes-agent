@@ -343,15 +343,16 @@ class TestParseReasoningEffort:
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
     def test_max_is_a_distinct_global_reasoning_effort(self):
-        """Max is not an alias for xhigh; providers that support both must preserve both."""
+        """Max is distinct globally; providers clamp unsupported high-end tags."""
         assert parse_reasoning_effort("max") == {"enabled": True, "effort": "max"}
         assert normalize_reasoning_effort_for_model("max", "anthropic", "claude-opus-4.8") == "max"
-        assert normalize_reasoning_effort_for_model("xhigh", "anthropic", "claude-opus-4.8") == "xhigh"
-        assert reasoning_effort_display_label("xhigh") == "Extra High"
-        assert reasoning_effort_display_label("max") == "Max"
+        assert normalize_reasoning_effort_for_model("xhigh", "anthropic", "claude-opus-4.8") is None
+        assert resolve_reasoning_effort_for_request("xhigh", "anthropic", "claude-opus-4.8") == "max"
+        assert reasoning_effort_display_label("xhigh") == "xhigh"
+        assert reasoning_effort_display_label("max") == "max"
 
     def test_anthropic_effort_surfaces_are_model_version_specific(self):
-        """Claude 4.6 has max but no xhigh; Claude 4.8 has both xhigh and max."""
+        """Claude adaptive-thinking surfaces expose max, not Codex-only xhigh."""
         assert reasoning_efforts_for_model("anthropic", "claude-sonnet-4.6") == (
             "low",
             "medium",
@@ -367,13 +368,13 @@ class TestParseReasoningEffort:
             "low",
             "medium",
             "high",
-            "xhigh",
             "max",
         )
         assert format_reasoning_effort_labels(reasoning_efforts_for_model("anthropic", "claude-opus-4.8")) == (
-            "Low, Medium, High, Extra High, Max"
+            "low, medium, high, max"
         )
         assert resolve_reasoning_effort_for_request("minimal", "anthropic", "claude-opus-4.8") == "low"
+        assert resolve_reasoning_effort_for_request("xhigh", "anthropic", "claude-opus-4.8") == "max"
 
     def test_relay_anthropic_models_expose_anthropic_surfaces(self):
         assert reasoning_efforts_for_model("openrouter", "anthropic/claude-sonnet-4.6") == (
@@ -398,14 +399,12 @@ class TestParseReasoningEffort:
             "low",
             "medium",
             "high",
-            "xhigh",
             "max",
         )
         assert reasoning_efforts_for_model("bedrock", "us.anthropic.claude-opus-4-8") == (
             "low",
             "medium",
             "high",
-            "xhigh",
             "max",
         )
 
@@ -440,8 +439,7 @@ class TestParseReasoningEffort:
     def test_codex_gpt55_effort_surface_matches_official_levels(self):
         """GPT-5.5 over the Codex OAuth provider has no minimal/off surface.
 
-        UI/gateway pickers expose Low, Medium, High, and Extra High only;
-        Hermes stores Extra High as the canonical ``xhigh`` wire enum.
+        UI/gateway pickers expose provider-style low/medium/high/xhigh tags.
         """
         assert is_codex_gpt55_model("openai-codex", "gpt-5.5") is True
         assert is_codex_gpt55_model("codex", "openai/gpt-5.5-fast") is True
@@ -457,12 +455,12 @@ class TestParseReasoningEffort:
         assert normalize_reasoning_effort_for_model("minimal", "openai-codex", "gpt-5.5") is None
         assert resolve_reasoning_effort_for_request("max", "openai-codex", "gpt-5.5") == "xhigh"
         assert resolve_reasoning_effort_for_request("minimal", "openai-codex", "gpt-5.5") == "low"
-        assert reasoning_effort_display_label("low") == "Low"
-        assert reasoning_effort_display_label("medium") == "Medium"
-        assert reasoning_effort_display_label("high") == "High"
-        assert reasoning_effort_display_label("xhigh") == "Extra High"
+        assert reasoning_effort_display_label("low") == "low"
+        assert reasoning_effort_display_label("medium") == "medium"
+        assert reasoning_effort_display_label("high") == "high"
+        assert reasoning_effort_display_label("xhigh") == "xhigh"
         assert format_reasoning_effort_labels(reasoning_efforts_for_model("openai-codex", "gpt-5.5")) == (
-            "Low, Medium, High, Extra High"
+            "low, medium, high, xhigh"
         )
 
 

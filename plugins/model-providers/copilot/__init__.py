@@ -34,7 +34,9 @@ class CopilotProfile(ProviderProfile):
 
                 supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
+                    from hermes_constants import canonicalize_reasoning_effort
+
+                    effort = canonicalize_reasoning_effort(reasoning_config.get("effort", "medium")) or "medium"
                     # Normalize non-standard effort levels to the nearest supported
                     if effort == "xhigh":
                         effort = "high"

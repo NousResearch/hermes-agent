@@ -1711,7 +1711,7 @@ def skills_command(args) -> None:
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
     elif action == "uninstall":
-        do_uninstall(args.name)
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))

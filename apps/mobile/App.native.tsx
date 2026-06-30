@@ -338,13 +338,10 @@ export default function App() {
           setDiagnostic(JSON.stringify(event.nativeEvent).slice(0, 1600));
         }}
       />
-      {/* Diagnostic overlay is dev-only — Release builds hide it so the user
-          doesn't see raw JSON over the chat / Skills view. */}
-      {__DEV__ && diagnostic ? (
-        <View pointerEvents="none" style={styles.debugOverlay}>
-          <Text style={styles.debugText}>{diagnostic}</Text>
-        </View>
-      ) : null}
+      {/* Diagnostic overlay removed from UI entirely — the JSON dump leaked
+          into Release and there's no user-facing value in seeing fetch
+          internals on screen. Diagnostic strings are still captured in the
+          state ref for future logging hookup but not rendered. */}
     </View>
   );
 }

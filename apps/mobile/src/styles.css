@@ -975,6 +975,19 @@ html.hermes-mobile-standalone [data-mobile-overlay] {
   position: relative;
 }
 
+/* iOS WebKit suppresses the synthetic click after touchend on buttons that
+   don't declare touch intent. Inside mobile overlays this killed every
+   inline expand/select button — the StatusPill (Configured / Needs keys)
+   on Skills toolsets, the provider rows in ToolsetConfigPanel, etc. Set
+   touch-action: manipulation on every button inside an overlay so the
+   click dispatches deterministically. -webkit-tap-highlight-color gives
+   the press a flash of feedback so users see the tap registered. */
+html.hermes-mobile-standalone [data-mobile-overlay] button,
+html.hermes-mobile-standalone [data-mobile-overlay] [role='button'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0.06);
+}
+
 /* PageLoader inside a mobile overlay was anchored to the post-header content
    box (h-full of the children area), which sat well below screen center
    because the header pad takes ~75px of vertical space. Promote it to fill

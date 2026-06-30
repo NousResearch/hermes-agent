@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_metadata_exporter as kme
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name
 
@@ -421,6 +422,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         dest="current_step_key",
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
+    )
+
+    # --- export-metadata ---
+    p_export_metadata = sub.add_parser(
+        "export-metadata",
+        help="Export read-only metadata-only task snapshots for source integrations",
+    )
+    p_export_metadata.add_argument("--json", action="store_true", required=True)
+    p_export_metadata.add_argument("--assignee", default=None)
+    p_export_metadata.add_argument(
+        "--status",
+        default=None,
+        choices=sorted(kb.VALID_STATUSES),
+    )
+    p_export_metadata.add_argument("--tenant", default=None)
+    p_export_metadata.add_argument(
+        "--archived",
+        action="store_true",
+        help="Include archived tasks",
+    )
+    p_export_metadata.add_argument(
+        "--lifecycle-event-type",
+        default=kme.DEFAULT_LIFECYCLE_EVENT_TYPE,
+        help="Lifecycle event type to stamp on the export (default: snapshot)",
     )
 
     # --- show ---
@@ -941,6 +966,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
+            "export-metadata": _cmd_export_metadata,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
@@ -1441,6 +1467,21 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for t in tasks:
         print(_fmt_task_line(t))
+    return 0
+
+
+def _cmd_export_metadata(args: argparse.Namespace) -> int:
+    payload = kme.export_metadata(
+        assignee=getattr(args, "assignee", None),
+        status=getattr(args, "status", None),
+        tenant=getattr(args, "tenant", None),
+        include_archived=bool(getattr(args, "archived", False)),
+        lifecycle_event_type=(
+            getattr(args, "lifecycle_event_type", None)
+            or kme.DEFAULT_LIFECYCLE_EVENT_TYPE
+        ),
+    )
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0
 
 

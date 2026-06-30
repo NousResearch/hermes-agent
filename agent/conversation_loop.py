@@ -2680,6 +2680,91 @@ def run_conversation(
                     )
                     continue
 
+                # ── Orphaned tool_use recovery ─────────────────────────
+                # Anthropic rejects messages where a tool_use block is not
+                # immediately followed by a matching tool_result.  Two
+                # known causes:
+                #   1. Context compression inserts messages between a
+                #      tool_use and its tool_result.
+                #   2. A cron/subagent session is interrupted before the
+                #      tool_result is appended (e.g. execute_code blocked
+                #      by the approval guard).
+                # The canonical ``messages`` list uses OpenAI-style
+                # role=tool / tool_calls — not the Anthropic wire format.
+                # _strip_orphaned_tool_blocks operates on Anthropic-style
+                # api_messages, so we strip there and then signal the
+                # outer loop to rebuild api_messages from the cleaned
+                # canonical list by removing the orphaned tool_calls
+                # entries and their matching role=tool messages.
+                # One-shot to avoid an infinite strip loop.
+                if (
+                    classified.reason == FailoverReason.orphaned_tool_use
+                    and not _retry.orphaned_tool_use_retry_attempted
+                ):
+                    _retry.orphaned_tool_use_retry_attempted = True
+                    try:
+                        # Parse the orphaned tool_use IDs directly from the
+                        # Anthropic error message.  The error looks like:
+                        #   "messages.N: `tool_use` ids were found without
+                        #    `tool_result` blocks immediately after:
+                        #    toolu_xxx, toolu_yyy."
+                        # We cannot rely on detecting orphans from the
+                        # canonical messages (OpenAI-style tool_calls) because
+                        # the pair IS present there — the adjacency breaks
+                        # during Anthropic adapter conversion, e.g. when
+                        # context compaction injects a synthetic user message
+                        # between an assistant tool_use and its tool_result.
+                        import re as _re
+                        _err_str = str(api_error or "")
+                        _orphaned_ids: set = set(
+                            _re.findall(r"toolu_[A-Za-z0-9]+", _err_str)
+                        )
+
+                        # Remove these IDs from canonical messages so the
+                        # next api_messages rebuild produces valid adjacency.
+                        _stripped_canonical = 0
+                        if _orphaned_ids:
+                            _i = 0
+                            while _i < len(messages):
+                                _cm = messages[_i]
+                                if not isinstance(_cm, dict):
+                                    _i += 1
+                                    continue
+                                if _cm.get("role") == "assistant" and isinstance(_cm.get("tool_calls"), list):
+                                    _kept = [
+                                        tc for tc in _cm["tool_calls"]
+                                        if tc.get("id") not in _orphaned_ids
+                                    ]
+                                    if len(_kept) != len(_cm["tool_calls"]):
+                                        _stripped_canonical += len(_cm["tool_calls"]) - len(_kept)
+                                        if _kept:
+                                            _cm["tool_calls"] = _kept
+                                        else:
+                                            _cm.pop("tool_calls", None)
+                                if _cm.get("role") == "tool" and _cm.get("tool_call_id") in _orphaned_ids:
+                                    messages.pop(_i)
+                                    _stripped_canonical += 1
+                                    continue
+                                _i += 1
+                    except Exception as _strip_exc:
+                        logger.warning(
+                            "%sOrphaned tool_use recovery: strip failed: %s",
+                            agent.log_prefix, _strip_exc,
+                        )
+                        _orphaned_ids = set()
+                        _stripped_canonical = 0
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Orphaned tool_use detected — "
+                        f"stripped {len(_orphaned_ids)} id(s) from api_messages "
+                        f"and {_stripped_canonical} canonical entry/entries, retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sOrphaned tool_use recovery: stripped ids=%s canonical_entries=%d",
+                        agent.log_prefix, _orphaned_ids, _stripped_canonical,
+                    )
+                    continue
+
                 # ── llama.cpp grammar-parse recovery ──────────────────
                 # llama.cpp's ``json-schema-to-grammar`` converter rejects
                 # regex escape classes (``\d``, ``\w``, ``\s``) and most

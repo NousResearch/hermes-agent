@@ -4887,26 +4887,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ Bericht ontvangen{status_detail} — ik verwerk het na de volgende stap."
             )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
             message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
+                f"⏳ Subagent actief{status_detail} — jouw bericht staat in de wachtrij "
+                f"(gebruik /stop om alles te annuleren)."
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ In de wachtrij{status_detail} — ik reageer zodra de huidige taak klaar is."
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ Taak onderbroken{status_detail} — ik reageer zo op jouw bericht."
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -6232,6 +6229,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_reaction_callback"):
+                adapter.set_reaction_callback(self._handle_telegram_reaction)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -7034,6 +7033,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
+                    if hasattr(adapter, "set_reaction_callback"):
+                        adapter.set_reaction_callback(self._handle_telegram_reaction)
 
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
@@ -7690,6 +7691,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_reaction_callback"):
+                adapter.set_reaction_callback(self._handle_telegram_reaction)
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -7891,6 +7894,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
+
+    async def _handle_telegram_reaction(self, payload: dict) -> None:
+        """Callback fired by TelegramAdapter when a user reacts to a bot message.
+
+        Emits a ``telegram:reaction`` hook event so user-installed hooks can
+        act on thumbs-up, heart, etc.  The payload mirrors what the adapter
+        built:  chat_id, message_id, user_id, user_name, new_reactions,
+        old_reactions, message_text.
+        """
+        await self.hooks.emit("telegram:reaction", payload)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """

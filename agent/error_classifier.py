@@ -52,6 +52,7 @@ class FailoverReason(enum.Enum):
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    orphaned_tool_use = "orphaned_tool_use"  # tool_use block has no adjacent tool_result — strip orphans and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
@@ -1139,6 +1140,18 @@ def _classify_400(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    # Anthropic rejects messages where a tool_use block is not immediately
+    # followed by a matching tool_result.  This can happen when:
+    #   • context compression inserts messages between the pair, or
+    #   • a cron/subagent session is interrupted before the tool_result
+    #     is appended (e.g. execute_code blocked by the approval guard).
+    # Recovery: strip orphaned tool_use/tool_result blocks and retry once.
+    if "tool_use" in error_msg and "tool_result" in error_msg:
+        return result_fn(
+            FailoverReason.orphaned_tool_use,
+            retryable=True,
         )
 
     # Non-retryable format error

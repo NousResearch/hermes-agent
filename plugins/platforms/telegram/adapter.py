@@ -31,6 +31,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        MessageReactionHandler,
         ContextTypes,
         filters,
     )
@@ -140,6 +141,7 @@ def check_telegram_requirements() -> bool:
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
+            MessageReactionHandler as _MRH,
             ContextTypes as _CT, filters as _filters,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
@@ -2636,6 +2638,8 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle message reactions (thumbs up, heart, etc.) on bot messages
+            self._app.add_handler(MessageReactionHandler(self._handle_reaction))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -3207,6 +3211,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                # Index this message so reaction updates can look it up.
+                try:
+                    from gateway import rich_sent_store as _rss
+                    _rss.record(str(chat_id), str(msg.message_id), content)
+                except Exception:
+                    pass
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -6696,6 +6706,75 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle message reaction updates (thumbs up, heart, etc.).
+
+        Only fires for reactions on messages sent by this bot.  Uses
+        ``rich_sent_store`` to match ``message_id`` → original bot message text,
+        then emits a ``telegram:reaction`` hook event for downstream hooks.
+        """
+        rxn: Any = update.message_reaction
+        if rxn is None:
+            return
+
+        chat_id = str(rxn.chat.id)
+        message_id = str(rxn.message_id)
+
+        # Only process reactions on our own bot messages.
+        from gateway import rich_sent_store
+        message_text = rich_sent_store.lookup(chat_id, message_id)
+
+        logger.info(
+            "[%s] reaction update: chat=%s msg=%s new=%s old=%s known_bot_msg=%s",
+            self.name, chat_id, message_id,
+            [getattr(r, "emoji", "?") for r in (rxn.new_reaction or [])],
+            [getattr(r, "emoji", "?") for r in (rxn.old_reaction or [])],
+            message_text is not None,
+        )
+
+        if message_text is None:
+            # Not a message we sent — ignore.
+            return
+
+        def _emoji_from_reaction(r: Any) -> str:
+            """Extract emoji string from a ReactionTypeEmoji or ReactionTypeCustomEmoji."""
+            return getattr(r, "emoji", None) or getattr(r, "custom_emoji_id", "?")
+
+        new_reactions = [_emoji_from_reaction(r) for r in (rxn.new_reaction or [])]
+        old_reactions = [_emoji_from_reaction(r) for r in (rxn.old_reaction or [])]
+
+        # Who reacted? rxn.user is set for users, rxn.actor_chat for anonymous actors.
+        user = rxn.user
+        actor_chat = rxn.actor_chat
+        user_id = str(user.id) if user else (str(actor_chat.id) if actor_chat else None)
+        user_name = (
+            (user.full_name or user.username) if user
+            else (actor_chat.title if actor_chat else None)
+        )
+
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "user_id": user_id,
+            "user_name": user_name,
+            "new_reactions": new_reactions,
+            "old_reactions": old_reactions,
+            "message_text": message_text,
+        }
+
+        logger.debug(
+            "[%s] reaction on bot msg %s: +%s -%s by %s",
+            self.name, message_id, new_reactions, old_reactions, user_id,
+        )
+
+        # Fire the reaction callback if one was installed (e.g. by run.py for hooks).
+        cb = getattr(self, "_reaction_callback", None)
+        if cb is not None:
+            try:
+                await cb(payload)
+            except Exception:
+                logger.debug("[%s] reaction callback failed", self.name, exc_info=True)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.

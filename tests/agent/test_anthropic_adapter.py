@@ -996,6 +996,64 @@ class TestConvertMessages:
         assert len(tool_results) == 1
         assert tool_results[0]["tool_use_id"] == "tc_valid"
 
+    def test_strips_non_adjacent_tool_use(self):
+        """tool_use whose tool_result is not adjacent after merging should be stripped.
+
+        An assistant turn between the tool_use and the tool_result makes them
+        non-adjacent even after _merge_consecutive_roles runs.
+        Anthropic rejects non-adjacent pairs with HTTP 400.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_nonadjacent", "function": {"name": "x", "arguments": "{}"}}
+                ],
+            },
+            # Plain user turn — no tool_result here
+            {"role": "user", "content": "wait a moment"},
+            # Intervening assistant turn breaks adjacency (no merge can bridge this)
+            {"role": "assistant", "content": "Sure, I'll wait"},
+            # tool_result appears two positions later — never adjacent to the tool_use
+            {"role": "tool", "tool_call_id": "tc_nonadjacent", "content": "late result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # The tool_use should have been stripped because the result is not adjacent
+        assistant_blocks = result[0]["content"]
+        assert all(b.get("type") != "tool_use" for b in assistant_blocks), (
+            "Non-adjacent tool_use should be stripped"
+        )
+
+    def test_consecutive_user_messages_merged_before_adjacency_check(self):
+        """Two consecutive user messages are merged by _merge_consecutive_roles
+        before the adjacency check runs.
+
+        After merging, the tool_result block ends up directly after the
+        tool_use — so the pair should be KEPT, not stripped.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_merge", "function": {"name": "x", "arguments": "{}"}}
+                ],
+            },
+            # Two consecutive user messages — second carries the tool_result
+            {"role": "user", "content": "some text"},
+            {"role": "tool", "tool_call_id": "tc_merge", "content": "result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # After merging the two user turns, tool_result is adjacent to tool_use
+        # → the tool_use must be preserved
+        assistant_blocks = result[0]["content"]
+        tool_use_ids = [b.get("id") for b in assistant_blocks if b.get("type") == "tool_use"]
+        assert "tc_merge" in tool_use_ids, (
+            "tool_use should survive when its tool_result becomes adjacent after merge"
+        )
+
+
     def test_system_with_cache_control(self):
         messages = [
             {

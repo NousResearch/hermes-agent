@@ -2657,6 +2657,19 @@ class BasePlatformAdapter(ABC):
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
 
+    def set_reaction_callback(self, callback: Optional[Callable[[dict], Awaitable[None]]]) -> None:
+        """Install a callback that fires when a user reacts to a bot message.
+
+        The callback receives a dict with:
+          - chat_id (str)
+          - message_id (str)
+          - user_id (str | None)
+          - new_reactions (list[str])  — emoji strings added
+          - old_reactions (list[str])  — emoji strings removed
+          - message_text (str | None)  — original bot message text (from rich_sent_store)
+        """
+        self._reaction_callback: Optional[Callable[[dict], Awaitable[None]]] = callback
+
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler

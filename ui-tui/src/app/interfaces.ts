@@ -134,6 +134,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  journey: boolean
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean

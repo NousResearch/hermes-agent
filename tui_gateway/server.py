@@ -204,6 +204,7 @@ _LONG_HANDLERS = frozenset(
         "pet.info",
         "pet.select",
         "pet.thumb",
+        "learning.frames",
         "plugins.manage",
         "process.list",
         "projects.discover_repos",
@@ -13468,6 +13469,30 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))
+
+
+@method("learning.frames")
+def _(rid, params: dict) -> dict:
+    """Pre-render the learning timeline for the TUI ``/journey`` overlay.
+
+    Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
+    so Ink can render and walk the tree locally without round-tripping the
+    gateway. Shares its renderer with the ``hermes journey`` CLI.
+    """
+    try:
+        cols = int(params.get("cols", 80) or 80)
+        rows = int(params.get("rows", 24) or 24)
+        frames = int(params.get("frames", 48) or 48)
+    except (TypeError, ValueError):
+        cols, rows, frames = 80, 24, 48
+    try:
+        from agent.learning_graph import build_learning_graph
+        from agent.learning_graph_render import render_frames
+
+        payload = build_learning_graph()
+        return _ok(rid, render_frames(payload, cols=max(20, cols), rows=max(10, rows), frames=frames))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.frames failed: {exc}")
 
 
 @method("skills.manage")

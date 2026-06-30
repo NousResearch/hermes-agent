@@ -76,12 +76,34 @@ function preprocessWithTailRepair(text: string): string {
 // with zero correctness risk (same input → same output). Streaming tail
 // growth misses the cache by design (every flush is a new string) — that
 // single lex is the irreducible cost.
+//
+// During active streaming the cache is bypassed entirely: `useDeferredValue`
+// can produce intermediate states (unclosed bold, partial tables) whose parsed
+// blocks are incorrect, and the LRU would serve those stale results if the
+// same intermediate string reappears.  See `setBlockCacheStreaming`.
 const BLOCK_CACHE_MAX = 64
 const BLOCK_CACHE_MIN_LENGTH = 1024
 const blockCache = new Map<string, string[]>()
 
-function parseMarkdownIntoBlocksCached(markdown: string): string[] {
-  if (markdown.length < BLOCK_CACHE_MIN_LENGTH) {
+// While a message is actively streaming, `useDeferredValue` may produce
+// intermediate states (unclosed bold, partial tables) whose parsed block
+// arrays are incorrect.  If the same intermediate string reappears before
+// the next token arrives, the LRU would serve the stale/corrupted parse.
+// We therefore suppress caching during streaming and clear the cache on
+// stream completion so stale intermediates never survive.
+let _isStreamingActive = false
+
+/** Toggle block-cache suppression for streaming. */
+export function setBlockCacheStreaming(active: boolean): void {
+  _isStreamingActive = active
+  if (!active) {
+    blockCache.clear()
+  }
+}
+
+/** Exported for testing — see markdown-text.test.ts. */
+export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
+  if (markdown.length < BLOCK_CACHE_MIN_LENGTH || _isStreamingActive) {
     return parseMarkdownIntoBlocks(markdown)
   }
 
@@ -501,6 +523,13 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
+
+  // Suppress block-cache during streaming so `useDeferredValue` intermediate
+  // states are never cached.  Clear on stream end so completed messages
+  // re-enter the cache with clean parses.
+  useEffect(() => {
+    setBlockCacheStreaming(isStreaming)
+  }, [isStreaming])
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by

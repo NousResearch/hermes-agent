@@ -1,6 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+
+// Mock the streamdown dependency so we can unit-test the cache logic
+// without pulling in the full React/Streamdown rendering pipeline.
+vi.mock('@assistant-ui/react-streamdown', () => ({
+  parseMarkdownIntoBlocks: (md: string) => {
+    // Minimal stub: split on double-newline like the real parser.
+    return md.split(/\n{2,}/)
+  },
+  StreamdownTextPrimitive: {},
+  type SyntaxHighlighterProps: {}
+}))
+
+vi.mock('@streamdown/code', () => ({ code: {} }))
+
+// Dynamic import AFTER mocks so the module picks up the stubs.
+const { parseMarkdownIntoBlocksCached, setBlockCacheStreaming } = await import(
+  './markdown-text'
+)
 
 describe('preprocessMarkdown', () => {
   it('strips inline accidental triple-backtick starts', () => {
@@ -130,7 +148,7 @@ describe('preprocessMarkdown', () => {
       '',
       'Sea Turtles & Manatees Snorkel + Free Rum — 1.5hr,',
       '~$56```https://www.getyourguide.com/san-juan-puerto-rico-l355/san-juan-snorkel-sea-turtles-manatees-free-video-rum-t879147/ Old San Juan Sunset Cruise w/ Drinks + Hotel Pickup — 1.5hr, ~$99 (drinks, no snorkel)```',
-      'https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/'
+      'https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t466138/'
     ].join('\n')
 
     const output = preprocessMarkdown(input)
@@ -145,7 +163,7 @@ describe('preprocessMarkdown', () => {
       '~\\$56<https://www.getyourguide.com/san-juan-puerto-rico-l355/san-juan-snorkel-sea-turtles-manatees-free-video-rum-t879147/> Old San Juan Sunset Cruise'
     )
     expect(output).toContain(
-      '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/>'
+      '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t466138/>'
     )
   })
 
@@ -158,7 +176,7 @@ describe('preprocessMarkdown', () => {
       '',
       'Old San Juan Sunset Cruise w/ Drinks + Hotel Pickup — 1.5hr, ~$99',
       '```',
-      'https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/',
+      'https://www.getyourguide.com/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t466138/',
       '```'
     ].join('\n')
 
@@ -169,7 +187,7 @@ describe('preprocessMarkdown', () => {
       '<https://www.getyourguide.com/san-juan-puerto-rico-l355/san-juan-snorkel-sea-turtles-manatees-free-video-rum-t879147/>'
     )
     expect(output).toContain(
-      '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/>'
+      '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t466138/>'
     )
   })
 
@@ -209,5 +227,67 @@ describe('preprocessMarkdown', () => {
     const input = `\`\`\`js\n${body}\n\`\`\``
 
     expect(() => preprocessMarkdown(input)).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Block cache streaming guard
+// ---------------------------------------------------------------------------
+
+/** Generate a markdown string longer than BLOCK_CACHE_MIN_LENGTH (1024). */
+function longMd(extra = ''): string {
+  const filler = 'Lorem ipsum dolor sit amet. '.repeat(40) // ~1080 chars
+  return filler + extra
+}
+
+describe('parseMarkdownIntoBlocksCached – streaming guard', () => {
+  afterEach(() => {
+    // Reset to non-streaming so other test blocks start clean.
+    setBlockCacheStreaming(false)
+  })
+
+  it('caches results when not streaming', () => {
+    const md = longMd('unique-A')
+    const first = parseMarkdownIntoBlocksCached(md)
+    const second = parseMarkdownIntoBlocksCached(md)
+    // Same reference = cache hit.
+    expect(second).toBe(first)
+  })
+
+  it('does NOT cache results while streaming', () => {
+    setBlockCacheStreaming(true)
+    const md = longMd('unique-B')
+    const first = parseMarkdownIntoBlocksCached(md)
+    const second = parseMarkdownIntoBlocksCached(md)
+    // Different reference = fresh parse every time (no caching).
+    expect(second).not.toBe(first)
+    // Content is still correct.
+    expect(second).toEqual(first)
+  })
+
+  it('clears cache when streaming ends', () => {
+    // Populate cache while not streaming.
+    const md = longMd('unique-C')
+    const cached = parseMarkdownIntoBlocksCached(md)
+
+    // Start streaming — cache is bypassed, existing entries preserved
+    // (they won't be served because _isStreamingActive is true).
+    setBlockCacheStreaming(true)
+    parseMarkdownIntoBlocksCached(md)
+
+    // End streaming — cache is cleared.
+    setBlockCacheStreaming(false)
+    const after = parseMarkdownIntoBlocksCached(md)
+    // Fresh parse because cache was cleared.
+    expect(after).not.toBe(cached)
+    expect(after).toEqual(cached)
+  })
+
+  it('skips cache for short markdown even when not streaming', () => {
+    const short = 'Hello world'
+    const first = parseMarkdownIntoBlocksCached(short)
+    const second = parseMarkdownIntoBlocksCached(short)
+    // Short strings bypass the cache unconditionally.
+    expect(second).not.toBe(first)
   })
 })

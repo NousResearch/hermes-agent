@@ -187,7 +187,18 @@ function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, sta
   // A fallback result means both runtime probes were non-authoritative
   // (transport timeout/disconnect). Keep a previously verified configured
   // state instead of forcing the blocking onboarding overlay.
-  return runtime.source === 'fallback' && state.configured === true && !state.requested
+  if (runtime.source === 'fallback' && state.configured === true && !state.requested) {
+    return true
+  }
+  // checksDisagree means setup.status says the provider IS configured but
+  // setup.runtime_check says it's NOT reachable — a transient provider
+  // outage (502, timeout, rate-limit), not a configuration problem.
+  // Don't downgrade to the blocking onboarding overlay; surface a
+  // non-blocking notification instead (the caller handles that).
+  if (runtime.checksDisagree && state.configured === true && !state.requested) {
+    return true
+  }
+  return false
 }
 
 function notifyReady(provider: string) {

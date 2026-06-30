@@ -125,7 +125,7 @@ from tools.url_safety import is_safe_url
 async def _wait_for_ready_or_bot_exit(
     ready_event: asyncio.Event,
     bot_task: asyncio.Task,
-    timeout: float,
+    timeout: Optional[float],
 ) -> None:
     """Wait until Discord is ready, or surface early bot startup failure.
 
@@ -326,6 +326,20 @@ def _build_allowed_mentions():
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+
+
+def _discord_ready_timeout_seconds() -> float:
+    """Return the Discord ready wait timeout during gateway startup."""
+    raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
+                raw,
+            )
+    return 30.0
 
 
 class VoiceReceiver:
@@ -1152,9 +1166,14 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
 
+            ready_timeout = _discord_ready_timeout_seconds()
             # Wait for ready, but fail fast if discord.py's background startup
             # task dies first (for example on SOCKS/proxy connect errors).
-            await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
+            await _wait_for_ready_or_bot_exit(
+                self._ready_event,
+                self._bot_task,
+                timeout=None if ready_timeout <= 0 else ready_timeout,
+            )
 
             self._running = True
             self._start_liveness_probe()

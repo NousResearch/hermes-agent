@@ -168,7 +168,16 @@ class TestFindRetiredPerSlot:
             "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}},
         }
         issues = find_retired_xai_refs(cfg)
-        assert len(issues) == 6
+        # Assert the exact trapped slot set, not just the count, so the test
+        # stays informative if slots are added/removed.
+        assert sorted(_paths(issues)) == [
+            "auxiliary.vision.model",
+            "delegation.model",
+            "model.default",
+            "plugins.image_gen.xai.model",
+            "principal.model",
+            "tts.xai.model",
+        ]
 
 
 class TestFindRetiredModelBlock:

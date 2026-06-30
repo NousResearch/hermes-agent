@@ -237,19 +237,29 @@ class ToolRegistry:
         """Return a stable snapshot of registered tool entries."""
         return self._snapshot_state()[0]
 
-    def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
-        """Return a stable snapshot of toolset availability checks."""
-        return self._snapshot_state()[1]
+    def _toolset_has_exposable_tools(
+        self,
+        toolset: str,
+        entries: List[ToolEntry],
+    ) -> bool:
+        """Return True when at least one tool in *toolset* would be exposed.
 
-    def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
-        """Run a toolset check, treating missing or failing checks as unavailable/available."""
-        if not check:
-            return True
-        try:
-            return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
-            return False
+        Mirrors :meth:`get_tool_definitions` per-tool filtering so doctor,
+        banners, and other toolset-level surfaces agree with runtime exposure.
+        Mixed toolsets (e.g. ``terminal`` plus desktop-only ``read_terminal``)
+        must not be gated solely by the first registered ``check_fn``.
+        """
+        check_results: Dict[Callable, bool] = {}
+        for entry in entries:
+            if entry.toolset != toolset:
+                continue
+            if not entry.check_fn:
+                return True
+            if entry.check_fn not in check_results:
+                check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+            if check_results[entry.check_fn]:
+                return True
+        return False
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
         """Return a registered tool entry by name, or None."""
@@ -410,6 +420,12 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
             )
+            # Availability is now derived per-tool (_toolset_has_exposable_tools),
+            # so this map no longer gates a toolset. It is still consumed by
+            # get_toolset_requirements -> TOOLSET_REQUIREMENTS["check_fn"], which
+            # banner.py reads (presence only, never called) to classify an
+            # already-unavailable toolset as lazy-init vs disabled. Keep the
+            # write path for that classification.
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
@@ -567,35 +583,32 @@ class ToolRegistry:
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
 
     def is_toolset_available(self, toolset: str) -> bool:
-        """Check if a toolset's requirements are met.
+        """Check if a toolset has at least one exposable tool.
 
-        Returns False (rather than crashing) when the check function raises
+        Returns False (rather than crashing) when a per-tool check raises
         an unexpected exception (e.g. network error, missing import, bad config).
         """
-        with self._lock:
-            check = self._toolset_checks.get(toolset)
-        return self._evaluate_toolset_check(toolset, check)
+        entries, _ = self._snapshot_state()
+        return self._toolset_has_exposable_tools(toolset, entries)
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
-        entries, toolset_checks = self._snapshot_state()
+        entries, _ = self._snapshot_state()
         toolsets = sorted({entry.toolset for entry in entries})
         return {
-            toolset: self._evaluate_toolset_check(toolset, toolset_checks.get(toolset))
+            toolset: self._toolset_has_exposable_tools(toolset, entries)
             for toolset in toolsets
         }
 
     def get_available_toolsets(self) -> Dict[str, dict]:
         """Return toolset metadata for UI display."""
         toolsets: Dict[str, dict] = {}
-        entries, toolset_checks = self._snapshot_state()
+        entries, _ = self._snapshot_state()
         for entry in entries:
             ts = entry.toolset
             if ts not in toolsets:
                 toolsets[ts] = {
-                    "available": self._evaluate_toolset_check(
-                        ts, toolset_checks.get(ts)
-                    ),
+                    "available": self._toolset_has_exposable_tools(ts, entries),
                     "tools": [],
                     "description": "",
                     "requirements": [],
@@ -632,20 +645,16 @@ class ToolRegistry:
         """Return (available_toolsets, unavailable_info) like the old function."""
         available = []
         unavailable = []
-        seen = set()
-        entries, toolset_checks = self._snapshot_state()
-        for entry in entries:
-            ts = entry.toolset
-            if ts in seen:
-                continue
-            seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
+        entries, _ = self._snapshot_state()
+        for ts in sorted({entry.toolset for entry in entries}):
+            ts_entries = [entry for entry in entries if entry.toolset == ts]
+            if self._toolset_has_exposable_tools(ts, entries):
                 available.append(ts)
             else:
                 unavailable.append({
                     "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
+                    "env_vars": ts_entries[0].requires_env if ts_entries else [],
+                    "tools": [entry.name for entry in ts_entries],
                 })
         return available, unavailable
 

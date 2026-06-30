@@ -106,3 +106,7 @@ optional_env:
     description: "Enable the narrowly-scoped native iMessage /unsend endpoint for Hermes-sent messages only (true/false, default false)"
     prompt: "Enable native iMessage unsend? (true/false)"
     password: false
+  - name: PHOTON_NATIVE_POLLS
+    description: "Enable the narrowly-scoped native iMessage /send-poll endpoint (true/false, default false)"
+    prompt: "Enable native iMessage polls? (true/false)"
+    password: false

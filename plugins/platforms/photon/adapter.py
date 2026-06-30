@@ -1269,6 +1269,38 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sent_message_ids.pop(message_id, None)
         return SendResult(success=True, message_id=message_id)
 
+    async def send_poll(
+        self,
+        chat_id: str,
+        question: str,
+        options: List[str],
+    ) -> SendResult:
+        """Create a native iMessage poll; no vote/mutation endpoints are exposed."""
+        if not self._native_polls_enabled:
+            return SendResult(success=False, error="Photon native polls are disabled")
+        clean_question = question.strip()
+        clean_options = [option.strip() for option in options if option.strip()]
+        if not clean_question:
+            return SendResult(success=False, error="Photon native polls require a question")
+        if len(clean_options) < 2:
+            return SendResult(
+                success=False,
+                error="Photon native polls require at least two options",
+            )
+        try:
+            data = await self._sidecar_call(
+                "/send-poll",
+                {
+                    "spaceId": chat_id,
+                    "question": clean_question,
+                    "options": clean_options,
+                },
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
     # Photon ships outbound attachments via spectrum-ts' `attachment()` /

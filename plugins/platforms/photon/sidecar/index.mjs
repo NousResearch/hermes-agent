@@ -91,6 +91,9 @@ const nativeEditsEnabled = /^(1|true|yes|on)$/i.test(
 const nativeUnsendEnabled = /^(1|true|yes|on)$/i.test(
   (process.env.PHOTON_NATIVE_UNSEND || "").trim()
 );
+const nativePollsEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_NATIVE_POLLS || "").trim()
+);
 const EFFECTS = {
   slam: "com.apple.MobileSMS.expressivesend.impact",
   impact: "com.apple.MobileSMS.expressivesend.impact",
@@ -902,6 +905,34 @@ const server = http.createServer(async (req, res) => {
       await space.send(unsendContent(target));
       knownMessages.delete(messageId);
       return ok(res, { messageId, unsent: true });
+    }
+    if (req.url === "/send-poll") {
+      if (!nativePollsEnabled) {
+        return badRequest(res, "native polls are disabled");
+      }
+      const { spaceId, question } = body || {};
+      const options = Array.isArray(body?.options)
+        ? body.options.filter((option) => typeof option === "string" && option.trim())
+        : [];
+      if (!spaceId || typeof question !== "string" || !question.trim()) {
+        return badRequest(res, "spaceId and question are required");
+      }
+      if (options.length < 2) {
+        return badRequest(res, "at least two poll options are required");
+      }
+      if (typeof pollContent !== "function") {
+        return badRequest(res, "native polls not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(
+        pollContent(question.trim(), ...options.map((option) => option.trim()))
+      );
+      rememberKnownMessage(result);
+      return ok(res, {
+        messageId: result?.id || null,
+        question: question.trim(),
+        optionCount: options.length,
+      });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =

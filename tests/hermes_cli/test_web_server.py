@@ -2199,11 +2199,12 @@ class TestPtyWebSocket:
         import sys
 
         winsize_script = (
-            "import fcntl, struct, termios, time; "
-            "time.sleep(0.15); "
+            "import fcntl, struct, sys, termios, time; "
+            "print('ready', flush=True); "
+            "time.sleep(0.5); "
             "rows, cols, *_ = struct.unpack('HHHH', "
             "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
-            "print(cols); print(rows)"
+            "print(cols); print(rows); sys.stdout.flush()"
         )
         monkeypatch.setattr(
             self.ws_module,

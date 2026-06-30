@@ -60,13 +60,13 @@ export const bubblegumPinkTheme: DesktopTheme = {
     userBubbleBorder: '#00E8FF'
   },
   darkColors: {
-    background: '#3B1629',
+    background: '#5A1F41',
     foreground: '#FFE6F0',
-    card: '#4D1A35',
+    card: '#6B2850',
     cardForeground: '#FFE6F0',
-    muted: '#331225',
+    muted: '#4A1836',
     mutedForeground: '#FF9DC8',
-    popover: '#52223A',
+    popover: '#73315A',
     popoverForeground: '#FFE6F0',
     primary: '#FF0080',
     primaryForeground: '#FFFFFF',
@@ -75,15 +75,15 @@ export const bubblegumPinkTheme: DesktopTheme = {
     accent: '#FF66B3',
     accentForeground: '#1A0010',
     border: '#FF4D9A',
-    input: '#4D1A35',
+    input: '#6B2850',
     ring: '#FF4D9A',
     midground: '#FF0080',
     composerRing: '#FF0080',
     destructive: '#FF0040',
     destructiveForeground: '#FFFFFF',
-    sidebarBackground: '#331225',
+    sidebarBackground: '#4A1836',
     sidebarBorder: '#FF0080',
-    userBubble: '#4D1A35',
+    userBubble: '#6B2850',
     userBubbleBorder: '#FF4D9A'
   }
 }

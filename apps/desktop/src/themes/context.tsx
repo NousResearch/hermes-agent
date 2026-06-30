@@ -265,7 +265,7 @@ export function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 
   const chromeBg = chromeBackground(c.background, isDark)
 
-  window.hermesDesktop?.setTitleBarTheme?.({
+  void window.hermesDesktop?.setTitleBarTheme?.({
     background: chromeBg,
     foreground: c.foreground
   })
@@ -422,8 +422,9 @@ export function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 // (macOS vibrancy material, titlebar, pre-paint background) matches the app
 // theme instead of the OS appearance. An explicit light/dark pick is forced;
 // 'system' stays 'system' so prefers-color-scheme keeps tracking the OS.
-const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
-  window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') => {
+  void window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+}
 
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own

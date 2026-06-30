@@ -1914,7 +1914,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if not self._response_succeeded(response):
                     logger.warning(
                         "[Feishu DIAG] edit failed: code=%s msg=%s raw.status_code=%s",
-                        getattr(response, "code"), getattr(response, "msg"),
+                        getattr(response, "code", None), getattr(response, "msg", None),
                         getattr(getattr(response, "raw", None), "status_code", None),
                     )
                 # Token invalid — evict, force-refresh, and retry.
@@ -4562,7 +4562,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if not self._response_succeeded(resp):
                 logger.warning(
                     "[Feishu DIAG] reply failed: code=%s msg=%s raw=%s",
-                    getattr(resp, "code"), getattr(resp, "msg"),
+                    getattr(resp, "code", None), getattr(resp, "msg", None),
                     getattr(resp, "raw", None),
                 )
             return resp
@@ -4599,7 +4599,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._response_succeeded(resp):
             logger.warning(
                 "[Feishu DIAG] create failed: code=%s msg=%s raw=%s",
-                getattr(resp, "code"), getattr(resp, "msg"),
+                getattr(resp, "code", None), getattr(resp, "msg", None),
                 getattr(resp, "raw", None),
             )
         return resp
@@ -4855,8 +4855,7 @@ class FeishuAdapter(BasePlatformAdapter):
             except AttributeError:
                 pass
             # Fallback: set to expired empty string (honoured by get() expiry check)
-            import time as _time
-            cache.set(key, "", int(_time.time() - 1))
+            cache.set(key, "", int(time.time() - 1))
         except Exception:
             logger.debug("[Feishu] Failed to evict cached token", exc_info=True)
 

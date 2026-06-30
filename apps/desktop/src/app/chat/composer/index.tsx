@@ -1,5 +1,5 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
-import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { ComposerPrimitive, useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
@@ -155,7 +155,21 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const aui = useAui()
-  const draft = useAuiState(s => s.composer.text)
+  const composerRuntime = useComposerRuntime()
+
+  // Per-keystroke text lives in the contentEditable DOM + draftRef (kept current
+  // imperatively by every mutation path + the composer subscription below), NOT
+  // in a React subscription — so typing never re-renders this ~2k-line component.
+  // Only the coarse *edges* the chrome reacts to are subscribed, and they flip
+  // rarely (empty↔non-empty, the `?` help sigil, steerable-vs-slash).
+  const hasText = useAuiState(s => s.composer.text.trim().length > 0)
+  const isHelpHint = useAuiState(s => s.composer.text === '?')
+
+  const isSteerableText = useAuiState(s => {
+    const trimmed = s.composer.text.trim()
+
+    return trimmed.length > 0 && !SLASH_COMMAND_RE.test(trimmed)
+  })
 
   // assistant-ui's composer *mutators* (setText/send/…) throw "Composer is not
   // available" when the thread's composer core isn't bound yet — and unlike the
@@ -254,10 +268,13 @@ export function ChatBar({
     position: popoutPosition
   })
 
-  const draftRef = useRef(draft)
+  const draftRef = useRef('')
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
+  const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
   activeQueueSessionKeyRef.current = activeQueueSessionKey
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   // Per-entry auto-drain failure counts; bounds retries so a persistent 404
@@ -281,19 +298,17 @@ export function ChatBar({
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
   const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
 
-  const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, draft, editorRef, poppedOut })
-  const trimmedDraft = draft.trim()
-  const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
+  const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
+  const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
-  const canSteer =
-    busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+  const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
 
-  const showHelpHint = draft === '?'
+  const showHelpHint = isHelpHint
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
@@ -407,23 +422,46 @@ export function ChatBar({
     }
   }, [appendExternalText, inputDisabled])
 
-  // Keep draftRef in sync with the assistant-ui composer state for callers
-  // that read the latest text outside the React render cycle. We don't push
-  // to `$composerDraft` per keystroke any more — nobody outside the composer
-  // subscribes to it (verified by grep), and the round-trip
-  // `setText` ⇄ `subscribe` ⇄ `setText` was adding two useEffects to the per-
-  // keystroke critical path. `reconcileComposerTerminalSelections` only
-  // matters when the draft is submitted; we now call it from the submit
-  // path instead.
+  // Imperative draft sync — the spine of the composer's "work only when work is
+  // to be performed" model. Subscribing to the composer runtime directly (rather
+  // than `useAuiState(text)` + a `[draft]` effect) keeps per-keystroke text out
+  // of React entirely, so typing never re-renders this component. On each change
+  // we (1) mirror the text into draftRef for the out-of-render callers, (2)
+  // repaint the editor only when the change came from OUTSIDE it — a programmatic
+  // clear/restore/insert; while the editor is focused it IS the source of truth —
+  // and (3) schedule the debounced per-session stash. Browsing history / editing
+  // a queued prompt suppress the stash so recalled text never clobbers the draft.
   useEffect(() => {
-    draftRef.current = draft
+    const sync = () => {
+      const text = composerRuntime.getState().text
+      draftRef.current = text
 
-    const editor = editorRef.current
+      const editor = editorRef.current
 
-    if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
-      renderComposerContents(editor, draft)
+      if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
+        renderComposerContents(editor, text)
+      }
+
+      if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
+        return
+      }
+
+      const scope = activeQueueSessionKeyRef.current
+      pendingDraftPersistRef.current = { scope, text }
+      window.clearTimeout(draftPersistTimerRef.current)
+      draftPersistTimerRef.current = window.setTimeout(() => {
+        pendingDraftPersistRef.current = null
+        stashAt(scope, text)
+      }, DRAFT_PERSIST_DEBOUNCE_MS)
     }
-  }, [draft])
+
+    const unsubscribe = composerRuntime.subscribe(sync)
+
+    return () => {
+      unsubscribe()
+      window.clearTimeout(draftPersistTimerRef.current)
+    }
+  }, [composerRuntime])
 
   useEffect(() => {
     if (urlOpen) {
@@ -1321,23 +1359,6 @@ export function ChatBar({
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Debounced stash into the active scope. Skipped while browsing history or
-  // editing a queued prompt — recalled text must not clobber the real draft.
-  useEffect(() => {
-    if (isBrowsingHistory(sessionId) || queueEdit) {
-      return
-    }
-
-    pendingDraftPersistRef.current = { scope: activeQueueSessionKey, text: draft }
-
-    const handle = window.setTimeout(() => {
-      pendingDraftPersistRef.current = null
-      stashAt(activeQueueSessionKey, draft)
-    }, DRAFT_PERSIST_DEBOUNCE_MS)
-
-    return () => window.clearTimeout(handle)
-  }, [activeQueueSessionKey, draft, queueEdit, sessionId])
-
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce window would drop trailing keystrokes without this.
   useEffect(() => {
@@ -1439,11 +1460,13 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    const text = draftRef.current
+
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
 
@@ -1452,7 +1475,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words

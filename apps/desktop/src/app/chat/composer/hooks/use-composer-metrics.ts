@@ -1,3 +1,4 @@
+import { useAuiState } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -11,7 +12,6 @@ interface UseComposerMetricsArgs {
   composerRef: RefObject<HTMLFormElement | null>
   composerSurfaceRef: RefObject<HTMLDivElement | null>
   editorRef: RefObject<HTMLDivElement | null>
-  draft: string
   poppedOut: boolean
 }
 
@@ -23,16 +23,18 @@ interface UseComposerMetricsArgs {
  * tree's computed style, and `tight` only flips when it crosses the breakpoint.
  * Returns `stacked` (the only value the render needs).
  */
-export function useComposerMetrics({
-  composerRef,
-  composerSurfaceRef,
-  editorRef,
-  draft,
-  poppedOut
-}: UseComposerMetricsArgs): { stacked: boolean } {
+export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut }: UseComposerMetricsArgs): {
+  stacked: boolean
+} {
   const [expanded, setExpanded] = useState(false)
   const [tight, setTight] = useState(false)
   const narrow = useMediaQuery('(max-width: 30rem)')
+
+  // Edge signals, not the live text: these only re-render when emptiness / the
+  // presence of a non-trailing newline actually flips, so typing within a line
+  // costs nothing here.
+  const isEmpty = useAuiState(s => s.composer.text.length === 0)
+  const hasHardNewline = useAuiState(s => s.composer.text.trimEnd().includes('\n'))
 
   // Expansion (input on its own full-width row, controls below) is driven by
   // the editor's *actual* rendered height via the ResizeObserver in
@@ -42,7 +44,7 @@ export function useComposerMetrics({
   // can't: an explicit newline (expand before layout settles) and an emptied
   // draft (collapse back). We never read scrollHeight per keystroke.
   useEffect(() => {
-    if (!draft) {
+    if (isEmpty) {
       setExpanded(false)
 
       return
@@ -55,10 +57,10 @@ export function useComposerMetrics({
     // Only a non-trailing newline forces an immediate expand. A trailing newline
     // (or phantom \n from contenteditable junk) is left to the ResizeObserver,
     // which expands only when the editor's real height actually grows.
-    if (draft.trimEnd().includes('\n')) {
+    if (hasHardNewline) {
       setExpanded(true)
     }
-  }, [draft, expanded])
+  }, [expanded, hasHardNewline, isEmpty])
 
   // Bucket measured heights so we only invalidate the global CSS var when
   // the size crosses a meaningful threshold. Without bucketing, the editor

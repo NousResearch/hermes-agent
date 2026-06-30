@@ -426,7 +426,10 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
-    return redacted
+    # Strip lone surrogate code points (U+D800-U+DFFF) that crash
+    # utf-16-le encoding in platform length checks (e.g. Telegram).
+    from agent.message_sanitization import _sanitize_surrogates
+    return _sanitize_surrogates(redacted)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:

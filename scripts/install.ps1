@@ -868,12 +868,22 @@ function Set-GitBashEnvVar {
     # git.exe on PATH can tell us where the install root is
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCmd) {
+        # .Source is empty when `git` resolves to a PowerShell alias or
+        # function rather than a real git.exe -- e.g. the `hub` wrapper, which
+        # makes `git --version` print "... hub version X".  Split-Path on an
+        # empty string throws "Cannot bind argument to parameter 'Path'
+        # because it is an empty string", which would abort the entire install
+        # even though Git is perfectly usable.  Guard the .Source read the same
+        # way Get-PinnedCommit does, and only derive the install root when we
+        # actually have a path to git.exe.
         $gitExe = $gitCmd.Source
-        # Git for Windows (full installer): <root>\cmd\git.exe + <root>\bin\bash.exe
-        # MinGit:                           <root>\cmd\git.exe + <root>\usr\bin\bash.exe
-        $gitRoot = Split-Path (Split-Path $gitExe -Parent) -Parent
-        $candidates += "$gitRoot\bin\bash.exe"
-        $candidates += "$gitRoot\usr\bin\bash.exe"
+        if ($gitExe) {
+            # Git for Windows (full installer): <root>\cmd\git.exe + <root>\bin\bash.exe
+            # MinGit:                           <root>\cmd\git.exe + <root>\usr\bin\bash.exe
+            $gitRoot = Split-Path (Split-Path $gitExe -Parent) -Parent
+            $candidates += "$gitRoot\bin\bash.exe"
+            $candidates += "$gitRoot\usr\bin\bash.exe"
+        }
     }
 
     # Standard system install locations as a final fallback.  Note:

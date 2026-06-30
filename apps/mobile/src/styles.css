@@ -2311,7 +2311,14 @@ html.hermes-mobile-standalone [data-pane-main='true'] {
    centered text 12px right. */
 html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
   padding-inline: 1.5rem !important;
-  /* Force the grid to fill the viewport so the intro can center in it. */
+}
+
+/* Force the grid to fill the viewport ONLY when the intro is visible (empty
+   thread). With messages present, locking height to 100dvh crushed every
+   message into the same viewport-sized row and they stacked on top of each
+   other ("text on text on text"). :has gates the override on the intro's
+   presence so populated threads use their natural content-driven height. */
+html.hermes-mobile-standalone [data-slot='aui_thread-content']:has([data-slot='aui_intro']) {
   min-height: 100dvh !important;
   height: 100dvh !important;
 }
@@ -2320,8 +2327,9 @@ html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
    which pushes the intro down by the composer's height — on phone that's
    ~120px and visually glues the wordmark to the top. Zero it and use the
    grid row to center vertically instead. The composer floats fixed at the
-   bottom so we don't need that padding to clear it. */
-html.hermes-mobile-standalone [data-slot='aui_thread-content'] > div {
+   bottom so we don't need that padding to clear it. Same :has gate so we
+   don't force height on populated threads. */
+html.hermes-mobile-standalone [data-slot='aui_thread-content']:has([data-slot='aui_intro']) > div {
   padding-top: 0 !important;
   min-height: 0 !important;
   height: 100% !important;

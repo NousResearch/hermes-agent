@@ -337,6 +337,12 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
+    # Gemini API rejects histories whose first content has role "model" —
+    # it requires the conversation to start with a user turn.  Strip any
+    # leading model entries so the request does not 400.
+    while contents and contents[0].get("role") == "model":
+        contents.pop(0)
+
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:

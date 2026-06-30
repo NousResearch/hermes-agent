@@ -488,7 +488,7 @@ export const es: Translations = {
     deleteKeyMessage: "The private and public key files will be removed from ~/.hermes/.ssh.",
     deleteHostTitle: "Delete host alias?",
     deleteHostMessage: "This removes the alias from config.yaml and ~/.hermes/.ssh/config.",
-  },,
+  },
 
   oauth: {
     title: "Inicios de sesión de proveedores (OAuth)",

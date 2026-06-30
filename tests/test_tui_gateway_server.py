@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import hermes_logging
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -296,6 +297,22 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", _BrokenStdout())
 
     assert server.write_json({"ok": True}) is False
+
+
+def test_set_session_context_syncs_gateway_and_logging_state():
+    from gateway.session_context import get_session_env
+
+    hermes_logging.clear_session_context()
+
+    tokens = server._set_session_context("sess-54897")
+    try:
+        assert get_session_env("HERMES_SESSION_KEY") == "sess-54897"
+        assert getattr(hermes_logging._session_context, "session_id", None) == "sess-54897"
+    finally:
+        server._clear_session_context(tokens)
+
+    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert getattr(hermes_logging._session_context, "session_id", None) is None
 
 
 def test_write_json_drops_detached_ws_frames(monkeypatch):

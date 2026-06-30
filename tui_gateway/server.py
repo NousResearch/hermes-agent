@@ -1813,6 +1813,12 @@ def _cwd_for_session_key(session_key: str) -> str:
 
 def _set_session_context(session_key: str, cwd: str | None = None) -> list:
     try:
+        from hermes_logging import set_session_context as set_log_session_context
+
+        set_log_session_context(session_key)
+    except Exception:
+        pass
+    try:
         from gateway.session_context import set_session_vars
 
         # Ephemeral task IDs (background, preview) aren't in `_sessions`, so the
@@ -1832,6 +1838,12 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
 
 
 def _clear_session_context(tokens: list) -> None:
+    try:
+        from hermes_logging import clear_session_context as clear_log_session_context
+
+        clear_log_session_context()
+    except Exception:
+        pass
     if not tokens:
         return
     try:

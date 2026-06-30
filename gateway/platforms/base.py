@@ -1471,7 +1471,11 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
 
 def _strip_media_tag_directives(text: str) -> str:
     """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
-    if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+    if (
+        "MEDIA:" not in text
+        and "[[audio_as_voice]]" not in text
+        and "[[as_document]]" not in text
+    ):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
 
@@ -3544,7 +3548,11 @@ class BasePlatformAdapter(ABC):
         ``validate_media_delivery_path`` accepts the path so undeliverable
         paths stay visible for debugging.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "[[as_document]]" not in text
+        ):
             return text
         cleaned = _strip_media_tag_directives(text)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

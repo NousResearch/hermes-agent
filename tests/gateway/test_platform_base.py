@@ -696,6 +696,21 @@ class TestExtensionlessMediaDelivery:
         stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
         assert "MEDIA:" not in stripped
 
+    def test_as_document_directive_stripped_without_media_tag(self):
+        """[[as_document]] must be stripped even when no MEDIA: tag is present.
+
+        The display/strip guards short-circuit on text containing none of the
+        delivery directives; [[as_document]] must be in that guard or it leaks
+        to the user as visible text on any image-only response.
+        """
+        from gateway.platforms.base import _strip_media_directives
+
+        text = "Here is your image. [[as_document]]"
+        assert "[[as_document]]" not in _strip_media_directives(text)
+        assert "[[as_document]]" not in (
+            BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):

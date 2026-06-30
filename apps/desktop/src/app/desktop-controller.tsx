@@ -846,7 +846,10 @@ export function DesktopController() {
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
-      void refreshCurrentModel()
+      // A user-visible "New Session" starts from Settings → Model, not from a
+      // stale composer/session override that may have come from the previously
+      // focused conversation.
+      void refreshCurrentModel(true)
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])

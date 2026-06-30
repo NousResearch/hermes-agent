@@ -4,7 +4,14 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  setCurrentModel,
+  setCurrentProvider,
+  setFreshDraftUsesProfileDefault
+} from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -36,8 +43,9 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
-  // for a profile swap (the new profile has its own default); otherwise this
-  // only fills an EMPTY selection so a user's pick (plain UI state in
+  // when the UI intentionally starts from defaults again (profile swap or a
+  // brand-new draft); otherwise this only fills an EMPTY selection so a user's
+  // pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
   const refreshCurrentModel = useCallback(async (force = false) => {
@@ -84,6 +92,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
+      setFreshDraftUsesProfileDefault(false)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

@@ -6,7 +6,9 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  $activeSessionId,
   $busy,
+  $freshDraftUsesProfileDefault,
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
@@ -185,6 +187,16 @@ export function useSessionStateCache({
       // foreground write within the same animation frame (only one RAF is
       // scheduled, so the last `pendingViewStateRef` writer would otherwise win).
       if (sessionId !== activeSessionIdRef.current) {
+        return
+      }
+
+      // startFreshSessionDraft clears the store's active id synchronously, but
+      // this hook's ref updates on the next React effect. During that gap an
+      // old focused session can still emit session.info and would otherwise
+      // write its model back into the new-chat composer. The draft has already
+      // declared that it wants Settings → Model, so ignore stale runtime
+      // metadata until a real session becomes active again.
+      if ($freshDraftUsesProfileDefault.get() && !$activeSessionId.get()) {
         return
       }
 

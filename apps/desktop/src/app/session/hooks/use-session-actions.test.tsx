@@ -9,9 +9,14 @@ import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $messages,
   $resumeFailedSessionId,
   setActiveSessionId,
+  setCurrentModel,
+  setCurrentProvider,
+  setFreshDraftUsesProfileDefault,
   setMessages,
   setResumeFailedSessionId,
   setSessions
@@ -114,6 +119,9 @@ describe('createBackendSessionForSend profile routing', () => {
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
     $currentCwd.set('')
+    setCurrentModel('')
+    setCurrentProvider('')
+    setFreshDraftUsesProfileDefault(false)
     vi.restoreAllMocks()
   })
 
@@ -154,6 +162,70 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('omits stale composer model overrides when a fresh draft is pinned to the profile default', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('minimax-m3')
+      setCurrentProvider('opencode-go')
+      setFreshDraftUsesProfileDefault(true)
+    })
+
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
+  })
+})
+
+function FreshDraftHarness({ onReady }: { onReady: (start: () => void) => void }) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: 'runtime-previous',
+    activeSessionIdRef: ref<string | null>('runtime-previous'),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway: vi.fn(async () => ({})) as never,
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: 'stored-previous',
+    selectedStoredSessionIdRef: ref<string | null>('stored-previous'),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  const { startFreshSessionDraft } = actions
+
+  useEffect(() => {
+    onReady(() => startFreshSessionDraft())
+  }, [startFreshSessionDraft, onReady])
+
+  return null
+}
+
+describe('startFreshSessionDraft model defaults', () => {
+  afterEach(() => {
+    cleanup()
+    setCurrentModel('')
+    setCurrentProvider('')
+    setFreshDraftUsesProfileDefault(false)
+    vi.restoreAllMocks()
+  })
+
+  it('clears stale composer model overrides so a new session can use the profile default', async () => {
+    setCurrentModel('minimax-m3')
+    setCurrentProvider('opencode-go')
+
+    let start: (() => void) | null = null
+    render(<FreshDraftHarness onReady={value => (start = value)} />)
+    await waitFor(() => expect(start).not.toBeNull())
+
+    start!()
+
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
   })
 })
 

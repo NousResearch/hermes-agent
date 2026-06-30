@@ -265,6 +265,10 @@ export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+// True only for the visible New Session draft path: the next session should
+// start from Settings → Model instead of inheriting a model from the previously
+// focused conversation. A deliberate picker choice clears this flag.
+export const $freshDraftUsesProfileDefault = atom(false)
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -330,6 +334,9 @@ export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
 }
+
+export const setFreshDraftUsesProfileDefault = (next: Updater<boolean>) =>
+  updateAtom($freshDraftUsesProfileDefault, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 

@@ -22,6 +22,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $freshDraftUsesProfileDefault,
   $messages,
   $sessions,
   $yoloActive,
@@ -31,9 +32,12 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
+  setFreshDraftUsesProfileDefault,
   setIntroSeed,
   setMessages,
   setResumeExhaustedSessionId,
@@ -134,12 +138,14 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // The composer's model/effort/fast is sticky UI state (persisted in
-      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
-      // back to the profile default, so we deliberately don't reset it here. The
-      // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
+      // A visible New Session starts from Settings → Model, not from the model
+      // inherited from the previously focused conversation. Clear the composer
+      // override synchronously so an immediate send cannot race ahead with a
+      // stale per-session model; DesktopController then re-seeds the display
+      // from the profile default.
+      setFreshDraftUsesProfileDefault(true)
+      setCurrentModel('')
+      setCurrentProvider('')
       setCurrentServiceTier('')
       setYoloActive(false)
       // In a project → the repo's default-branch (main worktree) checkout; not in
@@ -180,6 +186,7 @@ export function useSessionActions({
         // default (that lives in Settings → Model).
         const uiModel = $currentModel.get().trim()
         const uiProvider = $currentProvider.get().trim()
+        const useProfileDefaultModel = $freshDraftUsesProfileDefault.get()
         const uiEffort = $currentReasoningEffort.get().trim()
         const uiFast = $currentFastMode.get()
 
@@ -187,7 +194,7 @@ export function useSessionActions({
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {}),
-          ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
+          ...(!useProfileDefaultModel && uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
           ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
           ...(uiFast ? { fast: true } : {})
         })
@@ -221,6 +228,7 @@ export function useSessionActions({
         }
 
         setFreshDraftReady(false)
+        setFreshDraftUsesProfileDefault(false)
         setActiveSessionId(created.session_id)
         setSelectedStoredSessionId(stored)
         setSessionStartedAt(Date.now())

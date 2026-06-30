@@ -152,13 +152,13 @@ class TestTencentTokenhubModelCatalog:
         assert "tencent-tokenhub" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["tencent-tokenhub"]) >= 1
 
-    def test_hy3_preview_in_model_list(self):
+    def test_hy3_in_model_list(self):
         from hermes_cli.models import _PROVIDER_MODELS
-        assert "hy3-preview" in _PROVIDER_MODELS["tencent-tokenhub"]
+        assert "hy3" in _PROVIDER_MODELS["tencent-tokenhub"]
 
     def test_default_model(self):
         from hermes_cli.models import get_default_model_for_provider
-        assert get_default_model_for_provider("tencent-tokenhub") == "hy3-preview"
+        assert get_default_model_for_provider("tencent-tokenhub") == "hy3"
 
 
 # =============================================================================
@@ -182,7 +182,7 @@ class TestTencentTokenhubCanonicalProvider:
     def test_description_contains_hy3(self):
         from hermes_cli.models import CANONICAL_PROVIDERS
         entry = next(p for p in CANONICAL_PROVIDERS if p.slug == "tencent-tokenhub")
-        assert "Hy3 Preview" in entry.tui_desc
+        assert "Hy3" in entry.tui_desc
 
 
 # =============================================================================
@@ -220,22 +220,22 @@ class TestTencentTokenhubNormalization:
     """
 
     def test_bare_name_passthrough(self):
-        """hy3-preview should remain unchanged when targeting tencent-tokenhub."""
+        """hy3 should remain unchanged when targeting tencent-tokenhub."""
         from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("hy3-preview", "tencent-tokenhub")
-        assert result == "hy3-preview"
+        result = normalize_model_for_provider("hy3", "tencent-tokenhub")
+        assert result == "hy3"
 
     def test_vendor_prefixed_passthrough(self):
-        """tencent/hy3-preview is not stripped since tencent-tokenhub is not in
+        """tencent/hy3 is not stripped since tencent-tokenhub is not in
         _MATCHING_PREFIX_STRIP_PROVIDERS — the slash survives."""
         from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("tencent/hy3-preview", "tencent-tokenhub")
+        result = normalize_model_for_provider("tencent/hy3", "tencent-tokenhub")
         # Direct providers not in any special set → passthrough
-        assert result == "tencent/hy3-preview"
+        assert result == "tencent/hy3"
 
     def test_not_in_matching_prefix_strip_set(self):
         """tencent-tokenhub does NOT need prefix stripping — it only has
-        one model (hy3-preview) and users won't copy vendor/ form."""
+        one model (hy3) and users won't copy vendor/ form."""
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "tencent-tokenhub" not in _MATCHING_PREFIX_STRIP_PROVIDERS
 
@@ -303,7 +303,7 @@ class TestTencentTokenhubURLMapping:
 
 
 class TestTencentTokenhubContextLength:
-    """hy3-preview has a context-length entry registered.
+    """hy3 has a context-length entry registered.
 
     Asserting the relationship (registered + ≥ 4096) instead of a
     specific value, per AGENTS.md "Don't write change-detector tests".
@@ -312,11 +312,11 @@ class TestTencentTokenhubContextLength:
     window (#22268).
     """
 
-    def test_hy3_preview_has_registered_context_length(self):
+    def test_hy3_has_registered_context_length(self):
         from agent.model_metadata import get_model_context_length
-        ctx = get_model_context_length("hy3-preview")
+        ctx = get_model_context_length("hy3")
         assert isinstance(ctx, int)
-        assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
+        assert ctx >= 4096, f"hy3 context length looks unset/wrong: {ctx}"
 
 
 # =============================================================================
@@ -367,7 +367,7 @@ class TestTencentTokenhubAuxiliary:
     def test_aux_model_registered(self):
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "tencent-tokenhub" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["tencent-tokenhub"] == "hy3-preview"
+        assert _API_KEY_PROVIDER_AUX_MODELS["tencent-tokenhub"] == "hy3"
 
     def test_aux_aliases(self):
         from agent.auxiliary_client import _PROVIDER_ALIASES

@@ -67,9 +67,15 @@ exploration value = √(uncertainty × value-of-answering)
 > (`is_gated_out`: `derivable_prob`→1 → `U`→0 retires answered questions across rounds, §"evidence
 > loop"); the ablation only tested the ranking role. So a future "drop U" means removing it from the
 > `value` number **only**, never from the derivability gate.
-> **Decision (2026-06): the formula is FROZEN** — no changes on n=17. A de-confounded, multi-prompt
-> re-run (#21) that measures realized *stakes* and registers max-Δ as a competitor decides every
-> formula question; the wrapper build is gated on it.
+> **Domain update — `U` is NOT inert in the target domain.** A 34-prompt/17-category scan
+> (`evsi-validation-findings.md` §Domain sensitivity) shows the "U inert" result was a **life-domain
+> artifact**: on agentic/tool/coding tasks U's spread is **0.26 (vs 0.07)** and it is the
+> **ask-the-user vs go-find-out discriminator** (via `derivable_prob` — high derivable → U→0 → route to
+> research, the Phase-2 trigger). So **`U` stays.** The domain also breaks the absolute thresholds
+> (61% of agentic candidates fall below the life-tuned 0.40) → rank-relative selection is now required.
+> **Decision (2026-06): the formula is FROZEN** — no changes on n=17. A de-confounded, **agentic**,
+> per-regime re-run (#21) that measures realized *stakes* and registers max-Δ as a competitor decides
+> every formula question; the wrapper build is gated on it.
 
 ## The evidence loop (how multi-step depth happens)
 

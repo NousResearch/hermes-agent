@@ -110,6 +110,69 @@ competitor against √(U·EVSI) / EVSI-only / U-only on the blind realized-impro
 (c) **pool across many more than 3 prompts** with a prompt-cluster bootstrap CI. The improvement-vs-value
 curve also yields `diminishing_floor`.
 
+## Domain sensitivity — the value structure is domain-bound (a 3-regime spectrum)
+
+The Phase-1 numbers above were measured on **generic life questions** — which turn out to be a
+degenerate corner. The real target is **agentic / tool-access / coding** tasks. A value-structure
+scan across a **34-prompt, 17-category bank** (`evals/testbank.py` + `evals/score_scan.py`, deepseek
+judge) shows the life conclusions do **not** transfer:
+
+| | U spread | derivable_prob | value < 0.40 (life-tuned) |
+|---|---|---|---|
+| **LIFE** | sd **0.07**, [0.72–0.98] | mean 0.01, [0.00–0.10] | **11%** |
+| **AGENTIC** | sd **0.26**, [0.02–0.98] | mean 0.15, [0.00–0.95] | **61%** |
+
+In life questions all uncertainty is **homogeneous, non-derivable user-intent**, so U is pinned high
+and inert. Agentic tasks span a wide **derivability** axis, and as `derivable_prob` rises, `U` falls
+and the bucket empties — sorted by category (mean over all scored candidates):
+
+```
+category        buck deriv  U_mean U_sd value evsi  <thr   regime
+planning           6  0.00   0.87  0.04  0.71  0.58   0%    ── ASK THE USER (high U, low deriv,
+finance            4  0.00   0.83  0.09  0.48  0.32  33%       real decision-changing forks):
+life              16  0.01   0.87  0.07  0.60  0.43  11%       behaves like the life set — the
+code-review        8  0.02   0.81  0.12  0.46  0.34  33%       skill produces genuine questions
+code-feature       7  0.08   0.67  0.13  0.45  0.31  42%
+code-debug         5  0.07   0.75  0.23  0.39  0.28  58%
+devops             6  0.10   0.71  0.23  0.42  0.28  50%
+system-files       4  0.03   0.79  0.15  0.26  0.14  67%   ── JUST DO IT / DEFAULT (low value:
+email              5  0.11   0.67  0.20  0.26  0.16  72%       answer wouldn't change the plan;
+automation         5  0.11   0.62  0.12  0.32  0.22  58%       assume the modal answer)
+data               2  0.13   0.69  0.22  0.16  0.09  83%
+comms-send         1  0.17   0.68  0.30  0.24  0.12  92%
+docs               6  0.18   0.61  0.32  0.34  0.27  50%
+comms-retrieve     7  0.19   0.54  0.26  0.34  0.32  61%   ── GO FIND OUT (high deriv -> U->0 ->
+calendar           3  0.22   0.59  0.27  0.28  0.22  75%       gate fires): route to grounded
+web-research       3  0.38   0.49  0.33  0.28  0.17  75%       research, not a user question
+knowledge          0  0.90   0.05  0.01  0.05  0.08 100%       (explain-oauth: deriv .90, U .04,
+                                                               0 questions — correctly silent)
+```
+
+**Three usage regimes, mapped onto the skill's three levers:**
+1. **Ask-the-user** (spec-heavy: planning, coding features, security audits, finance) — high U, low
+   `derivable_prob`, real EVSI. The skill produces genuine clarifying questions, exactly as for life.
+2. **Go-find-out** (research / knowledge / retrieval: web-research, `explain-oauth`, calendar sync) —
+   high `derivable_prob` → the **U-gate fires** (`U`→0) → few/no user questions. The skill is already
+   signalling *"don't ask, resolve this by research"* — which is precisely the **Phase-2 grounded
+   answerer's** trigger. `explain-oauth` (deriv 0.90, U 0.04, 0 questions) is the gate working perfectly.
+3. **Just-do-it** (data pulls, sends, file ops, email summaries) — low `EVSI`/value: the answer
+   wouldn't change the plan, so assume the modal default. The skill correctly discards these.
+
+**What this overturns / sharpens:**
+- **"Drop U" is dead in the target domain.** U's spread is 0.26 here (not 0.07) and it is the
+  **ask-vs-find-out discriminator** (regime 1 vs 2) via `derivable_prob`. Removing it would erase that
+  routing. The freeze decision was correct — the n=17 life-only "U inert" was a domain artifact.
+- **Rank-relative selection (#23) is required, not "likely."** The life-tuned 0.40 cutoff discards 61%
+  of agentic candidates — and for *different reasons per regime* (regime 2: low U; regime 3: low value;
+  and regime 1's legitimate questions are also pushed under as the whole distribution shifts down).
+  An absolute threshold cannot serve a domain this heterogeneous; select by rank / round-relative.
+- **The skill's derivability gate is already doing Phase-2's job.** The go-find-out regime is exactly
+  where the iterate-context wrapper's grounded research (and NOT_FOUND tombstones) earns out; info-gain
+  flags it via `U`→0. This is design-validating, not a defect.
+
+**Implication for #21:** validate on the **agentic bank**, not life questions — and analyze **per
+regime** (a single pooled number would average three different mechanisms into mush).
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it
@@ -118,3 +181,8 @@ curve also yields `diminishing_floor`.
   tie-free, but row-level rank signal is concentrated at the extremes.
 - Projected scores use the shipped deepseek judge; `realized_change` uses a deepseek change-judge —
   not de-confounded from each other by model.
+- **Domain scan:** 1 prompt/cell, fast generation + deepseek judge, the value distribution only (no
+  realized_change). Some of the agentic downshift could be model-capability (the fast model projecting
+  agentic answers less richly, à la usaw) rather than pure domain structure — but the U-spread /
+  derivability pattern is structurally sensible (research tasks *are* more derivable), so it most likely
+  reflects a real domain effect. The agentic *realized*-change calibration (per-regime) is the follow-up.

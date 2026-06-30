@@ -37,12 +37,20 @@ spectrum (not just top-2 vs low-2) and plot **realized improvement vs question `
 where improvement flattens to ~0. Set the cap from the curve, don't guess it.
 
 **Hard requirements added by Phase-1 (to break the confound P1c exposed):**
+- **Validate on the AGENTIC bank, per regime — not life questions.** The domain scan (`evsi-validation-
+  findings.md` §Domain sensitivity) shows life prompts are a degenerate corner (homogeneous,
+  non-derivable; U inert; everything survives). The target domain spans three regimes —
+  **ask-the-user** (spec-heavy coding/planning), **go-find-out** (high `derivable_prob` → U-gate fires
+  → route to research), **just-do-it** (low EVSI → default). Use `testbank.BANK`; **analyze per regime**
+  (a single pooled number averages three different mechanisms into mush).
 - **Measure realized *stakes*, blind.** P1a/P1c only measured realized *change*; any "realized EVSI"
   that reuses projected stakes is confounded (ρ=0.96 collinearity nullifies it). The blind judge must
   rate the **importance/consequence** of the differences between responses, not just whether they
   changed — so realized EVSI = realized-Δ × realized-stakes is computed without the predictor's inputs.
 - **Register `max-Δ` as a named competitor** alongside `√(U·EVSI)`, EVSI-only, U-only on the blind
   realized-improvement axis (P1c made it the leading clean-signal predictor, p=0.064 — resolve it here).
+  Note: U is **not** inert in the agentic domain (sd 0.26 vs 0.07) — it discriminates ask-vs-find-out —
+  so the √-form question must be re-run here, not inherited from the life result.
 - **Pool across many more than 3 prompts**, with a **prompt-cluster bootstrap CI** (per-prompt n=5–6
   needs near-perfect monotonicity to reach significance; pool the question-level unit instead).
 
@@ -51,12 +59,12 @@ where improvement flattens to ~0. Set the cap from the curve, don't guess it.
 signal (+0.526) while EVSI/value are ≈0 there (the EVSI signal lives entirely in stakes-weighting,
 which 1.1 must validate de-confounded). See `evsi-validation-findings.md`.
 
-**1.3 Calibration → rank-relative (likely); revisit `U` after #21.** Absolute thresholds (0.40/0.60)
-are model-dependent (fast → everything PRE_ANSWER; deepseek → fewer). Switch selection to rank/relative
-(top-K, or ≥ X% of the round's best). The P1c finding (inert `U`) is **held, not actioned** (formula
-frozen until #21). If #21 confirms it, drop `U` from the `value` number **only** — `value` becomes EVSI
-(`√(U·EVSI)` is already a monotone transform of EVSI), while the derivability **gate** stays so the
-evidence loop still retires answered questions. Pending confirmation it isn't a narrow-`U`-range artifact.
+**1.3 Calibration → rank-relative — now REQUIRED (was "likely").** The domain scan settles it: the
+life-tuned absolute cutoff (0.40) discards **61%** of agentic candidates (vs 11% of life), and for
+different reasons per regime — an absolute threshold cannot serve a domain this heterogeneous. Switch
+selection to rank/relative (top-K, or ≥ X% of the round's best). **`U` is NOT dropped** — the life-only
+"inert" finding does not hold in the agentic domain (U sd 0.26; it discriminates ask-vs-find-out). The
+`√`-form / `U` question is re-opened for #21 on agentic data, not closed.
 
 **1.4 Elicitation (only if 1.1 says inputs are the weak link).** Replace absolute 0–1 Δ/stakes with
 **comparative/pairwise** judgments ("which answer would change the response more?") — models are far

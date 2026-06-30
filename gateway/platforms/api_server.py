@@ -1077,6 +1077,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -1131,6 +1132,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -2667,7 +2669,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 Plain strings are text deltas — they are batched (50ms)
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
-                prefixes are tool lifecycle events and flush the buffer
+                prefixes are tool lifecycle events, and ``__reasoning__``
+                carries a reasoning-summary delta; all flush the buffer
                 before emitting.
                 """
                 nonlocal _batch_timer
@@ -2680,6 +2683,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        await _write_event("response.reasoning_summary_text.delta", {
+                            "type": "response.reasoning_summary_text.delta",
+                            "item_id": message_item_id,
+                            "output_index": 0,
+                            "summary_index": 0,
+                            "delta": payload,
+                        })
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -3099,6 +3110,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_reasoning(text):
+                """Queue a reasoning delta for live ``response.reasoning_summary_text.delta``
+                streaming.  The agent fires this via ``reasoning_callback`` when the
+                model emits reasoning deltas (e.g. ``summary: "auto"`` on the codex
+                Responses backend).  Without this the deltas are generated and then
+                discarded; the SSE writer turns the queued marker into the spec event.
+                """
+                if text:
+                    _stream_q.put(("__reasoning__", text))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -3109,6 +3130,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -3772,6 +3794,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -3804,6 +3827,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=tool_progress_callback,
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
+                    reasoning_callback=reasoning_callback,
                     gateway_session_key=gateway_session_key,
                 )
                 if agent_ref is not None:

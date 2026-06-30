@@ -53,7 +53,12 @@ function makeHighlightStyle(p: GithubPalette): HighlightStyle {
     { color: p.comment, fontStyle: 'italic', tag: [t.comment, t.lineComment, t.blockComment, t.docComment] },
     {
       color: p.entity,
-      tag: [t.function(t.variableName), t.function(t.propertyName), t.definition(t.function(t.variableName)), t.labelName]
+      tag: [
+        t.function(t.variableName),
+        t.function(t.propertyName),
+        t.definition(t.function(t.variableName)),
+        t.labelName
+      ]
     },
     { color: p.number, tag: [t.number, t.bool, t.atom] },
     { color: p.constant, tag: [t.constant(t.variableName), t.standard(t.variableName)] },

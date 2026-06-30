@@ -146,10 +146,7 @@ export function SidebarRowLeadGlyph({
 }) {
   return (
     <span
-      className={cn(
-        'grid size-full place-items-center text-(--ui-text-tertiary) [&_.codicon]:leading-none',
-        className
-      )}
+      className={cn('grid size-full place-items-center text-(--ui-text-tertiary) [&_.codicon]:leading-none', className)}
       style={style}
     >
       {children}

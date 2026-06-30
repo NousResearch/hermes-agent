@@ -100,9 +100,11 @@ import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $connection } from '@/store/session'
 import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
+import { isWatchWindow } from '@/store/windows'
 
 type ThreadLoadingState = 'response' | 'session'
 interface RestoreMessageTarget {
@@ -194,9 +196,9 @@ export const Thread: FC<{
   const { t } = useI18n()
   const copy = t.assistant.thread
 
-  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<(RestoreMessageTarget & { messageId: string }) | null>(
-    null
-  )
+  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<
+    (RestoreMessageTarget & { messageId: string }) | null
+  >(null)
 
   const closeRestoreConfirm = useCallback(() => setRestoreConfirmTarget(null), [])
 
@@ -219,7 +221,9 @@ export const Thread: FC<{
 
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />,
+      AssistantMessage: () => (
+        <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />
+      ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
       UserMessage: () => (
@@ -483,6 +487,10 @@ const StreamStallIndicator: FC = () => {
 
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
+  // A pending clarify / approval / sudo / secret means the turn is paused on the
+  // user, not working — so don't resurrect the "thinking" timer while they
+  // decide (matches the pet's awaitingInput pose taking priority over busy).
+  const awaitingInput = useStore($activeSessionAwaitingInput)
 
   useEffect(() => {
     setStalled(false)
@@ -491,7 +499,7 @@ const StreamStallIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const active = stalled || compacting
+  const active = (stalled || compacting) && !awaitingInput
   const elapsed = useElapsedSeconds(active)
 
   if (!active) {
@@ -1013,6 +1021,13 @@ const UserMessage: FC<{
   const lastClampHeightRef = useRef(-1)
   const lineHeightRef = useRef(0)
 
+  // Watch windows spectate a subagent run driven elsewhere — prompts can't be
+  // edited, restored, or stopped from here. The bubble stays a button that
+  // toggles the 2-line clamp so long prompts are still fully readable.
+  const readOnly = isWatchWindow()
+  const [expanded, setExpanded] = useState(false)
+  const clampActive = !(readOnly && expanded)
+
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current
     const outer = inner?.parentElement
@@ -1063,11 +1078,11 @@ const UserMessage: FC<{
 
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
-  const showStop = isLatestUser && threadRunning && Boolean(onCancel)
+  const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
-  const showRestore = !showStop && Boolean(onRequestRestoreConfirm) && hasBody
+  const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
@@ -1079,7 +1094,10 @@ const UserMessage: FC<{
     // Render the user's text through a minimal markdown pipeline:
     // backtick `code` and ``` fenced ``` blocks, with directive chips
     // (`@file:` etc.) still resolved inside the plain-text spans.
-    <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+    <div
+      className={cn(clampActive && 'sticky-human-clamp')}
+      data-clamped={clampActive && bodyClamped ? 'true' : undefined}
+    >
       {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
@@ -1107,20 +1125,41 @@ const UserMessage: FC<{
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
-              {/* Always editable — clicking opens the edit composer even while a
-                  turn streams; sending the edit reverts (interrupt + rewind). */}
-              <ActionBarPrimitive.Edit asChild>
+              {readOnly ? (
+                // Spectator transcript: clicking only toggles the clamp so the
+                // full prompt is readable — never opens an edit composer.
                 <button
-                  aria-label={copy.editMessage}
-                  className={bubbleClassName}
-                  onClick={() => triggerHaptic('selection')}
-                  onPointerDown={() => notifyThreadEditOpen()}
-                  title={copy.editMessage}
+                  aria-expanded={bodyClamped ? expanded : undefined}
+                  className={cn(bubbleClassName, !bodyClamped && 'cursor-default')}
+                  onClick={() => {
+                    if (!bodyClamped) {
+                      return
+                    }
+
+                    triggerHaptic('selection')
+                    setExpanded(value => !value)
+                  }}
+                  title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
                   type="button"
                 >
                   {bubbleContent}
                 </button>
-              </ActionBarPrimitive.Edit>
+              ) : (
+                // Always editable — clicking opens the edit composer even while a
+                // turn streams; sending the edit reverts (interrupt + rewind).
+                <ActionBarPrimitive.Edit asChild>
+                  <button
+                    aria-label={copy.editMessage}
+                    className={bubbleClassName}
+                    onClick={() => triggerHaptic('selection')}
+                    onPointerDown={() => notifyThreadEditOpen()}
+                    title={copy.editMessage}
+                    type="button"
+                  >
+                    {bubbleContent}
+                  </button>
+                </ActionBarPrimitive.Edit>
+              )}
               {(showStop || showRestore) && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
@@ -1164,7 +1203,10 @@ const UserMessage: FC<{
               )}
             </div>
             <BranchPickerPrimitive.Root
-              className="checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)"
+              className={cn(
+                'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',
+                readOnly && 'hidden'
+              )}
               hideWhenSingleBranch
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />

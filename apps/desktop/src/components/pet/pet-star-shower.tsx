@@ -42,6 +42,7 @@ function readAccent(el: HTMLElement): string {
 function sparkle(ctx: CanvasRenderingContext2D, size: number, rot: number, color: string): void {
   ctx.rotate(rot)
   ctx.fillStyle = color
+
   for (const [rx, ry] of [
     [size, size * 0.26],
     [size * 0.26, size]
@@ -54,6 +55,7 @@ function sparkle(ctx: CanvasRenderingContext2D, size: number, rot: number, color
     ctx.closePath()
     ctx.fill()
   }
+
   const core = Math.max(1, Math.round(size * 0.4))
   ctx.fillStyle = '#fff'
   ctx.fillRect(-core / 2, -core / 2, core, core)
@@ -66,9 +68,11 @@ export function PetStarShower() {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
     const parent = canvas?.parentElement
+
     if (!canvas || !ctx || !parent) {
       return
     }
+
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       return
     }
@@ -79,6 +83,7 @@ export function PetStarShower() {
     let h = 0
     let cx = 0
     let cy = 0
+
     const resize = () => {
       const r = parent.getBoundingClientRect()
       w = r.width
@@ -89,21 +94,34 @@ export function PetStarShower() {
       canvas.height = Math.round(h * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     }
+
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(parent)
 
     const pick = () => (Math.random() < GOLD_MIX ? GOLD : Math.random() < 0.5 ? accent : '#ffffff')
     const stars: Star[] = []
+
     for (let i = 0; i < BURST; i++) {
       const a = Math.random() * Math.PI * 2
       const sp = VELOCITY * (0.4 + Math.random() * 0.7)
       stars.push({
-        x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-        size: 3.5 + Math.random() * 5.5, rot: Math.random() * 6.28, vrot: (Math.random() - 0.5) * 8,
-        phase: 0, twinkle: 0, life: 0, ttl: 0.8 + Math.random() * 0.7, color: pick(), rise: false
+        x: cx,
+        y: cy,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        size: 3.5 + Math.random() * 5.5,
+        rot: Math.random() * 6.28,
+        vrot: (Math.random() - 0.5) * 8,
+        phase: 0,
+        twinkle: 0,
+        life: 0,
+        ttl: 0.8 + Math.random() * 0.7,
+        color: pick(),
+        rise: false
       })
     }
+
     const rays = { life: 0, ttl: 0.9, rot: Math.random() * 6.28 }
 
     let raf = 0
@@ -118,14 +136,23 @@ export function PetStarShower() {
       const dt = Math.min(0.05, ms / 1000)
       const decay = Math.pow(DECAY, dt * 60)
       acc += ms
+
       if (acc >= MOTE_MS && stars.length < 40) {
         acc = 0
         stars.push({
-          x: cx + (Math.random() - 0.5) * w * 0.85, y: cy + Math.random() * h * 0.25,
-          vx: (Math.random() - 0.5) * 14, vy: -(14 + Math.random() * 26),
-          size: 2.5 + Math.random() * 3.5, rot: Math.random() * 6.28, vrot: (Math.random() - 0.5) * 2,
-          phase: Math.random() * 6.28, twinkle: 5 + Math.random() * 4, life: 0, ttl: 1.2 + Math.random(),
-          color: pick(), rise: true
+          x: cx + (Math.random() - 0.5) * w * 0.85,
+          y: cy + Math.random() * h * 0.25,
+          vx: (Math.random() - 0.5) * 14,
+          vy: -(14 + Math.random() * 26),
+          size: 2.5 + Math.random() * 3.5,
+          rot: Math.random() * 6.28,
+          vrot: (Math.random() - 0.5) * 2,
+          phase: Math.random() * 6.28,
+          twinkle: 5 + Math.random() * 4,
+          life: 0,
+          ttl: 1.2 + Math.random(),
+          color: pick(),
+          rise: true
         })
       }
 
@@ -137,6 +164,7 @@ export function PetStarShower() {
         rays.life += dt
         rays.rot += dt * 0.6
         const t = rays.life / rays.ttl
+
         if (t >= 1) {
           raysAlive = false
         } else {
@@ -144,6 +172,7 @@ export function PetStarShower() {
           ctx.save()
           ctx.translate(cx, cy)
           ctx.rotate(rays.rot)
+
           for (let i = 0; i < RAY_COUNT; i++) {
             ctx.rotate((Math.PI * 2) / RAY_COUNT)
             const a = (1 - t) * 0.3 * (i % 2 ? 0.65 : 1)
@@ -159,6 +188,7 @@ export function PetStarShower() {
             ctx.closePath()
             ctx.fill()
           }
+
           ctx.restore()
         }
       }
@@ -166,6 +196,7 @@ export function PetStarShower() {
       for (let i = stars.length - 1; i >= 0; i--) {
         const s = stars[i]
         s.life += dt
+
         if (s.rise) {
           s.vy += 7 * dt
           s.phase += s.twinkle * dt
@@ -173,16 +204,21 @@ export function PetStarShower() {
           s.vx *= decay
           s.vy = s.vy * decay + GRAVITY * dt
         }
+
         s.x += s.vx * dt
         s.y += s.vy * dt
         s.rot += s.vrot * dt
+
         if (s.life >= s.ttl || s.y < -12) {
           stars.splice(i, 1)
+
           continue
         }
+
         const fade = s.rise
           ? Math.min(1, s.life * 5, (s.ttl - s.life) * 3) * (0.45 + 0.55 * Math.abs(Math.sin(s.phase)))
           : Math.min(1, (s.ttl - s.life) * 3)
+
         ctx.save()
         ctx.globalAlpha = fade
         ctx.translate(Math.round(s.x), Math.round(s.y))
@@ -192,6 +228,7 @@ export function PetStarShower() {
 
       ctx.globalCompositeOperation = 'source-over'
     }
+
     raf = requestAnimationFrame(tick)
 
     return () => {

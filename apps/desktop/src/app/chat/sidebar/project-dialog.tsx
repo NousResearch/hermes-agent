@@ -3,7 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { GenerateButton } from '@/components/ui/generate-button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -80,21 +87,25 @@ export function ProjectDialog() {
   }
 
   const pickFolder = async () => {
-    const dir = await pickProjectFolder()
+    try {
+      const dir = await pickProjectFolder()
 
-    if (!dir) {
-      return
+      if (!dir) {
+        return
+      }
+
+      const projectId = state?.projectId
+
+      if (mode === 'add-folder' && projectId) {
+        await runSubmit(() => addProjectFolder(projectId, dir))
+
+        return
+      }
+
+      setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+    } catch (err) {
+      notifyError(err, p.createFailed)
     }
-
-    const projectId = state?.projectId
-
-    if (mode === 'add-folder' && projectId) {
-      await runSubmit(() => addProjectFolder(projectId, dir))
-
-      return
-    }
-
-    setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
   }
 
   const submit = async () => {
@@ -138,7 +149,10 @@ export function ProjectDialog() {
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md">
+      <DialogContent
+        className="max-w-md"
+        onInteractOutside={event => event.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {mode === 'create' && <DialogDescription>{p.createDesc}</DialogDescription>}

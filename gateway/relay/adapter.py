@@ -71,6 +71,15 @@ class RelayAdapter(BasePlatformAdapter):
         # recipient's author binding; we re-attach this user_id as
         # metadata.user_id on the outbound action so it can. See _capture_scope.
         self._dm_user_by_chat: Dict[str, str] = {}
+        # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
+        # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
+        # fronts N platforms on one WS; an outbound reply must egress through the
+        # platform the inbound came from. We remember it per chat_id from the
+        # inbound event's source.platform and stamp it on the OutboundFrame so the
+        # connector dispatches to the right sender. Empty for a single-platform
+        # gateway (the connector falls back to its session default). See
+        # _capture_scope / send.
+        self._platform_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
         # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
         # (a 4401 close after a successful handshake = the operator opted this
@@ -106,7 +115,24 @@ class RelayAdapter(BasePlatformAdapter):
         return self.descriptor.supports_draft_streaming
 
     # ── abstract methods (delegated to the transport) ────────────────────
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract:
+        # the gateway's reconnect watcher (gateway/run.py) re-establishes a
+        # platform after a fatal adapter error by building a fresh adapter and
+        # calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or
+        # that recovery path raises TypeError and the relay platform can never
+        # come back through the watcher.
+        #
+        # Relay deliberately IGNORES the flag. The flag exists so adapters with a
+        # server-side update queue (e.g. Telegram's Bot API) preserve that queue
+        # across an outage instead of dropping it (#46621). Relay has no such
+        # gateway-side queue: messages buffered during a gap live in the
+        # CONNECTOR's durable buffer and are replayed when the transport
+        # re-handshakes. Routine WS drops are handled entirely by the transport's
+        # own reconnect supervisor (WebSocketRelayTransport, reconnect=True);
+        # a watcher-driven reconnect builds a fresh transport from scratch (the
+        # fatal-error handler disconnect()s the old adapter first, cancelling its
+        # supervisor), so there is nothing at the adapter layer to preserve.
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
@@ -226,11 +252,22 @@ class RelayAdapter(BasePlatformAdapter):
             chat = getattr(src, "chat_id", None)
             if not chat:
                 return
-            guild = getattr(src, "guild_id", None)
+            # Phase 1.5: remember the underlying platform for this chat so the
+            # reply egresses through the right sender (one relay adapter fronts N
+            # platforms). source.platform is a Platform enum (e.g. Platform.DISCORD,
+            # mapped from the connector's "discord" by ws_transport _frame_to_event);
+            # record its string VALUE, skipping the generic RELAY fallback (a
+            # single-platform connector that didn't tag a concrete platform — the
+            # connector's session default handles egress then).
+            platform = getattr(src, "platform", None)
+            platform_value = getattr(platform, "value", platform)
+            if platform_value and platform_value != "relay":
+                self._platform_by_chat[str(chat)] = str(platform_value)
+            guild = getattr(src, "scope_id", None) or getattr(src, "guild_id", None)
             if guild:
                 self._scope_by_chat[str(chat)] = str(guild)
                 return
-            # DM: no guild_id. Remember the authentic author id for outbound
+            # DM: no scope. Remember the authentic author id for outbound
             # author-binding resolution (the user we're replying to in this DM).
             user_id = getattr(src, "user_id", None)
             if user_id:
@@ -242,8 +279,10 @@ class RelayAdapter(BasePlatformAdapter):
         """Ensure the outbound metadata carries the discriminator the connector's
         egress guard needs to resolve the owning tenant. Two cases:
 
-          - GUILD reply: re-attach metadata.guild_id (routing-table resolution).
-          - DM reply: there is no guild_id, so re-attach metadata.user_id — the
+          - GUILD reply: re-attach metadata.scope_id (routing-table resolution;
+            also mirrored to the deprecated metadata.guild_id during the D-Q2.5
+            wire migration so a connector on either side resolves the tenant).
+          - DM reply: there is no scope, so re-attach metadata.user_id — the
             authentic author id we saw inbound — which the connector resolves to
             the tenant via the recipient's author binding (resolveByUser). Without
             one of these, egress is declined as 'target not routed to an onboarded
@@ -252,18 +291,31 @@ class RelayAdapter(BasePlatformAdapter):
         No-op when the relevant value is already present or unknown for this chat.
         """
         meta: Dict[str, Any] = dict(metadata or {})
-        if not meta.get("guild_id"):
+        if not meta.get("scope_id") and not meta.get("guild_id"):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
+                # D-Q2.5 dual-write: canonical scope_id + deprecated guild_id alias.
+                meta["scope_id"] = scope
                 meta["guild_id"] = scope
-        # DM author-binding discriminator. Only meaningful when there's no guild
-        # (a guild reply resolves by guild_id); harmless to carry otherwise, but
+        # DM author-binding discriminator. Only meaningful when there's no scope
+        # (a guild reply resolves by scope_id); harmless to carry otherwise, but
         # we only set it when this chat is a known DM and the field is absent.
-        if not meta.get("guild_id") and not meta.get("user_id"):
+        if not meta.get("scope_id") and not meta.get("guild_id") and not meta.get("user_id"):
             dm_user = self._dm_user_by_chat.get(str(chat_id))
             if dm_user:
                 meta["user_id"] = dm_user
         return meta
+
+    def _platform_is_fronted(self, platform: str) -> bool:
+        """Whether ``platform`` is one of the platforms this gateway fronts over
+        the relay (Phase 1.5). Reads the transport's advertised identity set; used
+        to decide whether a follow-up's platform-prefixed `kind` names a real
+        fronted platform worth tagging on the frame (vs. leaving egress to the
+        session default). Safe when the transport is absent or single-identity."""
+        ids = getattr(self._transport, "_identities", None)
+        if not ids:
+            return False
+        return any(p == platform for p, _ in ids)
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -353,14 +405,14 @@ class RelayAdapter(BasePlatformAdapter):
         member = payload.get("member") or {}
         user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
         channel_id = str(payload.get("channel_id") or "")
-        guild_id = payload.get("guild_id")
+        guild_id = payload.get("guild_id")  # real Discord interaction field
         source = SessionSource(
             platform=Platform.RELAY,
             chat_id=channel_id,
             chat_type="channel" if guild_id else "dm",
             user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
             user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
-            guild_id=str(guild_id) if guild_id else None,
+            scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot (D-Q2.5)
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
@@ -439,7 +491,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": reply_to,
                 "metadata": self._with_scope(chat_id, metadata),
-            }
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
         )
         return SendResult(
             success=bool(result.get("success")),
@@ -470,6 +523,16 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        # Phase 1.5: the capability `kind` is platform-prefixed (e.g.
+        # "discord.interaction_token"), so derive the egress platform from it when
+        # it names one we front — that tags the OutboundFrame so a multi-platform
+        # gateway routes the follow-up through the right sender. Falls back to the
+        # session default (connector-side) when the prefix isn't a fronted platform.
+        follow_up_platform = None
+        if kind and "." in kind:
+            prefix = kind.split(".", 1)[0]
+            if self._platform_is_fronted(prefix):
+                follow_up_platform = prefix
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
@@ -477,7 +540,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "kind": kind,
                 "content": content,
                 "metadata": metadata or {},
-            }
+            },
+            platform=follow_up_platform,
         )
         return SendResult(
             success=bool(result.get("success")),

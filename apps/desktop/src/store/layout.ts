@@ -69,28 +69,56 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
-export const $sidebarSessionOrderIds = persistentAtom(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarSessionOrderIds = persistentAtom(
+  SIDEBAR_SESSION_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 export const $sidebarSessionOrderManual = persistentAtom(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false, Codecs.bool)
-export const $sidebarWorkspaceOrderIds = persistentAtom(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarWorkspaceOrderIds = persistentAtom(
+  SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 // Order of the top-level repo "parent" groups in the worktree tree (worktrees
 // within a parent reuse $sidebarWorkspaceOrderIds).
-export const $sidebarWorkspaceParentOrderIds = persistentAtom(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarWorkspaceParentOrderIds = persistentAtom(
+  SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 // Manual drag-order of projects in the overview. Empty = the deterministic
 // default sort (active first, explicit before auto, by recency); once the user
 // drags a project their order wins (orderByIds surfaces new projects on top).
-export const $sidebarProjectOrderIds = persistentAtom(SIDEBAR_PROJECT_ORDER_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarProjectOrderIds = persistentAtom(
+  SIDEBAR_PROJECT_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 // Repo/worktree nodes that the user has explicitly COLLAPSED. Absent = open, so
 // a project's folders auto-open when you enter it (and persist your collapses
 // across reloads). Keyed by stable node id (repo root / worktree path).
-export const $sidebarWorkspaceCollapsedIds = persistentAtom(SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarWorkspaceCollapsedIds = persistentAtom(
+  SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 // Auto-derived (git-repo) projects the user has dismissed ("deleted") from the
 // overview. Keyed by repo-root path; persisted so they stay hidden. Explicit
 // projects are deleted for real instead — this only declutters the auto tier.
-export const $dismissedAutoProjectIds = persistentAtom(SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $dismissedAutoProjectIds = persistentAtom(
+  SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 // Worktree rows removed from the UI after a `git worktree remove`. The on-disk
 // dir is gone but historical sessions still reference its path, so we hide the
 // row by id (worktree path) to keep "remove" feeling real.
-export const $dismissedWorktreeIds = persistentAtom(SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $dismissedWorktreeIds = persistentAtom(
+  SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 export const $sidebarPinsOpen = atom(true)
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
@@ -105,7 +133,11 @@ export const $sidebarCronOpen = persistentAtom(SIDEBAR_CRON_OPEN_STORAGE_KEY, fa
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
-export const $sidebarMessagingOpenIds = persistentAtom(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarMessagingOpenIds = persistentAtom(
+  SIDEBAR_MESSAGING_OPEN_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
 export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.

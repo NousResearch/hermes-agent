@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
+import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceCollapsedIds, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
@@ -19,7 +20,11 @@ export const PROJECT_PREVIEW_COUNT = 3
 const WORKTREE_PROBE_CONCURRENCY = 4
 
 const pathListKey = (paths: string[]): string =>
-  paths.map(path => path.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)).join('\n')
+  paths
+    .map(path => path.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .join('\n')
 
 // Every session in a project, across its repos/worktrees (order-agnostic).
 const projectSessions = (project: SidebarProjectTree): SessionInfo[] =>
@@ -63,7 +68,10 @@ export function sortProjectsForOverview(
       return aHasSessions ? -1 : 1
     }
 
-    return projectActivityTime(b) - projectActivityTime(a) || a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    return (
+      projectActivityTime(b) - projectActivityTime(a) ||
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    )
   })
 }
 
@@ -81,7 +89,7 @@ export function useRepoWorktreeMap(
   const refreshToken = useStore($worktreeRefreshToken)
 
   useEffect(() => {
-    const git = window.hermesDesktop?.git
+    const git = desktopGit()
 
     if (!enabled || !repoPaths.length || !git?.worktreeList) {
       setMap({})

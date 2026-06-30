@@ -146,10 +146,7 @@ declare global {
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
-        scanRepos: (
-          roots: string[],
-          options?: { maxDepth?: number }
-        ) => Promise<{ root: string; label: string }[]>
+        scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
         dispose: (id: string) => Promise<boolean>
@@ -276,6 +273,7 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  updateAvailable?: boolean
   branch?: string
   currentBranch?: string
   reason?: string

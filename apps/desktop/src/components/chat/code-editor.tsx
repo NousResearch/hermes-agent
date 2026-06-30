@@ -24,7 +24,12 @@ interface CodeEditorProps {
 function baseName(filePath: string): string {
   const cleaned = filePath.replace(/[\\/]+$/, '')
 
-  return cleaned.slice(cleaned.lastIndexOf('/') + 1).split('\\').pop() ?? cleaned
+  return (
+    cleaned
+      .slice(cleaned.lastIndexOf('/') + 1)
+      .split('\\')
+      .pop() ?? cleaned
+  )
 }
 
 // Mirror SourceView's geometry/typography 1:1 so toggling preview⇄edit never

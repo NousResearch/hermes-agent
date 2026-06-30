@@ -12,5 +12,4 @@ interface PetFlash {
 // sets these; usePet reads them with priority over the derived state.
 export const $petFlash = atom<PetFlash | null>(null)
 
-export const flashPet = (state: PetState, ms = 1600) =>
-  $petFlash.set({ state, until: Date.now() + ms })
+export const flashPet = (state: PetState, ms = 1600) => $petFlash.set({ state, until: Date.now() + ms })

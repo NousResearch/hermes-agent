@@ -10,8 +10,8 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { isTodoDone } from '../lib/liveProgress.js'
-import { rpcErrorMessage } from '../lib/rpc.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -553,13 +553,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         sys('💳 Open this link to grant terminal billing access:')
         sys(url)
+
         if (code) {
           sys(`If prompted, enter code: ${code}`)
         }
+
         void openExternalUrl(url)
 
         return
       }
+
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -683,6 +686,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'reasoning.available':
         turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''), Boolean(ev.payload?.verbose))
 
+        return
+
+      case 'moa.reference':
+        turnController.recordMoaReference(
+          String(ev.payload?.label ?? 'reference'),
+          String(ev.payload?.text ?? ''),
+          typeof ev.payload?.index === 'number' ? ev.payload.index : undefined,
+          typeof ev.payload?.count === 'number' ? ev.payload.count : undefined
+        )
+
+        return
+
+      case 'moa.aggregating':
+        // Spinner/status transition only — the aggregator's response follows
+        // through the normal message stream. No committed transcript entry.
         return
 
       case 'tool.progress':

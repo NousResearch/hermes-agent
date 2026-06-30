@@ -46,8 +46,8 @@ import {
   IconPhoto as ImageIcon,
   IconInfoCircle as Info,
   IconKey as KeyRound,
-  IconLayoutDashboard as LayoutDashboard,
   IconLayersIntersect2 as Layers3,
+  IconLayoutDashboard as LayoutDashboard,
   IconLink as Link,
   IconLink as Link2,
   IconLink as LinkIcon,
@@ -56,7 +56,9 @@ import {
   IconLock as Lock,
   IconLogin as LogIn,
   IconMail as Mail,
+  IconMaximize as Maximize,
   IconMessageCircle as MessageCircle,
+  IconMessageQuestion as MessageQuestion,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
   IconMicrophoneOff as MicOff,
@@ -89,8 +91,8 @@ import {
   IconSettings2 as Settings2,
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSquare as Square,
-  IconPlayerStopFilled as StopFilled,
   IconSteeringWheel as SteeringWheel,
+  IconPlayerStopFilled as StopFilled,
   IconSun as Sun,
   IconTerminal2 as Terminal,
   IconTrash as Trash2,
@@ -104,7 +106,9 @@ import {
   IconX as X,
   IconX as XIcon,
   IconBolt as Zap,
-  IconBoltFilled as ZapFilled
+  IconBoltFilled as ZapFilled,
+  IconZoomIn as ZoomIn,
+  IconZoomOut as ZoomOut
 } from '@tabler/icons-react'
 
 export {
@@ -155,8 +159,8 @@ export {
   ImageIcon,
   Info,
   KeyRound,
-  LayoutDashboard,
   Layers3,
+  LayoutDashboard,
   Link,
   Link2,
   LinkIcon,
@@ -165,7 +169,9 @@ export {
   Lock,
   LogIn,
   Mail,
+  Maximize,
   MessageCircle,
+  MessageQuestion,
   MessageSquareText,
   Mic,
   MicOff,
@@ -198,8 +204,8 @@ export {
   Settings2,
   SlidersHorizontal,
   Square,
-  StopFilled,
   SteeringWheel,
+  StopFilled,
   Sun,
   Terminal,
   Trash2,
@@ -213,7 +219,9 @@ export {
   X,
   XIcon,
   Zap,
-  ZapFilled
+  ZapFilled,
+  ZoomIn,
+  ZoomOut
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'

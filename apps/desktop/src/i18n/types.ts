@@ -305,6 +305,12 @@ export interface Translations {
       translucencyDesc: string
       showBrowserGlobeTitle: string
       showBrowserGlobeDesc: string
+      embedsTitle: string
+      embedsDesc: string
+      embedsAsk: string
+      embedsAlways: string
+      embedsOff: string
+      embedsReset: (count: number) => string
       product: string
       productDesc: string
       technical: string
@@ -329,6 +335,8 @@ export interface Translations {
         off: string
         scaleTitle: string
         scaleDesc: string
+        roamTitle: string
+        roamDesc: string
         chooseTitle: string
         chooseDesc: string
         searchPlaceholder: string
@@ -842,6 +850,7 @@ export interface Translations {
     nameHint: string
     title: string
     count: (count: number) => string
+    search: string
     loading: string
     newProfile: string
     allProfiles: string
@@ -914,6 +923,8 @@ export interface Translations {
 
   cron: {
     close: string
+    title: string
+    count: (count: number) => string
     search: string
     loading: string
     states: Record<string, string>
@@ -1155,6 +1166,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    speakReplies: string
+    stopSpeakingReplies: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string
@@ -1492,6 +1505,24 @@ export interface Translations {
       turnRunning: string
       currentTurnElapsed: string
       contextUsage: string
+      contextUsagePanel: {
+        categories: {
+          conversation: string
+          mcp: string
+          memory: string
+          rules: string
+          skills: string
+          subagent_definitions: string
+          system_prompt: string
+          tool_definitions: string
+        }
+        empty: string
+        loading: string
+        percentFull: (percent: number) => string
+        title: string
+        tokenSummary: (used: string, max: string) => string
+      }
+      openContextUsage: string
       session: string
       runtimeSessionElapsed: string
       yoloOn: string
@@ -1535,6 +1566,10 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalsAria: string
+    terminalNew: string
+    terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 
@@ -1648,6 +1683,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      expandMessage: string
       scrollToBottom: string
       stop: string
       restorePrevious: string
@@ -1682,10 +1718,8 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcutSuffix: string
-      back: string
       skip: string
-      send: string
+      continueLabel: string
     }
     tool: {
       code: string
@@ -1715,6 +1749,7 @@ export interface Translations {
         reading: string
         opened: string
         opening: string
+        failedToOpen: string
         searched: string
         searching: string
         ran: string

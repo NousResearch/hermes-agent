@@ -4,7 +4,14 @@ import { useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -122,7 +129,8 @@ function RepoFlatSection({
   // A live `git worktree list` hit wins over an old dismissal: if git says the
   // worktree exists again (or still exists after "hide from sidebar"), surface it.
   const ordered = overlaidGroups.filter(
-    group => group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
+    group =>
+      group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
 
   const repoCount = ordered.reduce((sum, group) => sum + group.sessions.length, 0)
@@ -248,7 +256,9 @@ function RepoFlatSection({
     <SidebarRowStack>
       <WorkspaceHeader
         action={
-          onNewSession && <WorkspaceAddButton label={s.newSessionIn(repo.label)} onClick={() => onNewSession(repo.path)} />
+          onNewSession && (
+            <WorkspaceAddButton label={s.newSessionIn(repo.label)} onClick={() => onNewSession(repo.path)} />
+          )
         }
         count={repoCount}
         emphasis

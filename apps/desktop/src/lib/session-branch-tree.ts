@@ -14,9 +14,11 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   }
 
   const byVisibleId = new Map<string, SessionInfo>()
+
   for (const session of sessions) {
     byVisibleId.set(session.id, session)
     const rootId = session._lineage_root_id?.trim()
+
     if (rootId) {
       byVisibleId.set(rootId, session)
     }
@@ -27,11 +29,13 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
 
   for (const session of sessions) {
     const parentId = session.parent_session_id?.trim()
+
     if (!parentId) {
       continue
     }
 
     const parent = byVisibleId.get(parentId)
+
     if (!parent || parent.id === session.id) {
       continue
     }
@@ -50,17 +54,21 @@ export function flattenSessionsWithBranches(sessions: readonly SessionInfo[]): S
   // whole parent→branches cluster together instead of stranding the parent at
   // its own stale timestamp. Memoized — each subtree is folded at most once.
   const groupRecencyMemo = new Map<string, number>()
+
   const groupRecency = (session: SessionInfo): number => {
     const cached = groupRecencyMemo.get(session.id)
+
     if (cached !== undefined) {
       return cached
     }
 
     groupRecencyMemo.set(session.id, recency(session)) // cycle guard
+
     const max = (childrenByParent.get(session.id) ?? []).reduce(
       (acc, child) => Math.max(acc, groupRecency(child)),
       recency(session)
     )
+
     groupRecencyMemo.set(session.id, max)
 
     return max

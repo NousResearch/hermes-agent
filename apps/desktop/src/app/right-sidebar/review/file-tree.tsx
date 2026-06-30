@@ -93,10 +93,7 @@ export function ReviewFileTree() {
   const loading = useStore($reviewLoading)
   const mode = useStore($reviewTreeMode)
 
-  const tree = useMemo(
-    () => (mode === 'tree' ? buildReviewTree(files) : buildReviewFlatList(files)),
-    [files, mode]
-  )
+  const tree = useMemo(() => (mode === 'tree' ? buildReviewTree(files) : buildReviewFlatList(files)), [files, mode])
 
   const heavy = tree.length > HEAVY_LIST_CAP
 

@@ -5,18 +5,20 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Bookmark, BookmarkFilled, Download, Pin, Trash2 } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  Bookmark,
+  BookmarkFilled,
+  Download,
+  MessageCircle,
+  Trash2
+} from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -270,7 +272,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
+              icon={value === 'sessions' ? MessageCircle : value === 'system' ? Activity : BarChart3}
               key={value}
               label={cc.sections[value]}
               onClick={() => setSection(value)}
@@ -336,11 +338,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
-                            {pinned ? (
-                              <BookmarkFilled className="size-3.5" />
-                            ) : (
-                              <Bookmark className="size-3.5" />
-                            )}
+                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
@@ -372,7 +370,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             />
           ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
-              <div className="border-b border-(--ui-stroke-tertiary) pb-4">
+              <div>
                 {status ? (
                   <div className="grid gap-2">
                     <div className="flex items-start justify-between gap-3">
@@ -404,7 +402,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     {systemAction && (
                       <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
+                        {systemAction.running
+                          ? cc.actionRunning
+                          : systemAction.exit_code === 0
+                            ? cc.actionDone
+                            : cc.actionFailed}
                       </div>
                     )}
                   </div>
@@ -413,7 +415,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                 )}
               </div>
 
-              <div className="flex min-h-0 flex-col">
+              <div className="flex min-h-0 flex-col pt-2">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
                     {cc.recentLogs}
@@ -510,7 +512,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         </span>
       )}
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 py-2 sm:grid-cols-3">
         <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
         <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
@@ -570,7 +572,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         )}
       </section>
 
-      <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
+      <div className="grid min-h-0 gap-x-8 gap-y-5 pt-1 sm:grid-cols-2">
         <UsageList
           emptyLabel={cc.noModelUsage}
           rows={byModel.slice(0, 6).map(entry => ({

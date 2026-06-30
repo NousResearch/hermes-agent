@@ -224,6 +224,7 @@ export interface HermesConfig {
   }
   voice?: {
     max_recording_seconds?: number
+    auto_tts?: boolean
   }
 }
 
@@ -426,6 +427,22 @@ export interface UsageStats {
   input: number
   output: number
   total: number
+}
+
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_used: number
+  estimated_total: number
+  model?: string
 }
 
 export interface AnalyticsDailyEntry {
@@ -774,14 +791,17 @@ export interface MoaModelSlot {
 export interface MoaConfigResponse {
   default_preset: string
   active_preset: string
-  presets: Record<string, {
-    aggregator: MoaModelSlot
-    aggregator_temperature: number
-    enabled: boolean
-    max_tokens: number
-    reference_models: MoaModelSlot[]
-    reference_temperature: number
-  }>
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      enabled: boolean
+      max_tokens: number
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+    }
+  >
   aggregator: MoaModelSlot
   aggregator_temperature: number
   enabled: boolean

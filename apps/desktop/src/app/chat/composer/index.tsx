@@ -60,12 +60,14 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
@@ -87,6 +89,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useAutoSpeakReplies } from './hooks/use-auto-speak-replies'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
@@ -229,6 +232,12 @@ export function ChatBar({
   const statusItemsBySession = useStore($statusItemsBySession)
   const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const autoSpeak = useStore($autoSpeakReplies)
+  // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
+  // not interrupt it — there's nothing actively running to stop, and stopping
+  // would discard a question the user may want to come back to. The blocking
+  // prompt owns its own dismissal (Skip, Reject, dialog close).
+  const awaitingInput = useStore($activeSessionAwaitingInput)
   // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
   // tiny window, subagent watch windows) always start docked and can't pop out:
   // a floating composer makes no sense in a single-session side window, and it
@@ -278,14 +287,17 @@ export function ChatBar({
     poppedOut ? handleComposerDock() : handleComposerPopOut()
   }, [handleComposerDock, handleComposerPopOut, poppedOut])
 
-  const { dockProximity, dragging, onPointerDown: onComposerGesturePointerDown } =
-    useComposerPopoutGestures({
-      composerRef,
-      onDock: handleComposerDock,
-      onPopOut: handleComposerPopOut,
-      poppedOut,
-      position: popoutPosition
-    })
+  const {
+    dockProximity,
+    dragging,
+    onPointerDown: onComposerGesturePointerDown
+  } = useComposerPopoutGestures({
+    composerRef,
+    onDock: handleComposerDock,
+    onPopOut: handleComposerPopOut,
+    poppedOut,
+    position: popoutPosition
+  })
 
   const draftRef = useRef(draft)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
@@ -784,6 +796,16 @@ export function ChatBar({
     if (!pastedText) {
       event.preventDefault()
 
+      // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
+      // the Linux clipboard the DOM paste event reads, so a host screenshot
+      // arrives as an empty paste (no blobs, no text). Fall back to the main
+      // process, which pulls the image straight off the Windows clipboard.
+      // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
+      if (onPasteClipboardImage) {
+        triggerHaptic('selection')
+        void onPasteClipboardImage({ silent: true })
+      }
+
       return
     }
 
@@ -816,8 +838,7 @@ export function ChatBar({
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
   // Space/Tab — neither should dead-end on a popover.
-  const argStageEmpty =
-    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+  const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
 
   const closeTrigger = () => {
     setTrigger(null)
@@ -844,7 +865,14 @@ export function ChatBar({
       id: text,
       type: 'slash',
       label: text.slice(1),
-      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
+      metadata: {
+        command: slashCommandToken(trigger.query),
+        display: text,
+        meta: '',
+        group: '',
+        action: '',
+        rawText: text
+      }
     })
   }
 
@@ -984,10 +1012,7 @@ export function ChatBar({
 
     // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
     // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
-    if (
-      (event.key === 'Backspace' || event.key === 'Delete') &&
-      deleteSelectionInEditor(event.currentTarget)
-    ) {
+    if ((event.key === 'Backspace' || event.key === 'Delete') && deleteSelectionInEditor(event.currentTarget)) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 
@@ -1198,8 +1223,10 @@ export function ChatBar({
         return
       }
 
-      // Otherwise Esc interrupts the running turn (Stop-button parity).
-      if (busy) {
+      // Otherwise Esc interrupts the running turn (Stop-button parity) — unless
+      // the turn is parked waiting on the user, where Esc must not discard the
+      // pending prompt.
+      if (busy && !awaitingInput) {
         event.preventDefault()
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
@@ -1761,12 +1788,17 @@ export function ChatBar({
   // open — Esc must close that overlay, never double as canceling the stream
   // behind it. A latest-handler ref keeps the listener registered once.
   const escCancelRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {})
+
   escCancelRef.current = (event: globalThis.KeyboardEvent) => {
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy) {
+    // `awaitingInput`: the turn is parked on a clarify / approval / sudo / secret
+    // prompt, which owns Esc (or is meant to persist) — never cancel the stream
+    // out from under it.
+    if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
       return
     }
 
     const active = document.activeElement as HTMLElement | null
+
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
       return
     }
@@ -1992,6 +2024,20 @@ export function ChatBar({
 
   useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
 
+  const handleToggleAutoSpeak = useCallback(() => {
+    void setAutoSpeakReplies(!$autoSpeakReplies.get()).catch(error =>
+      notifyError(error, t.settings.config.autosaveFailed)
+    )
+  }, [t])
+
+  useAutoSpeakReplies({
+    conversationActive: voiceConversationActive,
+    failureLabel: t.assistant.thread.readAloudFailed,
+    markSpoken: consumePendingResponse,
+    pendingReply: pendingResponse,
+    sessionId
+  })
+
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
@@ -2009,6 +2055,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
       canSteer={canSteer}
@@ -2031,6 +2078,7 @@ export function ChatBar({
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       onSteer={steerDraft}
+      onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
     />
@@ -2254,7 +2302,9 @@ export function ChatBar({
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
-                  scrolledUp ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100' : 'opacity-100'
+                  scrolledUp
+                    ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
+                    : 'opacity-100'
                 )}
                 data-slot="composer-fade"
               >

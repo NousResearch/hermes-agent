@@ -286,6 +286,13 @@ export const ja = defineLocale({
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      embedsTitle: 'インライン埋め込み',
+      embedsDesc:
+        'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
+      embedsAsk: '確認',
+      embedsAlways: '常に',
+      embedsOff: 'オフ',
+      embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -312,6 +319,8 @@ export const ja = defineLocale({
           'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
         scaleTitle: 'サイズ',
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
+        roamTitle: '散歩',
+        roamDesc: 'アイドル中にペットがウィンドウ内を自由に歩き回ります。',
         on: 'オン',
         off: 'オフ',
         chooseTitle: 'ペットを選ぶ',
@@ -1164,6 +1173,7 @@ export const ja = defineLocale({
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
     title: 'プロファイル',
     count: count => `${count} プロファイル`,
+    search: 'プロファイルを検索...',
     loading: 'プロファイルを読み込み中...',
     newProfile: '新しいプロファイル',
     allProfiles: 'すべてのプロファイル',
@@ -1237,6 +1247,8 @@ export const ja = defineLocale({
 
   cron: {
     close: 'Cron を閉じる',
+    title: 'スケジュール済みジョブ',
+    count: count => `${count} 件のジョブ`,
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
     states: {
@@ -1438,7 +1450,8 @@ export const ja = defineLocale({
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
       createFailed: 'プロジェクトを作成できませんでした',
-      deleteConfirm: 'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
+      deleteConfirm:
+        'Hermes から保存済みプロジェクトを削除します。ファイル・git リポジトリ・ワークツリーはそのまま残ります。',
       startWork: '新しいワークツリー',
       newWorktreeTitle: '新しいワークツリー',
       newWorktreeDesc: 'このワークツリーのブランチ名を入力してください。',
@@ -1538,6 +1551,8 @@ export const ja = defineLocale({
     stopDictation: '口述を停止',
     transcribingDictation: '口述を文字起こし中',
     voiceDictation: '音声口述',
+    speakReplies: '返信を読み上げる',
+    stopSpeakingReplies: '返信の読み上げを停止',
     lookupLoading: '検索中…',
     lookupNoMatches: '一致なし。',
     lookupTry: '試す',
@@ -1953,6 +1968,24 @@ export const ja = defineLocale({
       turnRunning: '実行中',
       currentTurnElapsed: '現在のターン経過時間',
       contextUsage: 'コンテキスト使用状況',
+      contextUsagePanel: {
+        categories: {
+          conversation: '会話',
+          mcp: 'MCP',
+          memory: 'メモリ',
+          rules: 'ルール',
+          skills: 'スキル',
+          subagent_definitions: 'サブエージェント定義',
+          system_prompt: 'システムプロンプト',
+          tool_definitions: 'ツール定義'
+        },
+        empty: 'コンテキストデータはまだありません',
+        loading: '内訳を読み込み中…',
+        percentFull: percent => `${percent}% 使用中`,
+        title: 'コンテキスト使用状況',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: 'コンテキスト使用状況の内訳を開く',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
@@ -1996,6 +2029,10 @@ export const ja = defineLocale({
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
     terminalHide: 'ターミナルを非表示',
+    terminalsAria: 'ターミナル',
+    terminalNew: '新しいターミナル',
+    terminalCloseOthers: '他を閉じる',
+    terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
   },
 
@@ -2031,7 +2068,8 @@ export const ja = defineLocale({
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,
     diskChangedTitle: 'ファイルがディスク上で変更されました',
-    diskChangedBody: 'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
+    diskChangedBody:
+      'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
     overwrite: '上書き',
     discardReload: '破棄して再読み込み',
     console: {
@@ -2149,10 +2187,8 @@ export const ja = defineLocale({
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
-      shortcutSuffix: ' で送信',
-      back: '戻る',
       skip: 'スキップ',
-      send: '送信'
+      continueLabel: '続行'
     },
     tool: {
       code: 'コード',
@@ -2182,6 +2218,7 @@ export const ja = defineLocale({
         reading: '読み取り中',
         opened: 'オープン済み',
         opening: 'オープン中',
+        failedToOpen: 'オープン失敗',
         searched: '検索完了',
         searching: '検索中',
         ran: '実行完了',

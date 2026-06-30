@@ -46,7 +46,12 @@ import { cn } from '@/lib/utils'
 import { enableBrowserAndOpenTab } from '@/store/browser'
 import { browserDevServerCandidates } from '@/store/browser-dev-servers'
 import { $repoWorktrees } from '@/store/coding-status'
-import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import {
+  $commandPaletteOpen,
+  $commandPalettePage,
+  closeCommandPalette,
+  setCommandPaletteOpen
+} from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
@@ -209,7 +214,8 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
     return true
   }
 
-  const background = target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
+  const background =
+    target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
 
   return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
 }
@@ -735,7 +741,13 @@ export function CommandPalette() {
             <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
               {/* Server-driven pages render their own list; the rest show groups. */}
               {page === 'pets' ? (
-                <PetPalettePage onGenerate={() => { closeCommandPalette(); openPetGenerate() }} search={search} />
+                <PetPalettePage
+                  onGenerate={() => {
+                    closeCommandPalette()
+                    openPetGenerate()
+                  }}
+                  search={search}
+                />
               ) : page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (

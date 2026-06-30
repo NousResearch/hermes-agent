@@ -10,7 +10,26 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-const simpleGit = require('simple-git')
+// `simple-git` is a pure-JS runtime dep that workspace dedup hoists into the
+// repo-root node_modules.  Packaged builds set `files:` in package.json, which
+// excludes node_modules from the asar, so the normal require() fails at launch
+// (issue #52735: "Cannot find module 'simple-git'").  We ship the dep's
+// closure under resources/native-deps/vendor/node_modules/ via extraResources
+// + scripts/stage-native-deps.cjs, and resolve from there when the hoisted
+// require() isn't reachable.  The `vendor/` nesting matters: electron-builder
+// drops a node_modules dir at the root of an extraResources copy but keeps a
+// nested one.  Dev mode never hits the fallback -- Node's normal lookup finds
+// the hoisted copy.
+let simpleGit
+try {
+  simpleGit = require('simple-git')
+} catch {
+  const resourcesPath = process.resourcesPath
+  if (!resourcesPath) {
+    throw new Error("git-review IPC: 'simple-git' not found and no resourcesPath to fall back to")
+  }
+  simpleGit = require(path.join(resourcesPath, 'native-deps', 'vendor', 'node_modules', 'simple-git'))
+}
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')
 
@@ -188,7 +207,12 @@ async function defaultBranchName(git) {
 
   // Prefer a local trunk, then a remote-only one (returns the clean name either
   // way) so "branch off main" works even before main is checked out locally.
-  for (const ref of ['refs/heads/main', 'refs/heads/master', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+  for (const ref of [
+    'refs/heads/main',
+    'refs/heads/master',
+    'refs/remotes/origin/main',
+    'refs/remotes/origin/master'
+  ]) {
     try {
       await git.raw(['rev-parse', '--verify', '--quiet', ref])
 

@@ -2,6 +2,8 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBranch } from '@/global'
+import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { desktopGit } from '@/lib/desktop-git'
 import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
@@ -142,10 +144,7 @@ export function projectIdForCwd(cwd: string): null | string {
     // Match project + repo roots AND each worktree-lane path: a linked worktree
     // (e.g. a sibling `repo-retry`) lives OUTSIDE the repo root, so root-prefix
     // matching alone would miss it — but it's still part of the project.
-    const paths = [
-      project.path,
-      ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])
-    ]
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
 
     for (const path of paths) {
       const p = (path || '').trim()
@@ -283,7 +282,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 let didScanRepos = false
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
-  const scan = window.hermesDesktop?.git?.scanRepos
+  const scan = desktopGit()?.scanRepos
 
   if (!scan || (didScanRepos && !force)) {
     return
@@ -337,20 +336,19 @@ export async function generateProjectIdea(name: string): Promise<string> {
   }
 }
 
-// Write IDEA.md to a project's primary folder (desktop only, best-effort). Local
-// fs write is hardened in the electron main; a remote backend / missing bridge
-// just skips it.
+// Write IDEA.md to a project's primary folder (best-effort). Routes through the
+// remote-aware fs write, so it lands on the backend for a remote gateway and on
+// disk locally — the project is created regardless of whether the file lands.
 async function writeProjectIdea(folder: null | string | undefined, idea: string): Promise<void> {
   const dir = (folder || '').trim()
   const body = idea.trim()
-  const write = window.hermesDesktop?.writeTextFile
 
-  if (!dir || !body || !write) {
+  if (!dir || !body) {
     return
   }
 
   try {
-    await write(`${dir.replace(/[/\\]+$/, '')}/IDEA.md`, body.endsWith('\n') ? body : `${body}\n`)
+    await writeDesktopFileText(`${dir.replace(/[/\\]+$/, '')}/IDEA.md`, body.endsWith('\n') ? body : `${body}\n`)
   } catch {
     // Best-effort: the project is created regardless of whether IDEA.md lands.
   }
@@ -446,6 +444,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     if (input.use) {
       $activeProjectId.set(created.id)
     }
+
+    setSidebarAgentsGrouped(true)
   }
 
   reconcileProjects()
@@ -633,7 +633,7 @@ export async function startWorkInRepo(
   repoPath: string,
   options?: { name?: string; branch?: string; base?: string; existingBranch?: string }
 ): Promise<null | { path: string; branch: string }> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath) {
     return null
@@ -648,7 +648,7 @@ export async function startWorkInRepo(
 // Local branches for the composer's "convert a branch into a worktree" picker.
 // Empty on a remote backend / non-repo (the Electron probe can't run).
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git?.branchList || !repoPath) {
     return []
@@ -658,7 +658,7 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
 }
 
 export async function switchBranchInRepo(repoPath: string, branch: string): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath || !branch.trim()) {
     return
@@ -711,7 +711,7 @@ export async function removeWorktreePath(
   worktreePath: string,
   options?: { force?: boolean }
 ): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git) {
     return
@@ -735,20 +735,15 @@ export async function copyPath(path: null | string): Promise<void> {
   }
 }
 
-// Open the native directory picker (reuses the Electron default-project-dir
-// chooser). Returns the chosen absolute path, or null when cancelled.
+// Pick a project folder via the remote-aware picker: a remote gateway browses
+// the backend filesystem (seeded at its default cwd) where sessions run; local
+// mode opens the native dialog. Returns the absolute path, or null if cancelled.
 export async function pickProjectFolder(): Promise<null | string> {
-  const pick = window.hermesDesktop?.settings?.pickDefaultProjectDir
+  const [dir] = await selectDesktopPaths({
+    defaultPath: (await desktopDefaultCwd())?.cwd,
+    directories: true,
+    multiple: false
+  })
 
-  if (!pick) {
-    return null
-  }
-
-  try {
-    const result = await pick()
-
-    return result.canceled ? null : result.dir
-  } catch {
-    return null
-  }
+  return dir || null
 }

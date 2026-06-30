@@ -39,11 +39,6 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
-// ⌘` on macOS / Ctrl+` elsewhere (the `~` key), plus the Shift/tilde variant.
-// `mod` keeps one binding cross-platform; on macOS this shadows the system
-// window-cycler, which is fine for a single-window app.
-const TERMINAL_TOGGLE_DEFAULTS = ['mod+`', 'mod+shift+`']
-
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
 export const SESSION_SLOT_COUNT = 9
 
@@ -102,7 +97,18 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
-  { id: 'view.showTerminal', category: 'view', defaults: TERMINAL_TOGGLE_DEFAULTS },
+  // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
+  // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on
+  // every platform. Off macOS `ctrl` folds to `mod` (= Ctrl), so it's unchanged.
+  // Toggle reveals the terminal (opening one if none exist); Shift spawns a new one.
+  { id: 'view.showTerminal', category: 'view', defaults: ['ctrl+`'] },
+  { id: 'view.newTerminal', category: 'view', defaults: ['ctrl+shift+`'] },
+  // Same Ctrl(+Shift) terminal family: arrows walk the (vertical) tab rail, W
+  // kills the active one. ⌘W is taken (close preview tab) and ⌘⇧[ ] are profiles,
+  // so these stay on `ctrl` — distinct on macOS, folding to Ctrl elsewhere.
+  { id: 'view.nextTerminal', category: 'view', defaults: ['ctrl+shift+down'] },
+  { id: 'view.prevTerminal', category: 'view', defaults: ['ctrl+shift+up'] },
+  { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // Embedded browser pane. Avoids ⌘⇧B/Ctrl+Shift+B because Hermes already
   // ships that chord for new worktrees/branches.
   { id: 'view.openBrowser', category: 'view', defaults: ['mod+alt+b'] },

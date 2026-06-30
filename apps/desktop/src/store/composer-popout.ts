@@ -122,7 +122,10 @@ export function setComposerPoppedOut(value: boolean) {
  *  unless `persist`. Returns the clamped position so callers can sync their live
  *  ref. Pass the measured `size` for exact bounds; otherwise a fallback keeps it
  *  on-screen. */
-export function setComposerPopoutPosition(position: PopoutPosition, { area, persist, size }: SetPositionOptions = {}): PopoutPosition {
+export function setComposerPopoutPosition(
+  position: PopoutPosition,
+  { area, persist, size }: SetPositionOptions = {}
+): PopoutPosition {
   const next = clampPosition(position, size, area)
   $composerPopoutPosition.set(next)
 

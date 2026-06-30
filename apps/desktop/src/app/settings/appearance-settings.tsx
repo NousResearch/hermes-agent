@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
+import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
@@ -11,6 +12,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
+import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $showBrowserGlobe, setShowBrowserGlobe } from '@/store/show-browser-globe'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -217,6 +219,8 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const embedMode = useStore($embedMode)
+  const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const showBrowserGlobe = useStore($showBrowserGlobe)
   const profiles = useStore($profiles)
@@ -268,6 +272,12 @@ export function AppearanceSettings() {
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
   ] as const
+
+  const embedOptions = [
+    { id: 'ask', label: a.embedsAsk },
+    { id: 'always', label: a.embedsAlways },
+    { id: 'off', label: a.embedsOff }
+  ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
   return (
     <SettingsContent>
@@ -442,6 +452,35 @@ export function AppearanceSettings() {
             }
             description={a.showBrowserGlobeDesc}
             title={a.showBrowserGlobeTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex flex-col items-end gap-1.5">
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setEmbedMode(id)
+                  }}
+                  options={embedOptions}
+                  value={embedMode}
+                />
+                {embedAllowed.length > 0 && (
+                  <Button
+                    onClick={() => {
+                      triggerHaptic('selection')
+                      clearEmbedAllowed()
+                    }}
+                    size="inline"
+                    variant="text"
+                  >
+                    {a.embedsReset(embedAllowed.length)}
+                  </Button>
+                )}
+              </div>
+            }
+            description={a.embedsDesc}
+            title={a.embedsTitle}
           />
         </div>
       </div>

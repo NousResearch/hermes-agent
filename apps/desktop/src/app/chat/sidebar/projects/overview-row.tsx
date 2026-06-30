@@ -116,7 +116,9 @@ export function ProjectOverviewRow({
       <SidebarRowShell
         actions={
           <>
-            {onNewSession && <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />}
+            {onNewSession && (
+              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+            )}
             <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
           </>
         }

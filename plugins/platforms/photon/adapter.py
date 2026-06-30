@@ -741,6 +741,19 @@ class PhotonAdapter(BasePlatformAdapter):
                 [],
             )
 
+        def _poll_summary(poll: Dict[str, Any] | None) -> str:
+            if not isinstance(poll, dict):
+                return "Poll"
+            title = (poll.get("title") or "Poll").strip() or "Poll"
+            options = [
+                (option.get("title") or "").strip()
+                for option in (poll.get("options") or [])
+                if isinstance(option, dict) and (option.get("title") or "").strip()
+            ]
+            if not options:
+                return title
+            return f"{title} — options: {', '.join(options)}"
+
         ctype = content.get("type")
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
@@ -793,6 +806,20 @@ class PhotonAdapter(BasePlatformAdapter):
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
+        elif ctype == "poll":
+            text = f"[Photon poll received: {_poll_summary(content)}]"
+            mtype = MessageType.TEXT
+        elif ctype == "poll_option":
+            option_content = content.get("option")
+            option = option_content if isinstance(option_content, dict) else {}
+            option_title = (
+                content.get("title") or option.get("title") or "Option"
+            ).strip() or "Option"
+            poll_content = content.get("poll")
+            poll_text = _poll_summary(poll_content if isinstance(poll_content, dict) else None)
+            action = "selected" if content.get("selected") else "deselected"
+            text = f"[Photon poll option {action}: {option_title} in {poll_text}]"
+            mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
         elif ctype == "group":
@@ -809,6 +836,24 @@ class PhotonAdapter(BasePlatformAdapter):
                     item_text = item_content.get("text") or ""
                     if item_text:
                         text_parts.append(item_text)
+                    continue
+                if item_type == "poll":
+                    text_parts.append(f"[Photon poll received: {_poll_summary(item_content)}]")
+                    continue
+                if item_type == "poll_option":
+                    option_content = item_content.get("option")
+                    option = option_content if isinstance(option_content, dict) else {}
+                    option_title = (
+                        item_content.get("title") or option.get("title") or "Option"
+                    ).strip() or "Option"
+                    poll_content = item_content.get("poll")
+                    poll_text = _poll_summary(
+                        poll_content if isinstance(poll_content, dict) else None
+                    )
+                    action = "selected" if item_content.get("selected") else "deselected"
+                    text_parts.append(
+                        f"[Photon poll option {action}: {option_title} in {poll_text}]"
+                    )
                     continue
                 if item_type in {"attachment", "voice"}:
                     marker, item_mtype, item_urls, item_types = _normalize_binary_payload(

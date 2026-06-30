@@ -618,6 +618,51 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
+  if (content.type === "poll") {
+    return {
+      type: "poll",
+      title: typeof content.title === "string" ? content.title : "",
+      options: Array.isArray(content.options)
+        ? content.options.map((option) => ({
+            title:
+              option && typeof option === "object" && typeof option.title === "string"
+                ? option.title
+                : "",
+          }))
+        : [],
+    };
+  }
+  if (content.type === "poll_option") {
+    return {
+      type: "poll_option",
+      title: typeof content.title === "string" ? content.title : "",
+      selected: Boolean(content.selected),
+      option:
+        content.option && typeof content.option === "object"
+          ? {
+              title:
+                typeof content.option.title === "string" ? content.option.title : "",
+            }
+          : null,
+      poll:
+        content.poll && typeof content.poll === "object"
+          ? {
+              type: "poll",
+              title: typeof content.poll.title === "string" ? content.poll.title : "",
+              options: Array.isArray(content.poll.options)
+                ? content.poll.options.map((option) => ({
+                    title:
+                      option &&
+                      typeof option === "object" &&
+                      typeof option.title === "string"
+                        ? option.title
+                        : "",
+                  }))
+                : [],
+            }
+          : null,
+    };
+  }
   return { type: content.type || "unknown" };
 }
 

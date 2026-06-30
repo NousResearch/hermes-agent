@@ -270,6 +270,95 @@ async def test_dispatch_group_preserves_text_and_attachment(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_poll_surfaces_question_and_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("", msg_id="poll-msg-1")
+    event["content"] = {
+        "type": "poll",
+        "title": "Tea?",
+        "options": [{"title": "Yes"}, {"title": "No"}],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    assert captured[0].text == "[Photon poll received: Tea? — options: Yes, No]"
+    assert captured[0].message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_poll_option_surfaces_vote_without_unhandled_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("", msg_id="poll-vote-1")
+    event["content"] = {
+        "type": "poll_option",
+        "title": "Yes",
+        "selected": True,
+        "option": {"title": "Yes"},
+        "poll": {
+            "type": "poll",
+            "title": "Tea?",
+            "options": [{"title": "Yes"}, {"title": "No"}],
+        },
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    assert captured[0].text == (
+        "[Photon poll option selected: Yes in Tea? — options: Yes, No]"
+    )
+    assert "not handled" not in captured[0].text
+    assert captured[0].message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_group_poll_option_surfaces_vote_without_unhandled_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("", msg_id="poll-vote-group-1")
+    event["content"] = {
+        "type": "group",
+        "items": [
+            {
+                "id": "p:0/poll-vote-group-1",
+                "content": {
+                    "type": "poll_option",
+                    "title": "Yes",
+                    "selected": True,
+                    "option": {"title": "Yes"},
+                    "poll": {
+                        "type": "poll",
+                        "title": "Tea?",
+                        "options": [{"title": "Yes"}, {"title": "No"}],
+                    },
+                },
+            }
+        ],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    assert captured[0].text == (
+        "[Photon poll option selected: Yes in Tea? — options: Yes, No]"
+    )
+    assert "not handled" not in captured[0].text
+    assert captured[0].message_type == MessageType.TEXT
+
+
+@pytest.mark.asyncio
 async def test_dispatch_voice_downloads_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

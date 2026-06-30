@@ -760,12 +760,6 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
-    assignee = args.get("assignee")
-    if not assignee:
-        return tool_error(
-            "assignee is required — name the profile that should execute this "
-            "task (the dispatcher will only spawn tasks with an assignee)"
-        )
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -790,6 +784,13 @@ def _handle_create(args: dict, **kw) -> str:
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
+    # Assignee is required unless triage mode (the dispatcher routes triaged tasks).
+    assignee = args.get("assignee")
+    if not assignee and not triage:
+        return tool_error(
+            "assignee is required — name the profile that should execute this "
+            "task (the dispatcher will only spawn tasks with an assignee)"
+        )
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"

@@ -230,6 +230,68 @@ def _png_bytes(frame) -> bytes:
     return buf.getvalue()
 
 
+def _union_alpha_bbox(frames) -> tuple[int, int, int, int] | None:
+    """Union opaque-pixel bbox across *frames* (a stable trim for animation)."""
+    left = top = right = bottom = None
+    for frame in frames:
+        try:
+            bbox = frame.getchannel("A").getbbox()
+        except Exception:  # noqa: BLE001 - cosmetic; fail open
+            bbox = None
+        if not bbox:
+            continue
+        l, t, r, b = bbox
+        left = l if left is None else min(left, l)
+        top = t if top is None else min(top, t)
+        right = r if right is None else max(right, r)
+        bottom = b if bottom is None else max(bottom, b)
+    if left is None or top is None or right is None or bottom is None:
+        return None
+    return (left, top, right, bottom)
+
+
+def _crop_frames_to_alpha_union(frames):
+    """Crop every frame to the union opaque bbox so the sprite hugs its box.
+
+    kitty paints the whole transmitted rectangle, transparent margins included,
+    which makes the visible pet look small and adrift inside a larger cell box.
+    Trimming to the visible bounds keeps the pet tight in its corner.
+    """
+    bbox = _union_alpha_bbox(frames)
+    if not bbox:
+        return frames
+    return [f.crop(bbox) for f in frames]
+
+
+# Nominal terminal cell size in pixels. kitty fits an image to its cell
+# rectangle preserving aspect, so a frame whose pixel size isn't a whole
+# multiple of the cell rounds up — which makes the terminal clip the bottom row
+# (the "clipped feet") and letterbox a blank row. Snapping each frame to an
+# exact cell multiple avoids that. (See ratatui-image #57: "render in multiples
+# of the font-size, to avoid stale character artifacts.")
+_CELL_W = 8
+_CELL_H = 16
+
+
+def _snap_frames_to_cell_grid(frames):
+    """Resize frames so width/height are exact multiples of the cell box.
+
+    Removes the sub-cell remainder kitty would otherwise round up + clip. All
+    frames share the union-cropped size, so they snap to the same cell grid.
+    """
+    if not frames:
+        return frames
+    from PIL import Image
+
+    w, h = frames[0].size
+    cols = max(1, round(w / _CELL_W))
+    rows = max(1, round(h / _CELL_H))
+    target = (cols * _CELL_W, rows * _CELL_H)
+    if (w, h) == target:
+        return frames
+    return [f.resize(target, Image.LANCZOS) for f in frames]
+
+
 def _kitty_apc(ctrl: str, data: str) -> str:
     """Emit a kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces."""
     chunk = 4096
@@ -563,6 +625,8 @@ class PetRenderer:
         frames = self._frames(state)
         if not frames:
             return None
+        frames = _crop_frames_to_alpha_union(frames)
+        frames = _snap_frames_to_cell_grid(frames)
         cols, rows = self._cell_box(frames[0])
         return {
             "cols": cols,

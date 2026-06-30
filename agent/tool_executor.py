@@ -24,6 +24,7 @@ from typing import Any, Optional
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
+    build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
@@ -1228,7 +1229,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _ce_result = None
@@ -1262,7 +1263,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _mem_result = None
@@ -1294,7 +1295,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _spinner_result = None

@@ -10,7 +10,6 @@ vi.mock('@assistant-ui/react-streamdown', () => ({
     return md.split(/\n{2,}/)
   },
   StreamdownTextPrimitive: {},
-  type SyntaxHighlighterProps: {}
 }))
 
 vi.mock('@streamdown/code', () => ({ code: {} }))

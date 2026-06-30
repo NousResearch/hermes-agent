@@ -28,12 +28,7 @@ import {
   isBrowsingHistory
 } from '@/store/composer-input-history'
 import {
-  $composerPopoutPosition,
-  $composerPoppedOut,
-  POPOUT_WIDTH_REM,
-  readPopoutBounds,
-  setComposerPopoutPosition,
-  setComposerPoppedOut
+  POPOUT_WIDTH_REM
 } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
@@ -41,7 +36,6 @@ import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
-import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
@@ -65,11 +59,11 @@ import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
+import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
-import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { QueuePanel } from './queue-panel'
@@ -124,13 +118,6 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
-  // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
-  // tiny window, subagent watch windows) always start docked and can't pop out:
-  // a floating composer makes no sense in a single-session side window, and it
-  // would otherwise write the shared atom and yank the main window's composer out.
-  const popoutAllowed = !isSecondaryWindow()
-  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
-  const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
@@ -145,33 +132,17 @@ export function ChatBar({
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
 
-  const handleComposerPopOut = useCallback(() => {
-    triggerHaptic('open')
-    setComposerPoppedOut(true)
-  }, [])
-
-  const handleComposerDock = useCallback(() => {
-    triggerHaptic('success')
-    setComposerPoppedOut(false)
-  }, [])
-
-  // Double-click the grab area toggles dock/float. Undocking restores the last
-  // position (the persisted atom is never cleared on dock).
-  const handleComposerToggle = useCallback(() => {
-    poppedOut ? handleComposerDock() : handleComposerPopOut()
-  }, [handleComposerDock, handleComposerPopOut, poppedOut])
-
+  // Pop-out engine: docked↔floating state, dock/float/toggle, drag gestures, and
+  // the on-screen re-clamp. Secondary windows can't pop out.
   const {
     dockProximity,
     dragging,
-    onPointerDown: onComposerGesturePointerDown
-  } = useComposerPopoutGestures({
-    composerRef,
-    onDock: handleComposerDock,
-    onPopOut: handleComposerPopOut,
-    poppedOut,
-    position: popoutPosition
-  })
+    handleComposerToggle,
+    onComposerGesturePointerDown,
+    popoutAllowed,
+    popoutPosition,
+    poppedOut
+  } = useComposerPopout({ composerRef })
 
   // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
   // this ref (to suppress its stash while editing a queued prompt) and the queue
@@ -287,34 +258,6 @@ export function ChatBar({
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
   const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
-
-  // Keep the floating box on-screen: re-clamp (with the real measured size +
-  // thread bounds) when it pops out and on every window resize — so a position
-  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
-  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
-  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
-  // even if the first measure was premature.
-  useEffect(() => {
-    if (!poppedOut) {
-      return undefined
-    }
-
-    const reclamp = (persist: boolean) => {
-      const el = composerRef.current
-      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
-    }
-
-    reclamp(true)
-    const raf = requestAnimationFrame(() => reclamp(true))
-    const onResize = () => reclamp(false)
-    window.addEventListener('resize', onResize)
-
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-    }
-  }, [poppedOut])
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)

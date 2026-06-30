@@ -160,6 +160,7 @@ class TestFindRetiredPerSlot:
 
     def test_full_trap_config(self):
         cfg = {
+            "model":      {"provider": "xai", "default": "grok-3"},
             "principal":  {"model": "grok-4-1-fast-non-reasoning"},
             "auxiliary":  {"vision": {"model": "grok-4-fast-reasoning"}},
             "delegation": {"model": "grok-code-fast-1"},
@@ -167,7 +168,45 @@ class TestFindRetiredPerSlot:
             "plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}},
         }
         issues = find_retired_xai_refs(cfg)
-        assert len(issues) == 5
+        assert len(issues) == 6
+
+
+class TestFindRetiredModelBlock:
+    """The top-level ``model`` block is the PRIMARY active-model slot.
+
+    It mirrors ``runtime_provider._get_model_config``: ``model.default`` is
+    canonical and ``model.model`` is the accepted alias (used only when
+    ``default`` is absent).
+    """
+
+    def test_model_default_retired(self):
+        cfg = {"model": {"provider": "xai", "default": "grok-3"}}
+        issues = find_retired_xai_refs(cfg)
+        assert len(issues) == 1
+        assert issues[0].config_path == "model.default"
+        assert issues[0].current_model == "grok-3"
+        assert issues[0].replacement == _RETIRED_MODELS["grok-3"]["replacement"]
+        assert issues[0].reasoning_effort == _RETIRED_MODELS["grok-3"]["reasoning_effort"]
+
+    def test_model_model_alias_retired(self):
+        cfg = {"model": {"model": "x-ai/grok-4-fast-non-reasoning"}}
+        issues = find_retired_xai_refs(cfg)
+        assert len(issues) == 1
+        assert issues[0].config_path == "model.model"
+        assert issues[0].current_model == "x-ai/grok-4-fast-non-reasoning"
+        entry = _RETIRED_MODELS["grok-4-fast-non-reasoning"]
+        assert issues[0].replacement == entry["replacement"]
+        assert issues[0].reasoning_effort == entry["reasoning_effort"]
+
+    def test_model_default_takes_precedence_over_alias(self):
+        # When both are present, only model.default is scanned (mirrors
+        # _get_model_config, which ignores model.model once default is set).
+        cfg = {"model": {"default": "grok-3", "model": "grok-code-fast-1"}}
+        assert _paths(find_retired_xai_refs(cfg)) == ["model.default"]
+
+    def test_model_valid_not_flagged(self):
+        assert find_retired_xai_refs({"model": {"default": "grok-4.3"}}) == []
+        assert find_retired_xai_refs({"model": {"default": "gpt-4o"}}) == []
 
 
 # ---------------------------------------------------------------------------

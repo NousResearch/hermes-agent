@@ -63,6 +63,7 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
     """Walk all model slots in a Hermes config and return retirement issues.
 
     Slots scanned:
+      - ``model.default`` (primary active-model slot; ``model.model`` alias)
       - ``principal.model``
       - ``auxiliary.<any>.model`` (introspective — covers future aux slots)
       - ``delegation.model``
@@ -88,6 +89,16 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
 
     if not isinstance(config, dict):
         return issues
+
+    # Primary active-model slot. Mirror runtime_provider._get_model_config:
+    # model.default is canonical, model.model is the accepted alias (only
+    # consulted when default is absent).
+    model = config.get("model")
+    if isinstance(model, dict):
+        if model.get("default"):
+            _check("model.default", model.get("default"))
+        elif model.get("model"):
+            _check("model.model", model.get("model"))
 
     principal = config.get("principal")
     if isinstance(principal, dict):

@@ -1,6 +1,7 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
 import importlib
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from trajectory_compressor import (
     TrajectoryMetrics,
     AggregateMetrics,
     TrajectoryCompressor,
+    main,
 )
 
 
@@ -628,3 +630,35 @@ class TestCompressionToolPairIntegrity:
             {"from": "tool", "value": "<tool_response>a</tool_response>"},
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
+
+
+class TestFileInputSampling:
+    """``main(..., sample_percent=...)`` on a single JSONL file."""
+
+    def test_sampling_empty_file_does_not_crash(self, tmp_path):
+        """An empty (or all-invalid) input file must not raise.
+
+        Regression: ``sample_size = max(1, ...)`` floors the size to 1 even
+        when there are zero entries, so the un-clamped
+        ``random.sample(entries, sample_size)`` raised
+        ``ValueError: Sample larger than population`` on an empty file.
+        The directory-input path already clamped with ``min()``; the
+        file-input path did not.
+        """
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+
+        # dry_run returns right after sampling, before any tokenizer init.
+        main(input=str(empty), sample_percent=15, dry_run=True)
+
+    def test_sampling_size_clamped_to_population(self, tmp_path):
+        """A file smaller than the rounded sample size must not raise."""
+        one = tmp_path / "one.jsonl"
+        one.write_text(
+            json.dumps({"conversations": [{"from": "human", "value": "hi"}]}) + "\n",
+            encoding="utf-8",
+        )
+
+        # 1 entry, 90% -> sample_size floored to max(1, 0)=1, fine; the guard
+        # matters when the rounded size exceeds the population.
+        main(input=str(one), sample_percent=90, dry_run=True)

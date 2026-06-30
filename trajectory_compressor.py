@@ -1457,7 +1457,11 @@ def main(
         if sample_percent is not None:
             random.seed(seed)
             sample_size = max(1, int(total_entries * sample_percent / 100))
-            entries = random.sample(entries, sample_size)
+            # Clamp to the population size: an empty or tiny file would
+            # otherwise make ``random.sample`` raise "Sample larger than
+            # population" (max(1, ...) floors the size to 1 even when there
+            # are zero entries). Mirrors the directory-input path below.
+            entries = random.sample(entries, min(sample_size, total_entries))
             print(f"   Sampled {len(entries):,} trajectories ({sample_percent}% of {total_entries:,})")
         
         if dry_run:

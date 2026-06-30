@@ -694,6 +694,24 @@ class AIAgent:
             reset_engine=True,
         )
 
+        # Reset-only session switches (/new, /resume, /branch) update
+        # agent.session_id before calling reset_session_state(). The built-in
+        # compressor keeps durable cooldown state keyed by its bound session,
+        # so rebind it when the active session changed but no full start hook ran.
+        engine = getattr(self, "context_compressor", None)
+        target_session_id = getattr(self, "session_id", "") or ""
+        bound_session_id = getattr(engine, "_session_id", "") if engine is not None else ""
+        if (
+            engine is not None
+            and hasattr(engine, "bind_session_state")
+            and target_session_id
+            and target_session_id != bound_session_id
+        ):
+            try:
+                engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
+            except Exception as exc:
+                logger.debug("context engine bind_session_state during reset: %s", exc)
+
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
@@ -3400,8 +3418,8 @@ class AIAgent:
     def _get_tool_call_id_static(tc) -> str:
         """Extract call ID from a tool_call entry (dict or object)."""
         if isinstance(tc, dict):
-            return tc.get("call_id", "") or tc.get("id", "") or ""
-        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
+        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
 
     @staticmethod
     def _get_tool_call_name_static(tc) -> str:

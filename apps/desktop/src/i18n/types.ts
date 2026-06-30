@@ -331,6 +331,8 @@ export interface Translations {
         off: string
         scaleTitle: string
         scaleDesc: string
+        roamTitle: string
+        roamDesc: string
         chooseTitle: string
         chooseDesc: string
         searchPlaceholder: string
@@ -1160,6 +1162,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    speakReplies: string
+    stopSpeakingReplies: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string

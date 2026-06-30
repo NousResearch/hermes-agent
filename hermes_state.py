@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -611,6 +612,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    compression_failure_cooldown_until REAL,
+    compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -1609,6 +1612,88 @@ class SessionDB:
             conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
 
         self._execute_write(_do)
+
+    def record_compression_failure_cooldown(
+        self,
+        session_id: str,
+        cooldown_until: float,
+        error: Optional[str] = None,
+    ) -> None:
+        """Persist the active compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = ?, "
+                "compression_failure_error = ? WHERE id = ?",
+                (cooldown_until, error, session_id),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def get_compression_failure_cooldown(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the active compression-failure cooldown for ``session_id``."""
+        if not session_id:
+            return None
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT compression_failure_cooldown_until, compression_failure_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        cooldown_until = (
+            row["compression_failure_cooldown_until"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        if cooldown_until is None:
+            return None
+        cooldown_until = float(cooldown_until)
+        if cooldown_until <= now:
+            return None
+        error = (
+            row["compression_failure_error"]
+            if isinstance(row, sqlite3.Row)
+            else row[1]
+        )
+        return {
+            "cooldown_until": cooldown_until,
+            "remaining_seconds": cooldown_until - now,
+            "error": error,
+        }
+
+    def clear_compression_failure_cooldown(self, session_id: str) -> None:
+        """Clear any persisted compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = NULL, "
+                "compression_failure_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -1630,6 +1715,35 @@ class SessionDB:
     # the compress() call plus the rotation. ``holder`` identifies the
     # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
     # via ``expires_at`` if the holder process crashed without releasing.
+    def refresh_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend the compression lock lease if ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + ttl_seconds
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE compression_locks SET expires_at = ? "
+                "WHERE session_id = ? AND holder = ? AND expires_at >= ?",
+                (expires_at, session_id, holder, now),
+            )
+            return cur.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "refresh_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+            return False
+
     def try_acquire_compression_lock(
         self,
         session_id: str,
@@ -5312,3 +5426,20 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+class AsyncSessionDB:
+    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""
+
+    def __init__(self, db: "SessionDB") -> None:
+        self._db = db
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs):
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded

@@ -2163,7 +2163,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     result_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "tool":
-            cid = msg.get("tool_call_id")
+            cid = (msg.get("tool_call_id") or "").strip()
             if cid:
                 result_call_ids.add(cid)
 
@@ -2172,7 +2172,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     if orphaned_results:
         messages = [
             m for m in messages
-            if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+            if not (m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
         ]
         _ra().logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",

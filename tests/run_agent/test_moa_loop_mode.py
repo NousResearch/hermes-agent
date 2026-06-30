@@ -200,7 +200,7 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
 
 
-@pytest.mark.parametrize("provider", ["anthropic", "minimax-oauth", "qwen-oauth"])
+@pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
 def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
     """MoA can pass resolved endpoints for provider-backed slots without
     call_llm flattening them to generic custom endpoints.
@@ -211,6 +211,11 @@ def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider)
     via ``_resolve_task_provider_model`` (which takes everything except
     ``api_mode``, handled separately). The provider identity must survive that
     resolution rather than being flattened to ``custom``.
+
+    NOTE: providers in the ``_slot_runtime`` name-preservation set (anthropic,
+    bedrock, nous, openai-codex, xai-oauth) are intentionally NOT forwarded —
+    they're covered by their own dedicated tests. This case covers the
+    forward-the-resolved-endpoint path for providers that are NOT in the set.
     """
     from agent import moa_loop
     from agent.auxiliary_client import _resolve_task_provider_model

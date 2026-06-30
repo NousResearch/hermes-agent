@@ -24,7 +24,7 @@ import {
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
-import { MessageRenderBoundary } from './message-render-boundary'
+import { MessageRenderBoundary } from '../message-render-boundary'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 

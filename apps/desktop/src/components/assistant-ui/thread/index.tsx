@@ -1,17 +1,17 @@
 import { type FC, useCallback, useMemo, useState } from 'react'
 
-import { AssistantMessage } from '@/components/assistant-ui/assistant-message'
-import { SystemMessage } from '@/components/assistant-ui/system-message'
-import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
+import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
+import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import {
   BackgroundResumeNotice,
   CenteredThreadSpinner,
   ResponseLoadingIndicator
-} from '@/components/assistant-ui/thread-status'
-import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
-import { type RestoreMessageTarget } from '@/components/assistant-ui/thread-types'
-import { UserEditComposer } from '@/components/assistant-ui/user-edit-composer'
-import { UserMessage } from '@/components/assistant-ui/user-message'
+} from '@/components/assistant-ui/thread/status'
+import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
+import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
+import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
+import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
+import { UserMessage } from '@/components/assistant-ui/thread/user-message'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway } from '@/hermes'

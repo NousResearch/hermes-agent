@@ -72,7 +72,7 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SlashExecResponse
-} from '../../types'
+} from '../../../types'
 
 import {
   _submitInFlight,
@@ -93,7 +93,7 @@ import {
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionBusyRetry
-} from './use-prompt-actions-utils'
+} from './utils'
 
 interface HandoffResult {
   ok: boolean

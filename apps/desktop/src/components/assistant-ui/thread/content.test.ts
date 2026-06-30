@@ -6,7 +6,7 @@ import {
   messageContentText,
   partText,
   pickPrimaryPreviewTarget
-} from './thread-content'
+} from './content'
 
 describe('partText', () => {
   it('returns plain strings as-is', () => {

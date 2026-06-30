@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
-import { Thread } from './thread'
+import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 

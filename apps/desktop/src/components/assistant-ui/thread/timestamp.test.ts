@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatMessageTimestamp } from './thread-timestamp'
+import { formatMessageTimestamp } from './timestamp'
 
 const labels = {
   today: (time: string) => `Today at ${time}`,

@@ -2,9 +2,9 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread-content'
-import { type RestoreMessageTarget } from '@/components/assistant-ui/thread-types'
-import { UserMessageText } from '@/components/assistant-ui/user-message-text'
+import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
+import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
+import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'

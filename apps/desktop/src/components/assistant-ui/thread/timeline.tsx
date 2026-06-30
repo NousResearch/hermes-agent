@@ -9,7 +9,7 @@ import {
   deriveTimelineEntries,
   type TimelineEntry,
   type TimelineSourceMessage
-} from './thread-timeline-data'
+} from './timeline-data'
 
 const MIN_ENTRIES = 4
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'

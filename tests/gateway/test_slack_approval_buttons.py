@@ -348,6 +348,135 @@ class TestSlackSlashConfirmAction:
 
 
 # ===========================================================================
+# send_clarify — Block Kit choice buttons
+# ===========================================================================
+
+class TestSlackClarifyButtons:
+    """Test Slack-native clarify prompts and Block Kit callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_sends_blocks_without_raw_json_text(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "3000.1"})
+
+        result = await adapter.send_clarify(
+            chat_id="C1",
+            question="Which deployment target?",
+            choices=["staging", "production"],
+            clarify_id="clarify-1",
+            session_key="agent:main:slack:group:C1:1111",
+            metadata={"thread_id": "2000.1"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "3000.1"
+        mock_client.chat_postMessage.assert_awaited_once()
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert kwargs["channel"] == "C1"
+        assert kwargs["thread_ts"] == "2000.1"
+        assert kwargs["text"] == "Hermes needs your input: Which deployment target?"
+        assert "choices_offered" not in kwargs["text"]
+        assert "{" not in kwargs["text"]
+
+        blocks = kwargs["blocks"]
+        assert blocks[0]["type"] == "section"
+        section_text = blocks[0]["text"]["text"]
+        assert "Which deployment target?" in section_text
+        assert "1. staging" in section_text
+        assert "2. production" in section_text
+        action_ids = [element["action_id"] for element in blocks[1]["elements"]]
+        assert action_ids == [
+            "hermes_clarify_choice_0",
+            "hermes_clarify_choice_1",
+            "hermes_clarify_other",
+        ]
+        assert len(set(action_ids)) == len(action_ids)
+        assert adapter._clarify_state["clarify-1"] == ["staging", "production"]
+
+    @pytest.mark.asyncio
+    async def test_clarify_choice_resolves_gateway_entry(self):
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._clarify_state["clarify-1"] = ["staging", "production"]
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "3000.1",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Original clarify prompt"},
+                    },
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_clarify_choice_1",
+            "value": "clarify-1|1",
+        }
+
+        with patch(
+            "tools.clarify_gateway.resolve_gateway_clarify",
+            return_value=True,
+        ) as mock_resolve:
+            await adapter._handle_clarify_action(ack, body, action)
+
+        ack.assert_awaited_once()
+        mock_resolve.assert_called_once_with("clarify-1", "production")
+        assert "clarify-1" not in adapter._clarify_state
+        mock_client.chat_update.assert_awaited_once()
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "owner selected: production" in update_kwargs["text"]
+        assert update_kwargs["blocks"][0]["text"]["text"] == "Original clarify prompt"
+
+    @pytest.mark.asyncio
+    async def test_clarify_other_switches_to_text_capture(self):
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._clarify_state["clarify-2"] = ["staging", "production"]
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "3000.2",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Original clarify prompt"},
+                    },
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_clarify_other",
+            "value": "clarify-2",
+        }
+
+        with patch(
+            "tools.clarify_gateway.mark_awaiting_text",
+            return_value=True,
+        ) as mock_mark:
+            await adapter._handle_clarify_action(ack, body, action)
+
+        ack.assert_awaited_once()
+        mock_mark.assert_called_once_with("clarify-2")
+        assert "clarify-2" in adapter._clarify_state
+        mock_client.chat_update.assert_awaited_once()
+        update_kwargs = mock_client.chat_update.call_args[1]
+        assert "type your answer" in update_kwargs["text"]
+
+
+# ===========================================================================
 # _fetch_thread_context
 # ===========================================================================
 

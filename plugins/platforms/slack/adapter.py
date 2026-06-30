@@ -439,6 +439,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # Track clarify prompt choices for Block Kit callbacks.  Values are
+        # short-lived: wait_for_response() clears the gateway entry on resolve
+        # or timeout, and callbacks pop this state after a concrete choice.
+        self._clarify_state: Dict[str, List[str]] = {}
+        self._CLARIFY_STATE_MAX = 500
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -1170,6 +1175,13 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            # Register Block Kit action handlers for clarify buttons.
+            for _action_id in (
+                *(f"hermes_clarify_choice_{index}" for index in range(24)),
+                "hermes_clarify_other",
+            ):
+                self._app.action(_action_id)(self._handle_clarify_action)
 
             # Register plugin-provided Block Kit action handlers.
             #
@@ -3269,6 +3281,105 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a clarify prompt as Slack Block Kit buttons."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        def _flatten_choice(choice: Any) -> str:
+            if choice is None:
+                return ""
+            if isinstance(choice, str):
+                return choice.strip()
+            if isinstance(choice, dict):
+                for key in ("label", "description", "text", "title"):
+                    value = choice.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                return ""
+            if isinstance(choice, (list, tuple)):
+                return " ".join(_flatten_choice(item) for item in choice).strip()
+            return str(choice).strip()
+
+        question_text = str(question or "").strip() or "Please clarify."
+        clean_choices = [
+            text for text in (_flatten_choice(choice) for choice in (choices or [])) if text
+        ][:24]
+
+        if not clean_choices:
+            return await self.send(
+                chat_id=chat_id,
+                content=f"❓ {question_text}",
+                metadata=metadata,
+            )
+
+        try:
+            option_lines = "\n".join(
+                f"{index + 1}. {choice}" for index, choice in enumerate(clean_choices)
+            )
+            body = f"❓ *Hermes needs your input*\n\n{question_text}\n\n{option_lines}"
+            if len(body) > 3000:
+                body = body[:2997] + "..."
+
+            elements = [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": str(index + 1)},
+                    "action_id": f"hermes_clarify_choice_{index}",
+                    "value": f"{clarify_id}|{index}",
+                }
+                for index in range(len(clean_choices))
+            ]
+            elements.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Other"},
+                "action_id": "hermes_clarify_other",
+                "value": clarify_id,
+            })
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": body},
+                },
+                {
+                    "type": "actions",
+                    "elements": elements,
+                },
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"Hermes needs your input: {question_text[:150]}",
+                "blocks": blocks,
+            }
+            thread_ts = self._resolve_thread_ts(None, metadata)
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            self._clarify_state[clarify_id] = clean_choices
+            if len(self._clarify_state) > self._CLARIFY_STATE_MAX:
+                for old_id in list(self._clarify_state)[: self._CLARIFY_STATE_MAX // 2]:
+                    self._clarify_state.pop(old_id, None)
+
+            return SendResult(
+                success=True,
+                message_id=result.get("ts", ""),
+                raw_response=result,
+            )
+        except Exception as e:
+            logger.error("[Slack] send_clarify failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     def _is_interactive_user_authorized(
         self,
         user_id: str,
@@ -3435,6 +3546,129 @@ class SlackAdapter(BasePlatformAdapter):
                 exc,
                 exc_info=True,
             )
+
+    async def _handle_clarify_action(self, ack, body, action) -> None:
+        """Handle a clarify button click from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized clarify click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
+
+        if action_id.startswith("hermes_clarify_choice_"):
+            if "|" not in value:
+                logger.warning("[Slack] Malformed clarify value: %s", value)
+                return
+            clarify_id, index_text = value.split("|", 1)
+            choices = self._clarify_state.get(clarify_id)
+            if choices is None:
+                logger.warning("[Slack] Clarify choice for stale id %s", clarify_id)
+                return
+            try:
+                index = int(index_text)
+            except ValueError:
+                logger.warning("[Slack] Malformed clarify index: %s", index_text)
+                return
+            if index < 0 or index >= len(choices):
+                logger.warning("[Slack] Clarify index out of range: %s", index_text)
+                return
+            response = str(choices[index])
+            try:
+                from tools.clarify_gateway import resolve_gateway_clarify
+
+                resolved = resolve_gateway_clarify(clarify_id, response)
+            except Exception as exc:
+                logger.error(
+                    "Failed to resolve Slack clarify button: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+            if resolved:
+                self._clarify_state.pop(clarify_id, None)
+                decision_text = f"✅ {user_name} selected: {response}"
+            else:
+                self._clarify_state.pop(clarify_id, None)
+                logger.warning(
+                    "[Slack] Clarify resolver reported stale id %s",
+                    clarify_id,
+                )
+                decision_text = "⚠️ This clarify prompt expired. Please ask again."
+        elif action_id == "hermes_clarify_other":
+            clarify_id = value
+            if clarify_id not in self._clarify_state:
+                logger.warning("[Slack] Clarify Other for stale id %s", clarify_id)
+                return
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+
+                awaiting_text = mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to mark Slack clarify for text response: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+            if awaiting_text:
+                decision_text = f"✏️ {user_name}, type your answer in this thread."
+            else:
+                self._clarify_state.pop(clarify_id, None)
+                logger.warning(
+                    "[Slack] Clarify text mode failed for stale id %s",
+                    clarify_id,
+                )
+                decision_text = "⚠️ This clarify prompt expired. Please ask again."
+        else:
+            logger.warning("[Slack] Unknown clarify action: %s", action_id)
+            return
+
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Clarify prompt",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text[:3000]},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update clarify message: %s", e)
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""

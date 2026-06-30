@@ -34,7 +34,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "kilocode"}
 
 
 def _get_custom_provider_names() -> list:
@@ -407,6 +407,24 @@ def auth_add_command(args) -> None:
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "kilocode":
+        from hermes_cli.kilo_auth import acquire_and_store_kilo_credential
+
+        entry = acquire_and_store_kilo_credential(
+            pool,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+            label=(getattr(args, "label", None) or "").strip() or None,
+        )
+        # The org header is NOT set here — it is a model-config concern applied
+        # by _model_flow_kilo after deactivate_provider(), so it doesn't leak to
+        # other providers. The org id lives on the credential's extra dict.
+        first_credential = len(pool.entries()) == 1
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
+        print(f'Saved {provider} device-auth credentials: "{entry.label}"')
         return
 
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")

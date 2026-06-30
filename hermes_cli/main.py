@@ -618,6 +618,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_bedrock,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
+    _model_flow_kilo,
     _model_flow_moa,
 )
 logger = logging.getLogger(__name__)
@@ -3103,6 +3104,8 @@ def select_provider_and_model(args=None):
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
+    elif selected_provider == "kilocode":
+        _model_flow_kilo(config, current_model, args=args)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
     elif selected_provider == "stepfun":
@@ -3120,7 +3123,6 @@ def select_provider_and_model(args=None):
         "kimi-coding-cn",
         "minimax",
         "minimax-cn",
-        "kilocode",
         "opencode-zen",
         "opencode-go",
         "alibaba",

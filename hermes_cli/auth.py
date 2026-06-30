@@ -1486,6 +1486,16 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
         if not cleared:
             return False
         _save_auth_store(auth_store)
+
+    # Kilo device-auth mirrors the selected organization into
+    # model.default_headers (X-KILOCODE-ORGANIZATIONID). Clear it on logout so
+    # no orphaned org header survives the credentials it was bound to.
+    if target == "kilocode":
+        try:
+            from hermes_cli.kilo_auth import set_kilo_org_header
+            set_kilo_org_header(None)
+        except Exception as exc:
+            logger.debug("kilo org header cleanup on logout failed: %s", exc)
     return True
 
 
@@ -1499,6 +1509,15 @@ def deactivate_provider() -> None:
         auth_store = _load_auth_store()
         auth_store["active_provider"] = None
         _save_auth_store(auth_store)
+
+    # Clear the Kilo org header (model.default_headers) so it doesn't leak to
+    # the newly-selected provider. _model_flow_kilo re-applies it AFTER calling
+    # this, so a Kilo→Kilo switch still works.
+    try:
+        from hermes_cli.kilo_auth import set_kilo_org_header
+        set_kilo_org_header(None)
+    except Exception:
+        pass
 
 
 # =============================================================================

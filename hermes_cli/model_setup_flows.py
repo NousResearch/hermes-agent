@@ -2825,3 +2825,179 @@ def _model_flow_anthropic(config, current_model=""):
         print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
+
+
+def _model_flow_kilo(config, current_model="", args=None):
+    """Kilo Code provider: browser device-auth or API key, then pick model.
+
+    Kilo Gateway tokens are long-lived (~1 year) with no refresh, so device-auth
+    credentials are stored in the credential pool as ``auth_type=api_key`` and
+    resolved at runtime via the generic api_key path (env → pool). When an
+    organization is selected during login, its id is mirrored into
+    ``model.default_headers`` (X-KILOCODE-ORGANIZATIONID) — applied AFTER
+    ``deactivate_provider()`` so it doesn't leak to the previously-active
+    provider.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        load_config,
+        save_config,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from agent.credential_pool import load_pool
+
+    pconfig = PROVIDER_REGISTRY["kilocode"]
+    gateway_base = pconfig.inference_base_url
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+
+    # Existing credentials: env var (paste-key path) or pool entry (device-auth).
+    pool = load_pool("kilocode")
+    existing_entry = pool.peek() if pool.entries() else None
+    existing_env_key = get_env_value(key_env) or "" if key_env else ""
+    has_existing = bool(existing_entry and getattr(existing_entry, "access_token", "")) or bool(existing_env_key)
+
+    resolved_token = existing_env_key or (
+        getattr(existing_entry, "access_token", "") if existing_entry else ""
+    )
+    resolved_org_id = existing_entry.extra.get("organization_id") if existing_entry else None
+
+    if has_existing:
+        choice = _prompt_auth_credentials_choice("Kilo Code credentials found.")
+        if choice == "cancel":
+            print("No change.")
+            return
+        if choice == "use":
+            # Fall through to model selection with the existing token.
+            pass
+        else:
+            # reauth — clear the existing token so we acquire a fresh one below.
+            resolved_token = ""
+            resolved_org_id = None
+
+    # Acquire credentials if none usable or the user chose to reauthenticate.
+    if not resolved_token:
+        try:
+            from hermes_cli.setup import _curses_prompt_choice
+            method_idx = _curses_prompt_choice(
+                "Choose how to authenticate with Kilo Code:",
+                ["Login with browser (device authorization)", "Paste API key"],
+                0,
+            )
+        except Exception:
+            print("Choose how to authenticate with Kilo Code:")
+            print("  → 1. Login with browser (device authorization)")
+            print("    2. Paste API key")
+            try:
+                raw = input("  Choice [1/2]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("No change.")
+                return
+            method_idx = 0 if raw not in {"2"} else 1
+
+        if method_idx != 0:
+            # Paste API key — reuse the shared prompt (writes KILOCODE_API_KEY).
+            from hermes_cli.main import _prompt_api_key
+            resolved_token, abort = _prompt_api_key(pconfig, existing_env_key, provider_id="kilocode")
+            if abort:
+                return
+            resolved_org_id = None
+        else:
+            from hermes_cli.kilo_auth import acquire_and_store_kilo_credential
+
+            no_browser = bool(getattr(args, "no_browser", False)) if args else False
+            timeout = (getattr(args, "timeout", None) or 15.0) if args else 15.0
+            entry = acquire_and_store_kilo_credential(
+                pool,
+                open_browser=not no_browser,
+                timeout_seconds=timeout,
+            )
+            # Track the newly-created entry so the defaults lookup below uses
+            # the correct org id (not the stale pre-reauth one).
+            existing_entry = entry
+            resolved_token = entry.access_token
+            resolved_org_id = entry.extra.get("organization_id")
+            print()
+            print(f"Saved Kilo Code device-auth credentials: \"{entry.label}\"")
+
+            from hermes_constants import display_hermes_home as _dhh
+            print(f"  Auth state: {_dhh()}/auth.json")
+
+    # ── Model selection ────────────────────────────────────────────────────
+    # Prefer the account's default model (from /api/defaults) as a suggestion,
+    # then fall back to the curated catalog + live /models probe. Fetch both
+    # concurrently to avoid blocking the interactive flow on sequential round-trips.
+    curated = list(_PROVIDER_MODELS.get("kilocode", []))
+    suggested_default = None
+    live_models = []
+
+    if resolved_token:
+        from concurrent.futures import ThreadPoolExecutor
+        from hermes_cli.kilo_auth import fetch_kilo_default_model
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            defaults_future = ex.submit(fetch_kilo_default_model, resolved_token, resolved_org_id)
+            models_future = ex.submit(fetch_api_models, resolved_token, gateway_base)
+            suggested_default = defaults_future.result()
+            live_models = models_future.result() or []
+
+    if live_models:
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from Kilo Code API")
+    else:
+        model_list = curated
+        if model_list:
+            print(
+                f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+            )
+
+    # Surface the account default first if it is among the known models.
+    if suggested_default and suggested_default not in model_list:
+        model_list = [suggested_default, *model_list]
+    elif suggested_default:
+        model_list = [suggested_default, *[m for m in model_list if m != suggested_default]]
+
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model or suggested_default or "",
+            confirm_provider="kilocode",
+            confirm_base_url=gateway_base,
+            confirm_api_key=resolved_token,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "kilocode"
+        model["base_url"] = gateway_base
+        from hermes_cli.config import clear_model_endpoint_credentials
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
+        model.pop("api_mode", None)
+        save_config(cfg)
+        # deactivate_provider clears any stale org header from the prior
+        # provider; re-apply the Kilo org header AFTER so it only rides
+        # requests to api.kilo.ai while kilocode is active.
+        deactivate_provider()
+
+        from hermes_cli.kilo_auth import set_kilo_org_header
+        set_kilo_org_header(resolved_org_id)
+
+        print(f"Default model set to: {selected} (via Kilo Code)")
+    else:
+        print("No change.")

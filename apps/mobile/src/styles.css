@@ -834,6 +834,54 @@ html.hermes-mobile-standalone [data-slot='overlay-view'] select {
   min-height: 2.75rem;
 }
 
+/* Small interaction effects — polish on the new mobile overrides:
+   - press-down scale on tap targets (sidebar trigger, Done pill, nav rows)
+   - crossfade on the master-detail swap so it doesn't read as a hard cut
+   - sienna focus ring on inputs + textarea (matches the PMXT accent palette)
+   - drawer Sheet enter/exit easing tuned for phone (snappier in, softer out) */
+html.hermes-mobile-standalone [data-tool-id='sidebar'],
+html.hermes-mobile-standalone .mobile-done-pill,
+html.hermes-mobile-standalone [data-slot='overlay-nav-item'] {
+  transition:
+    background-color 140ms ease-out,
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out;
+}
+html.hermes-mobile-standalone [data-tool-id='sidebar']:active,
+html.hermes-mobile-standalone .mobile-done-pill:active,
+html.hermes-mobile-standalone [data-slot='overlay-nav-item']:active {
+  transform: scale(0.97);
+}
+
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'],
+html.hermes-mobile-standalone [data-slot='overlay-main'] {
+  transition: opacity 180ms ease-out;
+}
+html.hermes-mobile-standalone [data-slot='overlay-sidebar']:not(:has(*)),
+html.hermes-mobile-standalone body[data-mobile-drilled] [data-slot='overlay-sidebar'] {
+  opacity: 0;
+}
+
+html.hermes-mobile-standalone input:focus,
+html.hermes-mobile-standalone textarea:focus,
+html.hermes-mobile-standalone [data-slot='composer-rich-input']:focus,
+html.hermes-mobile-standalone [data-slot='overlay-view'] input:focus,
+html.hermes-mobile-standalone [data-slot='overlay-view'] textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 32%, transparent);
+  border-color: color-mix(in srgb, var(--ui-accent) 48%, transparent);
+  transition:
+    box-shadow 150ms ease-out,
+    border-color 150ms ease-out;
+}
+
+html.hermes-mobile-standalone [data-slot='sheet-content'] {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+html.hermes-mobile-standalone [data-slot='sheet-content'][data-state='closed'] {
+  transition: transform 180ms ease-in;
+}
+
 /* Mobile chrome: only the sidebar trigger lives in the titlebar on phone.
    Settings/keybinds/haptics/flip/right-rail/preview/devtools all collapse
    into the drawer or are inappropriate for a phone; hide them outright so

@@ -693,10 +693,19 @@ export function DesktopController() {
             restoreWorktree(resolved)
             void followActiveSessionCwd(resolved)
           }
+
+          // After a worktree is created via the sidebar fork button, the
+          // backend session tree is stale. When the project already has
+          // sessions the overlay masks the staleness (leading to the
+          // duplicate-lane bug fixed separately); when the project has ZERO
+          // sessions the stale tree is empty and the sidebar renders nothing
+          // until an unrelated event triggers a refresh. Kick a session-list
+          // refresh so the new worktree session appears at once.
+          void refreshSessions().catch(() => undefined)
         })
         .catch(() => undefined)
     },
-    [requestGateway, startFreshSessionDraft]
+    [refreshSessions, requestGateway, startFreshSessionDraft]
   )
 
   // Composer "branch off into a new worktree": the composer already created the

@@ -164,6 +164,60 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
+    def test_request_metadata_sent_via_extra_body(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_metadata={"source": "gateway", "feature": "litellm"},
+        )
+        assert "metadata" not in kw
+        assert kw.get("extra_body", {}).get("metadata") == {
+            "source": "gateway",
+            "feature": "litellm",
+        }
+
+    def test_request_override_metadata_merges_into_extra_body(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_metadata={"source": "gateway", "feature": "litellm"},
+            request_overrides={"metadata": {"feature": "override", "job": "cron"}},
+        )
+        assert "metadata" not in kw
+        assert kw.get("extra_body", {}).get("metadata") == {
+            "source": "gateway",
+            "feature": "override",
+            "job": "cron",
+        }
+
+    def test_request_override_extra_body_preserves_metadata(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_metadata={"source": "gateway", "feature": "litellm"},
+            request_overrides={
+                "extra_body": {
+                    "metadata": {"feature": "override", "job": "cron"},
+                    "custom": True,
+                }
+            },
+        )
+        assert "metadata" not in kw
+        assert kw.get("extra_body") == {
+            "metadata": {
+                "source": "gateway",
+                "feature": "override",
+                "job": "cron",
+            },
+            "custom": True,
+        }
+
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -694,6 +748,15 @@ class TestCodexTransportTimeout:
             request_overrides={"timeout": 450.0},
         )
         assert kw.get("timeout") == 450.0
+
+    def test_request_metadata_is_forwarded_via_extra_body(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hello"}],
+            request_metadata={"hermes_source_tag": "interactive:slack"},
+        )
+        assert "metadata" not in kw
+        assert kw["extra_body"]["metadata"]["hermes_source_tag"] == "interactive:slack"
 
 
 class TestCodexTransportXaiServiceTierStrip:

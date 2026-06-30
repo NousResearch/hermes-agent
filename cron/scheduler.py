@@ -2195,9 +2195,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
         "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+        "HERMES_CRON_JOB_ID",
+        "HERMES_CRON_JOB_NAME",
     )
     for _var_name in _cron_delivery_vars:
         _VAR_MAP[_var_name].set("")
+    _VAR_MAP["HERMES_CRON_JOB_ID"].set(str(job_id or ""))
+    _VAR_MAP["HERMES_CRON_JOB_NAME"].set(str(job_name or ""))
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:

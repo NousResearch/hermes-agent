@@ -99,6 +99,41 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _merge_extra_body(base: dict[str, Any], additions: dict[str, Any] | None) -> None:
+    """Merge extra_body dictionaries, preserving nested metadata keys."""
+    if not additions:
+        return
+    for key, value in additions.items():
+        if key == "metadata" and isinstance(value, dict):
+            existing = base.get("metadata")
+            merged: dict[str, Any] = {}
+            if isinstance(existing, dict):
+                merged.update(existing)
+            merged.update(value)
+            base["metadata"] = merged
+        else:
+            base[key] = value
+
+
+def _apply_request_overrides(
+    api_kwargs: dict[str, Any], extra_body: dict[str, Any], overrides: dict[str, Any] | None
+) -> bool:
+    """Apply caller overrides; return True when extra_body was replaced."""
+    replaced_extra_body = False
+    if not overrides:
+        return replaced_extra_body
+    for key, value in overrides.items():
+        if key == "extra_body" and isinstance(value, dict):
+            _merge_extra_body(extra_body, value)
+        elif key == "extra_body":
+            api_kwargs[key] = value
+            replaced_extra_body = True
+            extra_body.clear()
+        else:
+            api_kwargs[key] = value
+    return replaced_extra_body
+
+
 def _model_consumes_thought_signature(model: Any) -> bool:
     """True when the outgoing model is a Gemini family model that requires
     ``extra_content`` (thought_signature) to be replayed on tool calls.
@@ -440,16 +475,26 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")
-        if additions:
-            extra_body.update(additions)
+        _merge_extra_body(extra_body, additions)
+
+        request_metadata = params.get("request_metadata")
+        if request_metadata:
+            _merge_extra_body(extra_body, {"metadata": request_metadata})
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
         # Request overrides last (service_tier etc.)
-        overrides = params.get("request_overrides")
-        if overrides:
-            api_kwargs.update(overrides)
+        replaced_extra_body = _apply_request_overrides(
+            api_kwargs, extra_body, params.get("request_overrides")
+        )
+
+        if replaced_extra_body:
+            pass
+        elif extra_body:
+            api_kwargs["extra_body"] = extra_body
+        else:
+            api_kwargs.pop("extra_body", None)
 
         return api_kwargs
 
@@ -557,19 +602,20 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Merge any pre-built extra_body additions from the caller
         additions = params.get("extra_body_additions")
-        if additions:
-            extra_body.update(additions)
+        _merge_extra_body(extra_body, additions)
+
+        request_metadata = params.get("request_metadata")
+        if request_metadata:
+            _merge_extra_body(extra_body, {"metadata": request_metadata})
 
         # Request overrides (user config)
-        overrides = params.get("request_overrides")
-        if overrides:
-            for k, v in overrides.items():
-                if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
-                else:
-                    api_kwargs[k] = v
+        replaced_extra_body = _apply_request_overrides(
+            api_kwargs, extra_body, params.get("request_overrides")
+        )
 
-        if extra_body:
+        if replaced_extra_body:
+            pass
+        elif extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)
             # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
             # keys (tags, reasoning, provider, plugins, …) are unknown fields

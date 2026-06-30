@@ -30,6 +30,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
+from agent.litellm_metadata import build_litellm_request_metadata
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -685,6 +686,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
+            request_metadata=build_litellm_request_metadata(agent, caller="main"),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
@@ -788,6 +790,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
+            request_metadata=build_litellm_request_metadata(agent, caller="main"),
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
@@ -820,6 +823,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
+        request_metadata=build_litellm_request_metadata(agent, caller="main"),
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,

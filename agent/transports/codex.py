@@ -292,9 +292,43 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
+        def _merge_metadata_into_extra_body(metadata: Dict[str, Any]) -> None:
+            existing_extra_body = kwargs.get("extra_body")
+            merged_extra_body: Dict[str, Any] = {}
+            if isinstance(existing_extra_body, dict):
+                merged_extra_body.update(existing_extra_body)
+            existing_metadata = merged_extra_body.get("metadata")
+            merged_metadata: Dict[str, Any] = {}
+            if isinstance(existing_metadata, dict):
+                merged_metadata.update(existing_metadata)
+            merged_metadata.update(metadata)
+            merged_extra_body["metadata"] = merged_metadata
+            kwargs["extra_body"] = merged_extra_body
+
+        request_metadata = params.get("request_metadata")
+        if isinstance(request_metadata, dict) and request_metadata:
+            _merge_metadata_into_extra_body(request_metadata)
+
         request_overrides = params.get("request_overrides")
         if request_overrides:
-            kwargs.update(request_overrides)
+            for key, value in request_overrides.items():
+                if key == "metadata" and isinstance(value, dict):
+                    _merge_metadata_into_extra_body(value)
+                elif key == "extra_body" and isinstance(value, dict):
+                    existing_extra_body = kwargs.get("extra_body")
+                    merged_extra_body: Dict[str, Any] = {}
+                    if isinstance(existing_extra_body, dict):
+                        merged_extra_body.update(existing_extra_body)
+                    existing_metadata = merged_extra_body.get("metadata")
+                    merged_extra_body.update(value)
+                    override_metadata = value.get("metadata")
+                    if isinstance(existing_metadata, dict) and isinstance(override_metadata, dict):
+                        merged_metadata: Dict[str, Any] = dict(existing_metadata)
+                        merged_metadata.update(override_metadata)
+                        merged_extra_body["metadata"] = merged_metadata
+                    kwargs["extra_body"] = merged_extra_body
+                else:
+                    kwargs[key] = value
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

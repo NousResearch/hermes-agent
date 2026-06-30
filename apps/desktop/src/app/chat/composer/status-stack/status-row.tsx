@@ -126,7 +126,7 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
       >
         <span
           className={cn(
-            'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
+            'min-w-0 flex-1 truncate text-[0.73rem] leading-4',
             failed
               ? 'text-destructive/90'
               : item.todoStatus && item.todoStatus !== 'in_progress'

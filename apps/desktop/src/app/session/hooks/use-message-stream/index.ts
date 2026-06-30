@@ -352,6 +352,7 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId
+        const completedAt = Math.floor(Date.now() / 1000)
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
@@ -383,12 +384,14 @@ export function useMessageStream({
                 ...message,
                 error: completionError,
                 parts: message.parts.filter(part => part.type !== 'text'),
-                pending: false
+                pending: false,
+                timestamp: completedAt
               }
             : {
                 ...message,
                 parts: replaceTextPart(message.parts),
-                pending: false
+                pending: false,
+                timestamp: completedAt
               }
 
         const newAssistantFromCompletion = (): ChatMessage => ({
@@ -396,6 +399,7 @@ export function useMessageStream({
           role: 'assistant',
           parts: completionError ? [] : [assistantTextPart(finalText)],
           branchGroupId: state.pendingBranchGroup ?? undefined,
+          timestamp: completedAt,
           ...(completionError && { error: completionError })
         })
 
@@ -471,6 +475,7 @@ export function useMessageStream({
     (sessionId: string, errorMessage: string) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
+        const failedAt = Math.floor(Date.now() / 1000)
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
         const error = errorMessage.trim() || 'Hermes reported an error'
@@ -481,7 +486,8 @@ export function useMessageStream({
                 ? {
                     ...message,
                     error,
-                    pending: false
+                    pending: false,
+                    timestamp: failedAt
                   }
                 : message
             )
@@ -493,7 +499,8 @@ export function useMessageStream({
                 parts: [],
                 error,
                 pending: false,
-                branchGroupId: groupId
+                branchGroupId: groupId,
+                timestamp: failedAt
               }
             ]
 

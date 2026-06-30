@@ -1807,6 +1807,10 @@ class MCPServerTask:
 
         command = config.get("command")
         args = config.get("args", [])
+        # Ensure args is a list — YAML parsing can sometimes return a string
+        # if the user writes args: "--flag value" instead of args: ["--flag", "value"]
+        if isinstance(args, str):
+            args = args.split()
         user_env = config.get("env")
 
         if not command:

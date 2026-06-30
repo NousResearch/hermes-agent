@@ -72,6 +72,25 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
                 if isinstance(item, dict)
             ]
             continue
+        if key == "type" and isinstance(value, list):
+            # JSON Schema allows ``type`` to be an array (e.g. the nullable
+            # form ``["string", "null"]`` or a plain union ``["string",
+            # "integer"]``).  Gemini's ``Schema`` object only accepts a
+            # single string ``type``, so collapse the array to one type and
+            # carry ``null`` over as ``nullable``.  Without this the enum
+            # check below does ``type_val in {...}`` on a list and raises
+            # ``TypeError: unhashable type: 'list'``.
+            non_null = [t for t in value if t != "null"]
+            if len(non_null) == 1 and isinstance(non_null[0], str):
+                cleaned["type"] = non_null[0]
+            else:
+                first_str = next(
+                    (t for t in value if isinstance(t, str) and t != "null"), None
+                )
+                cleaned["type"] = first_str if first_str else "object"
+            if "null" in value:
+                cleaned.setdefault("nullable", True)
+            continue
         cleaned[key] = value
 
     # Gemini's Schema validator requires every ``enum`` entry to be a string,
@@ -83,7 +102,11 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     # model enough guidance; the tool handler still validates the value.
     enum_val = cleaned.get("enum")
     type_val = cleaned.get("type")
-    if isinstance(enum_val, list) and type_val in {"integer", "number", "boolean"}:
+    if (
+        isinstance(enum_val, list)
+        and isinstance(type_val, str)
+        and type_val in {"integer", "number", "boolean"}
+    ):
         if any(not isinstance(item, str) for item in enum_val):
             cleaned.pop("enum", None)
 

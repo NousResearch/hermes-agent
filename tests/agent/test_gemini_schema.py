@@ -107,6 +107,61 @@ class TestSanitizeGeminiSchema:
         assert sanitize_gemini_schema("not a schema") == {}
         assert sanitize_gemini_schema([1, 2, 3]) == {}
 
+    def test_array_type_with_enum_does_not_crash(self):
+        """A ``type`` array alongside an ``enum`` must not raise.
+
+        JSON Schema allows ``type`` to be an array (the nullable form
+        ``["string", "null"]``).  The enum-compatibility check did
+        ``type_val in {...}`` directly on that list and raised
+        ``TypeError: unhashable type: 'list'``, aborting tool translation
+        for the whole request.  The array must be collapsed to a single
+        Gemini ``type`` with ``nullable`` carried over.
+        """
+        schema = {"type": ["string", "null"], "enum": ["low", "high"]}
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["type"] == "string"
+        assert cleaned["nullable"] is True
+        # String enum is valid for Gemini and must be preserved.
+        assert cleaned["enum"] == ["low", "high"]
+
+    def test_array_type_nullable_without_enum(self):
+        """The nullable array form collapses even without an enum."""
+        cleaned = sanitize_gemini_schema({"type": ["integer", "null"]})
+        assert cleaned["type"] == "integer"
+        assert cleaned["nullable"] is True
+
+    def test_array_type_plain_union_picks_first(self):
+        """A non-null union has no Gemini equivalent; keep the first type."""
+        cleaned = sanitize_gemini_schema({"type": ["string", "integer"]})
+        assert cleaned["type"] == "string"
+        assert "nullable" not in cleaned
+
+    def test_nested_array_type_with_enum_does_not_crash(self):
+        """The crash must be fixed at every nesting level (properties)."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": ["string", "null"],
+                    "enum": ["red", "green", "blue"],
+                },
+            },
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        color = cleaned["properties"]["color"]
+        assert color["type"] == "string"
+        assert color["nullable"] is True
+        assert color["enum"] == ["red", "green", "blue"]
+
+    def test_array_type_integer_union_drops_int_enum(self):
+        """After collapsing to an int type, an int enum is still dropped."""
+        cleaned = sanitize_gemini_schema(
+            {"type": ["integer", "null"], "enum": [1, 2, 3]}
+        )
+        assert cleaned["type"] == "integer"
+        assert cleaned["nullable"] is True
+        assert "enum" not in cleaned
+
 
 class TestSanitizeGeminiToolParameters:
     def test_empty_parameters_return_valid_object_schema(self):

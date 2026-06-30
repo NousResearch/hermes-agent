@@ -37,7 +37,7 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
             ["git", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
@@ -421,7 +421,7 @@ def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
         return False, ""
     try:
         proc = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=_GH_TIMEOUT
+            ["gh", *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=_GH_TIMEOUT
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""

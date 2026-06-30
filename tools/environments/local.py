@@ -1403,7 +1403,7 @@ class LocalEnvironment(BaseEnvironment):
 
         proc = subprocess.Popen(
             args,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             env=run_env,
             encoding="utf-8",
             errors="replace",

@@ -59,7 +59,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         prefix=f".{path.name}.",
         suffix=".tmp",
         dir=path.parent,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
     )
     tmp_path = Path(tmp_name)
     try:

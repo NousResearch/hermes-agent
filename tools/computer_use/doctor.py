@@ -99,7 +99,7 @@ def _drive_health_report(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         encoding="utf-8",
         errors="replace",
         bufsize=1,

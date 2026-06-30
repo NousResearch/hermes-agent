@@ -1104,7 +1104,7 @@ class TestWhatsAppIdentifierPublicHelpers:
         assert normalize_whatsapp_identifier("60123456789:47@s.whatsapp.net") == "60123456789"
 
     def test_normalize_strips_leading_plus(self):
-        assert normalize_whatsapp_identifier("+601****6789") == "60123456789"
+        assert normalize_whatsapp_identifier("+60123456789") == "60123456789"
 
     def test_normalize_handles_bare_numeric(self):
         assert normalize_whatsapp_identifier("60123456789") == "60123456789"
@@ -1635,3 +1635,14 @@ class TestDingTalkSessionKeySlash:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.session_key == "agent:main:dingtalk:dm:cidNcWXuYmxUGBIug3mN5iy%2F9w"
+
+    def test_percent_encoded_before_slash(self):
+        """Literal '%' must be encoded first to prevent collision with %2F."""
+        from gateway.session import _sanitize_key_component
+
+        # room/a -> room%2F  (slash encoded)
+        assert _sanitize_key_component("room/a") == "room%2Fa"
+        # room%2Fa -> room%252Fa  (literal % encoded to %25, then / untouched)
+        assert _sanitize_key_component("room%2Fa") == "room%252Fa"
+        # These must NOT collide
+        assert _sanitize_key_component("room/a") != _sanitize_key_component("room%2Fa")

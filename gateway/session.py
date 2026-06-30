@@ -102,7 +102,7 @@ def _sanitize_key_component(value: str) -> str:
     etc.) are left as-is because they are safe in dict keys and common in
     platform identifiers.
     """
-    return value.replace("/", "%2F").replace("\\", "%5C").replace("..", "%2E%2E")
+    return value.replace("%", "%25").replace("/", "%2F").replace("\\", "%5C").replace("..", "%2E%2E")
 
 
 @dataclass

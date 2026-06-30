@@ -1019,7 +1019,7 @@ const server = http.createServer(async (req, res) => {
       const cleanQuestion = question.trim();
       const cleanOptions = options.map((option) => option.trim());
       const pollState = await withAdvancedIMessageClient(space, (client) =>
-        client.polls.create(space.id, cleanQuestion, cleanOptions, {
+        client.polls.create(advancedChatId(space), cleanQuestion, cleanOptions, {
           clientMessageId: clientMessageId("poll"),
         })
       );

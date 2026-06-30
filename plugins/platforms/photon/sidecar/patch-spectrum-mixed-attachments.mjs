@@ -160,14 +160,18 @@ export function patchSpectrumTs(root = scriptDir()) {
       continue;
     }
     let patched = original;
+    let changed = false;
     if (!patched.includes(MARKER)) {
       patched = patchRebuild(patched);
       patched = patchInbound(patched);
       patched = patchChildIndices(patched);
       patched = `// ${MARKER}\n${patched}`;
+      changed = true;
     }
+    const beforePollPatch = patched;
     patched = patchPollTitles(patched);
-    if (patched === original) {
+    if (patched !== beforePollPatch) changed = true;
+    if (!changed) {
       return { patched: false, file, reason: "already patched" };
     }
     if (usedCRLF) {

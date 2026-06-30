@@ -505,6 +505,33 @@ def _write_through_provider_state_to_global_root(
         )
 
 
+
+def _is_command_shaped(value: str) -> bool:
+    """Detect values that look like pasted CLI commands rather than raw credentials.
+
+    Catches common patterns:
+    - Starts with known CLI tools (hermes, python, pip, etc.)
+    - Starts with shell flags (-x, --api-key, etc.)
+    - Contains shell operators (&&, ||, |, ;)
+    - Looks like a full command with subcommands
+    """
+    if not value or not isinstance(value, str):
+        return False
+    v = value.strip()
+    # Starts with a CLI command name
+    if re.match(r'^(hermes|python[3]?|pip[3]?|npm|node|curl|wget|git|docker|kubectl|aws|gcloud|az)\b', v, re.I):
+        return True
+    # Starts with a flag (user pasted a full command including the tool)
+    if re.match(r'^-{1,2}[a-zA-Z]', v):
+        return True
+    # Contains shell operators
+    if re.search(r'&&|\|\||;\s*\w', v):
+        return True
+    # Looks like "tool subcommand --flag value" pattern
+    if re.match(r'^\S+\s+(add|remove|set|get|create|delete|auth|login|setup)\b', v, re.I):
+        return True
+    return False
+
 class CredentialPool:
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
@@ -1643,6 +1670,20 @@ class CredentialPool:
         return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
+        # Defence-in-depth: reject command-shaped credentials before they
+        # enter the pool.  Users sometimes paste a full CLI invocation
+        # (e.g. "hermes auth add openrouter --api-key sk-or-xxx") instead
+        # of the raw key.  Persisting that string silently poisons auth.
+        if _is_command_shaped(entry.access_token):
+            logger.warning(
+                "Rejected command-shaped credential for %s (value starts with %r)",
+                entry.provider, entry.access_token[:40],
+            )
+            raise ValueError(
+                f"Refusing to store credential that looks like a CLI command "
+                f"(starts with {entry.access_token[:40]!r}). "
+                f"Please paste only the raw API key."
+            )
         entry = replace(entry, priority=_next_priority(self._entries))
         self._entries.append(entry)
         self._persist()

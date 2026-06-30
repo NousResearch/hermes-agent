@@ -592,10 +592,11 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
-    def _persist(self) -> None:
+    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
+            removed_ids=removed_ids,
         )
 
     def _is_terminal_auth_failure(
@@ -1179,13 +1180,17 @@ class CredentialPool:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc
                         )
+                    removed_ids = [
+                        item.id for item in self._entries
+                        if item.source == "loopback_pkce"
+                    ]
                     self._entries = [
                         item for item in self._entries
                         if item.source != "loopback_pkce"
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
-                    self._persist()
+                    self._persist(removed_ids=removed_ids)
                     return None
             # For openai-codex: same race as xAI/nous — another Hermes process
             # may have consumed the refresh token between our proactive sync
@@ -1245,13 +1250,17 @@ class CredentialPool:
                         logger.debug(
                             "Failed to clear terminal Codex OAuth state: %s", clear_exc
                         )
+                    removed_ids = [
+                        item.id for item in self._entries
+                        if item.source == "device_code"
+                    ]
                     self._entries = [
                         item for item in self._entries
                         if item.source != "device_code"
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
-                    self._persist()
+                    self._persist(removed_ids=removed_ids)
                     return None
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
@@ -1308,13 +1317,17 @@ class CredentialPool:
                         auth_mod.NOUS_DEVICE_CODE_SOURCE,
                         f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
                     }
+                    removed_ids = [
+                        item.id for item in self._entries
+                        if item.source in singleton_sources
+                    ]
                     self._entries = [
                         item for item in self._entries
                         if item.source not in singleton_sources
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
-                    self._persist()
+                    self._persist(removed_ids=removed_ids)
                     return None
             self._mark_exhausted(entry, None)
             return None
@@ -1582,7 +1595,7 @@ class CredentialPool:
             pruned_ids = set(entries_to_prune)
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
         if cleared_any:
-            self._persist()
+            self._persist(removed_ids=entries_to_prune)
         return available
 
     def _select_unlocked(self) -> Optional[PooledCredential]:
@@ -1765,7 +1778,11 @@ class CredentialPool:
             replace(entry, priority=new_priority)
             for new_priority, entry in enumerate(self._entries)
         ]
-        self._persist()
+        write_credential_pool(
+            self.provider,
+            [entry.to_dict() for entry in self._entries],
+            removed_ids=[removed.id],
+        )
         if self._current_id == removed.id:
             self._current_id = None
         return removed
@@ -2427,6 +2444,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     raw_entries = read_credential_pool(provider)
+    disk_ids = {
+        entry.get("id")
+        for entry in raw_entries
+        if isinstance(entry, dict) and entry.get("id")
+    }
     raw_needs_sanitization = any(
         isinstance(payload, dict)
         and sanitize_borrowed_credential_payload(payload, provider) != payload
@@ -2455,8 +2477,10 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= _normalize_pool_priorities(provider, entries)
 
     if changed:
+        new_ids = {entry.id for entry in entries}
         write_credential_pool(
             provider,
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
+            removed_ids=disk_ids - new_ids,
         )
     return CredentialPool(provider, entries)

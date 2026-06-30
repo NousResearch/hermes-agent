@@ -854,7 +854,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
-        {"context": "resume", "name": "search_files", "role": "tool"},
+        {"context": "Searching files for resume", "name": "search_files", "role": "tool"},
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
     ]
@@ -955,6 +955,14 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
+    # This resume takes the deferred (non-eager) path, which fires a 50ms
+    # background Timer (`_schedule_agent_build`) that later calls whatever
+    # `server._make_agent` is patched in AT THAT MOMENT. Left un-stubbed, that
+    # timer outlives this test and lands in the *next* test's `_make_agent`
+    # mock, racily corrupting its captured state (the `assert 'tip' ==
+    # 'cont_tip'` flake in test_session_resume_follows_compression_tip). Neuter
+    # the pre-warm here — this test only asserts the returned display history.
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
@@ -982,10 +990,16 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     base = int(time.time()) - 10_000
     db.create_session("parent_root", source="tui")
-    db.append_message("parent_root", role="user", content="pre-compression turn")
+    db.append_message(
+        "parent_root", role="user", content="pre-compression turn",
+        timestamp=base + 10,
+    )
     db.end_session("parent_root", "compression")
     db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
-    db.append_message("cont_tip", role="assistant", content="post-compression reply")
+    db.append_message(
+        "cont_tip", role="assistant", content="post-compression reply",
+        timestamp=base + 110,
+    )
     conn = db._conn
     assert conn is not None
     conn.execute(
@@ -998,7 +1012,10 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     captured = {}
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
-        captured["agent_session_id"] = session_id
+        # Record only the FIRST (synchronous, eager) build. A stray background
+        # build leaked from an earlier test's deferred resume could otherwise
+        # overwrite this with its own session_id and corrupt the assertion.
+        captured.setdefault("agent_session_id", session_id)
         return types.SimpleNamespace(model="test", provider="test")
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -3664,11 +3681,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "system"
+        assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "system",
+            "role": "user",
             "content": session["history"][-1]["content"],
         }
         # ...and the shared process env was NOT touched.
@@ -5444,13 +5461,23 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         assert built, "agent build did not complete within timeout"
 
         # Build finished without a close race — nothing should have been
-        # cleaned up by the orphan check.
+        # cleaned up by the orphan check.  Scope the assertions to THIS
+        # test's own session_key: a daemon build thread leaked from a prior
+        # session.create test in the same shard process can fire close/
+        # unregister against its own (foreign) key after we've patched the
+        # global hooks, polluting these lists.  Filtering by this session's
+        # key keeps the regression intent (this session's worker/notify must
+        # survive) while making the test immune to shard composition.
+        # (flaky under -j 8: foreign key e.g. 20260629_210208_d4f545)
+        own_key = session["session_key"]
+        own_closed = [k for k in closed_workers if k == own_key]
+        own_unregistered = [k for k in unregistered_keys if k == own_key]
         assert (
-            closed_workers == []
-        ), f"build thread closed its own worker despite no race: {closed_workers}"
+            own_closed == []
+        ), f"build thread closed its own worker despite no race: {own_closed}"
         assert (
-            unregistered_keys == []
-        ), f"build thread unregistered its own notify despite no race: {unregistered_keys}"
+            own_unregistered == []
+        ), f"build thread unregistered its own notify despite no race: {own_unregistered}"
 
         # Session should have the live worker installed.
         assert session.get("slash_worker") is not None

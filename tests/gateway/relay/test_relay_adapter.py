@@ -116,12 +116,16 @@ class _CaptureTransport:
 
     def __init__(self):
         self.sent = None
+        self.sent_platform = None
+        # No concrete fronted identities ⇒ _platform_is_fronted is a no-op here.
+        self._identities = []
 
     def set_inbound_handler(self, h):  # noqa: D401
         self._h = h
 
-    async def send_outbound(self, action):
+    async def send_outbound(self, action, *, platform=None):
         self.sent = action
+        self.sent_platform = platform
         return {"success": True, "message_id": "m1"}
 
 

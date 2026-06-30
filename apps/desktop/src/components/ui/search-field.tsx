@@ -52,7 +52,8 @@ export function SearchField({
         className={cn(
           // `field-sizing: content` grows the input to fit the placeholder/typed
           // text, capped by the container's max-width — no awkward empty space.
-          'h-7 max-w-full bg-transparent text-sm text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          // text-xs matches the form controls (Input/Select via controlVariants).
+          'h-7 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}

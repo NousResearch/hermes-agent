@@ -355,7 +355,14 @@ _hermes_home: Path | None = None
 
 
 def _get_hermes_home() -> Path:
-    """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
+    """Resolve Hermes home dynamically while preserving test monkeypatch hooks.
+
+    Cron is per-profile by design (#4707): the in-process ticker runs inside a
+    profile-scoped gateway, so resolving the active HERMES_HOME at call time
+    means a profile's jobs are stored AND executed under that profile's home
+    (its .env, config.yaml, scripts, skills). Do not freeze this at import or
+    anchor it at the shared default root — either re-breaks profile isolation.
+    """
     return _hermes_home or get_hermes_home()
 
 
@@ -1500,7 +1507,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-_DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+_DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
@@ -2328,7 +2335,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
         # Provider routing
-        pr = _cfg.get("provider_routing", {})
+        pr = _cfg.get("provider_routing") or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,

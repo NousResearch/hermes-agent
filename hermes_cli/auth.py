@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -704,6 +704,22 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     return default_url
 
 
+def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
+    """Return the OpenAI-compatible LM Studio runtime base URL.
+
+    LM Studio's native management API lives under ``/api/v1`` while its
+    OpenAI-compatible chat endpoint lives under ``/v1``. Users often paste
+    either form into ``LM_BASE_URL`` or ``model.base_url``; normalize before
+    the OpenAI SDK appends ``/chat/completions``.
+    """
+    root = str(base_url or "").strip().rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return (root or "http://127.0.0.1:1234") + "/v1"
+
+
 # =============================================================================
 # Error Types
 # =============================================================================
@@ -1260,24 +1276,54 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
-def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
+def write_credential_pool(
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Iterable[str]] = None,
+) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     This is the final disk-boundary guard for borrowed/reference-only
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
+
+    Re-read the on-disk pool under the same lock and merge entries present on
+    disk but missing from ``entries``. Those were added by another process after
+    the caller loaded its in-memory snapshot; without this merge a later
+    rotation/exhaustion rewrite drops the concurrent credential.
+
+    Pass ``removed_ids`` for entries the caller intentionally removed, so the
+    merge does not resurrect them from the on-disk copy.
     """
+    removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = [
+        sanitized_entries = [
             sanitize_borrowed_credential_payload(entry, provider_id)
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
+        existing = pool.get(provider_id)
+        existing_list = existing if isinstance(existing, list) else []
+        new_ids = {
+            entry.get("id")
+            for entry in sanitized_entries
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        merged: List[Dict[str, Any]] = list(sanitized_entries)
+        for disk_entry in existing_list:
+            if not isinstance(disk_entry, dict):
+                continue
+            disk_id = disk_entry.get("id")
+            if not disk_id or disk_id in new_ids or disk_id in removed:
+                continue
+            merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        pool[provider_id] = merged
         return _save_auth_store(auth_store)
 
 
@@ -1489,12 +1535,16 @@ def resolve_provider(
     """
     Determine which inference provider to use.
 
-    Priority (when requested="auto" or None):
-    1. active_provider in auth.json with valid credentials
-    2. Explicit CLI api_key/base_url -> "openrouter"
-    3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
-    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
-    5. Fallback: "openrouter"
+    Priority (when requested="auto" or None) — explicit user intent wins over a
+    stale logged-in OAuth provider (#29285):
+    1. Explicit CLI api_key/base_url -> "openrouter"
+    2. config.yaml `model.provider`
+    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
+    4. OpenRouter credential pool
+    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
+    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
+    7. AWS Bedrock credential chain
+    8. Error (no provider configured)
     """
     normalized = (requested or "auto").strip().lower()
 
@@ -1566,16 +1616,26 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
+    # Provider precedence for the auto-path (#29285): explicit user intent must
+    # win over a stale logged-in OAuth `active_provider`. Order matches the
+    # docstring: 1. explicit CLI creds  2. config.yaml `model.provider`
+    # 3. OPENAI/OPENROUTER env keys  4. OpenRouter pool  5. provider-specific
+    # env keys  6. auth.json `active_provider` (OAuth)  7. Bedrock  8. error.
+    # The normal chat/gateway path resolves config.provider upstream in
+    # resolve_requested_provider() before ever reaching "auto"; this duplicate
+    # check is the safety net for the lone direct caller (main.py resolve_provider
+    # ("auto")) and any future bypass of that stage.
+    _model_cfg: Any = None
     try:
-        auth_store = _load_auth_store()
-        active = auth_store.get("active_provider")
-        if active and active in PROVIDER_REGISTRY:
-            status = get_auth_status(active)
-            if status.get("logged_in"):
-                return active
+        from hermes_cli.config import load_config
+
+        _model_cfg = (load_config() or {}).get("model")
+        if isinstance(_model_cfg, dict):
+            _cfg_provider = _model_cfg.get("provider")
+            if isinstance(_cfg_provider, str) and _cfg_provider.strip().lower() in PROVIDER_REGISTRY:
+                return _cfg_provider.strip().lower()
     except Exception as e:
-        logger.debug("Could not detect active auth provider: %s", e)
+        logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
@@ -1595,6 +1655,18 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not check OpenRouter credential pool: %s", e)
 
+    # Determine the logged-in OAuth provider up front so the env-key loop below
+    # can WARN when an exported API key preempts it (#29285 transparency). The
+    # actual OAuth fallback (tier 6) still happens later if nothing else matches.
+    _oauth_active: Optional[str] = None
+    try:
+        _store = _load_auth_store()
+        _maybe = _store.get("active_provider")
+        if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
+            _oauth_active = _maybe
+    except Exception as e:
+        logger.debug("Could not pre-read active auth provider: %s", e)
+
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
@@ -1609,7 +1681,36 @@ def resolve_provider(
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
+                # An exported API key now wins over a logged-in OAuth provider
+                # (the #29285 fix). Surface that so a user who deliberately uses
+                # OAuth but has a stale key in ~/.hermes/.env isn't silently
+                # switched without knowing why.
+                if _oauth_active and _oauth_active != pid:
+                    logger.warning(
+                        "Provider resolved to %r via %s, preempting your "
+                        "logged-in OAuth provider %r. If you meant to use the "
+                        "OAuth login, unset %s or set `model.provider` "
+                        "explicitly.",
+                        pid, env_var, _oauth_active, env_var,
+                    )
                 return pid
+
+    # Logged-in OAuth provider (auth.json `active_provider`) — a LAST-RESORT
+    # fallback, chosen only when the user expressed no other preference above.
+    # Previously this sat ABOVE the env-var/config checks, so a stale OAuth
+    # login silently overrode an explicit `model.provider` or an exported API
+    # key (#29285). Demoted here so explicit intent always wins.
+    if _oauth_active:
+        # Surface the silent-override case the issue reported: a populated
+        # `model` config that lacks a `provider` key falls through to OAuth.
+        if isinstance(_model_cfg, dict) and _model_cfg and not _model_cfg.get("provider"):
+            logger.warning(
+                "Provider resolved to logged-in OAuth provider %r because "
+                "config.yaml `model` has no `provider` key. If you meant a "
+                "different provider, set `model.provider` explicitly.",
+                _oauth_active,
+            )
+        return _oauth_active
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
@@ -6297,6 +6398,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = env_url.rstrip("/")
     else:
         base_url = pconfig.inference_base_url
+
+    if provider_id == "lmstudio":
+        base_url = _normalize_lmstudio_runtime_base_url(base_url)
 
     return {
         "provider": provider_id,

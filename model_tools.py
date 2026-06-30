@@ -144,12 +144,9 @@ def _run_async(coro):
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Propagate the parent thread's ContextVars (notably the
-        # _HERMES_HOME_OVERRIDE profile scope) and approval/sudo callbacks into
-        # the worker thread.  Without this, any async tool that resolves
-        # get_hermes_home() inside its coroutine falls back to the launch/default
-        # profile in single-process multi-profile runtimes (desktop tui_gateway),
-        # leaking one profile's reads/writes into another.
+        # Propagate the profile override + approval/sudo callbacks into the
+        # worker so async tools resolving get_hermes_home() see the active
+        # profile, not the launch one (multi-profile tui_gateway / gateway).
         from tools.thread_context import propagate_context_to_thread
 
         future = pool.submit(propagate_context_to_thread(_run_in_worker))

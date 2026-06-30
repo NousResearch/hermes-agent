@@ -450,6 +450,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         This launches the Node.js bridge process and waits for it to be ready.
         """
+        # Lazy-install aiohttp and defusedxml if missing (#54217).
+        try:
+            from tools.lazy_deps import ensure
+            ensure("platform.whatsapp", prompt=False)
+        except Exception:
+            pass
+
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(

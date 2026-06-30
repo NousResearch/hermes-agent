@@ -2061,8 +2061,8 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _get_tool_call_id(tc) -> str:
         """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
         if isinstance(tc, dict):
-            return tc.get("call_id", "") or tc.get("id", "") or ""
-        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
+        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
 
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
@@ -2089,7 +2089,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         result_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
+                cid = (msg.get("tool_call_id") or "").strip()
                 if cid:
                     result_call_ids.add(cid)
 
@@ -2098,7 +2098,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         if orphaned_results:
             messages = [
                 m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
             ]
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))

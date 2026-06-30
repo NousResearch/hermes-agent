@@ -42,6 +42,7 @@ of "ignore all instructions").  This mirrors the fix applied to
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List, Optional, Tuple
 
 # Each entry: (regex, pattern_id, scope)
@@ -213,18 +214,27 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     findings: List[str] = []
 
     # Invisible unicode — single pass through the content set, not 17
-    # ``in`` lookups.
+    # ``in`` lookups.  Run this on the RAW content before NFKC normalisation,
+    # since normalisation can strip some of these codepoints.
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+
+    # Normalise to NFKC so full-width / compatibility Unicode variants
+    # (e.g. ｃａｔ → cat, Ａ → A) are folded to their ASCII counterparts before
+    # the regex engine sees them.  This prevents homograph substitution from
+    # bypassing keyword checks (e.g. ``ｃａｔ ~/.hermes/.env``).  NOTE: this
+    # does NOT defend against cross-script confusables (Cyrillic ``а`` U+0430),
+    # which NFKC leaves untouched — that needs a TR#39 confusable database.
+    normalised = unicodedata.normalize("NFKC", content)
 
     # Threat patterns
     patterns = _COMPILED.get(scope)
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     for compiled, pid in patterns:
-        if compiled.search(content):
+        if compiled.search(normalised):
             findings.append(pid)
 
     return findings

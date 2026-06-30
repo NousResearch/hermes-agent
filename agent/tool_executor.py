@@ -282,6 +282,24 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _running_tool_names(not_done, futures, runnable_calls) -> list:
+    """Names of the still-running tools, for the progress heartbeat.
+
+    ``futures`` is built in lock-step with ``runnable_calls`` (one future per
+    submitted runnable call, in submit order), so a future's position in
+    ``futures`` indexes ``runnable_calls`` — NOT ``parsed_calls``. ``parsed_calls``
+    also contains guardrail-blocked calls, which are absent from ``runnable_calls``;
+    indexing it with a futures position therefore reports the wrong tool name (and
+    shifts further with each blocked call that precedes a runnable one).
+    """
+    names = []
+    for f in not_done:
+        if f in futures:
+            # runnable_calls entries are (orig_index, tool_call, name, args).
+            names.append(runnable_calls[futures.index(f)][2])
+    return names
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -687,11 +705,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     _conc_elapsed = int(time.time() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
-                        _still_running = [
-                            parsed_calls[futures.index(f)][1]
-                            for f in not_done
-                            if f in futures
-                        ]
+                        _still_running = _running_tool_names(
+                            not_done, futures, runnable_calls
+                        )
                         agent._touch_activity(
                             f"concurrent tools running ({_conc_elapsed}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"

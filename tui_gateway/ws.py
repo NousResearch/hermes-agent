@@ -27,6 +27,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import socket
 from typing import Any
 
@@ -37,7 +38,10 @@ _log = logging.getLogger(__name__)
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
+try:
+    _WS_WRITE_TIMEOUT_S = float(os.environ.get("HERMES_WS_WRITE_TIMEOUT", "3"))
+except (ValueError, TypeError):
+    _WS_WRITE_TIMEOUT_S = 3.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Keep starlette optional at import time; handle_ws uses the real class when

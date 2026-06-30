@@ -435,6 +435,85 @@ def test_api_gmail_reply_reads_headers_case_insensitively_and_uses_conventional_
     assert "\nreferences: " not in raw_text
 
 
+def test_api_calendar_create_verifies_inserted_event(api_module, capsys):
+    """calendar create must re-read the inserted event before reporting success."""
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["calendar", "events", "insert"]:
+            return {"id": "evt-123", "summary": body["summary"]}
+        if parts == ["calendar", "events", "get"]:
+            assert params == {"calendarId": "primary", "eventId": "evt-123"}
+            return {
+                "id": "evt-123",
+                "summary": "Team Standup",
+                "start": {"dateTime": "2026-04-01T10:00:00Z"},
+                "end": {"dateTime": "2026-04-01T10:30:00Z"},
+                "htmlLink": "https://calendar.google.com/event?eid=evt-123",
+            }
+        raise AssertionError(parts)
+
+    args = api_module.argparse.Namespace(
+        summary="Team Standup",
+        start="2026-04-01T10:00:00Z",
+        end="2026-04-01T10:30:00Z",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+        func=api_module.calendar_create,
+    )
+
+    with patch.object(api_module, "_run_gws", side_effect=fake_run_gws):
+        api_module.calendar_create(args)
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "created"
+    assert output["id"] == "evt-123"
+    assert output["verified"] is True
+    assert [call["parts"] for call in calls] == [
+        ["calendar", "events", "insert"],
+        ["calendar", "events", "get"],
+    ]
+
+
+def test_api_calendar_create_exits_when_verification_mismatches(api_module, capsys):
+    """calendar create must not emit success if the re-read event mismatches."""
+    args = api_module.argparse.Namespace(
+        summary="Team Standup",
+        start="2026-04-01T10:00:00Z",
+        end="2026-04-01T10:30:00Z",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+        func=api_module.calendar_create,
+    )
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        if parts == ["calendar", "events", "insert"]:
+            return {"id": "evt-123", "summary": body["summary"]}
+        if parts == ["calendar", "events", "get"]:
+            return {
+                "id": "evt-123",
+                "summary": "Different title",
+                "start": {"dateTime": "2026-04-01T10:00:00Z"},
+                "end": {"dateTime": "2026-04-01T10:30:00Z"},
+            }
+        raise AssertionError(parts)
+
+    monkey_sleep = patch.object(api_module.time, "sleep", lambda _seconds: None)
+    with patch.object(api_module, "_run_gws", side_effect=fake_run_gws), monkey_sleep:
+        with pytest.raises(SystemExit) as exc_info:
+            api_module.calendar_create(args)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "verification failed" in captured.err
+    assert captured.out == ""
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

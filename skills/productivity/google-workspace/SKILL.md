@@ -200,6 +200,12 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 
 ### Calendar
 
+Calendar writes must be closed-loop verified. Do not tell the user an event is
+saved until the command output includes `"verified": true` or you have separately
+listed/read the event by ID and confirmed the title plus exact start/end time.
+If verification fails, say the save failed or is unverified, and show the user
+the exact follow-up needed instead of saying it was saved.
+
 ```bash
 # List events (defaults to next 7 days)
 $GAPI calendar list

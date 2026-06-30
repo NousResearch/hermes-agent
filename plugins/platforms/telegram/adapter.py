@@ -17,6 +17,7 @@ import html as _html
 import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
+from urllib.parse import unquote, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -6484,6 +6485,133 @@ class TelegramAdapter(BasePlatformAdapter):
             return note
         return f"{existing}\n\n{note}"
 
+    def _local_bot_api_file_fallback_enabled(self) -> bool:
+        """Return True when Telegram file_path may refer to local Bot API storage."""
+        if self.config.extra.get("local_mode"):
+            return True
+        for key in ("base_url", "base_file_url"):
+            raw_url = str(self.config.extra.get(key) or "").strip()
+            if not raw_url:
+                continue
+            try:
+                host = (urlsplit(raw_url).hostname or "").lower()
+            except ValueError:
+                continue
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                return True
+        return False
+
+    @staticmethod
+    def _strip_telegram_bot_url_prefix(path_text: str) -> str:
+        """Remove /bot<TOKEN>/ from local Bot API URL paths without logging it."""
+        if not path_text.startswith("/bot"):
+            return path_text
+        parts = path_text.split("/", 2)
+        if len(parts) == 3 and parts[1].startswith("bot"):
+            return "/" + parts[2].lstrip("/")
+        return path_text
+
+    @staticmethod
+    def _local_bot_api_suffixes(path_text: str) -> List[str]:
+        normalized = path_text.replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part]
+        suffixes: List[str] = []
+        for marker in ("documents", "videos", "photos", "music", "voice", "animations"):
+            if marker in parts:
+                idx = len(parts) - 1 - parts[::-1].index(marker)
+                suffixes.append("/".join(parts[idx:]))
+                break
+        if parts:
+            suffixes.append(parts[-1])
+        deduped: List[str] = []
+        for suffix in suffixes:
+            if suffix and suffix not in deduped:
+                deduped.append(suffix)
+        return deduped
+
+    def _resolve_local_bot_api_file_path(self, file_path: Any) -> Optional[_Path]:
+        """Map Telegram local Bot API file_path variants to a host-readable file."""
+        if not self._local_bot_api_file_fallback_enabled():
+            return None
+
+        raw = str(file_path or "").strip()
+        if not raw:
+            return None
+
+        path_texts: List[str] = []
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.scheme and parsed.path:
+            path_texts.append(self._strip_telegram_bot_url_prefix(unquote(parsed.path)))
+        path_texts.append(self._strip_telegram_bot_url_prefix(unquote(raw)))
+
+        for path_text in path_texts:
+            try:
+                candidate = _Path(path_text).expanduser()
+            except (OSError, ValueError):
+                continue
+            if candidate.is_absolute() and candidate.is_file():
+                return candidate
+
+        suffixes: List[str] = []
+        for path_text in path_texts:
+            for suffix in self._local_bot_api_suffixes(path_text):
+                if suffix not in suffixes:
+                    suffixes.append(suffix)
+        if not suffixes:
+            return None
+
+        roots: List[_Path] = []
+        for key in ("local_bot_api_root", "local_bot_api_dir", "telegram_bot_api_dir"):
+            configured = str(self.config.extra.get(key) or "").strip()
+            if configured:
+                roots.append(_Path(configured).expanduser())
+        try:
+            from hermes_constants import get_hermes_home
+            roots.append(get_hermes_home() / "telegram-bot-api")
+        except Exception:
+            pass
+
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for suffix in suffixes:
+                direct = root / suffix
+                if direct.is_file():
+                    return direct
+                suffix_parts = _Path(suffix).parts
+                if not suffix_parts:
+                    continue
+                wanted = "/".join(suffix_parts)
+                try:
+                    for candidate in root.rglob(suffix_parts[-1]):
+                        if candidate.is_file() and str(candidate).replace("\\", "/").endswith(wanted):
+                            return candidate
+                except OSError:
+                    continue
+        return None
+
+    async def _download_telegram_file_bytes(self, file_obj: Any) -> bytes:
+        """Download a Telegram file, falling back to local Bot API storage."""
+        try:
+            return bytes(await file_obj.download_as_bytearray())
+        except Exception as download_err:
+            local_path = self._resolve_local_bot_api_file_path(getattr(file_obj, "file_path", None))
+            if local_path is None:
+                raise
+            try:
+                data = local_path.read_bytes()
+            except OSError as local_err:
+                logger.warning(
+                    "[Telegram] Local Bot API fallback file was not readable (%s)",
+                    local_err.__class__.__name__,
+                )
+                raise download_err
+            logger.info("[Telegram] Read Telegram local Bot API file via fallback (%s bytes)", len(data))
+            return data
+
     async def _surface_media_cache_failure(
         self,
         msg: Message,
@@ -7065,7 +7193,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
                 file_obj = await msg.video.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
+                video_bytes = await self._download_telegram_file_bytes(file_obj)
                 ext = ".mp4"
                 if getattr(file_obj, "file_path", None):
                     for candidate in SUPPORTED_VIDEO_TYPES:
@@ -7158,12 +7286,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     ext = image_mime_to_ext.get(doc.mime_type, "")
 
                 if ext in SUPPORTED_VIDEO_TYPES:
+                    event.message_type = MessageType.VIDEO
                     file_obj = await doc.get_file()
-                    video_bytes = await file_obj.download_as_bytearray()
+                    video_bytes = await self._download_telegram_file_bytes(file_obj)
                     cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
                     event.media_urls = [cached_path]
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
-                    event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
                     await self.handle_message(event)
                     return

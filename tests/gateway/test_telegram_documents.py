@@ -505,6 +505,91 @@ class TestVideoDownloadBlock:
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
+    @pytest.mark.asyncio
+    async def test_native_video_falls_back_to_local_bot_api_absolute_path(self, adapter, tmp_path):
+        local_video = tmp_path / "clip.MOV"
+        local_video.write_bytes(b"local-mov-bytes")
+        adapter.config.extra["base_url"] = "http://127.0.0.1:8081/bot"
+
+        file_obj = _make_file_obj()
+        file_obj.file_path = str(local_video)
+        file_obj.download_as_bytearray = AsyncMock(side_effect=RuntimeError("Not Found: method not found"))
+        msg = _make_message()
+        msg.video = _make_video(file_obj)
+        msg.video.file_size = local_video.stat().st_size
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mov"]]
+        assert os.path.exists(event.media_urls[0])
+        with open(event.media_urls[0], "rb") as cached:
+            assert cached.read() == b"local-mov-bytes"
+        msg.reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_video_document_falls_back_to_local_bot_api_url_suffix(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "hermes-home"
+        storage_dir = home / "telegram-bot-api" / "fake-token" / "documents"
+        storage_dir.mkdir(parents=True)
+        local_video = storage_dir / "file_66.MOV"
+        local_video.write_bytes(b"container-url-mov")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        adapter.config.extra["base_url"] = "http://127.0.0.1:8081/bot"
+
+        file_obj = _make_file_obj()
+        file_obj.file_path = (
+            "http://127.0.0.1:8081/botREDACTED//var/lib/telegram-bot-api/"
+            "REDACTED/documents/file_66.MOV"
+        )
+        file_obj.download_as_bytearray = AsyncMock(side_effect=RuntimeError("Not Found: method not found"))
+        doc = _make_document(
+            file_name="IMG_5109.MOV",
+            mime_type="video/mp4",
+            file_size=local_video.stat().st_size,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mov"]]
+        assert os.path.exists(event.media_urls[0])
+        with open(event.media_urls[0], "rb") as cached:
+            assert cached.read() == b"container-url-mov"
+        msg.reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_video_document_download_failure_still_signals_agent(self, adapter):
+        adapter.config.extra["base_url"] = "http://127.0.0.1:8081/bot"
+        file_obj = _make_file_obj()
+        file_obj.file_path = "/var/lib/telegram-bot-api/TOKEN/documents/missing.MOV"
+        file_obj.download_as_bytearray = AsyncMock(side_effect=RuntimeError("Not Found: method not found"))
+        doc = _make_document(
+            file_name="missing.MOV",
+            mime_type="video/mp4",
+            file_size=100,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        msg.reply_text.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert event.message_type == MessageType.VIDEO
+        assert "could not be downloaded" in (event.text or "")
+        assert "missing.MOV" in (event.text or "")
+
 
 # ---------------------------------------------------------------------------
 # TestMediaGroups — media group (album) buffering

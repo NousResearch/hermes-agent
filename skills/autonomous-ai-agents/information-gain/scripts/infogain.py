@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline  # noqa: E402
@@ -114,6 +115,8 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         if progress:
             progress(msg)
 
+    pipeline.reset_usage()
+    _t0 = time.time()
     plan_model = resolve_alias(cfg["plan_model"])
     qg_model = resolve_alias(cfg["question_gen_model"])
     ans_model = resolve_alias(cfg["answer_model"])
@@ -213,9 +216,12 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         pre_answer_threshold=cfg["pre_answer_threshold"],
         hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"])
 
+    usage = pipeline.get_usage()
+    usage["wall_seconds"] = round(time.time() - _t0, 1)
     result = {
         "problem": problem,
         "evidence": list(evidence or []),
+        "usage": usage,
         "framing": framing,
         "framing_error": ferr,
         "config": cfg,
@@ -362,14 +368,14 @@ def render_markdown(result):
                  f"{result['rounds_used']} round(s). This usually means the problem "
                  f"is already fairly well-specified.")
 
+    u = result.get("usage") or {}
     meta = (f"_mode={result['config'].get('mode', 'focus')} · "
             f"models: plan={result['config']['question_gen_model']}, "
             f"answers={result['config']['answer_model']}, "
             f"judge={result['config']['value_judge_model']} · "
-            f"rounds={result['rounds_used']} · "
-            f"candidates={result['candidates_considered']} · "
-            f"thresholds: discard={result['config']['discard_threshold']}, "
-            f"pre-answer={result['config']['pre_answer_threshold']}_")
+            f"rounds={result['rounds_used']} · candidates={result['candidates_considered']} · "
+            f"{u.get('calls', 0)} calls · {u.get('input_tokens', 0)}+{u.get('output_tokens', 0)} tok · "
+            f"{u.get('wall_seconds', 0)}s wall_")
 
     crit = fr.get("success_criteria") or []
     crit_str = "; ".join(crit) if isinstance(crit, list) else str(crit)

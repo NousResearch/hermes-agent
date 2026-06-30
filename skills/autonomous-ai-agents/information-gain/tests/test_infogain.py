@@ -248,6 +248,14 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(rec["answerability"], 0.4)
         self.assertEqual(rec["derivable_prob"], 0.2)
 
+    def test_usage_counters_reset(self):
+        pipeline.reset_usage()
+        u = pipeline.get_usage()
+        self.assertEqual(u["calls"], 0)
+        self.assertEqual(u["input_tokens"], 0)
+        self.assertIn("output_tokens", u)
+        self.assertIn("model_seconds", u)
+
     def test_evidence_woven_into_prompts(self):
         ev = ["budget is $0", "users are coaches"]
         fp = pipeline.frame_prompt("problem", ev)
@@ -367,6 +375,8 @@ class TestOrchestrationMocked(unittest.TestCase):
              mock.patch.object(pipeline, "judge_plan_change_batch", side_effect=lambda p, f, b, recs, *a, **k: recs):
             result = infogain.run("p", cfg, evidence=["budget is $0"])
         self.assertEqual(result["evidence"], ["budget is $0"])
+        self.assertIn("usage", result)
+        self.assertIn("wall_seconds", result["usage"])
         md = infogain.render_markdown(result)
         self.assertIn("budget is $0", md)
         self.assertIn("answerable", md)  # new column header

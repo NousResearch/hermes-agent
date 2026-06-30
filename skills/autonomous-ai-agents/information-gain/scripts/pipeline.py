@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """pipeline.py — the model-calling stages of the information-gain skill.
 
-Stages (each a role-specialized Ollama model, mostly via direct /api/chat raw
-calls run in parallel):
+Given a PROMPT, produce the raw signals voi.py needs to rank the key questions whose
+answers would most improve a RESPONSE to that prompt. Stages (each a role-specialized
+Ollama model, mostly via direct /api/chat raw calls run in parallel):
 
-    0. frame_and_plan   — restate goal/decision/success + a baseline plan (plan*_0)
-    1. generate_questions — interrogate the problem into candidate questions
-    2. project_answers  — plausible answers + probabilities + derivability  (parallel)
-    3. judge_plan_change — per-answer Δplan and stakes vs the baseline plan  (parallel)
+    0. frame_and_plan   — restate goal/response-type/success + a baseline response
+    1. generate_questions — find candidate questions that would change the response
+    2. project_answers  — plausible answers + probabilities + derivability + answerability
+    3. judge_plan_change — per-answer response-change and stakes vs the baseline response
 
-The pure scoring/ranking/selection math is in voi.py; this module only produces
-the raw signals (answers, probabilities, Δplan, stakes) for it to score.
+Vocabulary note: the JSON keys `baseline_plan` and `delta_plan` are legacy names for the
+baseline RESPONSE and the per-answer RESPONSE-change — kept stable to avoid churn; the
+prompts and output speak in "response" terms.
 
 Reuse: `build_prompt`, `resolve_alias`, `NON_ENGLISH_MODELS` come from the `ask`
 skill's model_utils (resolved at runtime via HERMES_HOME / ASK_SCRIPTS_DIR). The
@@ -23,6 +25,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.request
 
@@ -48,6 +51,23 @@ import voi  # noqa: E402
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434/api/chat")
 OLLAMA_TAGS_URL = OLLAMA_URL.replace("/api/chat", "/api/tags")
 MAX_WORKERS = int(os.environ.get("INFOGAIN_MAX_WORKERS", "8"))
+
+# ── token/time usage accounting (thread-safe; aggregated per run) ─────────────
+_USAGE_LOCK = threading.Lock()
+_USAGE = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "model_seconds": 0.0}
+
+
+def reset_usage():
+    """Zero the per-run usage counters (call at the start of a run)."""
+    with _USAGE_LOCK:
+        _USAGE.update(calls=0, input_tokens=0, output_tokens=0, model_seconds=0.0)
+
+
+def get_usage():
+    """Snapshot of usage since the last reset: calls, input/output tokens (from
+    Ollama's prompt_eval_count / eval_count), and summed model wall-seconds."""
+    with _USAGE_LOCK:
+        return dict(_USAGE)
 
 
 # ── low-level: raw Ollama call + JSON extraction ─────────────────────────────
@@ -86,9 +106,18 @@ def raw_chat(model, user_content, timeout=120, temperature=0.0, num_predict=900)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read().decode("utf-8"))
         content = (result.get("message") or {}).get("content", "")
-        return {"content": content.strip(), "elapsed": time.time() - start, "error": None}
+        itok, otok = int(result.get("prompt_eval_count") or 0), int(result.get("eval_count") or 0)
+        elapsed = time.time() - start
+        with _USAGE_LOCK:
+            _USAGE["calls"] += 1
+            _USAGE["input_tokens"] += itok
+            _USAGE["output_tokens"] += otok
+            _USAGE["model_seconds"] += elapsed
+        return {"content": content.strip(), "elapsed": elapsed, "error": None,
+                "input_tokens": itok, "output_tokens": otok}
     except Exception as e:
-        return {"content": "", "elapsed": time.time() - start, "error": str(e)}
+        return {"content": "", "elapsed": time.time() - start, "error": str(e),
+                "input_tokens": 0, "output_tokens": 0}
 
 
 def extract_json(text):
@@ -219,17 +248,19 @@ def answers_prompt(problem, framing, question, m, evidence=None):
         f"\nGOAL: {framing.get('goal', '')}\n"
         f"QUESTION: {question}\n\n"
         f"Enumerate the {m} most plausible DISTINCT answers. For each, estimate a "
-        "probability (0-1) that it is the true answer given the problem. Also estimate "
-        "(a) whether it is already answerable from the problem + established facts, and "
-        "(b) whether it could realistically be RESOLVED if someone went and investigated.\n\n"
+        "probability (0-1) that it is the true answer given the prompt. Also estimate two "
+        "DIFFERENT things: (a) derivable_prob — can you ALREADY infer the answer from the "
+        "prompt + established facts (so asking adds nothing); and (b) answerability — IF you "
+        "went and investigated, could a determinate answer be obtained at all.\n\n"
         "Return ONLY a JSON object:\n"
         '{"derivable_prob": float, "answerability": float, '
         '"answers": [{"answer": str, "prob": float}, ...]}\n'
-        "- derivable_prob: 0-1, probability the question is already answerable from the "
-        "problem + established facts (high = asking buys little).\n"
-        "- answerability: 0-1, probability the question has a determinate answer you could "
-        "actually obtain with reasonable effort (1 = a stakeholder/system can readily "
-        "provide it; low = speculative, judgment-call, or unknowable).\n"
+        "- derivable_prob: 0-1, probability the answer is ALREADY inferable from the prompt + "
+        "established facts (high = you basically know it; asking buys little).\n"
+        "- answerability: 0-1, probability a determinate answer EXISTS and is obtainable with "
+        "reasonable effort (1 = a stakeholder/system can readily provide it; low = speculative, "
+        "judgment-call, or unknowable even if you try). Note: a question can be unknown now "
+        "(low derivable_prob) yet still high answerability.\n"
         f"- Provide 2 to {m} answers; probabilities need not sum to exactly 1.\n"
         "Respond ONLY with the JSON object."
     )
@@ -336,10 +367,10 @@ def consolidate_prompt(problem, candidates):
         f"{i + 1}. {c.get('question', '')}  (target: {c.get('target', '')})"
         for i, c in enumerate(candidates))
     return (
-        "You are de-duplicating clarifying questions for a problem. Some of the "
+        "You are de-duplicating clarifying questions for a prompt. Some of the "
         "questions below resolve the SAME underlying unknown, just worded differently "
         "(e.g. 'update latency' and 'data freshness' are the same unknown).\n\n"
-        f"PROBLEM:\n{problem}\n\n"
+        f"PROMPT:\n{problem}\n\n"
         f"CANDIDATE QUESTIONS:\n{listing}\n\n"
         "Group the questions that resolve the same underlying unknown, and return ONE "
         "canonical question per DISTINCT unknown (use the clearest phrasing). Keep "

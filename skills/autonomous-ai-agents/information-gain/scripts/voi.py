@@ -8,15 +8,18 @@ orchestration loop in infogain.py.
 Scoring is grounded in the decision-theoretic Expected Value of Sample Information
 (EVSI) and expected-information-gain literature (see references/methodology.md):
 
-    EVSI(q) ≈ Σ_a  P(a) · Δplan(a) · stakes(a)        # expected regret avoided
-    U       = normalized_entropy(P(a)) · (1 - derivable_prob)   # reducible/epistemic
-    value(q) = sqrt( U · EVSI )                        # gate-preserving, [0,1]
+    value-of-answering EVSI(q) ≈ Σ_a P(a)·response_change(a)·stakes(a)  # regret avoided
+    uncertainty U = normalized_entropy(P(a))·(1 − derivable_prob)       # reducible/epistemic
+    exploration value(q) = answerability · √(U · EVSI)                  # the ranking number
 
 `value` is 0 if EITHER the uncertainty gate U or the EVSI is 0 — encoding Howard's
-"information has value only if it could change the optimal decision" plus the
-necessary conditions (must be uncertain, must be reducible). The geometric mean
-keeps `value` on an interpretable ~0..1 scale (so absolute thresholds like 0.40
-are meaningful) while preserving the necessary-condition gate.
+"information has value only if it could change the optimal decision" plus the necessary
+conditions (must be uncertain, must be reducible). The geometric mean keeps it on an
+interpretable ~0..1 scale (so absolute thresholds like 0.40 are meaningful); answerability
+then discounts questions you couldn't resolve even if you tried (defaults to 1.0).
+
+Vocabulary note: the per-answer key `delta_plan` is the legacy name for the response-change
+(how much the answer would change your response) — kept stable to avoid churn.
 """
 
 import math

@@ -438,6 +438,14 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
 # exception path (a provider moderation error classified as
 # ``content_policy_blocked``) end with the same actionable next steps, so they
 # share one trailer to keep the guidance from drifting between the two sites.
+
+
+def _client_safe_truncation_response() -> str:
+    return (
+        "⚠️ I hit an internal response limit while working on this, so I stopped before sending an incomplete answer. "
+        "Please ask me to continue or narrow the request, and I can pick up safely."
+    )
+
 _CONTENT_POLICY_RECOVERY_HINT = (
     "Try rephrasing the request, narrowing the context, or "
     "adding a fallback provider with `hermes fallback add`."
@@ -1467,13 +1475,21 @@ def run_conversation(
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
+                    provider_finish_reason = getattr(response, "finish_reason", None)
+                    if isinstance(provider_finish_reason, str):
+                        provider_finish_reason = provider_finish_reason.strip().lower()
+                    else:
+                        provider_finish_reason = None
                     incomplete_details = getattr(response, "incomplete_details", None)
                     incomplete_reason = None
                     if isinstance(incomplete_details, dict):
                         incomplete_reason = incomplete_details.get("reason")
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+                    if (
+                        provider_finish_reason in {"length", "max_tokens", "max_output_tokens"}
+                        or (status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"})
+                    ):
                         finish_reason = "length"
                     else:
                         finish_reason = "stop"
@@ -1616,6 +1632,16 @@ def run_conversation(
                             f"(finish_reason='length') - model hit max output tokens",
                             force=True,
                         )
+
+                    # The ChatGPT Codex backend rejects explicit max_output_tokens,
+                    # so a Codex length stop cannot be fixed by increasing the
+                    # request cap. Keep Codex as primary, but fail over for this
+                    # turn when a fallback is configured; otherwise the safe
+                    # truncation response below prevents leaking internals.
+                    if agent.api_mode == "codex_responses" and getattr(agent, "_fallback_chain", None):
+                        agent._emit_status("⚠️ Codex hit output cap — switching to fallback provider...")
+                        if agent._try_activate_fallback():
+                            continue
 
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
@@ -1801,7 +1827,7 @@ def run_conversation(
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
-                                "final_response": partial_response or None,
+                                "final_response": partial_response or _client_safe_truncation_response(),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -1860,18 +1886,18 @@ def run_conversation(
                                 )
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            _safe_error = (
+                                "Stream repeatedly dropped mid tool-call (network); the tool was not executed"
+                                if _is_stub_stall
+                                else "Response truncated due to output length limit"
+                            )
                             return {
-                                "final_response": None,
+                                "final_response": _client_safe_truncation_response(),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": (
-                                    "Stream repeatedly dropped mid tool-call (network); "
-                                    "the tool was not executed"
-                                    if _is_stub_stall
-                                    else "Response truncated due to output length limit"
-                                ),
+                                "error": _safe_error,
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -1882,26 +1908,28 @@ def run_conversation(
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
 
+                        _safe_error = "Response truncated due to output length limit"
                         return {
-                            "final_response": None,
+                            "final_response": _client_safe_truncation_response(),
                             "messages": rolled_back_messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
-                            "error": "Response truncated due to output length limit"
+                            "error": _safe_error,
                         }
                     else:
                         # First message was truncated - mark as failed
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True)
                         agent._persist_session(messages, conversation_history)
+                        _safe_error = "First response truncated due to output length limit"
                         return {
-                            "final_response": None,
+                            "final_response": _client_safe_truncation_response(),
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": "First response truncated due to output length limit"
+                            "error": _safe_error,
                         }
                 
                 # Track actual token usage from response for context management
@@ -4243,13 +4271,14 @@ def run_conversation(
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
+                        _safe_error = "Response truncated due to output length limit"
                         return {
-                            "final_response": None,
+                            "final_response": _client_safe_truncation_response(),
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
-                            "error": "Response truncated due to output length limit",
+                            "error": _safe_error,
                         }
 
                     # Track retries for invalid JSON arguments

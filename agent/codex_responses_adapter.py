@@ -1315,7 +1315,15 @@ def _normalize_codex_response(
         codex_message_items=message_items_raw or None,
     )
 
-    if tool_calls:
+    provider_finish_reason = getattr(response, "finish_reason", None)
+    if isinstance(provider_finish_reason, str):
+        provider_finish_reason = provider_finish_reason.strip().lower()
+    else:
+        provider_finish_reason = None
+
+    if provider_finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+        finish_reason = "length"
+    elif tool_calls:
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"

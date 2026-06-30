@@ -1676,6 +1676,8 @@ class AIAgent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
+                if msg.get("_flushed_to_db"):
+                    continue
                 msg_id = id(msg)
                 if msg_id in flushed_ids:
                     continue
@@ -1722,6 +1724,7 @@ class AIAgent:
                     timestamp=msg.get("timestamp"),
                 )
                 flushed_ids.add(msg_id)
+                msg["_flushed_to_db"] = True
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

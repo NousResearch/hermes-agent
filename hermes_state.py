@@ -3179,6 +3179,7 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            msg["_flushed_to_db"] = True
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):

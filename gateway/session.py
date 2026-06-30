@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -674,12 +675,20 @@ class SessionEntry:
         session_key = data["session_key"]
         session_id = data["session_id"]
 
-        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22).
+        # session_id is used as a file-system path component (state.db dir name)
+        # so it gets the full traversal check.  session_key is a logical
+        # identifier stored only in SQLite and must NOT be rejected for
+        # containing '/' — platforms like DingTalk embed base64 chat IDs with
+        # slashes (e.g. "cid.../9w/...").  Control characters are still blocked
+        # for both fields.
         for _field, _val in (("session_key", session_key), ("session_id", session_id)):
-            if _is_path_unsafe(_val):
-                raise ValueError(
-                    f"Invalid {_field}: potential directory traversal detected"
-                )
+            if re.search(r'[\r\n\x00]', _val):
+                raise ValueError(f"Invalid {_field}: contains control characters")
+        if _is_path_unsafe(session_id):
+            raise ValueError(
+                "Invalid session_id: potential directory traversal detected"
+            )
 
         return cls(
             session_key=session_key,

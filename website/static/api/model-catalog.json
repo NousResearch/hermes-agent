@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-16T18:04:33Z",
+  "updated_at": "2026-06-30T19:42:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -22,6 +22,10 @@
         },
         {
           "id": "anthropic/claude-sonnet-4.6",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-sonnet-5",
           "description": ""
         },
         {
@@ -157,6 +161,9 @@
         },
         {
           "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5"
         },
         {
           "id": "anthropic/claude-haiku-4.5"

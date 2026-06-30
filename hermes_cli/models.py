@@ -37,6 +37,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
     ("anthropic/claude-sonnet-4.6",            ""),
+    ("anthropic/claude-sonnet-5",              ""),
     ("anthropic/claude-haiku-4.5",             ""),
     # OpenAI
     ("openai/gpt-5.5",                         ""),
@@ -178,6 +179,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Anthropic
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4.5",
         # OpenAI
         "openai/gpt-5.5",
@@ -252,6 +254,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -339,6 +342,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-sonnet-5",
         "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
@@ -377,6 +381,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
         "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "openai/gpt-5.4",
     ],
     "opencode-zen": [
@@ -400,6 +405,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-codex",
         "gpt-5-nano",
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -498,6 +504,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",

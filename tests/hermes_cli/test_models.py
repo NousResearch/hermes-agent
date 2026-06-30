@@ -969,3 +969,20 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+class TestClaudeSonnet5InCuratedLists:
+    """Regression: Claude Sonnet 5 must appear in curated model lists (#55846)."""
+
+    def test_anthropic_native_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "claude-sonnet-5" in _PROVIDER_MODELS["anthropic"]
+
+    def test_openrouter_fallback_includes_sonnet_5(self):
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "anthropic/claude-sonnet-5" in ids
+
+    def test_nous_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "anthropic/claude-sonnet-5" in _PROVIDER_MODELS["nous"]

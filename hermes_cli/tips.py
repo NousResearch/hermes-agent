@@ -144,6 +144,7 @@ TIPS = [
     "The todo tool helps the agent track complex multi-step tasks during a session.",
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",
+    "mixture_of_agents routes hard problems through 4 frontier LLMs collaboratively.",
     "/moa routes one hard prompt through your configured Mixture of Agents model set.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",

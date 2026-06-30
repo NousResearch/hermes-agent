@@ -332,6 +332,35 @@ TOOLSETS = {
         "includes": []
     },
 
+    # ==========================================================================
+    # FORK-CUSTOM toolsets (Kyzcreig fork — NOT present upstream).
+    #
+    # These are a DELIBERATE divergence from upstream and an upstream parity
+    # merge MUST preserve them (they are dropped if the merge blindly takes
+    # upstream's toolsets.py). See tests/agent/test_fork_custom_toolsets.py,
+    # which fails CI if either toolset stops resolving.
+    #
+    #   * messaging — upstream's stance (see the note further down) is that
+    #     agents do NOT get an agent-callable send_message; outbound messaging
+    #     is handled outside the agent loop. THIS FORK intentionally re-enables
+    #     an agent-callable send_message: the fleet's orchestrator sends
+    #     mid-turn status/alerts to the originating channel, and the fork's
+    #     origin-routing work (send_message origin-leak fixes) is built on it.
+    #   * moa — the mixture_of_agents tool (tools/mixture_of_agents_tool.py),
+    #     a fork-only multi-LLM reasoning tool.
+    # ==========================================================================
+    "messaging": {
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+        "tools": ["send_message"],
+        "includes": []
+    },
+
+    "moa": {
+        "description": "Advanced reasoning and problem-solving tools",
+        "tools": ["mixture_of_agents"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

@@ -704,3 +704,83 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+# =========================================================================
+# _origin_from_env — DM origin reconstruction from HERMES_SESSION_KEY (#10605)
+# Salvage of #11305 by @KeaneYan.
+# =========================================================================
+class TestOriginFromEnvSessionKeyFallback:
+    @pytest.fixture(autouse=True)
+    def _clear_session(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars()  # reset all ContextVars to empty
+        yield
+        clear_session_vars(tokens)
+
+    def test_explicit_env_wins_over_session_key(self):
+        # When explicit platform/chat env vars are present they take priority,
+        # even if a session key is also set.
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(
+            platform="telegram",
+            chat_id="999",
+            session_key="agent:main:weixin:dm:abc123",
+        )
+        origin = _origin_from_env()
+        assert origin is not None
+        assert origin["platform"] == "telegram"
+        assert origin["chat_id"] == "999"
+
+    def test_reconstructs_dm_origin_from_session_key(self):
+        # Fails without the fix: explicit env vars are absent, so the legacy
+        # code returned None and the DM origin was lost.
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(session_key="agent:main:weixin:dm:chat-42")
+        origin = _origin_from_env()
+        assert origin is not None
+        assert origin["platform"] == "weixin"
+        assert origin["chat_id"] == "chat-42"
+        assert origin["thread_id"] is None
+
+    def test_reconstructs_dm_origin_with_thread_id(self):
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(session_key="agent:main:telegram:dm:chat-7:topic-3")
+        origin = _origin_from_env()
+        assert origin is not None
+        assert origin["platform"] == "telegram"
+        assert origin["chat_id"] == "chat-7"
+        assert origin["thread_id"] == "topic-3"
+
+    def test_reconstructs_dm_origin_for_named_profile(self):
+        # Named-profile keys use agent:<profile>:... — locating "dm" positionally
+        # (not hardcoding parts[1] == "main") reconstructs these correctly.
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(session_key="agent:coder:weixin:dm:chat-99")
+        origin = _origin_from_env()
+        assert origin is not None
+        assert origin["platform"] == "weixin"
+        assert origin["chat_id"] == "chat-99"
+
+    def test_non_dm_session_key_returns_none(self):
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(session_key="agent:main:telegram:group:room-1:user-2")
+        assert _origin_from_env() is None
+
+    def test_chatless_dm_session_key_returns_none(self):
+        # Ambiguous chat_id-less DM fallback forms are not reconstructed.
+        from gateway.session_context import set_session_vars
+        from tools.cronjob_tools import _origin_from_env
+
+        set_session_vars(session_key="agent:main:telegram:dm")
+        assert _origin_from_env() is None

@@ -305,6 +305,33 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
+
+    # Fallback: reconstruct DM origin from HERMES_SESSION_KEY when the explicit
+    # platform/chat env vars are unavailable in the worker thread (#10605).
+    # The DM session key is deterministic and reversible:
+    #   agent:<ns>:<platform>:dm:<chat_id>[:<thread_id>]
+    # where <ns> is "main" for the default profile or the profile name when
+    # multiplexing (see gateway.session.build_session_key). We locate the
+    # "dm" marker positionally rather than hardcoding parts[1] == "main", so
+    # named-profile session keys reconstruct correctly too. Only the
+    # chat_id-bearing DM form ("...:dm:<chat_id>[:<thread_id>]") is
+    # reconstructed; the chat_id-less fallback forms the gateway emits
+    # ("...:dm:<thread_id>" / bare "...:dm") are ambiguous and left as None.
+    session_key = get_session_env("HERMES_SESSION_KEY")
+    parts = session_key.split(":") if session_key else []
+    if len(parts) >= 5 and parts[0] == "agent" and parts[3] == "dm":
+        platform = parts[2]
+        chat_id = parts[4]
+        thread_id = parts[5] if len(parts) >= 6 else None
+        if platform and chat_id:
+            return {
+                "platform": platform,
+                "chat_id": chat_id,
+                "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
+                "thread_id": thread_id,
+                "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+            }
+
     return None
 
 

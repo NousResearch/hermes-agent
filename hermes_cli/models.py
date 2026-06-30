@@ -341,6 +341,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "anthropic": [
         "claude-fable-5",
         "claude-opus-4-8",
+        "claude-sonnet-5",
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
@@ -405,6 +406,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",
+        "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
         "claude-sonnet-4",
@@ -498,6 +500,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -3173,11 +3176,13 @@ _COPILOT_MODEL_ALIASES = {
     # default hyphenated Claude model don't hit HTTP 400
     # "model_not_supported".  See issue #6879.
     "claude-opus-4-6": "claude-opus-4.6",
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-sonnet-4-6": "claude-sonnet-4.6",
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",

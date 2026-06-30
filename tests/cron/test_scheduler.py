@@ -2324,7 +2324,7 @@ class TestRunJobSkillBacked:
 
 
 class TestSilentDelivery:
-    """Verify that [SILENT] responses suppress delivery while still saving output."""
+    """Verify that cron silence tokens suppress delivery while saving output."""
 
     def _make_job(self):
         return {
@@ -2379,10 +2379,22 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
 
     def test_bracketless_silent_variants_suppress(self):
-        """Bracketless near-markers the model emits when it drops brackets
-        must still suppress delivery (#51438, #46917)."""
+        """Bracketless/legacy no-op markers suppress delivery as line tokens."""
         from cron.scheduler import tick
-        for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
+        for marker in (
+            "SILENT",
+            "NO_REPLY",
+            "NO REPLY",
+            "no_reply",
+            ">>>NO_REPLY<<<",
+            "NO_CHANGES",
+            "NO CHANGES",
+            ">>>NO_CHANGES<<<",
+            "FIRST_RUN",
+            "FIRST RUN",
+            "HEARTBEAT_OK",
+            "HEARTBEAT OK",
+        ):
             with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
                  patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
                  patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
@@ -2407,7 +2419,8 @@ class TestSilentDelivery:
     def test_is_cron_silence_response_contract(self):
         """Direct behavior contract for the cron silence matcher."""
         from cron.scheduler import _is_cron_silence_response as sil
-        # Suppress: bare/bracketed/bracketless tokens, prefix, trailing-line.
+        # Suppress: bare/bracketed/bracketless tokens, wrappers, prefix,
+        # trailing-line.
         assert sil("[SILENT]")
         assert sil("[silent] nothing new")
         assert sil("[SILENT] No changes detected")
@@ -2415,10 +2428,25 @@ class TestSilentDelivery:
         assert sil("SILENT")
         assert sil("NO_REPLY")
         assert sil("NO REPLY")
+        assert sil(">>>NO_REPLY<<<")
+        for token in (
+            "NO_CHANGES",
+            "NO CHANGES",
+            ">>>NO_CHANGES<<<",
+            "FIRST_RUN",
+            "FIRST RUN",
+            "HEARTBEAT_OK",
+            "HEARTBEAT OK",
+        ):
+            assert sil(token), token
+            assert sil(f"Summary.\n{token}"), token
         assert sil("Summary.\nSILENT")
         # Deliver: real content, mid-sentence quotes, bare words, junk.
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")
+        assert not sil("Use NO_CHANGES when idle.")
+        assert not sil("This monitor reports HEARTBEAT_OK for healthy services.")
+        assert not sil("Use >>>NO_CHANGES<<< when idle.")
         assert not sil("Silent retry succeeded after 2 attempts.")
         assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
         assert not sil("")

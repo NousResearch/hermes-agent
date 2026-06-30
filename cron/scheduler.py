@@ -250,17 +250,35 @@ SILENT_MARKER = "[SILENT]"
 # a marker is the entire response OR appears as its own first/last line — but
 # NOT when a token merely appears mid-sentence in a genuine report (e.g.
 # "I considered staying [SILENT] but here is the summary…" must deliver).
-_CRON_SILENCE_TOKENS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
+_CRON_SILENCE_TOKENS = frozenset({
+    "[SILENT]",
+    "SILENT",
+    "NO_REPLY",
+    "NO REPLY",
+    "NO_CHANGES",
+    "NO CHANGES",
+    "FIRST_RUN",
+    "FIRST RUN",
+    "HEARTBEAT_OK",
+    "HEARTBEAT OK",
+})
+
+
+def _canonical_cron_silence_candidate(text: str) -> str:
+    candidate = " ".join(text.strip().upper().split())
+    if candidate.startswith(">>>") and candidate.endswith("<<<"):
+        candidate = candidate[3:-3].strip()
+    return candidate
 
 
 def _is_cron_silence_response(text: str) -> bool:
     """Return True when a cron final response should suppress delivery.
 
     Recognizes the bracketed ``[SILENT]`` sentinel (whole-response, first line,
-    or last line) plus the bracketless ``SILENT`` / ``NO_REPLY`` / ``NO REPLY``
-    variants the model emits when it drops the brackets (#51438, #46917).
-    Whitespace-trimmed and case-insensitive.  A token buried mid-sentence is
-    treated as real content and delivered.
+    or last line) plus the bracketless/legacy no-op tokens cron agents may emit
+    when they have nothing to report (#51438, #46917). Whitespace-trimmed and
+    case-insensitive.  A token buried mid-sentence is treated as real content
+    and delivered.
     """
     if not isinstance(text, str):
         return False
@@ -269,7 +287,7 @@ def _is_cron_silence_response(text: str) -> bool:
         return False
 
     def _is_token(line: str) -> bool:
-        return " ".join(line.strip().upper().split()) in _CRON_SILENCE_TOKENS
+        return _canonical_cron_silence_candidate(line) in _CRON_SILENCE_TOKENS
 
     # Whole response is exactly a token.
     if _is_token(stripped):

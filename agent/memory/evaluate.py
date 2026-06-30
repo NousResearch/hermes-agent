@@ -128,6 +128,10 @@ def _fallback_corpus() -> Tuple[List[str], str]:
         "[context: deploy] [signal: 0.8]Container naming migration DONE 2026-06-30. 13 GKE deployments updated to canonical images. 4 orphan repos deleted. Gitops committed.",
         "[context: feature] [signal: 0.9]Storage service at xentropy/ai/apps/storage/ — NestJS, Neo4j+GCS, GKE port 3006. Neo4j nodes: (:Tenant,:Workspace,:File,:IdempotencyKey). GCS: {project}-workspaces + {project}-assets.",
         "[context: feature] [signal: 0.9]Memory context relevance framework IMPLEMENTED. 5-stage pipeline: Intent extraction → FTS5+ONNX-embedding+context-tag hybrid recall → Cross-provider fusion → Relevance gating → Structured injection. all-MiniLM-L6-v2 via ONNX Runtime (22MB, no PyTorch). 162 tests pass.",
+        "[context: deploy] [signal: 0.8]GKE xenapi health endpoint bottleneck: Node.js event loop concurrency, not CPU. 100 concurrent connections still < 66m CPU. System plateaus at ~25 r/s total (12 r/s per pod). CPU-based HPA won't trigger. Use static replica count or custom concurrency metrics.",
+        "[context: deploy] [signal: 0.8]GKE dashboard API proxy fix: Next.js rewrites to 127.0.0.1:3001 fail on GKE because platform-api is a separate pod. Fix: route /api/ and /socket.io/ from ingress directly to platform-api service. nginx-ingress-controller with ImplementationSpecific pathType.",
+        "[context: debug] [signal: 0.8]Sentry test webhook false-positive pattern: verify-e2e webhooks create P2 incidents in kanban. Detection: non-numeric issue IDs or titles containing 'verified'/'test'/'verifyWebhook'. Fix: sentry-bridge should filter webhooks matching /^(verify|test)/i or resolve as false positive.",
+        "[context: feature] [signal: 0.8]Import path gotcha: src/domains/ai/tools/ imported ContentService from src/content/content.service (stub without methods). Real implementation at src/domains/content/content.service. Check domain imports resolve to real implementations not migration stubs.",
     ]
     return entries, "fallback corpus"
 

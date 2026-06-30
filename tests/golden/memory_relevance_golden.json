@@ -184,5 +184,47 @@
     "task_type": "debug",
     "relevant_indices": [],
     "note": "No error entry — tests graceful empty return"
+  },
+  {
+    "query": "what's the GKE xenapi bottleneck",
+    "task_type": "debug",
+    "relevant_indices": [6],
+    "note": "GKE xenapi health endpoint — Node.js concurrency bottleneck"
+  },
+  {
+    "query": "the GKE dashboard API proxy is broken, how do I fix it",
+    "task_type": "deploy",
+    "relevant_indices": [7],
+    "note": "Route /api/ and /socket.io/ from ingress to platform-api pod"
+  },
+  {
+    "query": "sentry webhook created a fake P2 incident",
+    "task_type": "debug",
+    "relevant_indices": [8],
+    "note": "Sentry test webhook false-positive detection pattern"
+  },
+  {
+    "query": "ContentService missing createNote method",
+    "task_type": "debug",
+    "relevant_indices": [9],
+    "note": "Import path gotcha — stub vs real service implementations"
+  },
+  {
+    "query": "how many requests can the health endpoint handle",
+    "task_type": "deploy",
+    "relevant_indices": [6],
+    "note": "~25 r/s total, 12 r/s per pod, Node.js concurrency ceiling"
+  },
+  {
+    "query": "scale the platform-api on GKE",
+    "task_type": "deploy",
+    "relevant_indices": [6, 7],
+    "note": "Both GKE deploy entries — concurrency bottleneck + routing fix"
+  },
+  {
+    "query": "fix the import path for domain services",
+    "task_type": "feature",
+    "relevant_indices": [9],
+    "note": "Domain import gotcha — real vs stub service paths"
   }
 ]

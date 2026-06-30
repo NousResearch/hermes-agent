@@ -160,7 +160,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
         proc = subprocess.run(
             [schtasks, *args],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             # Localized Windows emits schtasks output in the console code page,
             # not UTF-8. Decode with the locale encoding and replace undecodable
             # bytes so a non-UTF-8 status line never surfaces a UnicodeDecodeError

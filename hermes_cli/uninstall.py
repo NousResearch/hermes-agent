@@ -465,7 +465,7 @@ def _uninstall_profile(profile) -> None:
             subprocess.run(
                 hermes_invocation + ["gateway", subcmd],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=60,
                 check=False,
             )

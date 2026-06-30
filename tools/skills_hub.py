@@ -46,30 +46,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-#
-# These directories MUST resolve through ``get_hermes_home()`` on every access
-# so the context-local profile override (``set_hermes_home_override``) is
-# honored.  Freezing them as module-level constants at import time pinned every
-# later profile to whichever profile first imported this module — a cross-
-# profile data leak in single-process multi-profile runtimes (desktop
-# ``tui_gateway``).  See the profile-isolation fix.
-#
-# Backward compatibility: external callers do ``from tools.skills_hub import
-# SKILLS_DIR`` (always inside a function body, re-evaluated per call).  The
-# module-level ``__getattr__`` below makes those names resolve dynamically, so
-# no external call site needs to change.
+# Resolved per-call (not frozen at import) so the profile override is honored;
+# import-time constants leaked across profiles in single-process multi-profile
+# runtimes. Legacy names (SKILLS_DIR, ...) are re-exposed via __getattr__ below
+# so external `from tools.skills_hub import SKILLS_DIR` callers still work.
 
-INDEX_CACHE_TTL = 3600  # 1 hour  (defined early; referenced below)
+INDEX_CACHE_TTL = 3600  # 1 hour
 
 
-# The legacy path names (SKILLS_DIR, HUB_DIR, ...) are not real module
-# attributes — they are synthesized on access by the PEP 562 ``__getattr__``
-# below so they reflect the active profile override.  Tests, however, set them
-# as *real* module attributes via ``patch.object(hub, "SKILLS_DIR", ...)`` /
-# ``monkeypatch.setattr``.  ``_override`` lets each resolver honor such an
-# injected real attribute (the test seam) before falling back to dynamic
-# resolution.  ``globals().get`` returns None when only the __getattr__-backed
-# name exists (no real attribute set), so dynamic resolution wins by default.
+# _override lets a test-injected real module attribute (patch.object/monkeypatch
+# on SKILLS_DIR etc.) win over dynamic resolution; None means resolve live.
 def _override(name: str):
     return globals().get(name)
 
@@ -126,14 +112,8 @@ _DYNAMIC_PATH_RESOLVERS = {
 
 
 def __getattr__(name: str):
-    """Resolve the legacy path constants dynamically per access.
-
-    PEP 562 module ``__getattr__``: only called for names NOT found as real
-    module attributes, so it does not slow down ordinary lookups and a test's
-    ``patch.object``-set real attribute shadows it.  This lets
-    ``tools.skills_hub.SKILLS_DIR`` (and the rest) reflect the active profile
-    override instead of an import-time snapshot.
-    """
+    """Resolve legacy path constants dynamically (PEP 562) so they reflect the
+    active profile override; a test's patch.object-set real attribute shadows it."""
     resolver = _DYNAMIC_PATH_RESOLVERS.get(name)
     if resolver is not None:
         return resolver()

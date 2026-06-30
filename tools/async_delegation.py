@@ -249,10 +249,8 @@ def dispatch_async_delegation(
             _finalize(delegation_id, result, status)
 
     try:
-        # Capture the dispatching turn's ContextVars (notably the
-        # _HERMES_HOME_OVERRIDE profile scope) so the detached child resolves
-        # get_hermes_home() under the right profile in single-process
-        # multi-profile runtimes (desktop tui_gateway, multiplexed gateway).
+        # Propagate the dispatching profile so the detached child resolves
+        # get_hermes_home() under the right profile.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
@@ -438,9 +436,7 @@ def dispatch_async_delegation_batch(
             _finalize_batch(delegation_id, combined, status)
 
     try:
-        # Capture the dispatching turn's ContextVars (notably the
-        # _HERMES_HOME_OVERRIDE profile scope) so the detached batch children
-        # resolve get_hermes_home() under the right profile.
+        # Propagate the dispatching profile to the detached batch children.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
         with _records_lock:

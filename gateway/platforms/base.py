@@ -1914,6 +1914,22 @@ SEND_ERROR_KINDS = frozenset(
     }
 )
 
+# ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
+# the chat/user/group itself is gone, so the whole target is dead.  A
+# *thread/topic/message-level* not_found (a deleted forum topic, an edited-away
+# message) leaves the parent chat reachable — it must NOT mark the whole chat
+# dead.  ``classify_send_error`` collapses both into ``"not_found"``;
+# ``is_chat_level_not_found`` recovers the distinction for the dead-target path.
+# See gateway.dead_targets.
+_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
+_SUBCHAT_NOT_FOUND_SUBSTRINGS = (
+    "message to edit not found",
+    "message to reply not found",
+    "thread not found",
+    "topic_deleted",
+    "message_id_invalid",
+)
+
 
 def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
     """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
@@ -1953,13 +1969,8 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not a member" in blob
     ):
         return "forbidden"
-    if (
-        "chat not found" in blob
-        or "message to edit not found" in blob
-        or "message to reply not found" in blob
-        or "thread not found" in blob
-        or "topic_deleted" in blob
-        or "message_id_invalid" in blob
+    if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(
+        s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS
     ):
         return "not_found"
     if (
@@ -1975,6 +1986,27 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     if "connecttimeout" in blob:
         return "transient"
     return "unknown"
+
+
+def is_chat_level_not_found(error_text: str = "", exc: Optional[BaseException] = None) -> bool:
+    """Whether a ``not_found`` failure means the *whole chat* is gone.
+
+    :func:`classify_send_error` collapses chat-level and thread/topic/message-level
+    not_found into the single ``"not_found"`` kind.  Only the chat-level case (the
+    chat/user/group no longer exists) should mark a delivery target dead; a deleted
+    forum topic or an edited-away message leaves the parent chat reachable.  When
+    both a chat-level and a sub-chat marker are present, the sub-chat reading wins
+    (conservative: never kill a chat that may still be reachable).
+    """
+    parts = []
+    if error_text:
+        parts.append(error_text)
+    if exc is not None:
+        parts.append(str(exc))
+    blob = " ".join(parts).lower()
+    if any(s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS):
+        return False
+    return any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS)
 
 
 class EphemeralReply(str):

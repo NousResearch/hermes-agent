@@ -137,12 +137,17 @@ SCHEMA_VERSION = 17
 # propagate that, every feature backed by state.db / kanban.db breaks
 # silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
 #
+# ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
+# shared-memory (-shm) file under concurrent connection bursts, presenting
+# as ``disk I/O error`` rather than ``locking protocol``.
+#
 # Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
-# works on NFS.  Concurrency drops — concurrent readers are blocked during
-# a write — but the feature works.
+# works on NFS and ZFS.  Concurrency drops — concurrent readers are blocked
+# during a write — but the feature works.
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
+    "disk i/o error",         # ZFS SHM corruption under concurrent connections
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
@@ -218,7 +223,7 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
         return f"{prefix}."
     hint = ""
     if any(marker in cause.lower() for marker in _WAL_INCOMPAT_MARKERS):
-        hint = " (state.db may be on NFS/SMB/FUSE — see https://www.sqlite.org/wal.html)"
+        hint = " (state.db may be on NFS/SMB/FUSE/ZFS — see https://www.sqlite.org/wal.html)"
     return f"{prefix}: {cause}{hint}."
 
 
@@ -287,10 +292,10 @@ def apply_wal_with_fallback(
 
     Returns the journal mode actually set (``"wal"`` or ``"delete"``).
 
-    On WAL-incompatible filesystems (NFS, SMB, some FUSE), SQLite raises
-    ``OperationalError("locking protocol")`` when setting WAL.  We fall
-    back to DELETE mode — the pre-WAL default, which works on NFS — and
-    log one WARNING explaining why.
+    On WAL-incompatible filesystems (NFS, SMB, some FUSE, ZFS), SQLite raises
+    ``OperationalError("locking protocol")`` or ``OperationalError("disk I/O error")``
+    when setting WAL.  We fall back to DELETE mode — the pre-WAL default, which
+    works on NFS and ZFS — and log one WARNING explaining why.
 
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
@@ -345,7 +350,7 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     logger.warning(
         "%s: WAL journal_mode unsupported on this filesystem (%s) — "
         "falling back to journal_mode=DELETE (slower rollback-journal "
-        "mode; reduces concurrency but works on NFS/SMB/FUSE). See "
+        "mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
         "https://www.sqlite.org/wal.html for details. This warning "
         "fires once per process per database.",
         db_label,

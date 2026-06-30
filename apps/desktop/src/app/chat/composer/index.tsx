@@ -58,14 +58,14 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify, notifyError } from '@/store/notifications'
+import { notify } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
-import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
@@ -93,17 +93,14 @@ import {
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
-  onComposerSubmitRequest,
-  onComposerVoiceToggleRequest
+  onComposerSubmitRequest
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
-import { useAutoSpeakReplies } from './hooks/use-auto-speak-replies'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
-import { useVoiceConversation } from './hooks/use-voice-conversation'
-import { useVoiceRecorder } from './hooks/use-voice-recorder'
 import {
   dragHasAttachments,
   droppedFileInlineRefs,
@@ -284,7 +281,6 @@ export function ChatBar({
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
-  const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
@@ -292,7 +288,6 @@ export function ChatBar({
   queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
-  const lastSpokenIdRef = useRef<string | null>(null)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -1802,93 +1797,24 @@ export function ChatBar({
     setUrlOpen(false)
   }
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
-    focusInput,
-    maxRecordingSeconds,
-    onTranscript: insertText,
-    onTranscribeAudio
-  })
-
-  const pendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-
-    if (!last || last.id === lastSpokenIdRef.current) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
-      return null
-    }
-
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text
-    }
-  }
-
-  const consumePendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-
-    if (last) {
-      lastSpokenIdRef.current = last.id
-    }
-  }
-
-  const submitVoiceTurn = async (text: string) => {
-    if (busy) {
-      return
-    }
-
-    triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text)
-  }
-
-  const conversation = useVoiceConversation({
+  const {
+    conversation,
+    dictate,
+    endConversation,
+    handleToggleAutoSpeak,
+    startConversation,
+    voiceActivityState,
+    voiceConversationActive,
+    voiceStatus
+  } = useComposerVoice({
     busy,
-    consumePendingResponse,
-    enabled: voiceConversationActive,
-    onFatalError: () => setVoiceConversationActive(false),
-    onSubmit: submitVoiceTurn,
+    clearDraft,
+    disabled,
+    focusInput,
+    insertText,
+    maxRecordingSeconds,
+    onSubmit,
     onTranscribeAudio,
-    pendingResponse
-  })
-
-  // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
-  // with STT unconfigured lets the conversation surface its own "configure
-  // speech-to-text" notice rather than silently no-opping.
-  const toggleVoiceConversation = useCallback(() => {
-    if (disabled) {
-      return
-    }
-
-    if (voiceConversationActive) {
-      setVoiceConversationActive(false)
-      void conversation.end()
-    } else {
-      setVoiceConversationActive(true)
-    }
-  }, [conversation, disabled, voiceConversationActive])
-
-  useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
-
-  const handleToggleAutoSpeak = useCallback(() => {
-    void setAutoSpeakReplies(!$autoSpeakReplies.get()).catch(error =>
-      notifyError(error, t.settings.config.autosaveFailed)
-    )
-  }, [t])
-
-  useAutoSpeakReplies({
-    conversationActive: voiceConversationActive,
-    failureLabel: t.assistant.thread.readAloudFailed,
-    markSpoken: consumePendingResponse,
-    pendingReply: pendingResponse,
     sessionId
   })
 
@@ -1919,11 +1845,8 @@ export function ChatBar({
         active: voiceConversationActive,
         level: conversation.level,
         muted: conversation.muted,
-        onEnd: () => {
-          setVoiceConversationActive(false)
-          void conversation.end()
-        },
-        onStart: () => setVoiceConversationActive(true),
+        onEnd: endConversation,
+        onStart: startConversation,
         onStopTurn: conversation.stopTurn,
         onToggleMute: conversation.toggleMute,
         status: conversation.status

@@ -3068,6 +3068,33 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
 }
 
+function maybePersistEnvRemoteConnection(connection, rawEnvToken) {
+  if (!connection?.baseUrl || connection.source !== 'env') {
+    return
+  }
+
+  const existing = readDesktopConnectionConfig()
+  if (String(existing.remote?.url || '').trim()) {
+    return
+  }
+
+  try {
+    const next = coerceDesktopConnectionConfig(
+      {
+        mode: 'remote',
+        remoteAuthMode: connection.authMode,
+        remoteToken: connection.authMode === 'token' ? rawEnvToken || undefined : undefined,
+        remoteUrl: connection.baseUrl
+      },
+      existing
+    )
+    writeDesktopConnectionConfig(next)
+    rememberLog(`[connection] saved env remote gateway URL for normal app launches: ${connection.baseUrl}`)
+  } catch (error) {
+    rememberLog(`[connection] could not save env remote gateway URL: ${error instanceof Error ? error.message : error}`)
+  }
+}
+
 // Build a remote backend connection descriptor from an already-resolved remote
 // config. Handles both auth models (OAuth ws-ticket vs static session token)
 // and is shared by the per-profile, env, and global resolution paths. `token`
@@ -3193,7 +3220,10 @@ async function resolveRemoteBackend(profile) {
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
   if (rawEnvUrl) {
-    return resolveEnvRemoteConnection(rawEnvUrl, rawEnvToken)
+    const connection = await resolveEnvRemoteConnection(rawEnvUrl, rawEnvToken)
+    maybePersistEnvRemoteConnection(connection, rawEnvToken)
+
+    return connection
   }
 
   // 3. Global remote.

@@ -240,6 +240,18 @@ export function GatewaySettings() {
     return Boolean(remoteToken.trim()) || state.remoteTokenSet
   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
+  const canSaveRemote = useMemo(() => {
+    if (!trimmedUrl) {
+      return false
+    }
+
+    if (authMode === 'oauth') {
+      return true
+    }
+
+    return Boolean(remoteToken.trim()) || state.remoteTokenSet
+  }, [authMode, remoteToken, state.remoteTokenSet, trimmedUrl])
+
   const payload = () => ({
     mode: 'remote' as const,
     profile: scope ?? undefined,
@@ -249,11 +261,11 @@ export function GatewaySettings() {
   })
 
   const save = async (apply: boolean) => {
-    if (!canUseRemote) {
+    if (!canSaveRemote) {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
-        message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
+        message: authMode === 'oauth' ? g.enterUrlFirst : g.incompleteToken
       })
 
       return
@@ -524,10 +536,10 @@ export function GatewaySettings() {
           {testing ? <Loader2 className="animate-spin" /> : null}
           {g.testRemote}
         </Button>
-        <Button disabled={saving} onClick={() => void save(false)} size="sm" variant="textStrong">
+        <Button disabled={saving || !canSaveRemote} onClick={() => void save(false)} size="sm" variant="textStrong">
           {g.saveForRestart}
         </Button>
-        <Button disabled={saving} onClick={() => void save(true)} size="sm">
+        <Button disabled={saving || !canSaveRemote} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="animate-spin" /> : null}
           {g.saveAndReconnect}
         </Button>

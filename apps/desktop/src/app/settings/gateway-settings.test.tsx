@@ -80,6 +80,33 @@ async function renderGatewaySettings() {
 }
 
 describe('GatewaySettings', () => {
+  it('saves a clean first-run OAuth gateway URL before opening login', async () => {
+    getConnectionConfig.mockResolvedValue(
+      connectionConfig({
+        envOverride: false,
+        remoteUrl: ''
+      })
+    )
+
+    await renderGatewaySettings()
+
+    const input = await screen.findByPlaceholderText('https://gateway.example.com/hermes')
+    fireEvent.change(input, { target: { value: MERCURY_URL } })
+
+    await waitFor(() => expect(probeConnectionConfig).toHaveBeenCalledWith(MERCURY_URL))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }))
+
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenCalledWith({
+        mode: 'remote',
+        profile: undefined,
+        remoteAuthMode: 'oauth',
+        remoteUrl: MERCURY_URL
+      })
+    )
+    expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(MERCURY_URL)
+  })
+
   it('persists the env-provided OAuth URL before opening login', async () => {
     await renderGatewaySettings()
 

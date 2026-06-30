@@ -26,6 +26,7 @@ from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
     _auth_store_lock,
+from agent.redact import redact_sensitive_text
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _load_auth_store,
@@ -629,7 +630,7 @@ class CredentialPool:
             ):
                 logger.debug(
                     "Pool entry %s: syncing tokens from credentials file (tokens changed)",
-                    entry.id,
+                    redact_sensitive_text(str(entry.id)),
                 )
                 updated = replace(
                     entry,
@@ -647,7 +648,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync from credentials file: %s", exc)
+            logger.debug("Failed to sync from credentials file: %s", redact_sensitive_text(str(exc)))
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -711,7 +712,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
+            logger.debug("Failed to sync Codex entry from auth.json: %s", redact_sensitive_text(str(exc)))
         return entry
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -769,7 +770,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
+            logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", redact_sensitive_text(str(exc)))
         return entry
 
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -841,7 +842,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
+            logger.debug("Failed to sync Nous entry from auth.json: %s", redact_sensitive_text(str(exc)))
         return entry
 
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:

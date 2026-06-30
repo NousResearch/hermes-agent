@@ -2220,3 +2220,40 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# QQAdapter.connect() signature contract (issue #54679)
+# ---------------------------------------------------------------------------
+
+class TestQQConnectIsReconnectKwarg:
+    """The gateway reconnect watcher always calls
+    ``adapter.connect(is_reconnect=...)`` via
+    ``_connect_adapter_with_timeout``. QQAdapter.connect() must accept the
+    keyword to match the PlatformAdapter contract; before the fix its
+    signature was ``async def connect(self)`` and the reconnect call raised
+    ``TypeError: connect() got an unexpected keyword argument 'is_reconnect'``
+    (QQ Bot failed to reconnect after a disconnect)."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_connect_signature_accepts_is_reconnect(self):
+        import inspect
+        from gateway.platforms.qqbot import QQAdapter
+        sig = inspect.signature(QQAdapter.connect)
+        assert "is_reconnect" in sig.parameters
+        param = sig.parameters["is_reconnect"]
+        # Keyword-only with a False default, matching PlatformAdapter.connect().
+        assert param.kind == inspect.Parameter.KEYWORD_ONLY
+        assert param.default is False
+
+    def test_connect_callable_with_is_reconnect_kwarg(self):
+        # Calling connect(is_reconnect=True) must not raise TypeError for the
+        # unexpected keyword. We force an early, dependency-style return so the
+        # call exercises only the signature/binding, not real networking.
+        adapter = self._make_adapter()
+        with mock.patch("gateway.platforms.qqbot.adapter.AIOHTTP_AVAILABLE", False):
+            result = asyncio.run(adapter.connect(is_reconnect=True))
+        assert result is False

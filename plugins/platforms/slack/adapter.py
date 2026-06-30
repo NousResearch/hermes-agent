@@ -468,6 +468,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
+        # Slack can deliver events for stale DM ids that the current bot token
+        # can no longer post to. Remember the user behind each DM so send()
+        # can reopen the current DM and retry instead of dropping the agent's
+        # completed response on chat.postMessage(channel_not_found).
+        self._dm_user_by_channel: Dict[str, str] = {}
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
@@ -1335,6 +1340,76 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+
+    @staticmethod
+    def _slack_api_error_code(exc: Exception) -> str:
+        """Return a Slack Web API error code from SlackApiError-like exceptions."""
+        response = getattr(exc, "response", None)
+        if response is not None and hasattr(response, "get"):
+            error = str(response.get("error", "") or "").strip()
+            if error:
+                return error
+        return str(exc)
+
+    async def _resolve_replacement_dm_channel(
+        self,
+        stale_chat_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Resolve the current Slack DM channel for a stale DM send target."""
+        if not stale_chat_id.startswith("D"):
+            return None
+
+        user_id = ""
+        if metadata:
+            user_id = str(
+                metadata.get("slack_user_id")
+                or metadata.get("user_id")
+                or ""
+            ).strip()
+        if not user_id:
+            user_id = self._dm_user_by_channel.get(stale_chat_id, "")
+        if not user_id:
+            return None
+
+        try:
+            result = await self._get_client(stale_chat_id).conversations_open(users=user_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "[Slack] Failed to reopen current DM for stale channel %s user %s: %s",
+                stale_chat_id,
+                user_id,
+                exc,
+            )
+            return None
+
+        if not result or not result.get("ok"):
+            logger.warning(
+                "[Slack] conversations.open failed while recovering stale DM %s for user %s: %s",
+                stale_chat_id,
+                user_id,
+                result.get("error") if hasattr(result, "get") else result,
+            )
+            return None
+
+        channel = result.get("channel") if hasattr(result, "get") else None
+        new_chat_id = str((channel or {}).get("id") or "").strip()
+        if not new_chat_id or new_chat_id == stale_chat_id:
+            return None
+
+        self._dm_user_by_channel[new_chat_id] = user_id
+        team_id = self._channel_team.get(stale_chat_id)
+        if team_id:
+            self._channel_team[new_chat_id] = team_id
+        logger.warning(
+            "[Slack] Recovered stale DM channel %s for user %s by retrying current DM %s",
+            stale_chat_id,
+            user_id,
+            new_chat_id,
+        )
+        return new_chat_id
+
     async def send(
         self,
         chat_id: str,
@@ -1366,6 +1441,8 @@ class SlackAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            effective_thread_ts = thread_ts
+            send_chat_id = chat_id
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -1374,20 +1451,43 @@ class SlackAdapter(BasePlatformAdapter):
 
             for i, chunk in enumerate(chunks):
                 kwargs = {
-                    "channel": chat_id,
+                    "channel": send_chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
-                if thread_ts:
-                    kwargs["thread_ts"] = thread_ts
+                if effective_thread_ts:
+                    kwargs["thread_ts"] = effective_thread_ts
                     # Only broadcast the first chunk of the first reply
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(send_chat_id).chat_postMessage(**kwargs)
+                except Exception as exc:
+                    error_code = self._slack_api_error_code(exc)
+                    replacement_dm = None
+                    if error_code == "channel_not_found" and send_chat_id.startswith("D"):
+                        replacement_dm = await self._resolve_replacement_dm_channel(
+                            send_chat_id,
+                            metadata=metadata,
+                        )
+                    if not replacement_dm:
+                        raise
+                    send_chat_id = replacement_dm
+                    # A thread timestamp from the stale DM is not valid in the
+                    # freshly opened DM. Drop it so the recovery message lands
+                    # visibly instead of failing again with thread/channel errors.
+                    effective_thread_ts = None
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs["channel"] = send_chat_id
+                    retry_kwargs.pop("thread_ts", None)
+                    retry_kwargs.pop("reply_broadcast", None)
+                    last_result = await self._get_client(send_chat_id).chat_postMessage(
+                        **retry_kwargs
+                    )
 
             # Clear Slack Assistant status as soon as the final message is posted.
-            if thread_ts:
+            if effective_thread_ts:
                 await self.stop_typing(chat_id)
 
             # Track the sent message ts so we can auto-respond to thread
@@ -1396,8 +1496,8 @@ class SlackAdapter(BasePlatformAdapter):
             if sent_ts:
                 self._bot_message_ts.add(sent_ts)
                 # Also register the thread root so replies-to-my-replies work
-                if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
+                if effective_thread_ts:
+                    self._bot_message_ts.add(effective_thread_ts)
                 if len(self._bot_message_ts) > self._BOT_TS_MAX:
                     excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
                     for old_ts in list(self._bot_message_ts)[:excess]:
@@ -1410,7 +1510,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[Slack] Send error: %s", e, exc_info=True)
+            logger.error("[Slack] Send error to %s: %s", chat_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_private_notice(
@@ -2636,6 +2736,14 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        if is_dm and not self._slack_dm_channel_allowed(channel_id):
+            logger.warning(
+                "[Slack] Ignoring DM-like message in non-owner DM channel: %s",
+                channel_id,
+            )
+            return
+        if is_dm and channel_id and user_id:
+            self._dm_user_by_channel[channel_id] = user_id
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -4053,6 +4161,35 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+
+    def _slack_allowed_dm_channels(self) -> set:
+        """Return DM channel IDs where the Slack bot may process messages.
+
+        Slack can deliver assistant/app events for human-to-human DM channels
+        authored by an allowed user. Those are not conversations with the bot;
+        processing them leaks the bot into private DMs. Restrict DM handling to
+        the bot's owner/current DM unless explicitly configured otherwise.
+        """
+        raw = self.config.extra.get("allowed_dm_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_ALLOWED_DM_CHANNELS", "")
+        parts = set()
+        if isinstance(raw, list):
+            parts.update(str(part).strip() for part in raw if str(part).strip())
+        elif raw is not None:
+            raw_s = str(raw).strip()
+            if raw_s:
+                parts.update(part.strip() for part in raw_s.split(",") if part.strip())
+        owner_dm = self.config.extra.get("owner_dm") or os.getenv("SLACK_OWNER_DM", "")
+        owner_dm_s = str(owner_dm).strip() if owner_dm is not None else ""
+        if owner_dm_s:
+            parts.add(owner_dm_s)
+        return parts
+
+    def _slack_dm_channel_allowed(self, channel_id: str) -> bool:
+        allowed = self._slack_allowed_dm_channels()
+        return not allowed or str(channel_id or "").strip() in allowed
 
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile optional regex wake-word patterns for channel triggers.

@@ -1961,6 +1961,51 @@ class TestMessageRouting:
         adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_human_dm_channel_ignored_when_owner_dm_is_set(self, adapter):
+        """Allowed users in human-to-human DMs must not dispatch to the agent."""
+        adapter.config.extra["owner_dm"] = "D_OWNER"
+        event = {
+            "text": "hello from an allowed user in somebody else's DM",
+            "user": "U_ALLOWED",
+            "channel": "D_OTHER_PERSON",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+        assert "D_OTHER_PERSON" not in adapter._dm_user_by_channel
+
+    @pytest.mark.asyncio
+    async def test_owner_dm_channel_allowed_when_owner_dm_is_set(self, adapter):
+        """The configured owner/current bot DM remains processable."""
+        adapter.config.extra["owner_dm"] = "D_OWNER"
+        event = {
+            "text": "hello",
+            "user": "U_OWNER",
+            "channel": "D_OWNER",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+        assert adapter._dm_user_by_channel["D_OWNER"] == "U_OWNER"
+
+    @pytest.mark.asyncio
+    async def test_explicit_allowed_dm_channel_allowed(self, adapter):
+        """Multiple allowed DM channels can be configured intentionally."""
+        adapter.config.extra["owner_dm"] = "D_OWNER"
+        adapter.config.extra["allowed_dm_channels"] = "D_ALLOWED,D_OTHER"
+        event = {
+            "text": "hello",
+            "user": "U_ALLOWED",
+            "channel": "D_ALLOWED",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_channel_message_requires_mention(self, adapter):
         """Channel messages without a bot mention should be ignored."""
         event = {
@@ -3282,6 +3327,62 @@ class TestMessageSplitting:
         await adapter.send("C123", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
+
+
+    @pytest.mark.asyncio
+    async def test_stale_dm_channel_not_found_reopens_current_dm(self, adapter):
+        """A stale Slack DM should be resolved to the user's current DM and retried."""
+
+        class SlackApiException(Exception):
+            def __init__(self, error: str):
+                super().__init__(error)
+                self.response = {"ok": False, "error": error}
+
+        async def fake_post(**kwargs):
+            if kwargs["channel"] == "DOLD":
+                raise SlackApiException("channel_not_found")
+            return {"ts": "new_reply_ts"}
+
+        adapter._app.client.chat_postMessage = AsyncMock(side_effect=fake_post)
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "DNEW"}}
+        )
+        result = await adapter.send(
+            "DOLD",
+            "hello again",
+            metadata={"thread_id": "old_thread", "slack_user_id": "U123"},
+        )
+        assert result.success
+        assert result.message_id == "new_reply_ts"
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123")
+        assert adapter._app.client.chat_postMessage.await_args_list[0].kwargs["channel"] == "DOLD"
+        retried = adapter._app.client.chat_postMessage.await_args_list[1].kwargs
+        assert retried["channel"] == "DNEW"
+        assert "thread_ts" not in retried
+
+    @pytest.mark.asyncio
+    async def test_stale_dm_channel_uses_cached_event_user(self, adapter):
+        """DM event processing caches channel→user for later send recovery."""
+
+        class SlackApiException(Exception):
+            def __init__(self, error: str):
+                super().__init__(error)
+                self.response = {"ok": False, "error": error}
+
+        async def fake_post(**kwargs):
+            if kwargs["channel"] == "DOLD":
+                raise SlackApiException("channel_not_found")
+            return {"ts": "new_reply_ts"}
+
+        adapter._dm_user_by_channel["DOLD"] = "U123"
+        adapter._app.client.chat_postMessage = AsyncMock(side_effect=fake_post)
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "DNEW"}}
+        )
+        result = await adapter.send("DOLD", "hello again")
+        assert result.success
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123")
+        assert adapter._dm_user_by_channel["DNEW"] == "U123"
 
 
 # ---------------------------------------------------------------------------

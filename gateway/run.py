@@ -12938,13 +12938,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+        if getattr(source, "platform", None) == Platform.SLACK:
+            user_id = getattr(source, "user_id", None)
+            if user_id:
+                metadata = dict(metadata or {})
+                metadata["slack_user_id"] = str(user_id)
+        return metadata
 
     def _thread_metadata_for_target(
         self,
@@ -12976,6 +12982,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+        if platform == Platform.SLACK and adapter is not None:
+            # Slack stale-DM recovery needs the event user so the adapter can
+            # reopen the current DM if Slack rejects an old D* channel id.
+            source_user_id = getattr(adapter, "_last_source_user_id", None)
+            if source_user_id:
+                metadata["slack_user_id"] = str(source_user_id)
         return metadata
 
     @staticmethod

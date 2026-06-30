@@ -461,3 +461,155 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path:
         "False — this flag MUST be cleared on the review fork."
     )
     db.close()
+
+
+# ── Lease-refresher bounded-failure tolerance (salvage follow-up, #54465) ────
+# A single falsy refresh (transient DB blip) must NOT permanently kill the
+# lease — only a *persistent* failure (genuine lost-ownership) should stop the
+# refresher after a bounded number of consecutive failures. Without this, one
+# escaped lock-contention error silently reintroduces the TTL-expiry wedge the
+# PR set out to fix.
+
+
+class _FlakyRefreshDB:
+    """A db whose refresh_compression_lock returns a scripted sequence."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    def refresh_compression_lock(self, session_id, holder, ttl_seconds=300.0):
+        self.calls += 1
+        if self._results:
+            return self._results.pop(0)
+        return True  # steady-state success after the scripted prefix
+
+
+def _no_sleep(refresher) -> None:
+    """Make the refresher loop iterate without real wall-clock sleeps.
+
+    ``_stop.wait(interval)`` returns False (keep looping) instantly instead of
+    blocking for the (clamped) interval, so count-based tests stay fast and
+    deterministic — the loop's termination is driven by the failure cap / the
+    scripted db, not by timing.
+    """
+    refresher._stop.wait = lambda _interval: False  # type: ignore[assignment]
+
+
+def test_lease_refresher_survives_single_transient_failure() -> None:
+    """One False (transient blip) followed by success must NOT stop the loop.
+
+    Regression for the W1/W2 finding: the original ``if not refreshed: break``
+    treated a one-off failure identically to genuine lost-ownership, killing
+    the lease on the first hiccup.
+    """
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    # Script: success, FAILURE (blip), success, then stop the loop externally.
+    db = _FlakyRefreshDB([True, False, True])
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=0.001
+    )
+    # Stop after exactly 4 ticks (3 scripted + 1 steady success), no real sleep.
+    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
+    refresher._run()
+
+    # The single False at call 2 must NOT have ended the loop — we keep going
+    # past it (calls reach >= 4), proving the blip was tolerated.
+    assert db.calls >= 4, (
+        "Lease refresher stopped after a single transient failure — the "
+        "bounded-tolerance fix regressed (one blip must not kill the lease)."
+    )
+
+
+def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
+    """Persistent failure stops within one lease's worth of time, not forever.
+
+    The contract (not a magic count): the give-up window
+    ``cap * refresh_interval`` must be <= the TTL, so a stuck refresher can
+    never hold the lock past its TTL. We assert that relationship directly
+    rather than freezing a literal cap (behavior contract over snapshot).
+    """
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    ttl, interval = 10.0, 2.0  # cap should be int(10/2) = 5
+    db = _FlakyRefreshDB([False] * 50)  # never recovers (lost ownership)
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=ttl, refresh_interval_seconds=interval
+    )
+    _no_sleep(refresher)
+    refresher._run()
+
+    cap = refresher._max_consecutive_failures
+    assert cap == int(ttl / interval), "cap must derive from ttl/interval"
+    # Stops at the cap — not on the first failure, not forever.
+    assert db.calls == cap
+    # The invariant that makes the cap honest: total tolerance <= one TTL.
+    assert cap * interval <= ttl, (
+        f"give-up window {cap * interval}s must not exceed the lease TTL {ttl}s"
+    )
+
+
+def test_lease_refresher_failure_cap_has_floor_of_one() -> None:
+    """A degenerate interval >= ttl still tolerates exactly one blip (floor 1)."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    db = _FlakyRefreshDB([False] * 10)
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=1.0, refresh_interval_seconds=5.0
+    )
+    _no_sleep(refresher)
+    refresher._run()
+    assert refresher._max_consecutive_failures == 1
+    assert db.calls == 1
+
+
+def test_lease_refresher_recovers_after_raise() -> None:
+    """A raise treated as a failure tick must RESET on a later success — the
+    exception arm gets the same blip-tolerance as a falsy return, not just a
+    'doesn't crash' guarantee."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    class _RaiseThenOKDB:
+        """Raise once, then succeed forever — the transient-blip analog."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def refresh_compression_lock(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated DB hiccup")
+            return True
+
+    db = _RaiseThenOKDB()
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+    # Run a handful of ticks past the raise, then stop.
+    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
+    refresher._run()  # must not propagate the RuntimeError
+    # Survived the raise and kept refreshing — the counter reset on recovery.
+    assert db.calls >= 4
+
+
+def test_lease_refresher_stops_on_persistent_raise() -> None:
+    """A refresh that raises every tick is bounded by the same TTL-derived cap,
+    never propagates, and never loops forever."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    class _AlwaysRaiseDB:
+        def __init__(self):
+            self.calls = 0
+
+        def refresh_compression_lock(self, *a, **k):
+            self.calls += 1
+            raise RuntimeError("simulated DB hiccup")
+
+    db = _AlwaysRaiseDB()
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+    _no_sleep(refresher)
+    refresher._run()  # must not propagate
+    assert db.calls == refresher._max_consecutive_failures

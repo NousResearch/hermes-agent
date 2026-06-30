@@ -227,13 +227,10 @@ export {
 export type { Icon as IconComponent } from '@tabler/icons-react'
 
 /**
- * Named icon-size scale — the single source of truth for SVG (Tabler / lucide)
- * icon dimensions. Replaces ad-hoc `h-N w-N` classes and numeric `size={N}`
- * props with a small, consistent set of Tailwind `size-*` classes (which set
- * both width and height; CSS overrides the icon's default 24px attributes).
- *
- * Usage: `<SomeIcon className={iconSize.sm} />` (compose with `cn(...)` when the
- * icon also needs colour/animation classes).
+ * Named icon-size scale — the single source of truth for SVG icon dimensions,
+ * replacing ad-hoc `h-N w-N` / `size={N}`. Use `<Icon className={iconSize.sm} />`
+ * (Tailwind `size-*` sets w+h and beats the icon's default 24px); compose with
+ * `cn()` for colour/animation classes.
  */
 export const iconSize = {
   xs: 'size-3', // 12px

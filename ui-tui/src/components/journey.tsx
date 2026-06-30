@@ -54,10 +54,12 @@ interface JourneyProps {
   t: Theme
 }
 
-// Flattened timeline tree: a slice header followed by its chronological items.
+// Flattened timeline tree: each slice header is preceded by a blank gap row
+// (except the first) and followed by its chronological items.
 type TreeRow =
-  | { bucket: BucketRow; kind: 'slice' }
   | { bucket: BucketRow; kind: 'node'; last: boolean; node: BucketNode }
+  | { bucket: BucketRow; kind: 'slice' }
+  | { kind: 'gap' }
 
 type Cell = { color?: string; text: string }
 
@@ -65,15 +67,17 @@ const MAX_CHART_ROWS = 8
 
 const rowText = (row: Run[]) => row.map(run => run[0]).join('')
 
-const treeLength = (buckets: BucketRow[]) => buckets.reduce((n, b) => n + 1 + b.nodes.length, 0)
-
 const buildTree = (buckets: BucketRow[]): TreeRow[] => {
   const out: TreeRow[] = []
 
-  for (const bucket of buckets) {
+  buckets.forEach((bucket, b) => {
+    if (b > 0) {
+      out.push({ kind: 'gap' }) // breathing room between groups
+    }
+
     out.push({ bucket, kind: 'slice' })
     bucket.nodes.forEach((node, j) => out.push({ bucket, kind: 'node', last: j === bucket.nodes.length - 1, node }))
-  }
+  })
 
   return out
 }
@@ -143,7 +147,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         }
 
         setData(r)
-        setCursor(Math.max(0, treeLength(r?.buckets ?? []) - 1)) // open on the newest entry
+        setCursor(Math.max(0, buildTree(r?.buckets ?? []).length - 1)) // open on the newest entry
         setMode('timeline')
       })
       .catch((e: unknown) => alive && setErr(rpcErrorMessage(e)))
@@ -156,7 +160,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const tree = buildTree(data?.buckets ?? [])
   const activeRow = tree[Math.min(cursor, Math.max(0, tree.length - 1))]
   const activeNode = activeRow?.kind === 'node' ? activeRow.node : undefined
-  const activeBucket = activeRow?.bucket
+  const activeBucket = activeRow && activeRow.kind !== 'gap' ? activeRow.bucket : undefined
 
   useEffect(() => {
     if (mode === 'item') {
@@ -168,6 +172,27 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const scrollItem = (dy: number) => {
     itemScroll.current?.scrollBy(dy)
     setTick(x => x + 1)
+  }
+
+  // Cursor only ever rests on real rows — gaps are visual padding.
+  const stepRow = (from: number, dir: -1 | 1) => {
+    let i = from + dir
+
+    while (tree[i]?.kind === 'gap') {
+      i += dir
+    }
+
+    return i >= 0 && i < tree.length ? i : from
+  }
+
+  const snapRow = (i: number) => {
+    const c = Math.max(0, Math.min(tree.length - 1, i))
+
+    if (tree[c]?.kind !== 'gap') {
+      return c
+    }
+
+    return stepRow(c, 1) === c ? stepRow(c, -1) : stepRow(c, 1)
   }
 
   useInput((ch, key) => {
@@ -224,19 +249,19 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     }
 
     if (key.upArrow || ch === 'k') {
-      return setCursor(v => Math.max(0, v - 1))
+      return setCursor(v => stepRow(v, -1))
     }
 
     if (key.downArrow || ch === 'j') {
-      return setCursor(v => Math.min(tree.length - 1, v + 1))
+      return setCursor(v => stepRow(v, 1))
     }
 
     if (key.pageUp || (key.ctrl && ch === 'u')) {
-      return setCursor(v => Math.max(0, v - page))
+      return setCursor(v => snapRow(v - page))
     }
 
     if (key.pageDown || (key.ctrl && ch === 'd')) {
-      return setCursor(v => Math.min(tree.length - 1, v + page))
+      return setCursor(v => snapRow(v + page))
     }
 
     if (ch === 'g') {
@@ -379,6 +404,10 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 }
 
 function TreeLine({ active, palette, row, t }: { active: boolean; palette: StarmapPalette; row: TreeRow; t: Theme }) {
+  if (row.kind === 'gap') {
+    return <Text> </Text>
+  }
+
   if (row.kind === 'slice') {
     const { bucket } = row
 

@@ -137,10 +137,21 @@ class WSTransport:
                     self._loop.call_soon_threadsafe(self._arm_token_flush)
             return not self._closed
 
-        try:
-            from agent.async_utils import safe_schedule_threadsafe
-
-            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
+        # Non-streaming frame (RPC response, control frame, non-token event):
+        # append it behind any buffered tokens and flush the whole batch NOW so
+        # it can never overtake the tokens that preceded it. The send is
+        # scheduled INSIDE the lock so the on-the-wire order matches the buffer
+        # order even if the coalesce timer fires on the loop at the same moment.
+        from agent.async_utils import safe_schedule_threadsafe
+        with self._token_lock:
+            self._pending_tokens.append(line)
+            batch = self._pending_tokens
+            self._pending_tokens = []
+            if on_loop:
+                # Fire-and-forget — don't block the loop waiting on itself.
+                self._loop.create_task(self._safe_send_many(batch))
+                return True
+            fut = safe_schedule_threadsafe(self._safe_send_many(batch), self._loop)
             if fut is None:
                 self._closed = True
                 return False

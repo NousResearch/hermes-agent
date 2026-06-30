@@ -137,6 +137,49 @@ def test_backend_resolver_thread_title_requires_backend_lane_without_business_ke
     assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
 
 
+def test_owner_route_back_thread_title_requires_control_tower_lane_without_business_keywords():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори към Емо",
+        channel_id="1504852553031221391",
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_owner_route_back_thread_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_owner_route_back_thread_title_requires_initial_message_for_standalone_thread():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори към Емо",
+        channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_owner_route_back_thread_missing_initial_message"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_owner_route_back_thread_title_passes_in_control_tower_lane():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори към Емо",
+        channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+    )
+
+    assert result.ok is True
+
+
+def test_kozhuharov_thread_title_does_not_match_owner_route_back():
+    result = lint_discord_thread_create_target(
+        "Емо Кожухаров: PBX/SIP проверка",
+        channel_id="1504852485083496561",
+        initial_message="Емо Кожухаров, моля провери централата.",
+    )
+
+    assert result.ok is True
+
+
 def test_backend_resolver_thread_title_passes_in_backend_lane():
     result = lint_discord_thread_create_target(
         "Алекс: Игрите на града — стари линкове",

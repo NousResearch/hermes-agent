@@ -21,10 +21,7 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import {
-  $composerAttachments,
-  clearComposerAttachments
-} from '@/store/composer'
+import { $composerAttachments, clearComposerAttachments } from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -427,7 +424,20 @@ export function ChatBar({
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
+  // A pending coalesced flush (rAF id). `composerPlainText` serializes the whole
+  // editor (O(n)), so running it on every event during a burst — holding a key,
+  // or holding Cmd+V into a growing editor — is O(n²) across the burst. The
+  // contentEditable DOM is the source of truth (submit + the compositionend /
+  // keydown paths re-read it synchronously), so collapsing the input/paste
+  // flushes to one per paint is lossless.
+  const flushRafRef = useRef<number | undefined>(undefined)
+
   const flushEditorToDraft = (editor: HTMLDivElement) => {
+    if (flushRafRef.current !== undefined) {
+      window.cancelAnimationFrame(flushRafRef.current)
+      flushRafRef.current = undefined
+    }
+
     normalizeComposerEditorDom(editor)
 
     const nextDraft = composerPlainText(editor)
@@ -440,6 +450,29 @@ export function ChatBar({
     window.setTimeout(refreshTrigger, 0)
   }
 
+  // Coalesce the high-frequency input/paste flushes to one per frame. Immediate
+  // paths (compositionend, Enter/keydown, submit) keep calling
+  // flushEditorToDraft directly, which cancels any pending coalesced run first.
+  const scheduleFlushEditorToDraft = (editor: HTMLDivElement) => {
+    if (flushRafRef.current !== undefined) {
+      return
+    }
+
+    flushRafRef.current = window.requestAnimationFrame(() => {
+      flushRafRef.current = undefined
+      flushEditorToDraft(editor)
+    })
+  }
+
+  useEffect(
+    () => () => {
+      if (flushRafRef.current !== undefined) {
+        window.cancelAnimationFrame(flushRafRef.current)
+      }
+    },
+    []
+  )
+
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
@@ -448,7 +481,7 @@ export function ChatBar({
       return
     }
 
-    flushEditorToDraft(event.currentTarget)
+    scheduleFlushEditorToDraft(event.currentTarget)
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -498,7 +531,7 @@ export function ChatBar({
 
     event.preventDefault()
     insertPlainTextAtCaret(event.currentTarget, pastedText)
-    flushEditorToDraft(event.currentTarget)
+    scheduleFlushEditorToDraft(event.currentTarget)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -1217,7 +1250,12 @@ export function ChatBar({
       {dragging && poppedOut && (
         <div
           aria-hidden
-          className="pointer-events-none fixed inset-x-0 bottom-0 z-20 h-32"
+          // `absolute`, not `fixed`: anchor to the chat-column root (the same
+          // `relative isolate` container the docked composer centers in) so the
+          // glow spans the thread area only — never the full viewport / under the
+          // sidebar. The dock target IS the docked position, so they must share
+          // a containing block.
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32"
           style={{
             // A bottom-centered radial glow — soft on every side by construction,
             // so it reads as the dock target without any hard band edges. Its

@@ -4944,3 +4944,65 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+# ── Feishu DM reply anchor regression test (#55750) ────────────────────
+
+from gateway.config import Platform
+
+
+def test_feishu_dm_reply_anchor_returns_reply_to_message_id():
+    """Feishu DM quote-reply should anchor to the quoted message.
+
+    Regression test for #55750: the original condition required
+    ``thread_id`` to be truthy, but Feishu DMs have ``thread_id=None``,
+    causing the reply to fall through to ``message_id`` (the bot's own
+    message) instead of the user's quoted message.
+    """
+    from gateway.platforms.base import _reply_anchor_for_event
+
+    event = SimpleNamespace(
+        message_id="bot_msg_001",
+        reply_to_message_id="user_quoted_msg_042",
+        source=SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="p2p",
+            thread_id=None,
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "user_quoted_msg_042"
+
+
+def test_feishu_group_reply_anchor_returns_reply_to_message_id():
+    """Feishu group chat reply-to should also anchor correctly."""
+    from gateway.platforms.base import _reply_anchor_for_event
+
+    event = SimpleNamespace(
+        message_id="bot_msg_002",
+        reply_to_message_id="user_msg_099",
+        source=SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="group",
+            thread_id="thread_abc",
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "user_msg_099"
+
+
+def test_feishu_dm_no_reply_returns_message_id():
+    """Feishu DM without quote-reply should fall back to message_id."""
+    from gateway.platforms.base import _reply_anchor_for_event
+
+    event = SimpleNamespace(
+        message_id="bot_msg_003",
+        reply_to_message_id=None,
+        source=SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="p2p",
+            thread_id=None,
+        ),
+    )
+
+    assert _reply_anchor_for_event(event) == "bot_msg_003"
+

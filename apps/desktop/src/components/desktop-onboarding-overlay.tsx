@@ -785,7 +785,7 @@ export function ApiKeyForm({
   )
 }
 
-function FlowPanel({
+export function FlowPanel({
   ctx,
   flow,
   leaving,
@@ -816,13 +816,24 @@ function FlowPanel({
   }
 
   if (flow.status === 'error') {
+    const showApiKeyRecovery = isProviderSetupErrorMessage(flow.message)
+    const openApiKeyForm = () => {
+      cancelOnboardingFlow()
+      setOnboardingMode('apikey')
+    }
+
     return (
       <div className="grid gap-3">
         <div className="flex items-center gap-1.5 text-sm text-destructive">
           <ErrorIcon className="shrink-0" size="0.875rem" />
           <span>{flow.message || t.onboarding.signInFailed}</span>
         </div>
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {showApiKeyRecovery ? (
+            <Button onClick={openApiKeyForm} variant="outline">
+              {t.onboarding.haveApiKey}
+            </Button>
+          ) : null}
           <Button onClick={cancelOnboardingFlow} variant="outline">
             {t.onboarding.pickDifferentProvider}
           </Button>

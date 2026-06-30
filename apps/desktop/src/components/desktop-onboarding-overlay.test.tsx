@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from './desktop-onboarding-overlay'
+import { FlowPanel, Picker } from './desktop-onboarding-overlay'
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -32,6 +32,29 @@ function setProviders(providers: OAuthProvider[]) {
 }
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
+
+function ensureLocalStorage() {
+  if (window.localStorage) {
+    return
+  }
+
+  const store = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => store.delete(key),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value))
+      }
+    }
+  })
+}
+
+beforeEach(() => {
+  ensureLocalStorage()
+})
 
 afterEach(() => {
   cleanup()
@@ -98,5 +121,53 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+})
+
+describe('onboarding FlowPanel error recovery', () => {
+  it('offers direct API-key recovery for missing provider credentials', () => {
+    $desktopOnboarding.set({
+      configured: false,
+      flow: {
+        status: 'error',
+        message:
+          'Connected, but Hermes still cannot resolve a usable provider. No usable credentials found for openrouter.'
+      },
+      mode: 'oauth',
+      providers: [provider('nous', 'Nous Portal')],
+      reason: null,
+      requested: true,
+      firstRunSkipped: false,
+      manual: false,
+      localEndpoint: false
+    })
+
+    render(
+      <FlowPanel
+        ctx={ctx}
+        flow={$desktopOnboarding.get().flow}
+        leaving={false}
+        onBegin={() => undefined}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'I have an API key' }))
+
+    expect($desktopOnboarding.get().flow.status).toBe('idle')
+    expect($desktopOnboarding.get().mode).toBe('apikey')
+  })
+
+  it('does not show API-key recovery for non-credential runtime errors', () => {
+    render(
+      <FlowPanel
+        ctx={ctx}
+        flow={{ status: 'error', message: 'Selected runtime is not available.' }}
+        leaving={false}
+        onBegin={() => undefined}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'I have an API key' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Pick a different provider' })).toBeTruthy()
   })
 })

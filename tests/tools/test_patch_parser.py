@@ -215,7 +215,7 @@ class TestApplyUpdate:
                     error=None,
                 )
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -261,7 +261,7 @@ class TestAdditionOnlyHunks:
                     content="def main():\n    pass\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -289,7 +289,7 @@ class TestAdditionOnlyHunks:
                     content="existing = True\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -326,7 +326,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -360,7 +360,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -403,7 +403,7 @@ class TestValidationPhase:
                     return SimpleNamespace(content=None, error=f"File not found: {path}")
                 return SimpleNamespace(content=content, error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 written[path] = content
                 return SimpleNamespace(error=None)
 
@@ -569,7 +569,7 @@ class TestV4ALspDiagnosticsPropagation:
         )
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -603,7 +603,7 @@ class TestV4ALspDiagnosticsPropagation:
             def read_file_raw(self, path):
                 return SimpleNamespace(content="ctx\nold\nctx\n", error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -621,7 +621,7 @@ class TestV4ALspDiagnosticsPropagation:
         ops = self._build_ops_writing("foo.py", "x = 1\n")
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
                 return SimpleNamespace(error=None)
 
@@ -654,7 +654,7 @@ class TestV4ALspDiagnosticsPropagation:
         }
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
 
             def _check_lint(self, path):
@@ -679,7 +679,7 @@ class _DictFileOps:
             return SimpleNamespace(content=self.files[path], error=None)
         return SimpleNamespace(content="", error="file not found")
 
-    def write_file(self, path, content):
+    def write_file(self, path, content, pre_content=None):
         self.files[path] = content
         return SimpleNamespace(error=None)
 

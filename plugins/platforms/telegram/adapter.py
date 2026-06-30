@@ -690,6 +690,16 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         adapter_group_allowed_chats = self._telegram_config_allowlist("group_allowed_chats")
 
+        # Decision tree for this early auth gate:
+        # - YAML sender allowlist (`allow_from` / `allowed_users`) matches -> allow.
+        # - If that sender list exists but misses:
+        #   * group/forum + YAML group sender list -> decide from that list.
+        #   * otherwise deny unless sender-scoped env auth is configured.
+        # - Group/forum messages that reach this point check YAML group sender
+        #   and chat gates before test hooks, runner auth, and env fallback.
+        # - Test/custom injection may decide directly. Real runner auth only
+        #   decides when auth config exists; no-auth DMs still reach pairing.
+        # - Env fallback order is group sender, group chat, then DM sender.
         if adapter_allow_from:
             if user_id in adapter_allow_from or "*" in adapter_allow_from:
                 return True

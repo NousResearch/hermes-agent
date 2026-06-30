@@ -223,6 +223,7 @@ export function DesktopController() {
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
+  const lastRefreshProfileScopeRef = useRef<string | null>(null)
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -1023,6 +1024,15 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  useEffect(() => {
+    const previousProfileScope = lastRefreshProfileScopeRef.current
+    lastRefreshProfileScopeRef.current = profileScope
+
+    if (gatewayState === 'open' && previousProfileScope !== null && previousProfileScope !== profileScope) {
+      void refreshSessions().catch(() => undefined)
+    }
+  }, [profileScope, gatewayState, refreshSessions])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

@@ -646,6 +646,17 @@ agent:
   # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: auto
 
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
+
   # Enable verbose logging
   verbose: false
   

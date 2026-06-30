@@ -319,6 +319,11 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — gateway bot tokens, GitHub
       auth, and remote-compute secrets are removed regardless of
       ``inherit_credentials``.  No child Hermes spawns legitimately needs them.
+      Dynamically-generated ``AUXILIARY_*_API_KEY`` / ``AUXILIARY_*_BASE_URL``
+      vars (see :func:`_is_auxiliary_secret`) get the same always-strip
+      treatment: they're per-task credentials (vision, compression, approval,
+      plugin-registered tasks) that no generic spawn — including an
+      ``inherit_credentials=True`` model-driving CLI — has a reason to read.
     * **Tier 2 (conditional):** the rest of ``_HERMES_PROVIDER_ENV_BLOCKLIST``
       (LLM provider API keys, tool secrets) is removed unless the caller passes
       ``inherit_credentials=True``.
@@ -339,9 +344,12 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
         env.pop(key, None)
-    # Internal routing hints must never reach a child.
+    # Internal routing hints and per-task auxiliary credentials must never
+    # reach a child, regardless of inherit_credentials.
     for key in list(env):
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_auxiliary_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:

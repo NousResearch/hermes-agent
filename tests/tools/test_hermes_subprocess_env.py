@@ -42,6 +42,18 @@ _SAFE_SAMPLE = {
     "MY_APP_VAR": "keep-me",
 }
 
+_AUXILIARY_SAMPLE = {
+    "AUXILIARY_VISION_API_KEY": "aux-vision-key",
+    "AUXILIARY_VISION_BASE_URL": "https://vision.example/v1",
+    "AUXILIARY_COMPRESSION_API_KEY": "aux-compression-key",
+    "AUXILIARY_CUSTOM_PLUGIN_TASK_API_KEY": "aux-plugin-key",
+}
+
+_AUXILIARY_NON_SECRET_SAMPLE = {
+    "AUXILIARY_VISION_MODEL": "gpt-4o-mini",
+    "AUXILIARY_VISION_PROVIDER": "openai",
+}
+
 
 def _build(extra=None, *, inherit_credentials=False):
     env = dict(_SAFE_SAMPLE)
@@ -99,6 +111,37 @@ class TestInheritCredentials:
 
     def test_pythonutf8_set_when_inheriting(self):
         assert _build(inherit_credentials=True).get("PYTHONUTF8") == "1"
+
+
+class TestAuxiliarySecrets:
+    """AUXILIARY_*_API_KEY / _BASE_URL are dynamically generated per-task
+    credentials (gateway/run.py bridges them for vision, compression,
+    approval, and plugin-registered tasks). They can't live in the static
+    _HERMES_PROVIDER_ENV_BLOCKLIST, so hermes_subprocess_env() must strip
+    them by pattern, like _sanitize_subprocess_env() already does for the
+    terminal path."""
+
+    def test_auxiliary_secrets_stripped_by_default(self):
+        result = _build(_AUXILIARY_SAMPLE)
+        for var in _AUXILIARY_SAMPLE:
+            assert var not in result, f"{var} leaked with inherit_credentials=False"
+
+    def test_auxiliary_secrets_stripped_even_when_inheriting(self):
+        """Tier-1 behavior: a model-driving CLI that legitimately inherits
+        primary provider credentials still has no reason to see another
+        task's auxiliary credentials."""
+        result = _build(_AUXILIARY_SAMPLE, inherit_credentials=True)
+        for var in _AUXILIARY_SAMPLE:
+            assert var not in result, (
+                f"{var} leaked (auxiliary) with inherit_credentials=True"
+            )
+
+    def test_auxiliary_non_secret_vars_preserved(self):
+        """Only the _API_KEY / _BASE_URL suffixes are secrets; sibling vars
+        like _MODEL / _PROVIDER carry no credential and must pass through."""
+        result = _build(_AUXILIARY_NON_SECRET_SAMPLE)
+        for var, val in _AUXILIARY_NON_SECRET_SAMPLE.items():
+            assert result.get(var) == val, f"{var} should not be stripped"
 
 
 class TestTierInvariants:

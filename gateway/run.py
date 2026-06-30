@@ -6763,10 +6763,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         send_metadata: Dict[str, Any] = {}
         if effective_thread_id:
             send_metadata["thread_id"] = effective_thread_id
+
+        # Parse inline keyboard from agent response
+        # Agent can include buttons using format:
+        #   ---\n[buttons: [{"text": "Label", "callback_data": "data"}, ...]]
+        # The block is stripped from the message text and passed via metadata.
+        _parsed_text = response_text
+        try:
+            import re as _re, json as _json
+            _btn_match = _re.search(r'\n---\n\[buttons:\s*(\[.*?\])\]\s*$', response_text, _re.DOTALL)
+            if _btn_match:
+                _btn_data = _json.loads(_btn_match.group(1))
+                if isinstance(_btn_data, list) and _btn_data:
+                    send_metadata["inline_keyboard"] = _btn_data
+                    _parsed_text = response_text[:_btn_match.start()]
+        except Exception:
+            pass  # Malformed button block — send without buttons
+
         try:
             result = await adapter.send(
                 chat_id=str(home.chat_id),
-                content=response_text,
+                content=_parsed_text,
                 metadata=send_metadata or None,
             )
         except Exception as exc:

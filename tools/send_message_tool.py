@@ -171,6 +171,10 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "inline_keyboard": {
+                "type": "string",
+                "description": "Inline keyboard markup as a JSON array of button rows for Telegram. Each row is an array of button objects with 'text' and either 'callback_data' or 'url'. Example: '[[{\"text\":\"Yes\",\"callback_data\":\"yes\"},{\"text\":\"No\",\"callback_data\":\"no\"}]]'. Only supported for Telegram."
             }
         },
         "required": []
@@ -299,6 +303,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    inline_keyboard = args.get("inline_keyboard", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -441,6 +446,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                inline_keyboard=inline_keyboard,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -720,7 +726,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, inline_keyboard=""):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -798,6 +804,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                inline_keyboard=inline_keyboard,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1014,7 +1021,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, inline_keyboard=""):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1105,6 +1112,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+
+        reply_markup = None
+        if inline_keyboard:
+            try:
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                import json as _json
+                parsed = _json.loads(inline_keyboard)
+                if isinstance(parsed, list):
+                    button_rows = []
+                    for row in parsed:
+                        buttons = []
+                        for btn in row:
+                            buttons.append(InlineKeyboardButton(**btn))
+                        button_rows.append(buttons)
+                    reply_markup = InlineKeyboardMarkup(button_rows)
+            except Exception as e:
+                logger.warning("Failed to parse inline_keyboard: %s", e)
+        if reply_markup is not None:
+            text_kwargs["reply_markup"] = reply_markup
 
         last_msg = None
         warnings = []

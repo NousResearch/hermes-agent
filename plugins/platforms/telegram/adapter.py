@@ -1401,6 +1401,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # which must not be sent as a stray field on the raw endpoint.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        # Inline keyboard support: extract from metadata
+        if metadata and metadata.get("inline_keyboard"):
+            payload["reply_markup"] = {
+                "inline_keyboard": metadata["inline_keyboard"]
+            }
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         if reply_to_id is not None:
@@ -3066,11 +3071,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
+                            _inline_kb = metadata.get("inline_keyboard") if metadata else None
+                            _reply_markup = {"inline_keyboard": _inline_kb} if _inline_kb else None
                             msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=_reply_markup,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -3080,11 +3088,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
+                                _inline_kb = metadata.get("inline_keyboard") if metadata else None
+                                _reply_markup = {"inline_keyboard": _inline_kb} if _inline_kb else None
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=_reply_markup,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -4913,6 +4924,34 @@ class TelegramAdapter(BasePlatformAdapter):
                         clarify_id,
                     )
             return
+
+        # --- Fallback: unhandled callback -> forward to agent as message ---
+        logger.info("[telegram] Unhandled callback, forwarding to agent: %s", data)
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+            event = MessageEvent(
+                text=f"🔘 Button clicked: {data}",
+                message_type=MessageType.TEXT,
+                message_id=str(getattr(query.message, "message_id", "")) if query.message else None,
+                source=SessionSource(
+                    platform=self.platform,
+                    chat_id=str(query.message.chat_id) if query.message else str(query_chat_id),
+                    user_id=str(getattr(query.from_user, "id", "")),
+                    user_name=getattr(query.from_user, "first_name", "User"),
+                ),
+                raw_message={
+                    "callback_data": data,
+                    "callback_type": data.split(":")[0] if ":" in data else data,
+                    "original_message_id": str(getattr(query.message, "message_id", "")) if query.message else None,
+                },
+            )
+            await self.handle_message(event)
+        except Exception as cb_err:
+            logger.error("[telegram] Failed to forward callback: %s", cb_err)
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):

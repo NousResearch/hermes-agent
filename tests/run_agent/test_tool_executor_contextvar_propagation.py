@@ -227,6 +227,23 @@ def test_run_agent_concurrent_executor_wraps_submit_with_copy_context():
     )
 
 
+def test_concurrent_tool_heartbeat_names_are_keyed_by_future_not_parsed_index():
+    """Guard against blocked calls shifting heartbeat tool-name lookup.
+
+    The concurrent executor submits only runnable calls, while parsed_calls also
+    includes guardrail/plugin-blocked calls. Heartbeats must therefore map each
+    Future directly to its submitted tool name instead of reusing the Future's
+    position in the shorter futures list as an index into parsed_calls.
+    """
+    import inspect
+
+    from agent import tool_executor as tool_executor_module
+
+    source = inspect.getsource(tool_executor_module.execute_tool_calls_concurrent)
+    assert "future_tool_names" in source
+    assert "parsed_calls[futures.index" not in source
+
+
 def test_two_concurrent_tool_batches_keep_session_keys_isolated():
     """End-to-end guard: two callers each set a different session key
     and submit workers concurrently. Each worker must see its own

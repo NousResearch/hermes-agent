@@ -611,6 +611,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if block_result is None
         ]
         futures = []
+        future_tool_names = {}
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -649,6 +650,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 )
                         break
                     futures.append(f)
+                    future_tool_names[f] = name
 
                 # Wait for all to complete with periodic heartbeats so the
                 # gateway's inactivity monitor doesn't kill us during long
@@ -688,9 +690,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
-                            parsed_calls[futures.index(f)][1]
+                            future_tool_names[f]
                             for f in not_done
-                            if f in futures
+                            if f in future_tool_names
                         ]
                         agent._touch_activity(
                             f"concurrent tools running ({_conc_elapsed}s, "

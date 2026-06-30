@@ -148,6 +148,41 @@ class TestRegistration:
              patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
             assert cu_tool.check_computer_use_requirements() is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
+    def test_check_fn_finds_user_local_cua_driver_when_path_omits_it(self, tmp_path, monkeypatch):
+        """Desktop/TUI launched from Finder/Dock can omit ~/.local/bin from PATH.
+
+        The cua-driver installer commonly places the binary there, so the
+        registry check must still expose the computer_use tool schema.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        driver = tmp_path / ".local" / "bin" / "cua-driver"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+        with patch("tools.computer_use.tool.sys.platform", "darwin"), \
+             patch("tools.computer_use.cua_backend.sys.platform", "darwin"):
+            assert cu_tool.check_computer_use_requirements() is True
+
+    def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        driver = tmp_path / "custom-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(driver)
+        assert cua_backend.cua_driver_binary_available() is True
+
 
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
@@ -2331,8 +2366,8 @@ class TestCuaEnvironmentScrubbing:
                 return MagicMock()
 
             with patch.dict(os.environ, test_env, clear=True), \
-                 patch("tools.computer_use.cua_backend.cua_driver_binary_available",
-                       return_value=True), \
+                 patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                       return_value="cua-driver"), \
                  patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
                        return_value=("cua-driver", ["mcp"])), \
                  patch("mcp.StdioServerParameters", side_effect=capture_env), \

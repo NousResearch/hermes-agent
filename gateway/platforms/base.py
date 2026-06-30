@@ -4761,6 +4761,35 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
+                    if self.platform == Platform.DISCORD:
+                        try:
+                            from gateway.support_ops_routing import lint_discord_target_for_content
+
+                            _target_lint = lint_discord_target_for_content(
+                                text_content,
+                                chat_id=str(event.source.chat_id or ""),
+                                thread_id=str(getattr(event.source, "thread_id", "") or "") or None,
+                            )
+                        except Exception as _lint_err:
+                            logger.warning(
+                                "[%s] Discord Support Ops final-response target lint failed for %s: %s",
+                                self.name,
+                                event.source.chat_id,
+                                _lint_err,
+                            )
+                            _target_lint = None
+                        if _target_lint is not None and not _target_lint.ok:
+                            logger.warning(
+                                "[%s] Discord Support Ops final-response target lint blocked delivery to %s/%s: %s expected_channel_id=%s",
+                                self.name,
+                                event.source.chat_id,
+                                getattr(event.source, "thread_id", None),
+                                _target_lint.blocked_reason,
+                                _target_lint.expected_channel_id,
+                            )
+                            text_content = ""
+
+                if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     _text_thread_metadata = prepare_outbound_intent_metadata(

@@ -28,6 +28,9 @@ from tools.discord_tool import (
     get_dynamic_schema_core,
 )
 
+SKYVISION_BACKEND_CHANNEL_ID = "1504852408227069993"
+SKYVISION_BOOKING_OPS_CHANNEL_ID = "1504852553031221391"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -595,6 +598,36 @@ class TestCreateThread:
             "POST", "/channels/11/messages/1001/threads", "test-token",
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_backend_resolver_title_outside_backend_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="Алекс: Игрите на града — стари линкове",
+        ))
+
+        assert "error" in result
+        assert "blocked_backend_resolver_thread_wrong_discord_lane" in result["error"]
+        assert SKYVISION_BACKEND_CHANNEL_ID in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_allows_backend_resolver_title_in_backend_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "802", "name": "Алекс: Игрите на града — стари линкове"}
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+            name="Алекс: Игрите на града — стари линкове",
+        ))
+
+        assert result["success"] is True
+        assert result["thread_id"] == "802"
+        mock_req.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

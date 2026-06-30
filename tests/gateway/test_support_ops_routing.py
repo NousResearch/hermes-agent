@@ -2,12 +2,14 @@ from gateway.config import Platform
 from gateway.run import _prepare_gateway_status_message
 from gateway.support_ops_routing import (
     BACKEND_MENTION,
+    EMIL_OWNER_MENTION,
     FATIH_MENTION,
     KOZHUHAROV_MENTION,
     ALEX_MENTION,
     PLAMENA_MENTION,
     SKYVISION_BACKEND_CHANNEL_ID,
     SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    lint_discord_thread_create_target,
     lint_discord_target_for_content,
     lint_and_resolve_discord_content,
 )
@@ -86,6 +88,32 @@ def test_backend_resolver_mention_requires_backend_lane_without_keyword_inferenc
     assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
 
 
+def test_owner_route_back_mention_requires_control_tower_lane_without_keyword_inference():
+    text = f"{EMIL_OWNER_MENTION} Емо, Пламенка върна корекцията за SkyAI."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id="1504852553031221391",
+        thread_id="1521247233130106901",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_owner_route_back_mention_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_owner_route_back_mention_passes_in_control_tower_lane():
+    text = f"{EMIL_OWNER_MENTION} Емо, Пламенка върна корекцията за SkyAI."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        thread_id="1507026708702826617",
+    )
+
+    assert result.ok is True
+
+
 def test_backend_resolver_mention_passes_in_backend_lane():
     text = f"{ALEX_MENTION} моля за действие по клиентския бонус."
 
@@ -96,6 +124,36 @@ def test_backend_resolver_mention_passes_in_backend_lane():
     )
 
     assert result.ok is True
+
+
+def test_backend_resolver_thread_title_requires_backend_lane_without_business_keywords():
+    result = lint_discord_thread_create_target(
+        "Алекс: Игрите на града — стари линкове",
+        channel_id="1504852553031221391",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_backend_resolver_thread_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
+
+
+def test_backend_resolver_thread_title_passes_in_backend_lane():
+    result = lint_discord_thread_create_target(
+        "Алекс: Игрите на града — стари линкове",
+        channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+    )
+
+    assert result.ok is True
+
+
+def test_non_resolver_thread_title_does_not_route_or_block():
+    result = lint_discord_thread_create_target(
+        "SkyAI review: ваучери за спряно преживяване",
+        channel_id="1504852553031221391",
+    )
+
+    assert result.ok is True
+    assert not hasattr(result, "route")
 
 
 def test_mixed_backend_resolver_and_requester_mentions_are_blocked_even_in_backend_lane():

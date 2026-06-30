@@ -1045,6 +1045,25 @@ def _run_discord_action(
             "error": f"Missing required parameters for '{action}': {', '.join(missing)}",
         })
 
+    if action == "create_thread":
+        try:
+            from gateway.support_ops_routing import lint_discord_thread_create_target
+            target_lint = lint_discord_thread_create_target(name, channel_id=channel_id)
+        except Exception as e:
+            return json.dumps({"error": f"Discord Support Ops thread target lint failed: {e}"})
+        if not target_lint.ok:
+            expected = (
+                f" Expected channel_id: {target_lint.expected_channel_id}."
+                if target_lint.expected_channel_id
+                else ""
+            )
+            return json.dumps({
+                "error": (
+                    "Discord Support Ops thread target lint blocked creation: "
+                    f"{target_lint.blocked_reason}.{expected}"
+                )
+            })
+
     try:
         return action_fn(
             token=token,

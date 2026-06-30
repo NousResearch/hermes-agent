@@ -23,6 +23,10 @@ BACKEND_TEXT_MENTION_RE = re.compile(
     r"(?<![\w<@-])@(алекс|ивчо|иво|alex|ivcho|ivo|ivo\s+popov)\b",
     re.IGNORECASE,
 )
+BACKEND_THREAD_TITLE_RE = re.compile(
+    r"(^|[^\w])(?:алекс|алек|ивчо|иво|alex|ivcho|ivo)(?:[^\w]|$)",
+    re.IGNORECASE,
+)
 KOZHUHAROV_TEXT_MENTION_RE = re.compile(
     r"(?<![\w<@-])@(кожухаров|емо\s+к|emo\s+k|kozhuharov)\b",
     re.IGNORECASE,
@@ -99,6 +103,14 @@ def lint_discord_target_for_content(
 
     text = str(content or "")
     target_chat_id = str(chat_id or "").strip()
+
+    if EMIL_OWNER_MENTION in text and target_chat_id != SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_owner_route_back_mention_wrong_discord_lane",
+            expected_channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        )
+
     has_backend_resolver = any(mention in text for mention in BACKEND_RESOLVER_MENTIONS)
     if not has_backend_resolver:
         return DiscordTargetLintResult(ok=True)
@@ -115,6 +127,36 @@ def lint_discord_target_for_content(
         return DiscordTargetLintResult(
             ok=False,
             blocked_reason="blocked_mixed_backend_resolver_and_requester_mentions",
+            expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        )
+
+    return DiscordTargetLintResult(ok=True)
+
+
+def lint_discord_thread_create_target(
+    name: str,
+    *,
+    channel_id: str,
+) -> DiscordTargetLintResult:
+    """Validate explicit resolver thread titles against the chosen channel.
+
+    This is a safety guard for the Discord thread-creation tool, not a business
+    router. It only looks at the already-authored thread title for exact
+    teammate labels such as "Алекс" / "Ивчо". It does not inspect business
+    words like voucher, booking, backend, frontend, PBX, product, or
+    reservation, and it does not decide where a case belongs.
+    """
+
+    title = str(name or "")
+    target_channel_id = str(channel_id or "").strip()
+
+    if not BACKEND_THREAD_TITLE_RE.search(title):
+        return DiscordTargetLintResult(ok=True)
+
+    if target_channel_id != SKYVISION_BACKEND_CHANNEL_ID:
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_backend_resolver_thread_wrong_discord_lane",
             expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
         )
 

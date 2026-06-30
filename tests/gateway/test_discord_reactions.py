@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.support_ops_routing import EMIL_OWNER_MENTION, SKYVISION_CONTROL_TOWER_CHANNEL_ID
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome, SendResult
 from gateway.session import SessionSource, build_session_key
@@ -78,6 +79,23 @@ def _make_event(message_id: str, raw_message) -> MessageEvent:
             chat_type="dm",
             user_id="42",
             user_name="Jezza",
+        ),
+        raw_message=raw_message,
+        message_id=message_id,
+    )
+
+
+def _make_discord_event(message_id: str, raw_message, *, chat_id: str, thread_id: str | None = None) -> MessageEvent:
+    return MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=chat_id,
+            chat_type="group",
+            user_id="42",
+            user_name="Jezza",
+            thread_id=thread_id,
         ),
         raw_message=raw_message,
         message_id=message_id,
@@ -165,6 +183,64 @@ async def test_reaction_helper_failures_do_not_break_message_flow(adapter):
     adapter._keep_typing = hold_typing
 
     event = _make_event("3", raw_message)
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_final_response_blocks_owner_route_back_mention_outside_control_tower(adapter):
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    async def handler(_event):
+        await asyncio.sleep(0)
+        return f"{EMIL_OWNER_MENTION} Емо, Пламенка върна корекцията за SkyAI."
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="999"))
+    adapter._keep_typing = hold_typing
+
+    event = _make_discord_event(
+        "owner-wrong-lane",
+        raw_message,
+        chat_id="1504852553031221391",
+        thread_id="1521247233130106901",
+    )
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_final_response_allows_owner_route_back_mention_in_control_tower(adapter):
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    async def handler(_event):
+        await asyncio.sleep(0)
+        return f"{EMIL_OWNER_MENTION} Емо, Пламенка върна корекцията за SkyAI."
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="999"))
+    adapter._keep_typing = hold_typing
+
+    event = _make_discord_event(
+        "owner-control-tower",
+        raw_message,
+        chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        thread_id="1507026708702826617",
+    )
     await adapter._process_message_background(event, build_session_key(event.source))
 
     adapter.send.assert_awaited_once()

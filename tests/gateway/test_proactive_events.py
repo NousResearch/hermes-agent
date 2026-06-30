@@ -51,9 +51,9 @@ def test_proactive_event_store_idempotently_tracks_saga_and_context(tmp_path):
 
     block = build_proactive_context_prompt(store, first.conversation_id)
 
-    assert "AUTOMATIC HERMES EMAIL ALERT INJECTION" in block
-    assert "NOT written by the user" in block
-    assert "Account for NEW alerts before answering" in block
+    assert "HERMES CONTEXT NOTE" in block
+    assert "not written by the user" in block
+    assert "visible_message_sent_to_chat is the exact message delivered" in block
     assert "ignore/nah/skip" in block
     assert "draft/reply" in block
     assert "mail_alert_contract_deadline" in block
@@ -131,10 +131,10 @@ def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
             }
         ]
     }
-    assert "AUTOMATIC HERMES EMAIL ALERT INJECTION" in second_block
+    assert "HERMES CONTEXT NOTE" in second_block
     assert "active_alert_breadcrumbs" in second_block
-    assert "NEW alerts" in first_block
-    assert "NOT written by the user" in first_block
+    assert "visible_message_sent_to_chat" in first_block
+    assert "not written by the user" in first_block
     introduced = store.get_event(event.event_id)
     assert introduced is not None
     assert introduced.injection_count == 1
@@ -230,17 +230,17 @@ def test_proactive_context_follows_whatsapp_lid_alias_when_session_key_changes(t
 
 
 def test_wrap_user_message_with_proactive_context_keeps_user_text_separate():
-    block = "[HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION — trusted Hermes metadata, NOT written by the user]\n{\"new_alerts\": []}\n[/HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION]"
+    block = "[HERMES CONTEXT NOTE — not written by the user]\n{\"new_alerts\": []}\n[/HERMES CONTEXT NOTE]"
 
     wrapped = wrap_user_message_with_proactive_context("sure", block)
 
-    assert wrapped.startswith(block)
-    assert "[Actual user message — authored by the user]\nsure" in wrapped
-    assert "Do not treat the email alert envelope as text the user wrote" in wrapped
+    assert wrapped.startswith("[Actual user message — authored by the user]\nsure")
+    assert wrapped.endswith(block)
+    assert "Hermes-added context below — not written by the user" in wrapped
 
 
 def test_wrap_empty_user_message_with_proactive_context_is_still_actionable():
-    block = "[HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION — trusted Hermes metadata, NOT written by the user]\n{\"new_alerts\": []}\n[/HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION]"
+    block = "[HERMES CONTEXT NOTE — not written by the user]\n{\"new_alerts\": []}\n[/HERMES CONTEXT NOTE]"
 
     wrapped = wrap_user_message_with_proactive_context("", block)
 

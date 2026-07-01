@@ -71,14 +71,21 @@ def _stub_uvicorn(monkeypatch):
 
 def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     """WS ping must be configured so half-open connections (reverse-proxy 524,
-    dropped tunnels) raise WebSocketDisconnect into the reaping path (#32377)."""
+    dropped tunnels) raise WebSocketDisconnect into the reaping path (#32377).
+
+    Loopback binds (the Desktop case) get a longer window to ride out
+    GIL-pressure event-loop stalls (#48445/#50005). The invariant asserted
+    here is that ping stays enabled (non-None, positive) and the timeout is
+    never shorter than the interval — not a frozen literal, which churns every
+    time the window is retuned."""
     captured = _stub_uvicorn(monkeypatch)
 
     # Loopback bind => no auth gate, so this reaches the Config constructor.
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
 
-    assert captured["ws_ping_interval"] == 20.0
-    assert captured["ws_ping_timeout"] == 20.0
+    assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
+    assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0
+    assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
 
 
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):

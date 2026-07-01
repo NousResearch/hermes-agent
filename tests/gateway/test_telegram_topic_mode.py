@@ -135,6 +135,10 @@ def _make_runner(session_db=None):
     runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
+    # Gateway holds the async facade; the slash handlers await it.
+    if session_db is not None:
+        from hermes_state import AsyncSessionDB
+        session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -1430,7 +1434,8 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     )
 
     runner = object.__new__(GatewayRunner)
-    runner._session_db = db
+    from hermes_state import AsyncSessionDB
+    runner._session_db = AsyncSessionDB(db)
 
     # Build a source that looks like it came from a synthetic/recovered event:
     # platform and chat_type match a Telegram DM, but thread_id is None.
@@ -1447,7 +1452,9 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
         and runner._session_db is not None
     ):
         try:
-            _binding = runner._session_db.get_telegram_topic_binding_by_session(
+            # Mirror production: this block runs in the run_sync executor, so it
+            # uses the sync handle (self._session_db._db), not the async facade.
+            _binding = runner._session_db._db.get_telegram_topic_binding_by_session(
                 session_id="sess-split-new",
             )
             if _binding and _binding.get("thread_id"):

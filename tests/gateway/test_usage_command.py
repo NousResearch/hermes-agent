@@ -1,3 +1,4 @@
+from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
@@ -219,9 +220,9 @@ class TestUsageAccountSection:
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
         runner = _make_runner(SK)
-        runner._session_db = MagicMock()
-        runner._session_db.get_last_turn_usage.return_value = None
-        runner._session_db.get_session.return_value = {
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_last_turn_usage.return_value = None
+        runner._session_db._db.get_session.return_value = {
             "billing_provider": "openai-codex",
             "billing_base_url": "https://chatgpt.com/backend-api/codex",
         }
@@ -349,8 +350,8 @@ class TestUsageLastTurnSnapshot:
     @pytest.mark.asyncio
     async def test_last_turn_snapshot_shown_when_no_agent(self):
         runner = _make_runner(SK)
-        runner._session_db = MagicMock()
-        runner._session_db.get_session.return_value = {
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {
             "billing_provider": None,
             "model": "anthropic/claude-opus-4-8",
             "input_tokens": 350_000,
@@ -358,7 +359,7 @@ class TestUsageLastTurnSnapshot:
             "total_tokens": 390_000,
             "api_call_count": 7,
         }
-        runner._session_db.get_last_turn_usage.return_value = {
+        runner._session_db._db.get_last_turn_usage.return_value = {
             "input_tokens": 120_000,
             "output_tokens": 8_000,
             "cache_read_tokens": 110_000,
@@ -394,9 +395,9 @@ class TestUsageLastTurnSnapshot:
     async def test_no_snapshot_still_falls_to_history(self):
         """When there is no persisted snapshot, behavior is unchanged."""
         runner = _make_runner(SK)
-        runner._session_db = MagicMock()
-        runner._session_db.get_session.return_value = {"billing_provider": None}
-        runner._session_db.get_last_turn_usage.return_value = None
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {"billing_provider": None}
+        runner._session_db._db.get_last_turn_usage.return_value = None
         session_entry = MagicMock()
         session_entry.session_id = "sess-nosnap"
         runner.session_store.get_or_create_session.return_value = session_entry

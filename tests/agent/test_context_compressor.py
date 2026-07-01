@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import pytest
+import time
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -8,6 +9,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
 )
+from hermes_state import SessionDB
 
 
 @pytest.fixture()
@@ -607,6 +609,24 @@ class TestNonStringContent:
         assert c._summary_model_fallen_back is True
         assert summary is None
         assert c._summary_failure_cooldown_until > 0
+
+    def test_string_message_coerced_to_summary_content(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = "plain summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert summary == f"{SUMMARY_PREFIX}\nplain summary text"
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -1563,6 +1583,75 @@ class TestAbortOnSummaryFailure:
         assert c._last_compress_aborted is False
         assert c._summary_failure_cooldown_until == 0.0
         assert len(result) < len(msgs)
+
+    def test_force_true_bypasses_persisted_session_cooldown(self, tmp_path):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        mock_llm.assert_called()
+        assert c._last_compress_aborted is False
+        assert len(result) < len(msgs)
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_aux_fallback_clears_persisted_session_cooldown_before_retry(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c.summary_model = "aux/model"
+
+        c._fallback_to_main_for_compression(Exception("provider down"), "failed")
+
+        assert c.summary_model == ""
+        assert c._summary_failure_cooldown_until == 0.0
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_success_clears_persisted_session_cooldown(self, tmp_path):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c._summary_failure_cooldown_until = 0.0
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_llm:
+            result = c.compress(msgs, current_tokens=999999)
+
+        mock_llm.assert_called()
+        assert c._last_compress_aborted is False
+        assert len(result) < len(msgs)
+        assert db.get_compression_failure_cooldown("s1") is None
+
+    def test_session_end_does_not_clear_persisted_session_cooldown(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+
+        c = self._make_compressor()
+        c.bind_session_state(db, "s1")
+        c.on_session_end("s1", [])
+
+        assert db.get_compression_failure_cooldown("s1") is not None
 
 
 class TestSummaryPrefixNormalization:

@@ -345,6 +345,15 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Whether the gateway shows a "typing…" / "is thinking…" status indicator
+    # while the agent processes a message on this platform. Default True
+    # preserves prior behavior. Set False on platforms where the indicator is
+    # unwanted (e.g. Slack's assistant.threads.setStatus "is thinking…", which
+    # disables the compose box, or any platform where users find the bubble
+    # noisy). Drives the per-message _keep_typing refresh loop in
+    # gateway/platforms/base.py.
+    typing_indicator: bool = True
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -354,6 +363,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "typing_indicator": self.typing_indicator,
         }
         if self.token:
             result["token"] = self.token
@@ -377,6 +387,13 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # typing_indicator mirrors gateway_restart_notification: it may arrive
+        # top-level or bridged into extra by the shared-key loop in
+        # load_gateway_config(), so check both.
+        _typing = data.get("typing_indicator")
+        if _typing is None:
+            _typing = data.get("extra", {}).get("typing_indicator")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -384,6 +401,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            typing_indicator=_coerce_bool(_typing, True),
             extra=data.get("extra", {}),
         )
 
@@ -1040,6 +1058,8 @@ def load_gateway_config() -> GatewayConfig:
                     ):
                         if _net_key in platform_cfg:
                             bridged[_net_key] = platform_cfg[_net_key]
+                if "typing_indicator" in platform_cfg:
+                    bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

@@ -110,7 +110,14 @@ class SessionSource:
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
-    guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
+    # Platform-neutral SCOPE discriminator (Discord guild / Slack workspace /
+    # Matrix server). Drives server/workspace isolation + the relay δ/ε/ζ gate.
+    # Wire migration (D-Q2.5): `scope_id` is the canonical name; `guild_id` is a
+    # deprecated legacy alias kept during the cross-repo dual-read/dual-write
+    # overlap. Both are written by to_dict and read by from_dict (scope_id wins);
+    # the `guild_id` alias is dropped in a follow-up once both repos deploy.
+    scope_id: Optional[str] = None
+    guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
@@ -132,6 +139,16 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    def __post_init__(self) -> None:
+        # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
+        # is the deprecated alias. Mirror whichever was provided onto the other
+        # (scope_id wins on conflict) so internal readers of EITHER field see the
+        # same value during the cross-repo wire migration overlap.
+        if self.scope_id is None and self.guild_id is not None:
+            self.scope_id = self.guild_id
+        elif self.scope_id is not None:
+            self.guild_id = self.scope_id
 
     @property
     def description(self) -> str:
@@ -169,8 +186,14 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
-        if self.guild_id:
-            d["guild_id"] = self.guild_id
+        # D-Q2.5 dual-write: emit BOTH the canonical `scope_id` and the
+        # deprecated `guild_id` alias (mirrored in __post_init__) so a connector
+        # on either side of the migration resolves the scope. Drop `guild_id`
+        # in the follow-up once both repos are on `scope_id`.
+        scope = self.scope_id if self.scope_id is not None else self.guild_id
+        if scope:
+            d["scope_id"] = scope
+            d["guild_id"] = scope
         if self.parent_chat_id:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
@@ -192,7 +215,9 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
-            guild_id=data.get("guild_id"),
+            # D-Q2.5 dual-read: prefer the canonical `scope_id`, fall back to the
+            # deprecated `guild_id` alias (a peer not yet migrated still sends it).
+            scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
@@ -426,7 +451,17 @@ def build_session_context_prompt(
             else:
                 id_lines.append(f"  - Channel: `{src.chat_id}`")
             if src.message_id:
-                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+                # The triggering message id is volatile (changes every turn).
+                # Keep it OUT of this cached system-prompt block — including it
+                # here changes build_session_context_prompt() output per turn,
+                # which busts the gateway agent-cache signature and forces an
+                # AIAgent rebuild on every Discord message. The actual id is
+                # injected per-turn into the user message instead (see the
+                # "Triggering message id" note in run.py).
+                id_lines.append(
+                    "  - Triggering message: provided per-turn in the incoming "
+                    "user message (use it as `message_id` for reply/react/pin)"
+                )
             lines.extend(id_lines)
         else:
             lines.append("")
@@ -892,11 +927,11 @@ class SessionStore:
         # in state.db. A hard gateway crash (exit code 1) skips the graceful
         # shutdown path, so sessions.json is never cleared and is left pointing
         # at ended sessions. On the next startup those stale entries act as live
-        # routing keys, but get_or_create_session() reuses them as long as the
-        # time/policy reset checks pass — it never consults end_reason — so every
-        # incoming message is silently routed into a closed session. Pruning here
-        # (lock already held) is cheap: one lookup per routing key, once at
-        # startup, and self-heals into a fresh session on the next message.
+        # routing keys. get_or_create_session() only consulted end_reason at
+        # startup (here) until #54878 added a routing-time guard for the
+        # live-gateway case; this startup prune still self-heals crash-left
+        # entries before the first message arrives. Pruning here (lock already
+        # held) is cheap: one lookup per routing key, once at startup.
         self._prune_stale_sessions_locked()
 
     def _prune_stale_sessions_locked(self) -> None:
@@ -1135,6 +1170,32 @@ class SessionStore:
 
         return False
 
+    def _is_session_ended_in_db(self, session_id: str) -> bool:
+        """Return True iff state.db has this session with a non-null end_reason.
+
+        Mirrors the staleness test in ``_prune_stale_sessions_locked``:
+          - no DB handle / no session_id -> False (can't tell — keep)
+          - row absent (legacy / not yet persisted) -> False (keep)
+          - end_reason is None -> False (alive — keep)
+          - end_reason not None -> True (ended — stale)
+
+        Used by ``get_or_create_session`` to self-heal at routing time:
+        ``_prune_stale_sessions_locked`` only runs at startup, so a session
+        ended in the DB while the gateway stays alive (any path that finalizes
+        the row without clearing sessions.json) would otherwise be reused as a
+        live routing key and silently swallow every subsequent message until
+        the next restart (#54878 — the live-gateway variant of #52804/FM9).
+        DB errors are non-fatal — never block routing on a failed lookup.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not session_id:
+            return False
+        try:
+            row = db.get_session(session_id)
+        except Exception:
+            return False
+        return bool(row is not None and row.get("end_reason") is not None)
+
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
         """
         Check if a session should be reset based on policy.
@@ -1230,45 +1291,78 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                # Auto-reset sessions marked as suspended (e.g. after /stop
-                # broke a stuck loop — #7536).  ``suspended`` is the hard
-                # forced-wipe signal and always wins over ``resume_pending``,
-                # so repeated interrupted restarts that escalate via the
-                # existing ``.restart_failure_counts`` stuck-loop counter
-                # still converge to a clean slate.
-                if entry.suspended:
-                    reset_reason = "suspended"
-                elif entry.resume_pending:
-                    # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript reloads
-                    # intact, but still honour normal daily/idle reset policy.
-                    reset_reason = self._should_reset(entry, source)
+                # Self-heal stale routing: if this session_key still points at
+                # a session that has ALREADY been ended in state.db (end_reason
+                # set), the in-memory sessions.json entry is stale.  Reusing it
+                # would route every incoming message into a closed session and
+                # silently drop it — with no log, no error, no response — until
+                # the gateway restarts and _prune_stale_sessions_locked() clears
+                # it (#54878 — the live-gateway variant of #52804/FM9, which
+                # only the startup prune previously caught).
+                #
+                # Drop the stale entry and fall through to the recovery path
+                # below.  Leaving db_end_session_id None routes us into
+                # _recover_session_from_db, whose finder
+                # (hermes_state.find_latest_gateway_session_for_peer) selects
+                # rows WHERE `ended_at IS NULL OR end_reason = 'agent_close'`
+                # — so it REOPENS gateway-cleanup-ended ('agent_close') rows and
+                # resumes the SAME session_id (transcript preserved), but returns
+                # None for any other end_reason (e.g. /new), which then correctly
+                # starts a fresh session.
+                if self._is_session_ended_in_db(entry.session_id):
+                    logger.warning(
+                        "gateway.session: routing key %r -> %s is ended in "
+                        "state.db but still live in sessions.json; dropping "
+                        "stale entry and recovering/recreating the session "
+                        "(#54878)",
+                        session_key, entry.session_id,
+                    )
+                    self._entries.pop(session_key, None)
+                    was_auto_reset = False
+                    auto_reset_reason = None
+                    reset_had_activity = False
+                    # Fall through to the recovery/create path below; the
+                    # stale entry is gone so we must NOT consult its
+                    # suspended/resume/reset state.
+                else:
+                    # Auto-reset sessions marked as suspended (e.g. after /stop
+                    # broke a stuck loop — #7536).  ``suspended`` is the hard
+                    # forced-wipe signal and always wins over ``resume_pending``,
+                    # so repeated interrupted restarts that escalate via the
+                    # existing ``.restart_failure_counts`` stuck-loop counter
+                    # still converge to a clean slate.
+                    if entry.suspended:
+                        reset_reason = "suspended"
+                    elif entry.resume_pending:
+                        # Restart-interrupted session: preserve the session_id
+                        # and return the existing entry so the transcript reloads
+                        # intact, but still honour normal daily/idle reset policy.
+                        reset_reason = self._should_reset(entry, source)
+                        if not reset_reason:
+                            entry.updated_at = now
+                            self._save()
+                            return entry
+                    else:
+                        reset_reason = self._should_reset(entry, source)
                     if not reset_reason:
                         entry.updated_at = now
                         self._save()
                         return entry
-                else:
-                    reset_reason = self._should_reset(entry, source)
-                if not reset_reason:
-                    entry.updated_at = now
-                    self._save()
-                    return entry
-                else:
-                    # Session is being auto-reset.
-                    was_auto_reset = True
-                    auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation.
-                    # had_any_turn is the durable signal — set on the first real
-                    # turn and never zeroed by transcript compression. Fall back
-                    # to last_prompt_tokens > 0 for entries persisted before
-                    # had_any_turn existed (older sessions.json rows default the
-                    # flag to False but may still carry a non-zero token count).
-                    # SessionEntry.total_tokens is never populated (token totals
-                    # live in the SessionDB — see gateway/slash_commands.py), so
-                    # the old `total_tokens > 0` gate was permanently False and
-                    # the user-facing reset notice never fired.
-                    reset_had_activity = entry.had_any_turn or entry.last_prompt_tokens > 0
-                    db_end_session_id = entry.session_id
+                    else:
+                        # Session is being auto-reset.
+                        was_auto_reset = True
+                        auto_reset_reason = reset_reason
+                        # Track whether the expired session had any real
+                        # conversation.  had_any_turn is the durable signal — set
+                        # on the first real turn and never zeroed by transcript
+                        # compression. Fall back to last_prompt_tokens > 0 for
+                        # entries persisted before had_any_turn existed (older
+                        # sessions.json rows default the flag to False but may
+                        # still carry a non-zero token count). total_tokens is
+                        # never populated (token totals live in the SessionDB),
+                        # so the old `total_tokens > 0` gate never fired.
+                        reset_had_activity = entry.had_any_turn or entry.last_prompt_tokens > 0
+                        db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
                 auto_reset_reason = None

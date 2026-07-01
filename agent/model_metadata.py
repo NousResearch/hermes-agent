@@ -523,6 +523,10 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
+    # Enterprise Copilot endpoints look like api.enterprise.githubcopilot.com,
+    # api.business.githubcopilot.com, etc.  Match the suffix so context-window
+    # resolution works for enterprise accounts too.
+    ".githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     # GitHub Models free tier (Azure-hosted prototyping endpoint) — same
     # canonical provider as the Copilot API.  Hard per-request token cap
@@ -1169,9 +1173,28 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         "maximum context length" in error_lower
         and "requested" in error_lower
         and "output tokens" in error_lower
+    ) or (
+        # DashScope / Alibaba Cloud (Qwen) phrasing.  The provider rejects an
+        # over-cap output request with a bounded range whose upper bound IS the
+        # real max-output cap, e.g.
+        #   "Range of max_tokens should be [1, 65536]"
+        # The input itself fits — this is purely an output-cap error, so reduce
+        # max_tokens and retry; do NOT compress.
+        "range of max_tokens should be" in error_lower
     )
     if not is_output_cap_error:
         return None
+
+    # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
+    # The upper bound is the available output cap.
+    _m_range = re.search(
+        r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
+        error_lower,
+    )
+    if _m_range:
+        _cap = int(_m_range.group(1))
+        if _cap >= 1:
+            return _cap
 
     # Extract the available_tokens figure.
     # Anthropic format: "… = available_tokens: 10000"
@@ -1217,6 +1240,70 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
             return _available
 
     return None
+
+
+def is_output_cap_error(error_msg: str) -> bool:
+    """Return True if a 400 is about the OUTPUT cap (max_tokens) being too large.
+
+    This is the broader sibling of :func:`parse_available_output_tokens_from_error`:
+    that function only returns a number when it can extract the available output
+    budget from a *known* provider phrasing.  This one answers the cheaper
+    yes/no question — "is this an output-cap error at all?" — across providers
+    whose exact wording we may not yet parse a number from.
+
+    Why this matters: an output-cap 400 is deterministic (every retry with the
+    same ``max_tokens`` gets the identical rejection).  If such an error is
+    misclassified as a context-overflow it gets routed into the compression
+    loop, the compressor re-issues the call with the same oversized
+    ``max_tokens``, the provider rejects it identically, and the session
+    death-loops until "cannot compress further" (issue #55546, DashScope/Qwen:
+    "Range of max_tokens should be [1, 65536]").  Compression cannot help an
+    output-cap error — the input already fits.
+
+    The signal: the error talks about ``max_tokens`` (or its aliases) as a
+    cap/range/limit, and does NOT talk about the INPUT/prompt/context window
+    being too long.  When both are present we defer to the context-overflow
+    path (a real input overflow can also mention max_tokens).
+    """
+    error_lower = error_msg.lower()
+
+    mentions_output_param = (
+        "max_tokens" in error_lower
+        or "max_output_tokens" in error_lower
+        or "max_completion_tokens" in error_lower
+    )
+    if not mentions_output_param:
+        return False
+
+    # Phrasing that signals the OUTPUT cap specifically is the problem.
+    output_cap_signal = (
+        "range of max_tokens should be" in error_lower      # DashScope / Alibaba
+        or "available_tokens" in error_lower                # Anthropic
+        or "available tokens" in error_lower
+        or ("in the output" in error_lower                  # OpenRouter / Nous
+            and "maximum context length" in error_lower)
+        or ("requested" in error_lower                      # LM Studio / llama.cpp
+            and "output tokens" in error_lower)
+        or "should be" in error_lower                       # generic "max_tokens should be <= N"
+        or "less than or equal" in error_lower
+        or "must be" in error_lower
+    )
+    if not output_cap_signal:
+        return False
+
+    # If the error ALSO clearly describes an oversized INPUT, it is a genuine
+    # context overflow that happens to mention max_tokens — let the
+    # context-overflow path handle it (it can compress the input).
+    input_overflow_signal = (
+        "prompt is too long" in error_lower
+        or "prompt too long" in error_lower
+        or "input is too long" in error_lower
+        or "input token" in error_lower
+        or "prompt length" in error_lower
+        or "prompt contains" in error_lower
+        or "reduce the length" in error_lower
+    )
+    return not input_overflow_signal
 
 
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:

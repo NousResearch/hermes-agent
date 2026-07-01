@@ -157,6 +157,14 @@ class TestStripBlockedTools(unittest.TestCase):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])
         self.assertEqual(sorted(result), ["browser", "file", "terminal", "web"])
 
+    def test_removes_kanban_toolset(self):
+        # Children inherit the parent process env, including the
+        # HERMES_KANBAN_TASK pin -- a child's kanban write would land on the
+        # PARENT's card. The kanban toolset must be stripped whether
+        # inherited or explicitly requested.
+        result = _strip_blocked_tools(["terminal", "kanban", "web"])
+        self.assertEqual(sorted(result), ["terminal", "web"])
+
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
@@ -1108,6 +1116,15 @@ class TestSubagentCostRollup(unittest.TestCase):
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+            self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
+
+    def test_kanban_lifecycle_blocked_for_children(self):
+        # Every tool in the kanban toolset must be blocked so the derived
+        # strip set drops the whole toolset for children: they share the
+        # parent's HERMES_KANBAN_TASK pin, so kanban_complete from a leaf
+        # closes the parent's card mid-task.
+        from toolsets import TOOLSETS
+        for tool in TOOLSETS["kanban"]["tools"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
@@ -3070,6 +3087,62 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestChildKanbanHardDisable(unittest.TestCase):
+    """A delegated child must never hold kanban lifecycle tools, even when the
+    process has HERMES_KANBAN_TASK set (dispatcher-spawned worker). Stripping
+    the toolset NAME from enabled_toolsets is NOT enough: model_tools re-adds
+    'kanban' from that env one layer down, and only disabled_toolsets survives
+    the re-add. Regression for the "delegated leaf closed the parent's card
+    mid-review" incident (a name-strip alone is silently undone)."""
+
+    def test_child_construction_hard_disables_kanban_under_task_env(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "kanban", "web"]
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_parent_card"}):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0,
+                    goal="close my own card please",
+                    context=None,
+                    toolsets=None,  # pure parent inheritance (the live path)
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                )
+
+        _, kwargs = MockAgent.call_args
+        # The toolset NAME is stripped from the child's enabled set ...
+        self.assertNotIn("kanban", kwargs.get("enabled_toolsets") or [])
+        # ... AND kanban is hard-disabled so the model_tools env re-add cannot
+        # resurrect it one layer down (this is the actual incident fix).
+        self.assertIn("kanban", kwargs.get("disabled_toolsets") or [])
+
+    def test_model_tools_env_readd_is_defeated_by_disabled_toolsets(self):
+        """Mechanism characterization: with HERMES_KANBAN_TASK set,
+        get_tool_definitions re-adds the kanban toolset even when it is NOT in
+        enabled_toolsets; only disabled_toolsets=['kanban'] removes the kanban_*
+        tools again. If the first assertion ever fails, upstream dropped the env
+        re-add and the child guard may no longer be load-bearing."""
+        import model_tools
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_card"}):
+            leaked = model_tools.get_tool_definitions(
+                enabled_toolsets=["terminal"], quiet_mode=True)
+            leaked_names = {t["function"]["name"] for t in (leaked or [])}
+            self.assertTrue(
+                any(n.startswith("kanban_") for n in leaked_names),
+                "expected HERMES_KANBAN_TASK to re-add kanban tools")
+            guarded = model_tools.get_tool_definitions(
+                enabled_toolsets=["terminal"], disabled_toolsets=["kanban"],
+                quiet_mode=True)
+            guarded_names = {t["function"]["name"] for t in (guarded or [])}
+            self.assertFalse(
+                any(n.startswith("kanban_") for n in guarded_names),
+                "disabled_toolsets=['kanban'] must strip kanban even under "
+                "HERMES_KANBAN_TASK")
 
 
 if __name__ == "__main__":

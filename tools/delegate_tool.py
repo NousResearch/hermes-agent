@@ -50,8 +50,34 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
         "cronjob",  # no scheduling more work in the parent's name
+        # Kanban lifecycle: children run inside the parent's process and
+        # inherit its HERMES_KANBAN_TASK pin, so any kanban write from a
+        # child lands on the PARENT's card (observed live: a delegated leaf
+        # called kanban_complete and closed the parent's task mid-review).
+        # Listing every kanban tool here makes _strip_blocked_tools auto-drop
+        # the whole kanban toolset for children (its tools are exactly these)
+        # -- the same blocklist/strip-set lockstep the cronjob block relies on.
+        "kanban_show",
+        "kanban_list",
+        "kanban_complete",
+        "kanban_block",
+        "kanban_heartbeat",
+        "kanban_comment",
+        "kanban_create",
+        "kanban_link",
+        "kanban_unblock",
     ]
 )
+
+# Toolsets that must be HARD-disabled on every delegated child -- not merely
+# stripped from enabled_toolsets. model_tools.get_tool_definitions RE-ADDS the
+# "kanban" toolset to any process whose env carries HERMES_KANBAN_TASK
+# (dispatcher-spawned workers), and children run in-process and inherit that
+# pin -- so a name-strip alone is silently undone one layer down. The
+# disabled_toolsets subtraction is applied AFTER that re-add, so children must
+# carry it explicitly. Without this a delegated leaf can call kanban_complete
+# and close the PARENT's card (observed live).
+_CHILD_DISABLED_TOOLSETS = ["kanban"]
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1339,10 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        # Hard-disable kanban so the model_tools HERMES_KANBAN_TASK re-add
+        # cannot resurrect it for an in-process child (see
+        # _CHILD_DISABLED_TOOLSETS).
+        disabled_toolsets=_CHILD_DISABLED_TOOLSETS,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",

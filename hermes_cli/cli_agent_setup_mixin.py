@@ -82,6 +82,7 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_max_output_tokens = runtime.get("max_output_tokens")
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -123,6 +124,11 @@ class CLIAgentSetupMixin:
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self._runtime_max_output_tokens = (
+            resolved_max_output_tokens
+            if isinstance(resolved_max_output_tokens, int) and resolved_max_output_tokens > 0
+            else None
+        )
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -189,6 +195,7 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "max_tokens": getattr(self, "max_tokens", None) or getattr(self, "_runtime_max_output_tokens", None),
         }
         route = {
             "model": self.model,
@@ -200,6 +207,7 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                runtime.get("max_tokens") or runtime.get("max_output_tokens"),
             ),
         }
 
@@ -349,7 +357,11 @@ class CLIAgentSetupMixin:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
-                max_tokens=self.max_tokens,
+                max_tokens=(
+                    getattr(self, "max_tokens", None)
+                    or runtime.get("max_tokens")
+                    or runtime.get("max_output_tokens")
+                ),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -422,6 +434,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                runtime.get("max_tokens") or runtime.get("max_output_tokens"),
             )
 
             # Force-create DB row on /title intent, then apply title.

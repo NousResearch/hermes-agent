@@ -74,6 +74,45 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _next_truncated_tool_call_cap(agent: Any, api_kwargs: Any, retry_index: int) -> int:
+    """Return the one-shot output cap for a truncated tool-call retry.
+
+    Prefer the largest explicit cap we know about.  The old inline logic grew
+    from a small base (often 4096), which meant a session configured for 100k
+    output could still retry at 8k/12k when the prepared request was stale or
+    provider-normalized.  For truncated JSON tool arguments, retrying below the
+    configured/requested ceiling is pure theatre.
+    """
+    configured_cap = getattr(agent, "max_tokens", None)
+    try:
+        configured_cap = int(configured_cap) if configured_cap else None
+    except (TypeError, ValueError):
+        configured_cap = None
+
+    extractor = getattr(agent, "_requested_output_cap_from_api_kwargs", None)
+    if callable(extractor):
+        requested_cap = extractor(api_kwargs)
+    else:
+        requested_cap = None
+        if isinstance(api_kwargs, dict):
+            for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+                raw_value = api_kwargs.get(key)
+                if raw_value is None:
+                    continue
+                try:
+                    value = int(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    requested_cap = value
+                    break
+    candidates = [cap for cap in (configured_cap, requested_cap) if isinstance(cap, int) and cap > 0]
+    if candidates:
+        return max(candidates)
+
+    return max(4096 * (retry_index + 1), 32768)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -1869,13 +1908,11 @@ def run_conversation(
                                 # network stall doesn't need a bigger budget, but
                                 # a genuine output-cap truncation does, and the
                                 # boost is harmless for the stall case.
-                                _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
-                                _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
-                                _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-                                if _tc_requested_cap is not None:
-                                    _tc_boost = max(_tc_boost, _tc_requested_cap)
-                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
-                                agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
+                                agent._ephemeral_max_output_tokens = _next_truncated_tool_call_cap(
+                                    agent,
+                                    api_kwargs,
+                                    truncated_tool_call_retries,
+                                )
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
@@ -1891,14 +1928,24 @@ def run_conversation(
                                     f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
-                            agent._cleanup_task_resources(effective_task_id)
-                            agent._persist_session(messages, conversation_history)
                             _final_response = (
                                 "Stream repeatedly dropped mid tool-call (network); "
                                 "the tool was not executed"
                                 if _is_stub_stall
                                 else "Response truncated due to output length limit"
                             )
+                            messages.append({
+                                "role": "assistant",
+                                "content": (
+                                    f"{_final_response}. No tool was executed because "
+                                    "the model response ended before valid tool-call "
+                                    "arguments were complete. Retry with smaller or "
+                                    "chunked tool arguments."
+                                ),
+                            })
+                            agent._session_messages = messages
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,

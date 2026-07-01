@@ -7829,6 +7829,22 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    # Persist model_override into task_runs.metadata so by-model
+    # analytics work without parsing per-run log files.  Non-fatal —
+    # metadata write failure never blocks the worker spawn.
+    if task.model_override and task.current_run_id is not None:
+        try:
+            _meta_conn = sqlite3.connect(str(kanban_db_path(board=board)))
+            _meta_conn.execute(
+                "UPDATE task_runs SET metadata = json_set("
+                "COALESCE(metadata, '{}'), '$.resolved_model', ?"
+                ") WHERE id = ?",
+                (task.model_override, task.current_run_id),
+            )
+            _meta_conn.commit()
+            _meta_conn.close()
+        except Exception:
+            _log.warning("failed to persist resolved_model in task_runs metadata", exc_info=True)
     return proc.pid
 
 

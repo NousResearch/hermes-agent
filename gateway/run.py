@@ -17280,9 +17280,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # any adapter that implements edit_message + delete_message).
                 # ------------------------------------------------------------------
                 if _live_thinking_enabled and _live_thinking_adapter:
-                    _bubble_text = str(text).strip()
-                    if len(_bubble_text) > _LIVE_THINKING_MAX:
-                        _bubble_text = _bubble_text[:_LIVE_THINKING_MAX - 3] + "..."
+                    _raw_thought = str(text).strip()
+                    if len(_raw_thought) > _LIVE_THINKING_MAX:
+                        _raw_thought = _raw_thought[:_LIVE_THINKING_MAX - 3] + "..."
+                    # Render as a distinct blockquote so it's visually
+                    # distinguishable from the final answer at a glance.
+                    _bubble_text = f'> 💭  _"{_raw_thought}"_'
                     # Capture a non-None local so the async closure has a
                     # concrete reference (avoids Pyright Optional false-positives).
                     _lta = _live_thinking_adapter
@@ -19247,6 +19250,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
+            elif (
+                not _is_empty_sentinel
+                and _live_thinking_enabled
+                and _live_thinking_post_ids
+                and _live_thinking_adapter is not None
+            ):
+                # Live-thinking bubble is pending — edit it with the final reply
+                # so it seamlessly becomes the response, avoiding a delete
+                # + send sequence that leaves a "(message deleted)" artifact.
+                _lt_bubble_id = _live_thinking_post_ids[0]
+                try:
+                    _lt_edit_res = await _live_thinking_adapter.edit_message(
+                        source.chat_id,
+                        _lt_bubble_id,
+                        _final,
+                        finalize=True,
+                    )
+                    if getattr(_lt_edit_res, "success", False):
+                        response["already_sent"] = True
+                        # Clear so the post-delivery delete callback is a no-op.
+                        _live_thinking_post_ids.clear()
+                        logger.info(
+                            "Replaced live-thinking bubble %s with final answer for session %s.",
+                            _lt_bubble_id, session_key or "?",
+                        )
+                except Exception as _lt_edit_err:
+                    logger.debug(
+                        "Failed to replace live-thinking bubble with final answer: %s", _lt_edit_err
+                    )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

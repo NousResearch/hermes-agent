@@ -772,12 +772,21 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is False
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth(self, auth_adapter):
+        """Detailed health must not leak runtime state without Bearer auth."""
         app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
+                assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_allows_authenticated_request(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        headers = {"Authorization": f"Bearer {auth_adapter._api_key}"}
+        with patch("gateway.status.read_runtime_status", return_value={"gateway_state": "running"}):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed", headers=headers)
                 assert resp.status == 200
 
 

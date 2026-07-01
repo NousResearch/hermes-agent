@@ -3182,6 +3182,25 @@ def browser_back(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "back", [])
 
     if result.get("success"):
+        # Browser history can land on a private/internal/cloud-metadata
+        # address that the browser_navigate preflight never saw (e.g. a
+        # redirect chain from an earlier legitimate navigation touched an
+        # internal host, or client-side history was otherwise manipulated).
+        # Re-check post-navigation, matching every other content-returning
+        # entry point (browser_snapshot/vision/console/eval, and click/type/
+        # press via _blocked_private_page_action) — the floor must fire for
+        # every backend, not just the initial navigate.
+        if _eval_ssrf_guard_active(effective_task_id):
+            _blocked_url = _current_page_private_url(effective_task_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). Browser history navigation (back) "
+                        "landed on this address."
+                    ),
+                }, ensure_ascii=False)
         data = result.get("data", {})
         response = {
             "success": True,

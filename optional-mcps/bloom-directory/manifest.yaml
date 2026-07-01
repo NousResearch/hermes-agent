@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: bloom-directory
+description: |
+  Curated indie consumer AI apps (wellness, journal, habits, daily life,
+  creative, money mindset). Ask Bloom to recommend apps that fit the user,
+  sign them up privately, publicly back them under a Bloom handle, and
+  remember their taste so future picks get smarter.
+
+source: https://bloomprotocol.ai/skill.md
+
+# Bloom ships a stateless streamable-HTTP MCP server at the URL below.
+# The Bloom API only ever asks for a public handle (2-30 chars, alphanumeric)
+# via MCP elicitation — no email, no OAuth, no PII flows through the protocol.
+# Handles are portable receipts anyone can cite at bloomprotocol.ai/agents/<handle>.
+transport:
+  type: http
+  url: https://bloomprotocol.ai/api/mcp
+
+auth:
+  type: none
+
+# Tool selection at install time:
+# Five tools total. list_projects + recommend_for_me are read-only. The
+# three write tools (sign_up_project, support_project, remember_my_taste)
+# all elicit a Bloom handle from the user before writing anything — safe
+# for install-time enable. No mutating tool touches user PII or external
+# systems beyond bloomprotocol.ai.
+tools:
+  # Leave default_enabled unset — the install-time checklist starts with
+  # everything pre-checked so users get the full Identity loop
+  # (recommend → back → remember) on first try. Anyone who wants only
+  # browsing can uncheck the writes.
+
+post_install: |
+  Bloom exposes five MCP tools:
+
+    list_projects        — Browse the catalog by category (read-only)
+    recommend_for_me     — Personalised ranking from chat signals + past taste
+    sign_up_project      — Private follow (email-style, no PII required)
+    support_project      — Public backing under a Bloom handle
+    remember_my_taste    — Record backed/skipped so future recs are smarter
+
+  Categories: wellness, journal, habits, daily-life, creative, money-mind.
+
+  Typical loop:
+
+    1. User: "find me an indie AI journaling app for anxiety"
+    2. Hermes → recommend_for_me(signals={intent, focus}, handle=@me)
+    3. Hermes shows top 3 with per-project "why this fits you" lines
+    4. User picks one → Hermes → support_project(projectId)
+    5. On declined options → Hermes → remember_my_taste(action=skipped)
+
+  The user's handle persists across every MCP-capable client (Claude Code,
+  Codex, Hermes, OpenClaw). Public profile at bloomprotocol.ai/agents/<handle>.
+
+  Docs + full skill spec: https://bloomprotocol.ai/skill.md
+  llms.txt (agent-readable positioning): https://bloomprotocol.ai/llms.txt

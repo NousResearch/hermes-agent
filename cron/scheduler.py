@@ -2328,18 +2328,28 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         _job_workdir = None
 
+    # Snapshot the current env value BEFORE acquiring the lock so the finally
+    # below can always restore it, even if an exception fires before we set the
+    # override inside the try.  This read can't leak the lock (it precedes the
+    # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
+    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+
     _holds_cwd_write = _job_workdir is not None
     if _holds_cwd_write:
         _terminal_cwd_lock.acquire_write()
     else:
         _terminal_cwd_lock.acquire_read()
 
-    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
-    if _job_workdir:
-        os.environ["TERMINAL_CWD"] = _job_workdir
-        logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
-
+    # Everything after the acquire MUST live inside this try, so the finally
+    # below always releases the lock even if the env override or any later
+    # statement raises.  A leaked writer would deadlock the whole scheduler
+    # (every future job blocks on acquire_*); a leaked reader blocks all
+    # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        if _job_workdir:
+            os.environ["TERMINAL_CWD"] = _job_workdir
+            logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart. Route through
         # load_hermes_dotenv (not a bare load_dotenv) and reset the secret-

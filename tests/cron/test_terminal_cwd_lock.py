@@ -132,3 +132,60 @@ def test_reader_never_observes_writer_override():
     assert not wt.is_alive() and not rt.is_alive()
     # The reader saw the restored value, never the writer's /project/A override.
     assert observations == ["<scheduler>"]
+
+
+def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
+    """A workdir job whose run_job body raises must still RELEASE the writer lock.
+
+    Regression for the leak that made the fix "still broken": the acquire was
+    placed before the try whose finally releases, so an exception in the
+    unprotected window (or anywhere in the body) leaked the writer lock and
+    deadlocked the whole scheduler. This asserts the lock is free again after a
+    raising run — acquire_write() must not block.
+    """
+    from unittest.mock import MagicMock, patch
+    import cron.scheduler as sched
+
+    workdir = tmp_path / "proj"
+    workdir.mkdir()
+    job = {"id": "boom-job", "name": "boom", "prompt": "hi", "workdir": str(workdir)}
+
+    # Force a raise in the WINDOW BETWEEN acquire and the try body — the exact
+    # spot the buggy placement left unprotected. With the fix these statements
+    # are inside the try (finally releases); with the bug the lock leaks.
+    # logger.info(...) fires right after os.environ["TERMINAL_CWD"] is set for a
+    # workdir job, in that window, so making it raise exercises the leak path.
+    real_info = sched.logger.info
+
+    def _raise_on_workdir_log(msg, *args, **kwargs):
+        if isinstance(msg, str) and "using workdir" in msg:
+            raise RuntimeError("boom")
+        return real_info(msg, *args, **kwargs)
+
+    with patch("cron.scheduler._hermes_home", tmp_path), \
+         patch("cron.scheduler._resolve_origin", return_value=None), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch.object(sched.logger, "info", side_effect=_raise_on_workdir_log), \
+         patch("hermes_state.SessionDB", return_value=MagicMock()):
+        # run_job catches its own body exceptions and returns (False, ...);
+        # it must not propagate, and it must release the lock either way.
+        success, _out, _final, _err = sched.run_job(job)
+
+    assert success is False
+
+    # If the writer lock leaked, this acquire would block forever. Prove it's
+    # free by acquiring as a writer from another thread under a short timeout.
+    acquired = threading.Event()
+
+    def try_acquire():
+        sched._terminal_cwd_lock.acquire_write()
+        try:
+            acquired.set()
+        finally:
+            sched._terminal_cwd_lock.release_write()
+
+    t = threading.Thread(target=try_acquire, daemon=True)
+    t.start()
+    assert acquired.wait(timeout=5), "writer lock was leaked by run_job on exception"
+    t.join(timeout=5)

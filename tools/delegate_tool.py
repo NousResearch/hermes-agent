@@ -53,6 +53,25 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+# Build a description fragment listing toolsets available for subagents.
+# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
+# (hermes-* prefixed), and scenario toolsets.
+#
+# NOTE: "delegation" is in this exclusion set so the subagent-facing
+# capability hint string (_TOOLSET_LIST_STR) doesn't advertise it as a
+# toolset to request explicitly — the correct mechanism for nested
+# delegation is role='orchestrator', which re-adds "delegation" in
+# _build_child_agent regardless of this exclusion.
+_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "rl"})
+_SUBAGENT_TOOLSETS = sorted(
+    name
+    for name, defn in TOOLSETS.items()
+    if name not in _EXCLUDED_TOOLSET_NAMES
+    and not name.startswith("hermes-")
+    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
+)
+_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -2403,6 +2422,7 @@ def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    toolsets: Optional[List[str]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -3578,6 +3598,18 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "toolsets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Toolsets to enable for this subagent. "
+                    "Default: inherits your enabled toolsets. "
+                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
+                    "Common patterns: ['terminal', 'file'] for code work, "
+                    "['web'] for research, ['browser'] for web interaction, "
+                    "['terminal', 'file', 'web'] for full-stack tasks."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3753,6 +3785,7 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=args.get("tasks"),
+        toolsets=args.get("toolsets"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

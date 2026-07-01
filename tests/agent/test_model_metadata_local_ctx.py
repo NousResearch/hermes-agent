@@ -665,3 +665,119 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()
+
+
+class TestFetchEndpointModelMetadataRemoteLmStudioFallback:
+    """Remote LMStudio: native /api/v1/models fallback when standard path lacks context_length."""
+
+    def _make_resp(self, body):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = body
+        return resp
+
+    def test_remote_lmstudio_fallback_to_native_api(self):
+        """When standard /models returns no context_length, try LMStudio native API."""
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        # Standard OpenAI /v1/models response (no context_length)
+        openai_resp = self._make_resp(
+            {
+                "data": [
+                    {
+                        "id": "qwen3.5-27b",
+                        "object": "model",
+                        "owned_by": "lm-studio",
+                    }
+                ]
+            }
+        )
+        # LMStudio native /api/v1/models response (has context_length)
+        native_resp = self._make_resp(
+            {
+                "models": [
+                    {
+                        "key": "qwen3.5-27b",
+                        "id": "qwen3.5-27b",
+                        "loaded_instances": [
+                            {"config": {"context_length": 131072}}
+                        ],
+                    }
+                ]
+            }
+        )
+
+        def mock_get(url, **kwargs):
+            if "/api/v1/models" in url:
+                return native_resp
+            return openai_resp
+
+        with patch("agent.model_metadata.is_local_endpoint", return_value=False), \
+             patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("agent.model_metadata.requests.get", side_effect=mock_get):
+            result = fetch_endpoint_model_metadata(
+                "https://remote-lmstudio:1234/v1",
+                api_key="test-key",
+                force_refresh=True,
+            )
+
+        assert "qwen3.5-27b" in result
+        assert result["qwen3.5-27b"]["context_length"] == 131072
+
+    def test_remote_non_lmstudio_no_fallback(self):
+        """When standard /models returns no context_length but server is not LMStudio, skip fallback."""
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        openai_resp = self._make_resp(
+            {
+                "data": [
+                    {
+                        "id": "some-model",
+                        "object": "model",
+                        "owned_by": "openai",
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.is_local_endpoint", return_value=False), \
+             patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("agent.model_metadata.requests.get", return_value=openai_resp):
+            result = fetch_endpoint_model_metadata(
+                "https://remote-api:1234/v1",
+                api_key="test-key",
+                force_refresh=True,
+            )
+
+        assert "some-model" in result
+        assert "context_length" not in result["some-model"]
+
+    def test_standard_path_with_context_length_skips_fallback(self):
+        """When standard /models already returns context_length, skip LMStudio fallback."""
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        openai_resp = self._make_resp(
+            {
+                "data": [
+                    {
+                        "id": "gpt-4",
+                        "object": "model",
+                        "owned_by": "openai",
+                        "context_length": 128000,
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.is_local_endpoint", return_value=False), \
+             patch("agent.model_metadata.detect_local_server_type") as mock_detect, \
+             patch("agent.model_metadata.requests.get", return_value=openai_resp):
+            result = fetch_endpoint_model_metadata(
+                "https://api.openai.com/v1",
+                api_key="sk-test",
+                force_refresh=True,
+            )
+
+        # detect_local_server_type should NOT be called since context_length exists
+        mock_detect.assert_not_called()
+        assert result["gpt-4"]["context_length"] == 128000

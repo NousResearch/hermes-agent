@@ -886,6 +886,57 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
+            # Fallback: if models were found but none have context_length,
+            # try the LMStudio native /api/v1/models endpoint (works for
+            # remote LMStudio instances where is_local_endpoint() is False).
+            if cache and not any(
+                "context_length" in v for v in cache.values()
+            ):
+                try:
+                    if detect_local_server_type(
+                        normalized, api_key=api_key
+                    ) == "lm-studio":
+                        server_url = (
+                            normalized[:-3].rstrip("/")
+                            if normalized.endswith("/v1")
+                            else normalized
+                        )
+                        lm_resp = requests.get(
+                            server_url.rstrip("/") + "/api/v1/models",
+                            headers=headers,
+                            timeout=10,
+                            verify=_resolve_requests_verify(),
+                        )
+                        lm_resp.raise_for_status()
+                        lm_payload = lm_resp.json()
+                        for lm_model in lm_payload.get("models", []):
+                            if not isinstance(lm_model, dict):
+                                continue
+                            lm_id = (
+                                lm_model.get("key")
+                                or lm_model.get("id")
+                                or ""
+                            )
+                            for inst in (
+                                lm_model.get("loaded_instances") or []
+                            ):
+                                if not isinstance(inst, dict):
+                                    continue
+                                cfg = inst.get("config", {})
+                                ctx = (
+                                    cfg.get("context_length")
+                                    if isinstance(cfg, dict)
+                                    else None
+                                )
+                                if isinstance(ctx, int) and ctx > 0:
+                                    # Merge into matching cache entries
+                                    for alias_key, alias_entry in cache.items():
+                                        if alias_key == lm_id or alias_entry.get("name") == lm_id:
+                                            alias_entry.setdefault("context_length", ctx)
+                                    break
+                except Exception:
+                    pass  # best-effort; standard metadata is still usable
+
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache

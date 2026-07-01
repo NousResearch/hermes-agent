@@ -30,6 +30,7 @@ import psutil
 import cli as cli_mod
 from cli import HermesCLI
 from rich.console import Console
+from tools.ansi_strip import strip_ansi
 
 # Env-overridable so the integration test can drive sub-second timing.
 def _env_float(name: str, default: float) -> float:
@@ -89,6 +90,15 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Rich Console captures its file handle at construction time, so
     # contextlib.redirect_stdout won't affect it. Swap the console's
     # underlying file to our buffer so self.console.print() is captured.
+    #
+    # force_terminal=True makes Rich lay out tables/bar charts with a real
+    # terminal width instead of collapsing to a bare 80-col non-tty fallback,
+    # but it also emits 24-bit ANSI color escapes. This captured string is
+    # returned through the gateway to a chat bubble (TUI/Desktop) that renders
+    # plain text, so the escapes show up as literal "?[38;2;...m" garbage
+    # (issue #56533). Keep force_terminal for the layout and strip the ANSI
+    # from the captured output below, mirroring how terminal_tool /
+    # code_execution_tool clean subprocess output before it leaves the process.
     cli.console = Console(file=buf, force_terminal=True, width=120)
 
     old = getattr(cli_mod, "_cprint", None)
@@ -102,7 +112,7 @@ def _run(cli: HermesCLI, command: str) -> str:
         if old is not None:
             cli_mod._cprint = old
 
-    return buf.getvalue().rstrip()
+    return strip_ansi(buf.getvalue()).rstrip()
 
 
 def main():

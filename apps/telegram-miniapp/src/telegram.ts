@@ -23,6 +23,19 @@ export type TelegramWebAppUser = {
   is_premium?: boolean;
 };
 
+type TelegramButton = {
+  show: () => void;
+  hide: () => void;
+  onClick: (callback: () => void) => void;
+  offClick: (callback: () => void) => void;
+};
+
+type TelegramMainButton = TelegramButton & {
+  setText: (text: string) => void;
+  enable: () => void;
+  disable: () => void;
+};
+
 type TelegramWebApp = {
   initData?: string;
   initDataUnsafe?: {
@@ -35,6 +48,8 @@ type TelegramWebApp = {
   platform?: string;
   viewportHeight?: number;
   viewportStableHeight?: number;
+  BackButton?: TelegramButton;
+  MainButton?: TelegramMainButton;
   ready?: () => void;
   expand?: () => void;
 };
@@ -60,6 +75,38 @@ export function prepareTelegramViewport(): void {
   const webApp = window.Telegram?.WebApp;
   webApp?.ready?.();
   webApp?.expand?.();
+}
+
+export function configureTelegramBackButton(isVisible: boolean, onBack: () => void): () => void {
+  const backButton = window.Telegram?.WebApp?.BackButton;
+  if (!backButton) return () => undefined;
+
+  if (isVisible) {
+    backButton.show();
+    backButton.onClick(onBack);
+  } else {
+    backButton.hide();
+  }
+
+  return () => {
+    backButton.offClick(onBack);
+    backButton.hide();
+  };
+}
+
+export function configureTelegramMainButton(text: string, onClick: () => void): () => void {
+  const mainButton = window.Telegram?.WebApp?.MainButton;
+  if (!mainButton) return () => undefined;
+
+  mainButton.setText(text);
+  mainButton.disable();
+  mainButton.show();
+  mainButton.onClick(onClick);
+
+  return () => {
+    mainButton.offClick(onClick);
+    mainButton.hide();
+  };
 }
 
 export function getTelegramRuntime(): TelegramRuntime {

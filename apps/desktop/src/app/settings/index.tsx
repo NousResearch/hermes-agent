@@ -1,11 +1,11 @@
-import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useRef } from 'react'
 
+import { codiconIcon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -20,6 +20,7 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
+import { NotificationsSettings } from './notifications-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -30,6 +31,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'gateway',
   'keys',
   'mcp',
+  'notifications',
   'sessions',
   'about'
 ]
@@ -101,26 +103,32 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               />
             )
           })}
+          <OverlayNavItem
+            active={activeView === 'notifications'}
+            icon={Bell}
+            label={t.settings.nav.notifications}
+            onClick={() => setActiveView('notifications')}
+          />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'providers'}
             icon={Zap}
-            label="Providers"
+            label={t.settings.nav.providers}
             onClick={() => setActiveView('providers')}
           />
           {activeView === 'providers' && (
             <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
               <OverlayNavItem
                 active={providerView === 'accounts'}
-                icon={Sparkles}
-                label="Accounts"
+                icon={codiconIcon('account')}
+                label={t.settings.nav.providerAccounts}
                 nested
                 onClick={() => openProviderView('accounts')}
               />
               <OverlayNavItem
                 active={providerView === 'keys'}
                 icon={KeyRound}
-                label="API keys"
+                label={t.settings.nav.providerApiKeys}
                 nested
                 onClick={() => openProviderView('keys')}
               />
@@ -143,14 +151,14 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               <OverlayNavItem
                 active={keysView === 'tools'}
                 icon={Wrench}
-                label="Tools"
+                label={t.settings.nav.keysTools}
                 nested
                 onClick={() => openKeysView('tools')}
               />
               <OverlayNavItem
                 active={keysView === 'settings'}
                 icon={Settings2}
-                label="Settings"
+                label={t.settings.nav.keysSettings}
                 nested
                 onClick={() => openKeysView('settings')}
               />
@@ -178,7 +186,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <div className="mt-auto flex items-center gap-1 pt-2">
             <Tip label={t.settings.exportConfig}>
               <OverlayIconButton onClick={() => void exportConfig()}>
-                <IconDownload className="size-3.5" />
+                <Download className="size-3.5" />
               </OverlayIconButton>
             </Tip>
             <Tip label={t.settings.importConfig}>
@@ -188,7 +196,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                   importInputRef.current?.click()
                 }}
               >
-                <IconUpload className="size-3.5" />
+                <Upload className="size-3.5" />
               </OverlayIconButton>
             </Tip>
             <Tip label={t.settings.resetToDefaults}>
@@ -199,13 +207,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                   void resetConfig()
                 }}
               >
-                <IconRefresh className="size-3.5" />
+                <RefreshCw className="size-3.5" />
               </OverlayIconButton>
             </Tip>
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)/2+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
@@ -220,11 +228,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings onViewChange={setProviderView} view={providerView} />
+            <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
+          ) : activeView === 'notifications' ? (
+            <NotificationsSettings />
           ) : (
             <SessionsSettings />
           )}

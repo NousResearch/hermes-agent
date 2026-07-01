@@ -72,6 +72,11 @@ export interface DesktopOnboardingState {
    *  picker's "Add provider" button). Forces the overlay to show the picker
    *  even when configured === true, and adds a close affordance. */
   manual: boolean
+  /** True when the overlay was opened specifically to configure a local /
+   *  custom OpenAI-compatible endpoint (e.g. from Settings → Model's "Set up
+   *  custom endpoint"). Forces the API-key form with the local option
+   *  preselected instead of the OAuth picker. */
+  localEndpoint: boolean
 }
 
 export interface OnboardingContext {
@@ -83,7 +88,8 @@ const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
-const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
 
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
@@ -149,7 +155,8 @@ const INITIAL: DesktopOnboardingState = {
   reason: null,
   requested: false,
   firstRunSkipped: readCachedSkipped(),
-  manual: false
+  manual: false,
+  localEndpoint: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -162,8 +169,7 @@ const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
 
-const setFlow = (flow: OnboardingFlow) =>
-  patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
+const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
@@ -174,11 +180,19 @@ function clearPoll() {
   }
 }
 
-async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessResult> {
+async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
+    requestedProvider,
     unknownReady: false
   })
+}
+
+function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // A fallback result means both runtime probes were non-authoritative
+  // (transport timeout/disconnect). Keep a previously verified configured
+  // state instead of forcing the blocking onboarding overlay.
+  return runtime.source === 'fallback' && state.configured === true && !state.requested
 }
 
 function notifyReady(provider: string) {
@@ -300,15 +314,34 @@ async function completeWithModelConfirm(
   ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
-  const runtime = await checkRuntime(ctx)
+
+  const defaults = await fetchProviderDefaultModel(preferredSlugs)
+
+  if (defaults) {
+    // Persist the chosen provider/model before the runtime gate so a stale
+    // config provider (e.g. anthropic from a prior failed setup) cannot make
+    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
+    try {
+      const res = await setModelAssignment({
+        scope: 'main',
+        provider: defaults.providerSlug,
+        model: defaults.defaultModel
+      })
+
+      notifyGatewayTools(res.gateway_tools)
+    } catch {
+      // Persistence failed — still run the scoped runtime check below and
+      // show the confirm card so the user can pick something explicitly.
+    }
+  }
+
+  const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
   if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
   }
-
-  const defaults = await fetchProviderDefaultModel(preferredSlugs)
 
   if (!defaults) {
     // Couldn't get a sensible default — proceed without confirm step.
@@ -317,27 +350,6 @@ async function completeWithModelConfirm(
     ctx.onCompleted?.()
 
     return
-  }
-
-  // Persist the default model BEFORE showing the confirm card so that:
-  // (1) "current default: X" shown in the UI is what's actually written
-  //     to config — no lying.
-  // (2) If the user clicks "Start chatting" without changing anything,
-  //     no extra write is needed.
-  // (3) If they bail out (e.g., refresh the page), they still end up
-  //     with a working config, not an empty-model fallback.
-  try {
-    const res = await setModelAssignment({
-      scope: 'main',
-      provider: defaults.providerSlug,
-      model: defaults.defaultModel
-    })
-
-    notifyGatewayTools(res.gateway_tools)
-  } catch {
-    // Persistence failed — still show the confirm card so the user can
-    // pick something explicitly. The backend will pick its own default
-    // at chat time if we end up never persisting.
   }
 
   setFlow({
@@ -387,16 +399,35 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON) {
   patch({
     manual: true,
     requested: true,
+    localEndpoint: false,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
     flow: { status: 'idle' }
   })
   void refreshProviders()
+}
+
+// Open the onboarding overlay directly on the local / custom endpoint form
+// (URL + optional API key), bypassing the OAuth picker. Used by Settings →
+// Model's "Set up custom endpoint" so it lands on a form that can actually
+// configure the endpoint instead of dead-ending on the OAuth provider list
+// (`custom` is not an OAuth provider, so the generic manual flow would just
+// re-show the picker — the original "booted back to the first screen" loop).
+export function startManualLocalEndpoint(reason: null | string = null) {
+  pendingProviderOAuthId = null
+  patch({
+    manual: true,
+    requested: true,
+    localEndpoint: true,
+    mode: 'apikey',
+    reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
+    flow: { status: 'idle' }
+  })
 }
 
 // One-shot hand-off used when the dedicated Providers settings page launches a
@@ -430,7 +461,7 @@ export function clearPendingProviderOAuth() {
 export function closeManualOnboarding() {
   pendingProviderOAuthId = null
 
-  patch({ manual: false, requested: false, flow: { status: 'idle' } })
+  patch({ manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
 }
 
 export function completeDesktopOnboarding() {
@@ -447,7 +478,8 @@ export function completeDesktopOnboarding() {
     reason: null,
     requested: false,
     firstRunSkipped: false,
-    manual: false
+    manual: false,
+    localEndpoint: false
   })
 }
 
@@ -460,7 +492,7 @@ export function completeDesktopOnboarding() {
 export function dismissFirstRunOnboarding() {
   clearPoll()
   writeCachedSkipped(true)
-  patch({ firstRunSkipped: true, requested: false, manual: false, flow: { status: 'idle' } })
+  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
@@ -488,6 +520,23 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
+
+  if (shouldPreserveConfiguredOnFallback(runtime, state)) {
+    // Gateway probes timed out but the user was already configured — don't
+    // downgrade to the blocking onboarding overlay. Surface a non-blocking
+    // notification with a stable id so repeated calls during an outage dedup
+    // instead of stacking toasts.
+    notify({
+      id: 'runtime-not-ready',
+      kind: 'error',
+      title: 'Runtime not ready',
+      message:
+        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+    })
+
+    return false
+  }
+
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
   writeCachedConfigured(false)
@@ -700,18 +749,28 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
   )
 }
 
-export async function saveOnboardingApiKey(envKey: string, value: string, label: string, ctx: OnboardingContext) {
+export async function saveOnboardingApiKey(
+  envKey: string,
+  value: string,
+  label: string,
+  ctx: OnboardingContext,
+  // Optional endpoint key — only meaningful for the "Local / custom endpoint"
+  // option, whose primary `value` is the base URL. Ignored for plain API-key
+  // providers (their key IS `value`).
+  endpointApiKey?: string
+) {
   const trimmed = value.trim()
 
   if (!trimmed) {
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // The "Local / custom endpoint" option carries a base URL, not an API key.
-  // It must be wired into config (provider=custom + base_url + model), not
-  // dropped into .env — runtime resolution ignores OPENAI_BASE_URL.
+  // The "Local / custom endpoint" option carries a base URL (in `value`) plus
+  // an optional API key. It must be wired into config (provider=custom +
+  // base_url + model + api_key), not dropped into .env — runtime resolution
+  // ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -747,14 +806,17 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 // env var that resolution never consults.
 //
 // The model is auto-discovered from the endpoint's /v1/models (surfaced by the
-// validate probe) so the user only has to paste a URL — no extra UI field.
+// validate probe). The optional API key is forwarded to the probe (so hosted
+// endpoints that gate /v1/models behind auth still enumerate models) and
+// persisted to model.api_key so the runtime can authenticate.
 //
 // We deliberately don't route through completeWithModelConfirm: that path
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
   const url = baseUrl.trim()
+  const key = apiKey.trim()
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -766,7 +828,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
 
     if (!probe.ok && probe.reachable) {
       return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
@@ -789,7 +851,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url })
+    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)
@@ -857,7 +919,9 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
     return
   }
 
-  notifyReady(flow.label)
+  // No success toast here: the confirm-model screen already showed "<provider>
+  // connected." notifyReady is reserved for completion paths that SKIP this
+  // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
   completeDesktopOnboarding()
   ctx.onCompleted?.()
 }

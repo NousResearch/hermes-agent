@@ -102,6 +102,11 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Lua — manual (LuaLS is platform-specific binaries from GitHub
     # releases; complex enough that we punt to the user)
     "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
+    # PowerShell — PowerShellEditorServices ships as a GitHub release
+    # zip driven by a pwsh bootstrap script, not a single binary.  We
+    # require a manual bundle install and probe for the pwsh host so
+    # `hermes lsp status` reports the host's presence.
+    "powershell": {"strategy": "manual", "pkg": "", "bin": "pwsh"},
 }
 
 
@@ -262,6 +267,7 @@ def _install_npm(
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
@@ -310,6 +316,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
             text=True,
             timeout=600,
             env=env,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
@@ -347,6 +354,7 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(

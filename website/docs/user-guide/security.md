@@ -272,8 +272,9 @@ whatsapp:
   unauthorized_dm_behavior: ignore
 ```
 
-- `pair` is the default. Unauthorized DMs get a pairing code reply.
+- `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 
 **Security features** (based on OWASP + NIST SP 800-63-4 guidance):
@@ -319,7 +320,7 @@ When using the `docker` terminal backend, Hermes applies strict security hardeni
 Every container runs with these flags (defined in `tools/environments/docker.py`):
 
 ```python
-_SECURITY_ARGS = [
+_BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",                          # Drop ALL Linux capabilities
     "--cap-add", "DAC_OVERRIDE",                  # Root can write to bind-mounted dirs
     "--cap-add", "CHOWN",                         # Package managers need file ownership
@@ -328,9 +329,10 @@ _SECURITY_ARGS = [
     "--pids-limit", "256",                         # Limit process count
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # No-exec /var/tmp
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",   # No-exec /run
 ]
 ```
+
+`SETUID`/`SETGID` are **not** in the base list — they're added conditionally when the container starts as root and an init/entrypoint must drop privileges (the s6 privilege-drop path). They're skipped when the container already runs as a non-root `--user`. The `/run` tmpfs is also split out from the base list and mounted per-image (hardened `noexec` by default, `exec` only for s6-overlay images that exec from `/run`).
 
 ### Resource Limits
 

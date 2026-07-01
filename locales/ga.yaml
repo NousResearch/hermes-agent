@@ -223,6 +223,14 @@ gateway:
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -255,10 +263,20 @@ gateway:
 
   status:
     header:                "📊 **Stádas Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID Seisiúin:** `{session_id}`"
     title:                 "**Teideal:** {title}"
     created:               "**Cruthaithe:** {timestamp}"
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Comharthaí:** {tokens}"
     agent_running:         "**Gníomhaire ag rith:** {state}"
     state_yes:             "Tá ⚡"
@@ -318,11 +336,24 @@ gateway:
     label_cost_included:      "Costas: san áireamh"
     label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
     label_compressions:       "Dlúthuithe: {count}"
+    breakdown_header: "🧩 **Miondealú comhthéacs** _(measta)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Leid an chórais"
+    breakdown_cat_tool_definitions: "Sainmhínithe uirlisí"
+    breakdown_cat_rules: "Rialacha"
+    breakdown_cat_skills: "Scileanna"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Sainmhínithe fo-ghníomhairí"
+    breakdown_cat_memory: "Cuimhne"
+    breakdown_cat_conversation: "Comhrá"
     header_session_info:      "📊 **Eolas Seisiúin**"
     label_messages:           "Teachtaireachtaí: {count}"
     label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
     detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
     no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
+
+  credits:
+    not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
 
   verbose:
     not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

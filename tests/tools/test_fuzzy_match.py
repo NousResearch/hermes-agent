@@ -43,6 +43,47 @@ class TestWhitespaceDifference:
         assert count == 1
         assert "bar" in new
 
+    def test_boundary_space_preserved_after_match(self):
+        """Regression: whitespace_normalized match ending with a non-space
+        character must NOT consume the word-boundary space that follows.
+        https://github.com/NousResearch/hermes-agent/issues/52491"""
+        # Case 1 — simple word boundary
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "foo   bar baz", "foo bar", "XY",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz", f"Boundary space deleted: {new!r}"
+
+    def test_boundary_space_preserved_in_code_edit(self):
+        """Regression: real-world code-edit scenario where the space before
+        the next operator must survive a whitespace-normalized match."""
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "compute(a, b)", "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
+
+    def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
+        """When the normalized match itself ends with whitespace (pattern has
+        trailing space), the expansion must still consume the full whitespace
+        run in the original."""
+        # Use a pattern with trailing space where the boundary is clear:
+        # content has "foo   " then "bar", pattern is "foo " — the match
+        # should cover all 3 original spaces (the trailing ws run).
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "a = foo   + bar", "foo +", "XY",
+        )
+        assert err is None
+        assert count == 1
+        # "foo   +" normalized to "foo +" matches; trailing spaces consumed
+        # Result: "a = XY bar"
+        assert "XY" in new and "bar" in new
+
 
 class TestIndentDifference:
     def test_different_indentation(self):
@@ -165,6 +206,39 @@ class TestReplaceAll:
         assert err is None
         assert count == 2
         assert new == "ccc bbb ccc"
+
+    def test_self_overlapping_pattern_non_overlapping_matches(self):
+        """Self-overlapping patterns must produce non-overlapping spans.
+
+        Regression: _strategy_exact advanced the scan cursor by 1 instead of
+        len(pattern), so "aa" in "aaaa" matched at offsets 0, 1, 2 (overlapping)
+        instead of 0, 2. _apply_replacements works in reverse order, so the
+        stale offsets corrupted the file. Fix aligns with str.replace().
+        """
+        # replace_all: 2 non-overlapping matches, not 3 overlapping ones.
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "bb"
+
+        # single-char pattern still counts every occurrence
+        new, count, _, err = fuzzy_find_and_replace("aaa", "a", "b", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "bbb"
+
+        # embedded in surrounding content — non-matched parts preserved
+        new, count, _, err = fuzzy_find_and_replace(
+            "prefix aaaa suffix", "aa", "b", replace_all=True
+        )
+        assert err is None
+        assert count == 2
+        assert new == "prefix bb suffix"
+
+        # without the flag, the non-overlapping count is reported (2, not 3)
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=False)
+        assert count == 0
+        assert "2 matches" in err
 
 
 class TestUnicodeNormalized:

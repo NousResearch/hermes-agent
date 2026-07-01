@@ -12,6 +12,8 @@ import os
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.environments.local import (
     LocalEnvironment,
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -237,6 +239,54 @@ class TestForceEnvOptIn:
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
 
 
+class TestActiveVenvMarkerStripping:
+    """Active-virtualenv markers must not leak into terminal subprocesses (#23473).
+
+    The gateway runs inside its own venv, so its process environment carries
+    VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
+    agent runs against ANOTHER Python project, ``uv``/``poetry`` treat the
+    inherited value as the active environment and build that project's deps
+    into the Hermes venv path instead of the project's own ``.venv`` —
+    silently clobbering the Hermes environment (and, when the other project
+    pins a different Python, breaking the gateway outright). The Hermes venv
+    stays reachable via PATH, so stripping the markers is safe.
+    """
+
+    def test_virtualenv_marker_stripped_end_to_end(self):
+        result_env = _run_with_env(extra_os_env={
+            "VIRTUAL_ENV": "/home/user/.hermes/hermes-agent/venv",
+        })
+        assert "VIRTUAL_ENV" not in result_env
+
+    def test_conda_prefix_marker_stripped_end_to_end(self):
+        result_env = _run_with_env(extra_os_env={
+            "CONDA_PREFIX": "/opt/conda/envs/hermes",
+        })
+        assert "CONDA_PREFIX" not in result_env
+
+    def test_make_run_env_strips_markers(self):
+        from tools.environments.local import _make_run_env
+        poison = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "PATH": "/usr/bin"}
+        with patch.dict(os.environ, poison, clear=True):
+            result = _make_run_env({})
+        assert "VIRTUAL_ENV" not in result
+        assert "CONDA_PREFIX" not in result
+
+    def test_sanitize_subprocess_env_strips_markers(self):
+        from tools.environments.local import _sanitize_subprocess_env
+        base = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "HOME": "/home/user"}
+        # Even an explicitly-passed extra marker is stripped.
+        result = _sanitize_subprocess_env(base, {"VIRTUAL_ENV": "/also/venv"})
+        assert "VIRTUAL_ENV" not in result
+        assert "CONDA_PREFIX" not in result
+        assert result.get("HOME") == "/home/user"
+
+    def test_markers_constant_contents(self):
+        from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
+        assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
+        assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
+
+
 class TestBlocklistCoverage:
     """Sanity checks that the blocklist covers all known providers."""
 
@@ -379,6 +429,18 @@ class TestBlocklistCoverage:
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_hermes_bin_injection(self):
+        """These tests assert the sane-path merge in isolation. Disable the
+        hermes-install-dir prepend (a separate concern, covered by
+        TestHermesBinDirOnPath) so a real ``hermes`` on the test runner's PATH
+        doesn't shift the asserted PATH layout."""
+        from tools.environments import local as local_mod
+        saved = local_mod._HERMES_BIN_DIR
+        local_mod._HERMES_BIN_DIR = None  # resolved -> no dir to inject
+        yield
+        local_mod._HERMES_BIN_DIR = saved
+
     def test_sane_path_includes_homebrew_bin(self):
         from tools.environments.local import _SANE_PATH
         assert "/opt/homebrew/bin" in _SANE_PATH
@@ -388,20 +450,277 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/sbin" in _SANE_PATH
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
-        """When PATH is minimal (no /usr/bin), _make_run_env should append
-        _SANE_PATH which now includes Homebrew dirs."""
-        from tools.environments.local import _make_run_env
+        """When PATH is minimal, _make_run_env appends missing sane entries."""
+        from tools.environments.local import _SANE_PATH, _make_run_env
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
-        assert "/opt/homebrew/bin" in result["PATH"]
-        assert "/opt/homebrew/sbin" in result["PATH"]
+        path_entries = result["PATH"].split(":")
+        assert path_entries[0] == "/some/custom/bin"
+        for entry in _SANE_PATH.split(":"):
+            assert entry in path_entries
 
-    def test_make_run_env_does_not_duplicate_on_full_path(self):
-        """When PATH already has /usr/bin, _make_run_env should not append."""
+    def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
+        """macOS launchd PATH can include /usr/bin while missing Homebrew."""
         from tools.environments.local import _make_run_env
-        full_env = {"PATH": "/usr/bin:/bin"}
-        with patch.dict(os.environ, full_env, clear=True):
+        launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
+        with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
-        # Should keep existing PATH unchanged
-        assert result["PATH"] == "/usr/bin:/bin"
+        path_entries = result["PATH"].split(":")
+        assert "/opt/homebrew/bin" in path_entries
+        assert "/opt/homebrew/sbin" in path_entries
+
+    def test_make_run_env_does_not_duplicate_existing_sane_entries(self):
+        from tools.environments.local import _make_run_env
+        existing_env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+        with patch.dict(os.environ, existing_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert path_entries.count("/opt/homebrew/bin") == 1
+        assert path_entries.count("/usr/local/bin") == 1
+        assert path_entries.count("/usr/bin") == 1
+
+    def test_make_run_env_real_launchd_path_gains_homebrew(self):
+        """The literal macOS launchd PATH is the production trigger for #35613."""
+        from tools.environments.local import _make_run_env
+        launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+        with patch.dict(os.environ, launchd_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert "/opt/homebrew/bin" in path_entries
+        assert "/opt/homebrew/sbin" in path_entries
+        # Original entries keep their leading precedence.
+        assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+    def test_make_run_env_collapses_duplicate_caller_entries(self):
+        """Duplicates already present in the caller PATH are de-duplicated."""
+        from tools.environments.local import _make_run_env
+        dup_env = {"PATH": "/usr/bin:/usr/bin:/custom/bin:/custom/bin:/bin"}
+        with patch.dict(os.environ, dup_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert path_entries.count("/usr/bin") == 1
+        assert path_entries.count("/custom/bin") == 1
+        # First-occurrence order is preserved for the caller entries.
+        assert path_entries[:3] == ["/usr/bin", "/custom/bin", "/bin"]
+
+    def test_make_run_env_strips_empty_path_entries(self):
+        """Leading/trailing/double colons (== CWD on POSIX) are dropped."""
+        from tools.environments.local import _make_run_env
+        empty_env = {"PATH": "/usr/bin::/bin:"}
+        with patch.dict(os.environ, empty_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert "" not in path_entries
+        assert "/usr/bin" in path_entries
+        assert "/opt/homebrew/bin" in path_entries
+
+    def test_make_run_env_leaves_windows_path_unchanged(self, monkeypatch):
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        windows_env = {"PATH": r"C:\Windows\System32;C:\Program Files\Git\bin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.dict(os.environ, windows_env, clear=True):
+            result = _make_run_env({})
+        assert result["PATH"] == windows_env["PATH"]
+
+    def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.object(local_mod.os, "environ", windows_env):
+            result = _make_run_env({})
+        assert result["Path"] == windows_env["Path"]
+        assert "PATH" not in result
+
+
+class TestHermesBinDirOnPath:
+    """The hermes install dir is reachable in the terminal subshell PATH.
+
+    Plugins shelling out to bare ``hermes`` via the terminal tool must work
+    even when the gateway was launched without the hermes install dir on
+    PATH (systemd, service managers, cron). See the discussion that motivated
+    _resolve_hermes_bin_dir / _prepend_hermes_bin_dir.
+    """
+
+    def _reset_cache(self):
+        from tools.environments import local as local_mod
+        local_mod._HERMES_BIN_DIR = local_mod._SENTINEL
+
+    def test_resolves_via_which(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        monkeypatch.setattr(local_mod.shutil, "which",
+                            lambda name: "/opt/hermes/bin/hermes" if name == "hermes" else None)
+        monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
+        assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
+
+    def test_resolves_via_sys_executable_dir(self, monkeypatch, tmp_path):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "hermes").write_text("#!/bin/sh\n")
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(local_mod.sys, "argv", ["python"])
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
+
+    def test_returns_none_when_unresolvable(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(local_mod.sys, "argv", ["python"])
+        monkeypatch.setattr(local_mod.sys, "executable", "/nonexistent/python")
+        assert local_mod._resolve_hermes_bin_dir() is None
+
+    def test_prepend_adds_missing_dir_at_front(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        out = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
+        assert out.split(os.pathsep)[0] == "/opt/hermes/bin"
+        assert "/usr/bin" in out.split(os.pathsep)
+
+    def test_prepend_is_idempotent(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        once = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
+        twice = local_mod._prepend_hermes_bin_dir(once)
+        assert twice == once
+        assert once.split(os.pathsep).count("/opt/hermes/bin") == 1
+
+    def test_prepend_noop_when_unresolved(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._HERMES_BIN_DIR = None
+        assert local_mod._prepend_hermes_bin_dir("/usr/bin:/bin") == "/usr/bin:/bin"
+
+    def test_make_run_env_injects_hermes_bin_dir(self, monkeypatch):
+        """A gateway env missing the hermes dir gets it back in the subshell PATH."""
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        self._reset_cache()
+        local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
+            result = _make_run_env({})
+        entries = result["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/hermes/bin"
+        assert "/usr/bin" in entries
+
+
+class TestHermesInternalDynamicSecrets:
+    """Dynamically-named Hermes secrets injected at gateway/CLI startup must
+    not leak into terminal subprocesses.
+
+    The static ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived
+    from provider/tool registries, so it cannot enumerate:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
+      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      ``gateway/run.py`` and ``cli.py``.
+    - ``GATEWAY_RELAY_*_SECRET`` / ``_KEY`` / ``_TOKEN`` — relay-auth material
+      provisioned by ``gateway/relay``.
+
+    ``_is_hermes_internal_secret`` is the single source of truth; every spawn
+    path (``_sanitize_subprocess_env``, ``_make_run_env``,
+    ``hermes_subprocess_env``, Docker forward filter, ``env_passthrough``)
+    consults it. These tests exercise the terminal execute path + predicate.
+    """
+
+    def test_predicate_matches_auxiliary_api_key(self):
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_API_KEY")
+        assert _is_hermes_internal_secret("AUXILIARY_WEB_EXTRACT_API_KEY")
+        assert _is_hermes_internal_secret("AUXILIARY_APPROVAL_API_KEY")
+        # plugin-registered task names are covered by the pattern
+        assert _is_hermes_internal_secret("AUXILIARY_MY_PLUGIN_TASK_API_KEY")
+
+    def test_predicate_matches_auxiliary_base_url(self):
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("AUXILIARY_VISION_BASE_URL")
+        assert _is_hermes_internal_secret("AUXILIARY_COMPRESSION_BASE_URL")
+
+    def test_predicate_matches_gateway_relay_auth(self):
+        from tools.environments.local import _is_hermes_internal_secret
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_SECRET")
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_SESSION_TOKEN")
+
+    def test_predicate_allows_auxiliary_non_secrets(self):
+        """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY_* routing hints are
+        NOT secrets and must remain visible so tooling that reads them works."""
+        from tools.environments.local import _is_hermes_internal_secret
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_PROVIDER")
+        assert not _is_hermes_internal_secret("AUXILIARY_VISION_MODEL")
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_URL")
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_PLATFORMS")
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_ID")  # not a secret suffix
+        # unrelated vars pass through
+        assert not _is_hermes_internal_secret("PATH")
+        assert not _is_hermes_internal_secret("MY_APP_KEY")
+
+    def test_auxiliary_secrets_stripped_from_subprocess(self):
+        """AUXILIARY_*_API_KEY / _BASE_URL injected into os.environ must not
+        reach the terminal subprocess, while _PROVIDER / _MODEL survive."""
+        result_env = _run_with_env(extra_os_env={
+            "AUXILIARY_VISION_API_KEY": "sk-vision-secret",
+            "AUXILIARY_VISION_BASE_URL": "http://internal:1234/v1",
+            "AUXILIARY_WEB_EXTRACT_API_KEY": "sk-webx-secret",
+            "AUXILIARY_VISION_PROVIDER": "openai",
+            "AUXILIARY_VISION_MODEL": "gpt-4o",
+        })
+        assert "AUXILIARY_VISION_API_KEY" not in result_env
+        assert "AUXILIARY_VISION_BASE_URL" not in result_env
+        assert "AUXILIARY_WEB_EXTRACT_API_KEY" not in result_env
+        # Non-secret routing config is preserved.
+        assert result_env.get("AUXILIARY_VISION_PROVIDER") == "openai"
+        assert result_env.get("AUXILIARY_VISION_MODEL") == "gpt-4o"
+
+    def test_gateway_relay_secret_stripped_from_subprocess(self):
+        result_env = _run_with_env(extra_os_env={
+            "GATEWAY_RELAY_SECRET": "relay-signing-secret",
+            "GATEWAY_RELAY_DELIVERY_KEY": "relay-delivery-key",
+            "GATEWAY_RELAY_URL": "https://relay.example.com",
+        })
+        assert "GATEWAY_RELAY_SECRET" not in result_env
+        assert "GATEWAY_RELAY_DELIVERY_KEY" not in result_env
+        # Non-secret routing hint stays visible.
+        assert result_env.get("GATEWAY_RELAY_URL") == "https://relay.example.com"
+
+    def test_auxiliary_secret_stripped_even_when_passthrough_registered(self):
+        """A skill registering AUXILIARY_*_API_KEY as env_passthrough must NOT
+        be able to tunnel it into a subprocess — the strip is unconditional."""
+        with patch(
+            "tools.env_passthrough.is_env_passthrough",
+            side_effect=lambda name: name == "AUXILIARY_VISION_API_KEY",
+        ):
+            result_env = _run_with_env(extra_os_env={
+                "AUXILIARY_VISION_API_KEY": "sk-vision-secret",
+            })
+        assert "AUXILIARY_VISION_API_KEY" not in result_env
+
+    def test_make_run_env_strips_internal_secrets(self):
+        """The foreground _make_run_env path strips the same dynamic secrets."""
+        from tools.environments.local import _make_run_env
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "AUXILIARY_VISION_API_KEY": "sk-secret",
+            "GATEWAY_RELAY_SECRET": "relay-secret",
+            "AUXILIARY_VISION_PROVIDER": "openai",
+        }, clear=True):
+            run_env = _make_run_env({})
+        assert "AUXILIARY_VISION_API_KEY" not in run_env
+        assert "GATEWAY_RELAY_SECRET" not in run_env
+        assert run_env.get("AUXILIARY_VISION_PROVIDER") == "openai"
+
+    def test_gateway_relay_static_names_in_blocklist(self):
+        """The static relay names are also added to the name-based blocklist so
+        the exact-match path catches them independently of the predicate."""
+        assert "GATEWAY_RELAY_SECRET" in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "GATEWAY_RELAY_DELIVERY_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "GATEWAY_RELAY_ID" in _HERMES_PROVIDER_ENV_BLOCKLIST

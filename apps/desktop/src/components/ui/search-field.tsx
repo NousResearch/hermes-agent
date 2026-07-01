@@ -2,6 +2,7 @@ import type { ReactNode, RefObject } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { Loader2, Search } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -35,6 +36,7 @@ export function SearchField({
   trailingAction,
   'aria-label': ariaLabel
 }: SearchFieldProps) {
+  const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
 
   return (
@@ -50,7 +52,8 @@ export function SearchField({
         className={cn(
           // `field-sizing: content` grows the input to fit the placeholder/typed
           // text, capped by the container's max-width — no awkward empty space.
-          'h-7 max-w-full bg-transparent text-sm text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          // text-xs matches the form controls (Input/Select via controlVariants).
+          'h-7 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
@@ -64,7 +67,7 @@ export function SearchField({
         <Loader2 className="pointer-events-none size-3.5 shrink-0 animate-spin text-muted-foreground/70" />
       ) : value ? (
         <Button
-          aria-label="Clear search"
+          aria-label={t.ui.search.clear}
           className="shrink-0 text-muted-foreground/85 hover:bg-accent/60 hover:text-foreground"
           onClick={clear}
           size="icon-xs"

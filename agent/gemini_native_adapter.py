@@ -41,6 +41,16 @@ DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
 
 
+def bare_gemini_model_id(model: str) -> str:
+    """Strip Gemini's own provider prefix from an aggregator-style model id."""
+    name = (model or "").strip()
+    lowered = name.lower()
+    for prefix in ("google/", "gemini/"):
+        if lowered.startswith(prefix):
+            return name[len(prefix):].strip() or name
+    return name
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -327,10 +337,26 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
+    # Gemini's generateContent requires strict user/model alternation;
+    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
+    # that multiturn requests alternate between user and model". The loop above
+    # emits one content per source message, so parallel tool calls (N tool
+    # results become N user functionResponse contents), back-to-back user turns,
+    # or merged assistant turns would each violate that. Merge adjacent
+    # same-role contents by concatenating their parts. For parallel calls this
+    # also produces the grouped multi-functionResponse turn Gemini expects.
+    merged_contents: List[Dict[str, Any]] = []
+    for content in contents:
+        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+            merged_contents[-1]["parts"].extend(content["parts"])
+        else:
+            merged_contents.append(content)
+    contents = merged_contents
+
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:
-        system_instruction = {"parts": [{"text": joined_system}]}
+        system_instruction = {"role": "system", "parts": [{"text": joined_system}]}
     return contents, system_instruction
 
 
@@ -914,6 +940,7 @@ class GeminiNativeClient:
             thinking_config=thinking_config,
         )
 
+        model = bare_gemini_model_id(model)
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 

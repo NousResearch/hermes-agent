@@ -2,6 +2,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { translateNow, useI18n } from '@/i18n'
 import { ChevronDown, ExternalLink, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
@@ -16,8 +17,7 @@ export type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
 /** Matches Advanced / config field controls (ListRow + Input). */
 export const CREDENTIAL_CONTROL_CLASS = cn('h-8', CONTROL_TEXT)
 
-export const isKeyVar = (key: string, info: EnvVarInfo) =>
-  info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
+export const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
 export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
   info.description?.trim() ||
@@ -27,7 +27,11 @@ export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
     .replace(/\b\w/g, c => c.toUpperCase())
 
 export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: string): string =>
-  isKeyVar(key, info) ? `Paste ${label} key` : /URL$/i.test(key) ? 'https://…' : 'Optional'
+  isKeyVar(key, info)
+    ? translateNow('settings.credentials.pasteLabelKey', label)
+    : /URL$/i.test(key)
+      ? 'https://…'
+      : translateNow('settings.credentials.optional')
 
 // A single credential field: a set key shows as a filled read-only input
 // (redacted value) that edits in place on click. Save appears once typed; a set
@@ -43,6 +47,7 @@ export function KeyField({
   rowProps: KeyRowProps
   varKey: string
 }) {
+  const { t } = useI18n()
   const { edits, onClear, onSave, saving, setEdits } = rowProps
   const editing = edits[varKey] !== undefined
   const draft = edits[varKey] ?? ''
@@ -84,14 +89,14 @@ export function KeyField({
           className={cn(CREDENTIAL_CONTROL_CLASS, 'min-w-0 flex-1')}
           onChange={update}
           onKeyDown={keydown}
-          placeholder={placeholder ?? 'Paste key'}
+          placeholder={placeholder ?? t.settings.credentials.pasteKey}
           type={editType}
           value={draft}
         />
         {dirty && (
           <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
-            {busy ? 'Saving' : 'Save'}
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
+            {busy ? t.settings.credentials.saving : t.common.save}
           </Button>
         )}
       </div>
@@ -100,18 +105,19 @@ export function KeyField({
           {info.is_set && (
             <>
               <Button
-                className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
+                className="text-[0.6875rem] text-destructive hover:text-destructive"
                 disabled={busy}
                 onClick={() => void onClear(varKey)}
+                size="inline"
                 type="button"
                 variant="text"
               >
-                Remove
+                {t.settings.credentials.remove}
               </Button>
-              <span className="text-muted-foreground">or</span>
+              <span className="text-muted-foreground">{t.settings.credentials.or}</span>
             </>
           )}
-          <span className="text-muted-foreground">esc to cancel</span>
+          <span className="text-muted-foreground">{t.settings.credentials.escToCancel}</span>
         </div>
       )}
     </div>
@@ -119,6 +125,8 @@ export function KeyField({
 }
 
 function CredentialDocsLink({ href }: { href: string }) {
+  const { t } = useI18n()
+
   return (
     <a
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
@@ -127,7 +135,7 @@ function CredentialDocsLink({ href }: { href: string }) {
       rel="noreferrer"
       target="_blank"
     >
-      Get a key
+      {t.settings.credentials.getKey}
       <ExternalLink className="size-3" />
     </a>
   )
@@ -173,10 +181,7 @@ export function CredentialKeyCard({
       <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className={cn(
-              'size-2 shrink-0 rounded-full',
-              info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
-            )}
+            className={cn('size-2 shrink-0 rounded-full', info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
           />
 
           <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
@@ -223,6 +228,7 @@ export function CredentialKeyCard({
 
 /** Provider API key group — collapsible card; description, docs link, and advanced fields expand on click. */
 export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps }: ProviderKeyRowsProps) {
+  const { t } = useI18n()
   const docsUrl = group.docsUrl?.trim()
   const description = group.description?.trim()
   const expandable = Boolean(description || docsUrl || group.advanced.length > 0)
@@ -283,7 +289,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
         >
           <KeyField
             info={group.primary[1]}
-            placeholder={`Paste ${group.name} key`}
+            placeholder={t.settings.credentials.pasteLabelKey(group.name)}
             rowProps={rowProps}
             varKey={group.primary[0]}
           />

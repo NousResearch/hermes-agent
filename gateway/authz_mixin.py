@@ -550,6 +550,11 @@ class GatewayAuthorizationMixin:
         check_ids = {user_id}
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
+        user_id_alt = str(getattr(source, "user_id_alt", "") or "").strip()
+        if user_id_alt:
+            check_ids.add(user_id_alt)
+            if "@" in user_id_alt:
+                check_ids.add(user_id_alt.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:

@@ -1,0 +1,44 @@
+name: nextcloud_talk
+label: Nextcloud Talk
+kind: platform
+version: 0.1.0
+description: >
+  Native Hermes gateway platform adapter for Nextcloud Talk/Spreed. Receives
+  signed Talk bot webhooks and sends replies through the Talk bot OCS API, so
+  Hermes gateway slash commands, sessions and delivery flows can run without
+  the compatibility bridge.
+author: Hermes Agent
+requires_env:
+  - name: NEXTCLOUD_TALK_BASE_URL
+    description: "Nextcloud base URL, e.g. https://nc.example.com"
+    prompt: "Nextcloud base URL"
+    password: false
+  - name: NEXTCLOUD_TALK_BOT_SECRET
+    description: "Talk bot shared secret"
+    prompt: "Talk bot secret"
+    password: true
+optional_env:
+  - name: NEXTCLOUD_TALK_WEBHOOK_HOST
+    description: "Webhook listen host (default: 127.0.0.1)"
+    prompt: "Webhook listen host"
+    password: false
+  - name: NEXTCLOUD_TALK_WEBHOOK_PORT
+    description: "Webhook listen port (default: 8767)"
+    prompt: "Webhook listen port"
+    password: false
+  - name: NEXTCLOUD_TALK_WEBHOOK_PATH
+    description: "Webhook path (default: /nextcloud-talk/webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: NEXTCLOUD_TALK_HOME_CHANNEL
+    description: "Default Talk room token for cron/notifications"
+    prompt: "Home Talk room token"
+    password: false
+  - name: NEXTCLOUD_TALK_ALLOWED_USERS
+    description: "Comma-separated Talk actor IDs allowed by gateway"
+    prompt: "Allowed Talk actor IDs"
+    password: false
+  - name: NEXTCLOUD_TALK_ALLOW_ALL_USERS
+    description: "Allow all Talk users (dev only)"
+    prompt: "Allow all Talk users?"
+    password: false

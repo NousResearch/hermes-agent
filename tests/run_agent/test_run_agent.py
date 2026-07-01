@@ -4010,6 +4010,39 @@ class TestRunConversation:
         ]
         assert len(tool_msgs) == 1
 
+    def test_mixed_fresh_and_replayed_tool_calls_executes_fresh_without_halting(self, agent):
+        """A turn that mixes a replayed completed call with a FRESH call must
+        drop only the replay, still execute the fresh call, and NOT halt."""
+        self._setup_agent(agent)
+        # Turn 1: one fresh call c1 (executes, records a tool result).
+        first = _mock_tool_call(name="web_search", arguments='{"query":"pwd"}', call_id="c1")
+        # Turn 2: replay of completed c1 + a genuinely NEW call c2.
+        replay = _mock_tool_call(name="web_search", arguments='{"query":"pwd"}', call_id="c1")
+        fresh = _mock_tool_call(name="web_search", arguments='{"query":"ls"}', call_id="c2")
+        # Turn 3: model finishes with a normal answer after c2 executes.
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[first])
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[replay, fresh])
+        resp3 = _mock_response(content="done", finish_reason="stop", tool_calls=None)
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"results": ["ok"]}') as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run commands")
+
+        # No halt — the turn completes normally.
+        assert result["turn_exit_reason"] != "guardrail_halt"
+        # c1 (fresh in turn 1) + c2 (fresh in turn 2) executed once each;
+        # the replayed c1 in turn 2 was dropped, NOT re-executed.
+        executed_ids = [
+            call.kwargs["tool_call_id"] for call in mock_handle_function_call.call_args_list
+        ]
+        assert executed_ids == ["c1", "c2"]
+        assert result["final_response"] == "done"
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

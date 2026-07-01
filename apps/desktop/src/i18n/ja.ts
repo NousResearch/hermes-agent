@@ -1338,37 +1338,7 @@ export const ja = defineLocale({
   },
 
   home: {
-    wordmark: 'APEX Desktop',
-    engineBacking: 'Hermes エンジン搭載',
-    title: 'まず AI に第一版を作らせる',
-    subtitle: '要望・チャット履歴・リンク・資料を送れば、APEX がまず使える第一版を作成します。',
-    quickTasksLabel: 'こちらをお試しください',
-    quickTasks: [
-      {
-        id: 'analyze-chat',
-        icon: 'comment-discussion',
-        label: 'チャット履歴を分析',
-        prompt: 'このチャット履歴を分析して、要点・決定事項・未解決の課題を抽出してください。'
-      },
-      {
-        id: 'organize-doc',
-        icon: 'files',
-        label: '資料を整理',
-        prompt: 'この資料を、わかりやすく構造化した要約にまとめてください。'
-      },
-      {
-        id: 'break-down-request',
-        icon: 'list-tree',
-        label: '要望を分解',
-        prompt: 'この要望を、具体的で実行可能なステップに分解してください。'
-      },
-      {
-        id: 'follow-up-plan',
-        icon: 'checklist',
-        label: 'フォロー計画を作成',
-        prompt: '担当者と次のアクションを明確にしたフォローアップ計画を作成してください。'
-      }
-    ]
+    title: '何をしましょうか？'
   },
 
   composer: {

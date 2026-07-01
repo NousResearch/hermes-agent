@@ -958,12 +958,7 @@ export interface Translations {
   }
 
   home: {
-    wordmark: string
-    engineBacking: string
     title: string
-    subtitle: string
-    quickTasksLabel: string
-    quickTasks: readonly { id: string; icon: string; label: string; prompt: string }[]
   }
 
   composer: {

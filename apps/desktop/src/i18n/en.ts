@@ -1227,37 +1227,7 @@ export const en: Translations = {
   },
 
   home: {
-    wordmark: 'APEX Desktop',
-    engineBacking: 'Powered by Hermes',
-    title: 'Let AI draft the first version',
-    subtitle: 'Send a request, chat log, link, or document — APEX drafts a usable first version for you.',
-    quickTasksLabel: 'Try one of these',
-    quickTasks: [
-      {
-        id: 'analyze-chat',
-        icon: 'comment-discussion',
-        label: 'Analyze a chat log',
-        prompt: 'Help me analyze this chat log: pull out the key points, decisions, and open questions.'
-      },
-      {
-        id: 'organize-doc',
-        icon: 'files',
-        label: 'Organize some material',
-        prompt: 'Help me organize this material into a clear, structured summary.'
-      },
-      {
-        id: 'break-down-request',
-        icon: 'list-tree',
-        label: 'Break down a request',
-        prompt: 'Help me break this request down into concrete, actionable steps.'
-      },
-      {
-        id: 'follow-up-plan',
-        icon: 'checklist',
-        label: 'Draft a follow-up plan',
-        prompt: 'Help me draft a follow-up plan with clear owners and next steps.'
-      }
-    ]
+    title: 'What should we do?'
   },
 
   composer: {

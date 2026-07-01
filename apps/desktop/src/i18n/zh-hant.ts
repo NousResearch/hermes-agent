@@ -1309,37 +1309,7 @@ export const zhHant = defineLocale({
   },
 
   home: {
-    wordmark: 'APEX Desktop',
-    engineBacking: 'Hermes 引擎驅動',
-    title: '先讓 AI 幫你做一版',
-    subtitle: '發一個需求、聊天記錄、連結或資料,APEX 會先產出一版可用結果。',
-    quickTasksLabel: '試試這些',
-    quickTasks: [
-      {
-        id: 'analyze-chat',
-        icon: 'comment-discussion',
-        label: '分析一段聊天記錄',
-        prompt: '幫我分析這段聊天記錄:提煉出重點、結論和待辦的問題。'
-      },
-      {
-        id: 'organize-doc',
-        icon: 'files',
-        label: '整理一份資料',
-        prompt: '幫我把這份資料整理成一份條理清晰的結構化摘要。'
-      },
-      {
-        id: 'break-down-request',
-        icon: 'list-tree',
-        label: '拆解一個需求',
-        prompt: '幫我把這個需求拆解成具體、可執行的步驟。'
-      },
-      {
-        id: 'follow-up-plan',
-        icon: 'checklist',
-        label: '生成跟進計畫',
-        prompt: '幫我生成一份跟進計畫,明確每一步的負責人和下一步動作。'
-      }
-    ]
+    title: '我們該做什麼？'
   },
 
   composer: {

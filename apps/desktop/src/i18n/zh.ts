@@ -1413,37 +1413,7 @@ export const zh: Translations = {
   },
 
   home: {
-    wordmark: 'APEX Desktop',
-    engineBacking: 'Hermes 引擎驱动',
-    title: '先让 AI 帮你做一版',
-    subtitle: '发一个需求、聊天记录、链接或资料,APEX 会先产出一版可用结果。',
-    quickTasksLabel: '试试这些',
-    quickTasks: [
-      {
-        id: 'analyze-chat',
-        icon: 'comment-discussion',
-        label: '分析一段聊天记录',
-        prompt: '帮我分析这段聊天记录:提炼出重点、结论和待办的问题。'
-      },
-      {
-        id: 'organize-doc',
-        icon: 'files',
-        label: '整理一份资料',
-        prompt: '帮我把这份资料整理成一份条理清晰的结构化摘要。'
-      },
-      {
-        id: 'break-down-request',
-        icon: 'list-tree',
-        label: '拆解一个需求',
-        prompt: '帮我把这个需求拆解成具体、可执行的步骤。'
-      },
-      {
-        id: 'follow-up-plan',
-        icon: 'checklist',
-        label: '生成跟进计划',
-        prompt: '帮我生成一份跟进计划,明确每一步的负责人和下一步动作。'
-      }
-    ]
+    title: '我们该做什么？'
   },
 
   composer: {

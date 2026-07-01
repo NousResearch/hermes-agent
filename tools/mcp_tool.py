@@ -50,7 +50,9 @@ Example config::
 Features:
     - Stdio transport (command + args) and HTTP/StreamableHTTP transport (url)
     - SSE transport (transport: sse) for MCP servers using the SSE protocol
-    - Automatic reconnection with exponential backoff (up to 5 retries)
+    - Automatic reconnection with exponential backoff. stdio servers give up
+      after 5 retries; remote HTTP servers fall back to a dormant re-arm loop
+      (retry forever at max backoff) so a self-healing remote always recovers
     - Environment variable filtering for stdio subprocesses (security)
     - Credential stripping in error messages returned to the LLM
     - Configurable per-server timeouts for tool calls and connections
@@ -1098,7 +1100,7 @@ class MCPServerTask:
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
-        "initialize_result",
+        "initialize_result", "_rearm_logged",
     )
 
     def __init__(self, name: str):
@@ -1129,6 +1131,10 @@ class MCPServerTask:
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
+        # True once a remote HTTP server has exhausted its reconnect budget and
+        # entered the dormant re-arm loop. Used only to log the transition once
+        # (not on every re-arm cycle). Reset when a healthy session is restored.
+        self._rearm_logged: bool = False
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -1674,6 +1680,15 @@ class MCPServerTask:
                 #    touch the retry counters — this is not a failure.
                 if self._shutdown_event.is_set():
                     break
+                # A clean transport return means we had an established, healthy
+                # session (it lived until a keepalive-triggered reconnect or an
+                # OAuth-recovery event). Reset the failure budget so the
+                # reconnect cap counts CONSECUTIVE failures, not transient blips
+                # accumulated over long uptime — and clear any dormant re-arm
+                # state now that the server is healthy again.
+                retries = 0
+                backoff = 1.0
+                self._rearm_logged = False
                 logger.info(
                     "MCP server '%s': reconnecting (OAuth recovery or "
                     "manual refresh)",
@@ -1753,12 +1768,37 @@ class MCPServerTask:
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
-                    )
-                    return
+                    # stdio (local subprocess) servers keep the historical
+                    # give-up: a crashed subprocess almost never self-heals, so
+                    # retrying forever would just spin.
+                    if not self._is_http():
+                        logger.warning(
+                            "MCP server '%s' failed after %d reconnection "
+                            "attempts, giving up: %s",
+                            self.name, _MAX_RECONNECT_RETRIES, exc,
+                        )
+                        return
+                    # Remote HTTP servers: a drop is almost always the remote
+                    # end closing an idle SSE stream or a transient network
+                    # blip, both of which self-heal. Permanently giving up here
+                    # left servers (e.g. Metaview) silently offline for days
+                    # until a manual Hermes restart. Instead enter a dormant
+                    # re-arm loop: keep retrying at the max backoff until the
+                    # remote recovers (a healthy session resets the budget
+                    # above) or Hermes shuts down. Log the transition once.
+                    if not self._rearm_logged:
+                        logger.warning(
+                            "MCP server '%s' failed after %d reconnection "
+                            "attempts; entering dormant re-arm (retrying every "
+                            "%.0fs until it recovers or Hermes shuts down): %s",
+                            self.name, _MAX_RECONNECT_RETRIES,
+                            _MAX_BACKOFF_SECONDS, exc,
+                        )
+                        self._rearm_logged = True
+                    await asyncio.sleep(_MAX_BACKOFF_SECONDS)
+                    if self._shutdown_event.is_set():
+                        return
+                    continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "

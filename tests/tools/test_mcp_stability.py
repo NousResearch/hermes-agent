@@ -320,3 +320,128 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Fix: remote HTTP MCP servers re-arm instead of permanently giving up
+# ---------------------------------------------------------------------------
+
+class TestMCPReconnectRearm:
+    """After exhausting the reconnect budget, remote HTTP servers enter a
+    dormant re-arm loop (retry forever at max backoff) so a self-healing remote
+    recovers on its own, while stdio servers keep the historical give-up.
+    Regression guard for the incident where Metaview dropped and stayed
+    silently offline for days until a manual Hermes restart."""
+
+    @staticmethod
+    def _patch_fast_sleep():
+        # Neutralise the reconnect backoff sleeps so the loop runs fast, while
+        # still yielding to the event loop each iteration (so shutdown/ready
+        # propagate). Captures the real sleep before patching.
+        _real_sleep = asyncio.sleep
+
+        async def _fast_sleep(*args, **kwargs):
+            await _real_sleep(0)
+
+        return patch("tools.mcp_tool.asyncio.sleep", _fast_sleep)
+
+    def test_http_server_rearms_past_reconnect_cap(self):
+        """A remote HTTP server keeps retrying past the give-up cap."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        stop_at = _MAX_RECONNECT_RETRIES + 5
+        calls = 0
+
+        async def _run():
+            nonlocal calls
+            server = MCPServerTask("test-http-rearm")
+
+            async def fake_run_http(self_inner, config):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    self_inner._ready.set()  # first connection succeeds
+                if calls >= stop_at:
+                    self_inner._shutdown_event.set()  # end the test loop
+                raise ConnectionError("SSE stream closed by remote")
+
+            with self._patch_fast_sleep(), \
+                    patch("tools.mcp_tool._validate_remote_mcp_url", lambda *a, **k: None), \
+                    patch.object(MCPServerTask, "_run_http", fake_run_http):
+                task = asyncio.ensure_future(
+                    server.run({"url": "https://mcp.example.com/mcp"})
+                )
+                await asyncio.wait_for(task, timeout=5)
+
+            # Kept retrying well past the give-up cap (no permanent give-up)
+            # and recorded the dormant re-arm transition.
+            assert calls >= _MAX_RECONNECT_RETRIES + 2
+            assert server._rearm_logged is True
+
+        asyncio.run(_run())
+
+    def test_stdio_server_still_gives_up(self):
+        """A stdio server keeps the historical give-up after the cap."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        calls = 0
+
+        async def _run():
+            nonlocal calls
+            server = MCPServerTask("test-stdio-giveup")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    self_inner._ready.set()  # first connection succeeds
+                raise ConnectionError("subprocess died")
+
+            with self._patch_fast_sleep(), \
+                    patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await asyncio.wait_for(task, timeout=5)
+
+            # Gave up after the cap (1st failure + _MAX retries), no re-arm.
+            assert server._rearm_logged is False
+            assert calls == _MAX_RECONNECT_RETRIES + 1
+
+        asyncio.run(_run())
+
+    def test_healthy_session_clears_rearm_state(self):
+        """A healthy (clean) session after dormant re-arm resets the flag."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        calls = 0
+        clean_return_at = _MAX_RECONNECT_RETRIES + 2  # after dormant entered
+
+        async def _run():
+            nonlocal calls
+            server = MCPServerTask("test-http-reset")
+
+            async def fake_run_http(self_inner, config):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    self_inner._ready.set()
+                if calls == clean_return_at:
+                    return  # healthy session ends cleanly -> should reset
+                if calls > clean_return_at:
+                    self_inner._shutdown_event.set()
+                    return
+                raise ConnectionError("SSE stream closed by remote")
+
+            with self._patch_fast_sleep(), \
+                    patch("tools.mcp_tool._validate_remote_mcp_url", lambda *a, **k: None), \
+                    patch.object(MCPServerTask, "_run_http", fake_run_http):
+                task = asyncio.ensure_future(
+                    server.run({"url": "https://mcp.example.com/mcp"})
+                )
+                await asyncio.wait_for(task, timeout=5)
+
+            # Dormant re-arm was entered (calls past the cap), then a healthy
+            # session cleared the flag.
+            assert calls > _MAX_RECONNECT_RETRIES + 1
+            assert server._rearm_logged is False
+
+        asyncio.run(_run())

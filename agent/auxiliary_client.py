@@ -5272,6 +5272,15 @@ def _resolve_task_provider_model(
     # which downstream consumers like ContextCompressor accept as the task output.
     # The provider-side 'auto' is handled in _resolve_auto() via main_runtime
     # fallback, so dropping cfg_model to None here lets that path do its job.
+    #
+    # The explicit `model` kwarg needs the identical normalization: MoA slots
+    # (agent/moa_loop.py's _slot_runtime) forward a preset's `model:` field as
+    # this explicit argument rather than through auxiliary.<task> config, so a
+    # user-configured `model: auto` on a MoA reference/aggregator slot reaches
+    # this function here, not as cfg_model. Only normalizing cfg_model let that
+    # literal "auto" slip through via `model or cfg_model` below.
+    if model and model.lower() == "auto":
+        model = None
     if cfg_model and cfg_model.lower() == "auto":
         cfg_model = None
 

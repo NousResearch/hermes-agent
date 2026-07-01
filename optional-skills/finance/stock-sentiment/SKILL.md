@@ -13,7 +13,7 @@ metadata:
 required_environment_variables:
   - name: SENTISENSE_API_KEY
     prompt: SentiSense API key
-    help: "Free key from Settings > Developer Console at https://sentisense.ai"
+    help: "Free key from the Developer Console: https://app.sentisense.ai/settings/developer"
     required_for: sentiment, smart-money, and AI-insight data
 ---
 # Stock Sentiment Skill
@@ -40,7 +40,7 @@ Do not use it for order entry, portfolio management, or personalized advice. It 
 ## Prerequisites
 
 - Python 3.8+ using only the standard library (`urllib`, `json`); no third-party packages required. Any HTTP client or plain `curl` works too.
-- A free `SENTISENSE_API_KEY`. Generate one from Settings > Developer Console at https://sentisense.ai. The key is required on every call; anonymous requests return `401 api_key_required`.
+- A free `SENTISENSE_API_KEY`. Generate one from the Developer Console at https://app.sentisense.ai/settings/developer. The key is required on every call; anonymous requests return `401 api_key_required`.
 - Network access to `https://app.sentisense.ai`.
 - Read-only scope. Every endpoint here is a GET. Nothing this skill does can place a trade, move money, or modify account state.
 

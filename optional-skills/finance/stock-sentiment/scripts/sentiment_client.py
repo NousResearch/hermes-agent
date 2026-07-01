@@ -29,7 +29,7 @@ def get(path, **params):
     key = os.environ.get("SENTISENSE_API_KEY")
     if not key:
         sys.exit("SENTISENSE_API_KEY is not set "
-                 "(free key: Settings > Developer Console at https://sentisense.ai)")
+                 "(free key: https://app.sentisense.ai/settings/developer)")
     req = urllib.request.Request(url, headers={"X-SentiSense-API-Key": key})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:

@@ -125,7 +125,7 @@ def test_multiple_corrupted_tool_calls_in_one_message():
     assert repaired == 2
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
     assert messages[0]["tool_calls"][1]["function"]["arguments"] == '{"path":"/tmp/bar"}'
-    assert messages[0]["tool_calls"][2]["function"]["arguments"] == "{}"
+    assert messages[0]["tool_calls"][2]["function"]["arguments"] == '{"mode":"tail"}'
     assert messages[1]["tool_call_id"] == "call_1"
     assert messages[1]["content"] == marker
     assert messages[2]["tool_call_id"] == "call_3"

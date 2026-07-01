@@ -2,6 +2,7 @@
 
 import json
 
+from agent.message_sanitization import repair_tool_call_arguments_with_status
 from run_agent import _repair_tool_call_arguments
 
 
@@ -80,6 +81,18 @@ class TestRepairToolCallArguments:
         # Truncated in the middle of a string key — bracket closing won't help
         assert _repair_tool_call_arguments('{"truncated": "val', "t") == "{}"
 
+    def test_unrepairable_partial_reports_failure(self):
+        result = repair_tool_call_arguments_with_status('{"truncated": "val', "t")
+        assert result.arguments == "{}"
+        assert result.repaired is True
+        assert result.success is False
+
+    def test_legitimate_empty_object_reports_success(self):
+        result = repair_tool_call_arguments_with_status("   \n\t  ", "t")
+        assert result.arguments == "{}"
+        assert result.repaired is True
+        assert result.success is True
+
     # -- Valid JSON passthrough (this path is via except, but still works) --
 
     def test_already_valid_json_passes_through(self):
@@ -97,6 +110,12 @@ class TestRepairToolCallArguments:
         # Trailing comma stripped first, then closing brace added.
         # May or may not fully recover — verify valid JSON at minimum.
         json.loads(result)
+
+    def test_repairable_truncation_reports_success(self):
+        result = repair_tool_call_arguments_with_status('{"a": 1, "b": 2,', "t")
+        assert json.loads(result.arguments) == {"a": 1, "b": 2}
+        assert result.repaired is True
+        assert result.success is True
 
     def test_real_world_glm_truncation(self):
         """Simulates GLM-5.1 truncating mid-argument."""
@@ -139,4 +158,3 @@ class TestRepairToolCallArguments:
         result = _repair_tool_call_arguments(raw, "t")
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
-

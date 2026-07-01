@@ -37,7 +37,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
-    _repair_tool_call_arguments,
+    repair_tool_call_arguments_with_status,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
     _sanitize_structure_non_ascii,
@@ -932,10 +932,10 @@ def run_conversation(
                             ),
                         }}
                     except Exception:
-                        tc["function"]["arguments"] = _repair_tool_call_arguments(
+                        tc["function"]["arguments"] = repair_tool_call_arguments_with_status(
                             tc["function"]["arguments"],
                             tc["function"].get("name", "?"),
-                        )
+                        ).arguments
                 new_tcs.append(tc)
             am["tool_calls"] = new_tcs
 
@@ -4346,7 +4346,14 @@ def run_conversation(
                     try:
                         json.loads(args)
                     except json.JSONDecodeError as e:
-                        invalid_json_args.append((tc.function.name, str(e)))
+                        repair = repair_tool_call_arguments_with_status(
+                            args,
+                            tc.function.name,
+                        )
+                        if repair.success:
+                            tc.function.arguments = repair.arguments
+                            continue
+                        invalid_json_args.append((tc, str(e)))
                 
                 if invalid_json_args:
                     # Check if the invalid JSON is due to truncation rather
@@ -4357,31 +4364,39 @@ def run_conversation(
                     # (after stripping whitespace) are cut off mid-stream.
                     _truncated = any(
                         not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
-                        for tc in assistant_message.tool_calls
-                        if tc.function.name in {n for n, _ in invalid_json_args}
+                        for tc, _ in invalid_json_args
                     )
                     if _truncated:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                            f"(finish_reason={finish_reason!r}) — refusing to execute.",
+                            f"(finish_reason={finish_reason!r}) — returning tool error.",
                             force=True,
                         )
                         agent._invalid_json_retries = 0
-                        agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": "Response truncated due to output length limit",
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "partial": True,
-                            "error": "Response truncated due to output length limit",
-                        }
+                        recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
+                        messages.append(recovery_assistant)
+                        invalid_call_ids = {tc.id for tc, _ in invalid_json_args}
+                        for tc in assistant_message.tool_calls:
+                            if tc.id in invalid_call_ids:
+                                tool_result = (
+                                    "Error: Tool call arguments were truncated due to the "
+                                    "output length limit and could not be repaired. Please "
+                                    "shorten the content or split it into multiple tool calls."
+                                )
+                            else:
+                                tool_result = "Skipped: other tool call in this response had truncated arguments."
+                            messages.append({
+                                "role": "tool",
+                                "name": tc.function.name,
+                                "tool_call_id": tc.id,
+                                "content": tool_result,
+                            })
+                        continue
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
 
-                    tool_name, error_msg = invalid_json_args[0]
+                    tool_name, error_msg = invalid_json_args[0][0].function.name, invalid_json_args[0][1]
                     agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 
                     if agent._invalid_json_retries < 3:
@@ -4399,10 +4414,10 @@ def run_conversation(
                         messages.append(recovery_assistant)
                         
                         # Respond with tool error results for each tool call
-                        invalid_names = {name for name, _ in invalid_json_args}
+                        invalid_call_ids = {tc.id for tc, _ in invalid_json_args}
                         for tc in assistant_message.tool_calls:
-                            if tc.function.name in invalid_names:
-                                err = next(e for n, e in invalid_json_args if n == tc.function.name)
+                            if tc.id in invalid_call_ids:
+                                err = next(e for invalid_tc, e in invalid_json_args if invalid_tc.id == tc.id)
                                 tool_result = (
                                     f"Error: Invalid JSON arguments. {err}. "
                                     f"For tools with no required parameters, use an empty object: {{}}. "

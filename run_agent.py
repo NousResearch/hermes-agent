@@ -410,7 +410,7 @@ class AIAgent:
 
     _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
         "[hermes-agent: tool call arguments were corrupted in this session and "
-        "have been dropped to keep the conversation alive. See issue #15236.]"
+        "were repaired or dropped to keep the conversation alive. See issue #15236.]"
     )
 
     @property

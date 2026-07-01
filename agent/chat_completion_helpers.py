@@ -32,7 +32,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
-    _repair_tool_call_arguments,
+    repair_tool_call_arguments_with_status,
 )
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2234,12 +2234,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # commas, unclosed brackets, Python None, etc.
                         # Without repair, these hit the truncation handler
                         # and kill the session.  _repair_tool_call_arguments
-                        # returns "{}" for unrepairable args, which is far
-                        # better than a crashed session.
-                        repaired = _repair_tool_call_arguments(arguments, tool_name)
-                        if repaired != "{}":
+                        # reports unrepairable args separately from legitimate
+                        # empty-object normalization, so only genuine failures
+                        # hit the truncation handler.
+                        repair = repair_tool_call_arguments_with_status(arguments, tool_name)
+                        if repair.success:
                             # Successfully repaired — use the fixed args
-                            arguments = repaired
+                            arguments = repair.arguments
                         else:
                             # Unrepairable — flag for truncation handling
                             has_truncated_tool_args = True

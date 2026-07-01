@@ -5186,10 +5186,10 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
-    def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
+    def test_unrepairable_truncated_tool_args_return_tool_error_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',
-        truncated JSON arguments should still be detected and refused rather
-        than wasting 3 retry attempts."""
+        unrepairable truncated JSON arguments should return a tool error to
+        the model instead of executing an empty-argument tool call."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -5200,7 +5200,7 @@ class TestRunConversation:
         resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.return_value = resp
+        final_resp = _mock_response(content="I will split the write.", finish_reason="stop")
 
         with (
             patch("run_agent.handle_function_call") as mock_handle_function_call,
@@ -5208,12 +5208,45 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
+            agent.client.chat.completions.create.side_effect = [resp, final_resp]
             result = agent.run_conversation("write the report")
 
-        assert result["completed"] is False
-        assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert result["final_response"] == "I will split the write."
+        assert any(
+            msg.get("role") == "tool"
+            and "Tool call arguments were truncated" in msg.get("content", "")
+            for msg in result["messages"]
+        )
         mock_handle_function_call.assert_not_called()
+
+    def test_repairable_truncated_tool_args_continue_when_finish_reason_not_length(self, agent):
+        """Router-mislabeled tool-call truncation gets one repair attempt before
+        falling back to a tool error."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        repaired_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial"',
+            call_id="c1",
+        )
+        resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[repaired_tc],
+        )
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [resp, final_resp]
+            result = agent.run_conversation("write the report")
+
+        mock_hfc.assert_called_once()
+        args, _kwargs = mock_hfc.call_args
+        assert args[1] == {"path": "report.md", "content": "partial"}
+        assert result["final_response"] == "Done!"
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must signal the dispatcher when its

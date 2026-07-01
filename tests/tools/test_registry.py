@@ -626,7 +626,6 @@ class TestDeregisterAuthorization:
         reg.register_plugin_override_policy("hermes_plugins.evil", False)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
             import pytest
-            import pytest
             with pytest.raises(PermissionError, match="allow_tool_override"):
                 reg.deregister("protected")
         assert reg._tools.get("protected") is not None, "tool must survive the rejected deregister"

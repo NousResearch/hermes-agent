@@ -426,6 +426,7 @@ class PluginContext:
         from tools.registry import registry
 
         plugin_id = self.manifest.key or self.manifest.name
+        _slug = plugin_id.replace("/", "__").replace("-", "_")
         registry.register(
             name=name,
             toolset=toolset,
@@ -437,7 +438,7 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
-            plugin_owner=plugin_id,
+            plugin_owner=f"hermes_plugins.{_slug}",
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(

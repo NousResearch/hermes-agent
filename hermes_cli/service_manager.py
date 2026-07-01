@@ -995,7 +995,7 @@ class S6ServiceManager:
             run_path.chmod(0o755)
 
             finish_path = tmp_dir / "finish"
-            finish_path.write_text(self._render_finish_script())
+            finish_path.write_text(self._render_finish_script(), encoding="utf-8")
             finish_path.chmod(0o755)
 
             # Persistent log rotation (OQ8-C).

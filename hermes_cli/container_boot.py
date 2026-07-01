@@ -462,7 +462,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         run.chmod(0o755)
 
         finish = tmp_dir / "finish"
-        finish.write_text(S6ServiceManager._render_finish_script())
+        finish.write_text(S6ServiceManager._render_finish_script(), encoding="utf-8")
         finish.chmod(0o755)
 
         # Persistent log rotation (OQ8-C).

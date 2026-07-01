@@ -74,7 +74,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
-    gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
+    const typedDispatch = cmd.slice(1)
+
+    gw.request<SlashExecResponse>('slash.exec', { command: typedDispatch, session_id: sid })
       .then(r => {
         if (stale()) {
           return
@@ -87,7 +89,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
       .catch(() => {
-        gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
+        gw.request('command.dispatch', { arg: typedDispatch, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
             if (stale()) {
               return
@@ -121,9 +123,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             }
 
             if (d.type === 'prefill') {
-              // /undo returns prefill: drop the backed-up message text into
-              // the composer so the user can edit and resubmit, instead of
-              // submitting it immediately like 'send'.
               if (d.notice?.trim()) {
                 sys(d.notice)
               }

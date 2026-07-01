@@ -124,6 +124,41 @@ class TestWindowsShellDestructiveCommands:
         assert key is not None
         assert desc == "PowerShell encoded command execution"
 
+    def test_powershell_bare_remove_item_requires_approval(self):
+        # Regression: PowerShell runs the verb as the default positional arg,
+        # so `powershell Remove-Item ...` with NO explicit -Command must still
+        # be gated (the original pattern required -Command and missed this).
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell Remove-Item -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_pwsh_bare_remove_item_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"pwsh Remove-Item -Recurse C:\tmp\x"
+        )
+        assert dangerous is True
+        assert "delete" in (desc or "").lower()
+
+    def test_powershell_ri_alias_requires_approval(self):
+        # `ri` is the canonical Remove-Item alias.
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell ri -Recurse -Force C:\tmp\x"
+        )
+        assert dangerous is True
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_powershell_benign_path_containing_del_not_flagged(self):
+        # A benign file path that merely contains "del" must NOT trip the guard
+        # (verb-position anchoring prevents matching inside a -File arg).
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell -File C:\del-logs\run.ps1"
+        )
+        assert dangerous is False
+        assert key is None
+
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
             "echo remember to del old notes"

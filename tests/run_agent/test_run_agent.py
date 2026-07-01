@@ -3966,6 +3966,48 @@ class TestRunConversation:
         assert "Ollama runtime context too small for Hermes tool use" in caplog.text
         assert "runtime_context=4096" in caplog.text
 
+    def test_configured_small_ollama_context_floor_allows_pi2_profile(self, agent):
+        self._setup_agent(agent)
+        agent.model = "tiny-local-model"
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._ollama_num_ctx = 4096
+        agent._minimum_tool_context_length = 2048
+        resp = _mock_response(content="small context ok", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["final_response"] == "small context ok"
+        assert agent.client.chat.completions.create.called
+
+    def test_configured_ollama_context_floor_uses_profile_value(self, agent):
+        self._setup_agent(agent)
+        agent.model = "tiny-local-model"
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:11434/v1"
+        agent._ollama_num_ctx = 4096
+        agent._minimum_tool_context_length = 8192
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["failed"] is True
+        assert result["api_calls"] == 0
+        assert "needs at least 8,192 tokens" in result["final_response"]
+        assert "profile lowers Hermes' tool-context floor to 8,192" in result["final_response"]
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

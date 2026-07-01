@@ -1224,6 +1224,19 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+
+    _runtime_agent_cfg = _agent_cfg.get("agent", {}) if isinstance(_agent_cfg, dict) else {}
+    agent._minimum_tool_context_length = MINIMUM_CONTEXT_LENGTH
+    if isinstance(_runtime_agent_cfg, dict):
+        _min_ctx_cfg = _runtime_agent_cfg.get("minimum_tool_context_length")
+        if _min_ctx_cfg is not None:
+            try:
+                _min_ctx_val = int(_min_ctx_cfg)
+                if _min_ctx_val > 0:
+                    agent._minimum_tool_context_length = _min_ctx_val
+            except (TypeError, ValueError):
+                _ra().logger.debug("Invalid agent.minimum_tool_context_length config value: %r", _min_ctx_cfg)
+
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

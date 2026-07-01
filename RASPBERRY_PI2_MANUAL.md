@@ -157,6 +157,8 @@ cd ~/llama.cpp
 - `-c 2048`: context size (limited by Raspberry Pi 2 RAM)
 - `--n_gpu_layers 0`: do not use GPU (Raspberry Pi 2 has no CUDA)
 
+Hermes' upstream local/Ollama tool-use guard defaults to a 64K runtime-context floor. The Pi2 templates tune that down with `agent.minimum_tool_context_length` (`2048` for core, `8192` for native/rag) so constrained local models can run in a degraded low-tool mode. Use a stronger LAN/cloud model with 64K+ context for full Hermes tool use and shared RAG.
+
 #### 4. Test the API
 
 ```bash

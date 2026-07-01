@@ -13,6 +13,11 @@ agent:
   gateway_timeout: 900
   restart_drain_timeout: 60
   api_max_retries: 2
+  # Low-resource override for local Ollama/llama.cpp use. Upstream Hermes
+  # defaults to a 64K runtime-context floor for reliable full tool use; the
+  # Pi2 core profile keeps the tool surface tiny, so 2K is allowed as a
+  # degraded/local-chat baseline.
+  minimum_tool_context_length: 2048
   tool_use_enforcement: auto
   task_completion_guidance: true
   environment_probe: true

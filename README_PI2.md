@@ -88,6 +88,16 @@ Important: a 7B model on Raspberry Pi 2 is usually impractical because of RAM an
 - a much smaller quantized model, or
 - a stronger LAN machine running `llama.cpp` with Pi2 acting as the Hermes client.
 
+## Context and performance defaults
+
+Upstream Hermes keeps a 64K runtime-context floor for reliable full tool use with local/Ollama models. The Pi2 profiles lower that floor through `agent.minimum_tool_context_length` so small local models can still run in a degraded, low-tool mode:
+
+- `config.pi2-core.yaml`: `2048` tokens for tiny local chat / minimal tools
+- `config.pi2-native.yaml`: `8192` tokens for broader native workflows
+- `config.pi2-rag.yaml`: `8192` tokens locally, with remote/central RAG preferred
+
+For full Hermes tool use, coding, or shared RAG, keep using a stronger LAN/cloud model with 64K+ context. The Pi2 override is an escape hatch for constrained local inference, not a claim that 2K can carry the complete Hermes tool surface.
+
 ## Memory and RAG posture
 
 Default Pi2 memory:

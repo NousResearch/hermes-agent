@@ -14,6 +14,9 @@ agent:
   gateway_timeout: 1200
   restart_drain_timeout: 90
   api_max_retries: 2
+  # Native Pi2 profile still keeps most heavy tools off, but expects a little
+  # more headroom than core for MCP/ACP/Home Assistant style workflows.
+  minimum_tool_context_length: 8192
   tool_use_enforcement: auto
   task_completion_guidance: true
   environment_probe: true

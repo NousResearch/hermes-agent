@@ -13,6 +13,10 @@ agent:
   gateway_timeout: 1200
   restart_drain_timeout: 90
   api_max_retries: 2
+  # RAG profile is designed for remote embeddings / central RAG. If you still
+  # run a local Ollama model on Pi2, keep the local context floor modest and
+  # let the central server provide larger 64K+ contexts when available.
+  minimum_tool_context_length: 8192
   tool_use_enforcement: auto
   task_completion_guidance: true
   environment_probe: true

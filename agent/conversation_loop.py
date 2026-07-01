@@ -111,7 +111,15 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
         return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+
+    minimum_context = getattr(agent, "_minimum_tool_context_length", MINIMUM_CONTEXT_LENGTH)
+    try:
+        minimum_context = int(minimum_context)
+    except (TypeError, ValueError):
+        minimum_context = MINIMUM_CONTEXT_LENGTH
+    if minimum_context <= 0:
+        return None
+    if runtime_ctx >= minimum_context:
         return None
 
     model = getattr(agent, "model", "") or "the selected model"
@@ -128,22 +136,34 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         provider,
         base_url,
         runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
+        minimum_context,
         request_tokens,
         tool_count,
         getattr(agent, "session_id", None) or "none",
     )
 
+    if minimum_context == MINIMUM_CONTEXT_LENGTH:
+        guidance = (
+            "A known-good starting point is 65,536 tokens. In Hermes config, "
+            "set `model.ollama_num_ctx: 65536` (and `model.context_length: "
+            "65536` if you also override the displayed model context). If you "
+            "manage the model through an Ollama Modelfile, set `PARAMETER "
+            "num_ctx 65536` there instead."
+        )
+    else:
+        guidance = (
+            f"This profile lowers Hermes' tool-context floor to {minimum_context:,} "
+            "tokens for low-resource use. Increase `model.ollama_num_ctx` to at "
+            "least that value, or raise `agent.minimum_tool_context_length` when "
+            "you move the model to a stronger server."
+        )
+
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but Hermes needs at least {minimum_context:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
-        "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
-        "model context). If you manage the model through an Ollama Modelfile, "
-        "set `PARAMETER num_ctx 65536` there instead."
+        f"model before trying again. {guidance}"
     )
 
 

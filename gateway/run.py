@@ -7686,6 +7686,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await self._cleanup_agent_resources_off_loop(
                                 _cached_agent, context="session expiry"
                             )
+                        # Finalize the state.db session row.  Marking the
+                        # session ended is what keeps state.db bounded — an
+                        # expired session must get an ``ended_at`` so it stops
+                        # counting as live and becomes eligible for later
+                        # pruning.  We must set it here explicitly: the cached
+                        # AIAgent's own ``close()`` would set it, but the agent
+                        # is frequently already soft-evicted by the idle sweep /
+                        # cache-cap enforcer (``_release_evicted_agent_soft``
+                        # preserves the open session for resume and never calls
+                        # ``end_session``), leaving ``_cached_agent`` None and
+                        # the row's ``ended_at`` NULL forever (#54189).
+                        # ``end_session`` is first-reason-wins and no-ops on an
+                        # already-ended row, so a prior ``agent_close`` reason
+                        # is preserved. Runs off the cache lock, mirroring the
+                        # ``session_reset`` path in gateway/session.py.
+                        _sess_db = getattr(self.session_store, "_db", None)
+                        if _sess_db is not None and entry.session_id:
+                            try:
+                                _sess_db.end_session(
+                                    entry.session_id, "session_expired"
+                                )
+                            except Exception as _end_exc:
+                                logger.debug(
+                                    "Session expiry: failed to end_session %s: %s",
+                                    entry.session_id, _end_exc,
+                                )
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows

@@ -89,6 +89,47 @@ from gateway.platforms.telegram_network import (
 )
 from utils import atomic_replace
 
+
+def _normalize_dm_topics_config(raw: Any) -> List[Dict[str, Any]]:
+    """Return dm_topics as the canonical list-of-dicts shape.
+
+    Older/manual YAML edits sometimes store list-like values as mappings with
+    numeric string keys:
+
+        dm_topics:
+          '0':
+            chat_id: '...'
+            topics:
+              '0': {name: General, thread_id: 123}
+
+    The runtime contract is a list of chat entries whose ``topics`` is also a
+    list.  Normalizing at adapter boundaries keeps startup robust while still
+    allowing the persistence path to write the canonical format.
+    """
+
+    def _values(value: Any) -> List[Any]:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            def _sort_key(item: Any) -> tuple[int, str]:
+                key = str(item[0])
+                return (0, f"{int(key):020d}") if key.isdigit() else (1, key)
+            return [v for _, v in sorted(value.items(), key=_sort_key)]
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in _values(raw):
+        if not isinstance(entry, dict):
+            continue
+        chat_entry = dict(entry)
+        chat_entry["topics"] = [
+            dict(topic)
+            for topic in _values(chat_entry.get("topics", []))
+            if isinstance(topic, dict)
+        ]
+        normalized.append(chat_entry)
+    return normalized
+
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
@@ -477,7 +518,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Lock per la registrazione sicura dei comandi nei forum supergroup
         self._forum_lock = asyncio.Lock()
         # DM Topics config from extra.dm_topics
-        self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        self._dm_topics_config: List[Dict[str, Any]] = _normalize_dm_topics_config(
+            self.config.extra.get("dm_topics", [])
+        )
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
@@ -6498,7 +6541,7 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
-            dm_topics = (
+            dm_topics = _normalize_dm_topics_config(
                 config.get("platforms", {})
                 .get("telegram", {})
                 .get("extra", {})

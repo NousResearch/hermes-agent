@@ -402,3 +402,41 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
     finally:
         runner._shutdown_executor()
 
+
+@pytest.mark.asyncio
+async def test_shutdown_executor_bounded_by_drain_timeout(monkeypatch):
+    """A wedged worker must NOT make _shutdown_executor block indefinitely.
+
+    Non-daemon ThreadPoolExecutor workers + concurrent.futures' atexit-join
+    would otherwise hang interpreter finalization for as long as an in-flight
+    agent turn runs (observed: a 149s restart blackout). The bounded drain
+    caps that wait; the CLI hard-exit backstop finalizes the wedged husk.
+    """
+    import threading
+    import time as _time
+    import gateway.run as gr
+
+    # Tiny drain budget so the test is fast; the real default is 8s.
+    monkeypatch.setattr(gr, "_executor_drain_timeout", lambda: 0.3)
+
+    runner = object.__new__(GatewayRunner)
+    release = threading.Event()
+
+    # Start a worker that blocks well past the drain budget.
+    fut = runner._get_executor().submit(lambda: release.wait(5.0))
+    # Give the worker a moment to actually start running.
+    _time.sleep(0.05)
+
+    t0 = _time.monotonic()
+    runner._shutdown_executor()
+    elapsed = _time.monotonic() - t0
+
+    # Bounded: returned near the budget, NOT after the worker's 5s block.
+    assert elapsed < 2.0, f"shutdown_executor blocked {elapsed:.2f}s (should be ~budget)"
+    # Let the wedged worker finish so it doesn't leak into other tests.
+    release.set()
+    try:
+        fut.result(timeout=5.0)
+    except Exception:
+        pass
+

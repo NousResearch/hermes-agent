@@ -67,6 +67,26 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# How long the shutdown path waits for in-flight ThreadPoolExecutor workers
+# (agent turns) to finish before giving up and letting the CLI hard-exit
+# backstop finalize the process. Bounded so a wedged worker can't strand the
+# gateway "down but not exited" (non-daemon workers + concurrent.futures'
+# atexit-join would otherwise block interpreter finalization). Overridable via
+# HERMES_GATEWAY_EXECUTOR_DRAIN_TIMEOUT for ops tuning.
+_EXECUTOR_DRAIN_TIMEOUT_SECS_DEFAULT = 8.0
+
+
+def _executor_drain_timeout() -> float:
+    """Return the bounded executor-drain timeout (seconds) for shutdown."""
+    raw = os.getenv("HERMES_GATEWAY_EXECUTOR_DRAIN_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid HERMES_GATEWAY_EXECUTOR_DRAIN_TIMEOUT=%r", raw
+            )
+    return _EXECUTOR_DRAIN_TIMEOUT_SECS_DEFAULT
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 # Greppable marker logged when a session auto-reset notice was supposed to be
@@ -14772,7 +14792,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return executor
 
     def _shutdown_executor(self) -> None:
-        """Stop the gateway-owned executor without touching the loop default."""
+        """Stop the gateway-owned executor without touching the loop default.
+
+        Drains with a bounded wait so a worker that finishes promptly is joined
+        cleanly, but a *wedged* worker (an agent turn blocked on a slow tool or
+        network call) cannot stall shutdown indefinitely. Because
+        ``ThreadPoolExecutor`` workers are non-daemon and ``concurrent.futures``
+        registers an ``atexit`` hook that joins them, an in-flight worker left
+        running here would otherwise block interpreter finalization for as long
+        as the turn takes — stranding the gateway "down but not exited" so
+        launchd/systemd can't relaunch it (observed: a 149s restart blackout).
+        The hard-exit backstop in the CLI entrypoint covers the wedged case;
+        this bounded drain makes the common case clean and logs what it saw.
+        """
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             return
@@ -14785,10 +14817,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if executor is None:
             return
 
+        # Count workers still alive so a slow/wedged drain is visible in logs.
         try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
+            inflight = sum(
+                1 for t in threading.enumerate()
+                if t.name.startswith("hermes-gateway") and t.is_alive()
+            )
+        except Exception:
+            inflight = -1
+
+        drain_budget = _executor_drain_timeout()
+        _t0 = time.monotonic()
+        timed_out = False
+        try:
+            # cancel queued (not-yet-started) work, then bounded-join running workers
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:  # Python <3.9 has no cancel_futures kwarg
+                executor.shutdown(wait=False)
+            # Bounded join: poll worker liveness rather than block forever.
+            _deadline = _t0 + drain_budget
+            while time.monotonic() < _deadline:
+                alive = [
+                    t for t in threading.enumerate()
+                    if t.name.startswith("hermes-gateway") and t.is_alive()
+                ]
+                if not alive:
+                    break
+                time.sleep(0.05)
+            else:
+                timed_out = True
+        except Exception as _e:
+            logger.debug("executor shutdown error: %s", _e)
+
+        _elapsed = time.monotonic() - _t0
+        if timed_out or _elapsed > 1.0 or (inflight and inflight > 0):
+            remaining = [
+                t.name for t in threading.enumerate()
+                if t.name.startswith("hermes-gateway") and t.is_alive()
+            ]
+            logger.warning(
+                "Executor drain: %d worker(s) in-flight at shutdown, drained in "
+                "%.2fs (budget %.1fs, timed_out=%s)%s",
+                inflight, _elapsed, drain_budget, timed_out,
+                (f"; still-running=[{', '.join(remaining)}] — the CLI hard-exit "
+                 f"backstop will finalize the process" if remaining else ""),
+            )
+        else:
+            logger.info("Executor drain: clean in %.2fs (no in-flight workers)", _elapsed)
 
     def _decide_image_input_mode(self) -> str:
         """Resolve the image-input routing for the currently active model.

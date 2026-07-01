@@ -299,3 +299,35 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_check_all_guards_wrapper_accepts_repo_root(monkeypatch):
+    captured = {}
+
+    def fake_impl(
+        command,
+        env_type,
+        approval_callback=None,
+        has_host_access=False,
+        repo_root=None,
+    ):
+        captured["command"] = command
+        captured["env_type"] = env_type
+        captured["approval_callback"] = approval_callback
+        captured["has_host_access"] = has_host_access
+        captured["repo_root"] = repo_root
+        return {"approved": True}
+
+    monkeypatch.setattr(terminal_tool, "_check_all_guards_impl", fake_impl)
+
+    result = terminal_tool._check_all_guards(
+        "echo hello",
+        "local",
+        repo_root="/tmp/repo",
+    )
+
+    assert result == {"approved": True}
+    assert captured["command"] == "echo hello"
+    assert captured["env_type"] == "local"
+    assert captured["has_host_access"] is False
+    assert captured["repo_root"] == "/tmp/repo"

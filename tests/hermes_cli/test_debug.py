@@ -1289,7 +1289,8 @@ class TestShareIncludesAutoDelete:
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        assert "public paste service" in out
+        assert "PUBLIC paste service" in out
+        assert "NOT redacted" in out
 
     def test_local_no_privacy_notice(self, hermes_home, capsys):
         from hermes_cli.debug import run_debug_share
@@ -1304,7 +1305,7 @@ class TestShareIncludesAutoDelete:
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        assert "public paste service" not in out
+        assert "PUBLIC paste service" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -1519,6 +1520,7 @@ class TestRunDebugShareNous:
             local = False
             nous = True
             no_redact = False
+            yes = True
 
         a = _A()
         for k, v in over.items():
@@ -1602,6 +1604,9 @@ class TestDebugSlashCommand:
         c = self._captured("/debug")
         assert c["nous"] is False and c["local"] is False
         assert c["lines"] == 200 and c["expire"] == 7
+        # The slash command IS the consent action → skip the [y/N] prompt
+        # (input() would hang inside prompt_toolkit's event loop).
+        assert c["yes"] is True
 
     def test_nous_word_sets_nous(self):
         c = self._captured("/debug nous")
@@ -1628,4 +1633,133 @@ class TestDebugSlashCommand:
         # Calling with no cmd_original (legacy callers) must still work.
         c = self._captured("")
         assert c["nous"] is False and c["local"] is False
+
+
+class TestShareConsentGate:
+    """`hermes debug share` requires explicit consent before uploading.
+
+    Uses SimpleNamespace rather than MagicMock so ``args.yes`` is a real
+    ``False`` — a MagicMock auto-provides a truthy ``.yes`` and would silently
+    bypass the very gate under test.
+    """
+
+    def _args(self, **over):
+        from types import SimpleNamespace
+
+        base = dict(lines=50, expire=7, local=False, nous=False,
+                    no_redact=False, yes=False)
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def test_aborts_on_user_decline(self, hermes_home, capsys, monkeypatch):
+        """Interactive user typing anything but y/yes → no upload."""
+        from hermes_cli.debug import run_debug_share
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            run_debug_share(self._args())
+
+        mock_upload.assert_not_called()
+        assert "Aborted" in capsys.readouterr().out
+
+    def test_proceeds_on_user_accept(self, hermes_home, capsys, monkeypatch):
+        """Interactive user typing 'y' → upload proceeds."""
+        from hermes_cli.debug import run_debug_share
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(self._args())
+
+        out = capsys.readouterr().out
+        assert "Debug report uploaded" in out
+        assert "Aborted" not in out
+
+    def test_yes_flag_skips_prompt(self, hermes_home, capsys, monkeypatch):
+        """--yes uploads without ever calling input()."""
+        from hermes_cli.debug import run_debug_share
+
+        def _boom(_):
+            raise AssertionError("input() must not be called with --yes")
+
+        monkeypatch.setattr("builtins.input", _boom)
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(self._args(yes=True))
+
+        assert "Debug report uploaded" in capsys.readouterr().out
+
+    def test_non_interactive_requires_yes(self, hermes_home, capsys, monkeypatch):
+        """No TTY + no --yes → exit(1), never upload silently."""
+        from hermes_cli.debug import run_debug_share
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            with pytest.raises(SystemExit) as exc:
+                run_debug_share(self._args())
+
+        assert exc.value.code == 1
+        mock_upload.assert_not_called()
+        err = capsys.readouterr().err
+        assert "Non-interactive mode requires --yes" in err
+        assert "personal data" in err
+
+    def test_non_interactive_with_yes_succeeds(self, hermes_home, capsys, monkeypatch):
+        """No TTY but --yes present → upload proceeds."""
+        from hermes_cli.debug import run_debug_share
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(self._args(yes=True))
+
+        assert "https://paste.rs/test" in capsys.readouterr().out
+
+    def test_nous_path_also_gated(self, hermes_home, capsys, monkeypatch):
+        """The --nous S3 path enforces the same consent gate (sibling site)."""
+        from hermes_cli.debug import run_debug_share
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.diagnostics_upload.share_to_nous") as mock_nous:
+            run_debug_share(self._args(nous=True))
+
+        mock_nous.assert_not_called()
+        assert "Aborted" in capsys.readouterr().out
+
+    def test_local_never_prompts(self, hermes_home, capsys, monkeypatch):
+        """--local renders to stdout and must not prompt or upload."""
+        from hermes_cli.debug import run_debug_share
+
+        def _boom(_):
+            raise AssertionError("input() must not be called for --local")
+
+        monkeypatch.setattr("builtins.input", _boom)
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
+            run_debug_share(self._args(local=True))
+
+        mock_upload.assert_not_called()
+        assert "Aborted" not in capsys.readouterr().out
 

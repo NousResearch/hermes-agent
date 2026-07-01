@@ -25,6 +25,7 @@ from acp.schema import (
     AvailableCommandsUpdate,
     BlobResourceContents,
     ClientCapabilities,
+    CloseSessionResponse,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
@@ -614,6 +615,142 @@ class HermesACPAgent(acp.Agent):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+    # ---- Extension methods (ext_method / ext_notification) -------------------
+
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle ACP extension methods and protocol-level requests.
+
+        Routes custom methods (``_custom/*``) as well as core protocol
+        methods that the ACP library does not register by default as
+        Agent methods — notably ``fs/read_text_file`` and
+        ``fs/write_text_file``.
+        """
+        logger.debug("ACP extension method called: %s", method)
+
+        if method == "fs/read_text_file":
+            return await self._fs_read_text_file(params)
+        if method == "fs/write_text_file":
+            return await self._fs_write_text_file(params)
+
+        logger.warning("Unhandled ACP extension method: %s (params=%s)", method, params)
+        from acp.exceptions import RequestError
+
+        raise RequestError.method_not_found(method)
+
+    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+        """Handle ACP extension notifications.
+
+        Silently logs unhandled notifications — they are not errors
+        because the extension is optional.
+        """
+        if method and method.strip():
+            logger.debug("ACP extension notification (unhandled): %s", method)
+
+    # ---- File-system helpers ------------------------------------------------
+
+    async def _fs_read_text_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Implement ``fs/read_text_file`` by delegating to the host
+        filesystem.
+
+        Expected params::
+
+            { "path": "<absolute or cwd-relative path>",
+              "session_id": "<optional session id>" }
+        """
+        file_path = str(params.get("path", "")).strip()
+        if not file_path:
+            from acp.exceptions import RequestError
+
+            raise RequestError.invalid_params(data={"message": "path is required"})
+
+        session_id = str(params.get("session_id", "")).strip() or None
+        cwd = None
+        if session_id:
+            state = self.session_manager.get_session(session_id)
+            if state:
+                cwd = getattr(state, "cwd", None)
+        if cwd:
+            resolved = Path(cwd) / file_path
+        else:
+            resolved = Path(file_path)
+
+        if not resolved.exists() or not resolved.is_file():
+            from acp.exceptions import RequestError
+
+            raise RequestError.invalid_params(data={"message": f"File not found: {resolved}"})
+
+        try:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            from acp.exceptions import RequestError
+
+            raise RequestError.internal_error(data={"message": str(exc)})
+
+        from acp.schema import TextResourceContents
+
+        text_contents = TextResourceContents(
+            uri=resolved.as_uri(),
+            mime_type=None,
+            text=content,
+        )
+        return {"contents": [text_contents]}
+
+    async def _fs_write_text_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Implement ``fs/write_text_file`` by writing to the host filesystem.
+
+        Expected params::
+
+            { "path": "<absolute or cwd-relative path>",
+              "content": "<file content>",
+              "session_id": "<optional session id>" }
+        """
+        file_path = str(params.get("path", "")).strip()
+        if not file_path:
+            from acp.exceptions import RequestError
+
+            raise RequestError.invalid_params(data={"message": "path is required"})
+
+        content = params.get("content", "")
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+
+        session_id = str(params.get("session_id", "")).strip() or None
+        cwd = None
+        if session_id:
+            state = self.session_manager.get_session(session_id)
+            if state:
+                cwd = getattr(state, "cwd", None)
+        if cwd:
+            resolved = Path(cwd) / file_path
+        else:
+            resolved = Path(file_path)
+
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            resolved.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            from acp.exceptions import RequestError
+
+            raise RequestError.internal_error(data={"message": str(exc)})
+
+        return {}
+
+    # ---- Session close ------------------------------------------------------
+
+    async def close_session(self, session_id: str, **kwargs: Any) -> Optional[CloseSessionResponse]:
+        """Remove a session from the session manager on client request.
+
+        The ACP library maps this to ``session/close`` (registered as an
+        unstable method).  Session-capability advertisements deliberately
+        omit the ``close`` field while this method is in preview.
+        """
+        existed = self.session_manager.remove_session(session_id)
+        if existed:
+            logger.info("ACP session %s closed via session/close", session_id)
+        else:
+            logger.warning("ACP session %s: close requested but session not found", session_id)
+        return CloseSessionResponse()
 
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
@@ -1891,8 +2028,14 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if cancelled else "end_turn"
-        return PromptResponse(stop_reason=stop_reason, usage=usage)
+        stop_reason: str = "cancelled" if cancelled else "end_turn"
+        if not cancelled and result.get("error"):
+            err = str(result.get("error", ""))
+            if "content_policy_blocked" in err:
+                stop_reason = "refusal"
+            elif "output length limit" in err:
+                stop_reason = "max_tokens"
+        return PromptResponse(stop_reason=stop_reason, usage=usage)  # type: ignore[arg-type]
 
     # ---- Slash commands (headless) -------------------------------------------
 

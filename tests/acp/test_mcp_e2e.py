@@ -160,9 +160,15 @@ class TestMcpRegistrationE2E:
             update_arg = call[1].get("update") or call[0][1]
             updates.append(update_arg)
 
-        # Find tool_call (start) and tool_call_update (completion) events
+        # Find tool_call (start) and tool_call_update (completion) events.
+        # The in_progress intermediate updates are also tool_call_update,
+        # so filter for completed specifically.
         starts = [u for u in updates if getattr(u, "session_update", None) == "tool_call"]
-        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
+        completions = [
+            u for u in updates
+            if getattr(u, "session_update", None) == "tool_call_update"
+            and getattr(u, "status", None) == "completed"
+        ]
 
         # Should have at least one ToolCallStart for "terminal"
         assert len(starts) >= 1, f"Expected ToolCallStart, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
@@ -170,8 +176,11 @@ class TestMcpRegistrationE2E:
         assert isinstance(start_event, ToolCallStart)
         assert start_event.title.startswith("terminal:")
 
-        # Should have at least one ToolCallUpdate (completion) with rawOutput
-        assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
+        # Should have at least one completed ToolCallUpdate with rawOutput
+        assert len(completions) >= 1, (
+            f"Expected completed ToolCallUpdate, got updates: "
+            f"{[(getattr(u, 'session_update', '?'), getattr(u, 'status', None)) for u in updates]}"
+        )
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)
         assert complete_event.status == "completed"
@@ -232,10 +241,17 @@ class TestMcpRegistrationE2E:
             updates.append(update_arg)
 
         starts = [u for u in updates if getattr(u, "session_update", None) == "tool_call"]
-        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
+        completions = [
+            u for u in updates
+            if getattr(u, "session_update", None) == "tool_call_update"
+            and getattr(u, "status", None) == "completed"
+        ]
 
         assert len(starts) == 2, f"Expected 2 starts, got {len(starts)}"
-        assert len(completions) == 2, f"Expected 2 completions, got {len(completions)}"
+        assert len(completions) == 2, (
+            f"Expected 2 completed completions, got {len(completions)}. "
+            f"All updates: {[(getattr(u, 'session_update', '?'), getattr(u, 'status', None)) for u in updates]}"
+        )
 
         # Each completion's toolCallId must match a start's toolCallId
         start_ids = {s.tool_call_id for s in starts}

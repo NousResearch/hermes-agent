@@ -179,6 +179,18 @@ def make_tool_progress_cb(
         update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
         _send_update(conn, session_id, loop, update)
 
+        # Immediately emit an in_progress status update so clients see the
+        # tool transition from pending → in_progress before the agent begins
+        # executing it.  The step_cb will later advance it to completed/failed.
+        try:
+            in_progress_update = acp.update_tool_call(
+                tc_id,
+                status="in_progress",
+            )
+            _send_update(conn, session_id, loop, in_progress_update)
+        except Exception:
+            logger.debug("Failed to emit in_progress status for tool %s", name, exc_info=True)
+
     return _tool_progress
 
 

@@ -277,6 +277,7 @@ AUTHOR_MAP = {
     "asimons81@gmail.com": "asimons81",
     "angelic805@gmail.com": "HwangJohn",
     "anderskev@gmail.com": "anderskev",
+    "alan.justino@yahoo.com.br": "alanjds",  # PR #56601 (perf(acp): reduce hermes acp cold-start connect time by ~4×)
     "alloevil@hotmail.com": "alloevil",
     "aieng.abdullah.arif@gmail.com": "aieng-abdullah",
     "88768844+loes5050@users.noreply.github.com": "loes5050",

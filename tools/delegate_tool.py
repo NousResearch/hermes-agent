@@ -666,6 +666,7 @@ def _build_child_system_prompt(
     *,
     workspace_path: Optional[str] = None,
     role: str = "leaf",
+    persona: str = "",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
 ) -> str:
@@ -676,12 +677,32 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When ``persona`` is a non-empty string, its body is prepended to the
+    default prompt with an explicit "AUTHORITATIVE PERSONA -- follow these
+    rules over any default subagent guidance" delimiter. This is the
+    cleaner replacement for the cavecrew-style pattern of stuffing the
+    persona prompt into ``context``; the persona text now rides on the
+    child's system prompt where it belongs.
     """
-    parts = [
+    parts: List[str] = []
+    if persona and persona.strip():
+        parts.extend([
+            "=== AUTHORITATIVE PERSONA ===",
+            "Follow the persona rules below over any default subagent",
+            "guidance that appears later in this prompt. The persona's",
+            "output format, refusal rules, and tool-use constraints are",
+            "non-negotiable for this task.",
+            "",
+            persona.strip(),
+            "=== END PERSONA ===",
+            "",
+        ])
+    parts.extend([
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
-    ]
+    ])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1064,6 +1085,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Persona system-prompt prepend (cavecrew & friends).  When set, the
+    # body is hoisted to the top of the child's system prompt with an
+    # explicit AUTHORITATIVE PERSONA delimiter.  Default empty preserves
+    # today's behavior exactly.
+    persona: str = "",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1149,6 +1175,7 @@ def _build_child_agent(
         context,
         workspace_path=workspace_hint,
         role=effective_role,
+        persona=persona,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
@@ -2343,6 +2370,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    persona: Optional[str] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
@@ -2358,6 +2386,11 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'persona' parameter, when set, is prepended to the child's system
+    prompt with an authoritative delimiter (see
+    ``_build_child_system_prompt``). Per-task ``persona`` inside
+    ``tasks=[...]`` beats the top-level one.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2507,6 +2540,11 @@ def delegate_task(
                     task_acp_args
                     if task_acp_args is not None
                     else (acp_args if acp_args is not None else creds.get("args"))
+                ),
+                persona=(
+                    t.get("persona")
+                    if t.get("persona") is not None
+                    else (persona or "")
                 ),
                 role=effective_role,
             )

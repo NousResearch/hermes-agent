@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "karinai-image-gateway"
 DEFAULT_MODEL = "karinai/image-gateway"
-_MAX_DATA_URL_FALLBACK_B64_CHARS = 2_000_000
+# Keep tiny gateway-returned images inline, but persist normal/large real-provider
+# images under /workspace/outputs/<run_id>/ so the backend artifact sweep exposes
+# signed /api/artifacts links. Match the backend image-gateway default cap.
+_MAX_STORED_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_INLINE_DATA_URL_B64_CHARS = 100_000
 _ALLOWED_DATA_URL_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _ASPECT_TO_GATEWAY = {
@@ -141,9 +144,34 @@ def _safe_extension(value: object) -> str:
     return "png"
 
 
+def _estimated_decoded_b64_bytes(encoded: str) -> int:
+    compact = "".join(str(encoded or "").split())
+    if not compact:
+        return 0
+    padding = len(compact) - len(compact.rstrip("="))
+    return max(0, (len(compact) * 3) // 4 - padding)
+
+
 def _safe_path_component(value: object, *, fallback: str) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", _clean(value)).strip(".-_")
     return (text or fallback)[:96]
+
+
+def _existing_path_component_is_symlink(root: Path, target: Path) -> bool:
+    try:
+        root_abs = root.expanduser().absolute()
+        target_abs = target.expanduser().absolute()
+        relative = target_abs.relative_to(root_abs)
+    except Exception:
+        return True
+    current = root_abs
+    if current.is_symlink():
+        return True
+    for part in relative.parts:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            return True
+    return False
 
 
 def _workspace_dir() -> str:
@@ -235,12 +263,15 @@ def _image_reference_from_b64_asset(
     if not isinstance(raw_b64, str) or not raw_b64.strip():
         return "", {}, ""
     b64_json = raw_b64.strip()
-    if len(b64_json) > _MAX_DATA_URL_FALLBACK_B64_CHARS:
-        return "", {}, "image gateway b64_json asset exceeded the retrievable data URL limit"
+    estimated_bytes = _estimated_decoded_b64_bytes(b64_json)
+    if estimated_bytes > _MAX_STORED_IMAGE_BYTES:
+        return "", {}, "image gateway b64_json asset exceeded the managed image byte limit"
     try:
         image_bytes = base64.b64decode(b64_json, validate=True)
     except (binascii.Error, ValueError):
         return "", {}, "image gateway returned invalid b64 image data"
+    if len(image_bytes) > _MAX_STORED_IMAGE_BYTES:
+        return "", {}, "image gateway b64_json asset exceeded the managed image byte limit"
     mime_type = _clean(asset.get("mime_type")) or "image/png"
     if mime_type not in _ALLOWED_DATA_URL_MIME_TYPES:
         return "", {}, "image gateway returned an unsupported image MIME type"
@@ -264,8 +295,13 @@ def _image_reference_from_b64_asset(
     output_path = output_root / filename
 
     try:
+        if _existing_path_component_is_symlink(workspace_root, output_root):
+            return "", {}, "managed image output path contains a symlink"
         output_root.mkdir(parents=True, exist_ok=True)
+        workspace_resolved = workspace_root.resolve()
         resolved_root = output_root.resolve()
+        if resolved_root != workspace_resolved and workspace_resolved not in resolved_root.parents:
+            return "", {}, "managed image output directory escaped the workspace"
         resolved_path = output_path.resolve()
         if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
             return "", {}, "managed image output path escaped the run output directory"

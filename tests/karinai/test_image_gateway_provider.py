@@ -287,8 +287,12 @@ def test_managed_image_gateway_uses_bounded_data_url_when_no_signed_url(tmp_path
 
 
 def test_managed_image_gateway_persists_large_b64_fallback_to_run_outputs(tmp_path, monkeypatch):
-    image_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 80_000)
+    # Real Codex/OpenAI image payloads commonly exceed the small inline data-URL
+    # limit and may exceed the old 2 MB b64 cap. They should still be persisted
+    # under run outputs as long as they are within the backend image byte cap.
+    image_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 1_600_000)
     large_b64 = base64.b64encode(image_bytes).decode("ascii")
+    assert len(large_b64) > 2_000_000
     with RunningImageGateway(signed_url=None, b64_json=large_b64) as gateway:
         _managed_image_env(monkeypatch, tmp_path, gateway.url)
 
@@ -311,6 +315,34 @@ def test_managed_image_gateway_persists_large_b64_fallback_to_run_outputs(tmp_pa
     assert "b64_json" not in json.dumps(body.get("assets", []))
     assert len(gateway.requests) == 1
 
+def test_managed_image_gateway_rejects_symlinked_output_directory(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "outputs").symlink_to(outside, target_is_directory=True)
+
+    image_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 120_000)
+    large_b64 = base64.b64encode(image_bytes).decode("ascii")
+    with RunningImageGateway(signed_url=None, b64_json=large_b64) as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw a large image with symlinked outputs"})
+
+    body = json.loads(raw)
+    assert body["success"] is False
+    assert body["error_type"] == "image_gateway_contract"
+    assert "symlink" in body["error"]
+    assert list(outside.rglob("*")) == []
+    assert len(gateway.requests) == 1
+
+
 def test_managed_image_gateway_rejects_invalid_b64_fallback(tmp_path, monkeypatch):
     with RunningImageGateway(signed_url=None, b64_json="not-valid-base64") as gateway:
         _managed_image_env(monkeypatch, tmp_path, gateway.url)
@@ -331,14 +363,17 @@ def test_managed_image_gateway_rejects_invalid_b64_fallback(tmp_path, monkeypatc
 
 
 def test_managed_image_gateway_rejects_oversized_b64_fallback(tmp_path, monkeypatch):
-    oversized_b64 = "A" * 2_000_004
+    image_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 256)
+    oversized_b64 = base64.b64encode(image_bytes).decode("ascii")
     with RunningImageGateway(signed_url=None, b64_json=oversized_b64) as gateway:
         _managed_image_env(monkeypatch, tmp_path, gateway.url)
 
         from agent.image_gen_registry import _reset_for_tests
         from hermes_cli.plugins import _ensure_plugins_discovered
+        import karinai.runtime.image_gateway_provider as provider_module
         from tools.image_generation_tool import _handle_image_generate
 
+        monkeypatch.setattr(provider_module, "_MAX_STORED_IMAGE_BYTES", 128)
         _reset_for_tests()
         _ensure_plugins_discovered(force=True)
         raw = _handle_image_generate({"prompt": "draw oversized b64"})
@@ -346,7 +381,7 @@ def test_managed_image_gateway_rejects_oversized_b64_fallback(tmp_path, monkeypa
     body = json.loads(raw)
     assert body["success"] is False
     assert body["error_type"] == "image_gateway_contract"
-    assert "data URL limit" in body["error"]
+    assert "managed image byte limit" in body["error"]
     assert len(gateway.requests) == 1
 
 

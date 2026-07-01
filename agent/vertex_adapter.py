@@ -21,6 +21,8 @@ import os
 import time
 from typing import Optional, Tuple
 
+from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
+
 # Ensure google-auth is installed before importing. The [vertex] extra is no
 # longer in [all] per the lazy-install policy added 2026-05-12 — lazy_deps
 # handles on-demand installation so the Vertex provider still works for users
@@ -65,7 +67,7 @@ def _resolve_region(explicit: Optional[str] = None) -> str:
     """Region precedence: explicit arg > VERTEX_REGION env > config.yaml > default."""
     if explicit:
         return explicit
-    env_region = os.environ.get("VERTEX_REGION", "").strip()
+    env_region = (_get_secret("VERTEX_REGION") or "").strip()
     if env_region:
         return env_region
     cfg_region = str(_vertex_config().get("region") or "").strip()
@@ -78,7 +80,7 @@ def _resolve_project_override() -> Optional[str]:
     Returns None when neither is set (the credentials' embedded project_id
     is used in that case).
     """
-    env_project = os.environ.get("VERTEX_PROJECT_ID", "").strip()
+    env_project = (_get_secret("VERTEX_PROJECT_ID") or "").strip()
     if env_project:
         return env_project
     cfg_project = str(_vertex_config().get("project_id") or "").strip()
@@ -88,8 +90,14 @@ def _resolve_project_override() -> Optional[str]:
 def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
     if explicit and os.path.exists(explicit):
         return explicit
+    # Routed through get_secret (not a raw os.environ read): in a multiplex
+    # gateway serving several profiles from one process, os.environ reflects
+    # whichever profile's .env happened to be loaded at boot, not the profile
+    # the current turn belongs to. Reading it directly here would let one
+    # profile mint Vertex tokens from — and get billed against — a different
+    # profile's service-account file. See agent/secret_scope.py.
     for env_var in ("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"):
-        path = os.environ.get(env_var)
+        path = _get_secret(env_var)
         if path and os.path.exists(path):
             return path
     return None
@@ -123,6 +131,24 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
                 )
                 project_id = creds.project_id
             else:
+                # google.auth.default() reads GOOGLE_APPLICATION_CREDENTIALS
+                # straight from os.environ internally — it has no notion of
+                # the profile secret scope. _resolve_credentials_path already
+                # confirmed (via get_secret) that *this* profile doesn't
+                # define the var, but python-dotenv's load_dotenv() mutates
+                # os.environ at boot for whichever profile happened to load
+                # first, so a raw os.environ read here can still pick up a
+                # different profile's service-account path. Refuse rather
+                # than silently authenticating under a stranger's identity.
+                if is_multiplex_active() and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                    logger.warning(
+                        "Vertex ADC skipped for this profile: "
+                        "GOOGLE_APPLICATION_CREDENTIALS is set in the process "
+                        "environment (from another profile's .env) but not in "
+                        "this profile's own config. Set VERTEX_CREDENTIALS_PATH "
+                        "in this profile's .env instead of relying on ADC."
+                    )
+                    return None, None
                 creds, project_id = google.auth.default(
                     scopes=["https://www.googleapis.com/auth/cloud-platform"]
                 )

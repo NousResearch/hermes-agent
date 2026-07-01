@@ -913,8 +913,8 @@ def test_ws_events_for_archived_board_does_not_recreate_empty_board(tmp_path, mo
     active_dir = kb.board_dir("gone")
     assert active_dir.exists()
     kb.remove_board("gone")
-    assert not active_dir.exists()
-    assert not kb.board_exists("gone")
+    assert active_dir.exists()
+    assert kb.read_board_metadata("gone")["archived"] is True
 
     import hermes_cli
     import types
@@ -937,8 +937,8 @@ def test_ws_events_for_archived_board_does_not_recreate_empty_board(tmp_path, mo
         ) as ws:
             ws.receive_json()
     assert exc.value.code == 1008
-    assert not active_dir.exists()
-    assert not kb.board_exists("gone")
+    assert active_dir.exists()
+    assert kb.read_board_metadata("gone")["archived"] is True
 
 
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):

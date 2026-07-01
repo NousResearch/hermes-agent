@@ -814,6 +814,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
 
     if archive:
+        # Capture display metadata before the move so the tombstone below keeps
+        # the user's board name instead of falling back to a title-cased slug.
+        prior_meta = read_board_metadata(normed)
         archive_root = boards_root() / "_archived"
         archive_root.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
@@ -824,6 +827,21 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
         d.rename(target)
+        # Leave a lightweight tombstone at the original slug.  Dashboard tabs
+        # can keep stale REST/WS requests open after an archive; without a
+        # tombstone, any code path that calls connect(board=slug) can recreate
+        # an empty board directory and make the archived board reappear.  The
+        # tombstone is skipped by list_boards(include_archived=False) and lets
+        # validation reject the stale slug without opening SQLite.
+        write_board_metadata(
+            normed,
+            name=prior_meta.get("name"),
+            description=prior_meta.get("description"),
+            icon=prior_meta.get("icon"),
+            color=prior_meta.get("color"),
+            default_workdir=prior_meta.get("default_workdir"),
+            archived=True,
+        )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil

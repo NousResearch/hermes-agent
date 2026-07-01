@@ -552,14 +552,20 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+_detect_local_server_type_cache: dict = {}
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    Results are cached per (base_url, api_key) for the lifetime of the process.
     """
     import httpx
 
     normalized = _normalize_base_url(base_url)
+    cache_key = (normalized, api_key)
+    if cache_key in _detect_local_server_type_cache:
+        return _detect_local_server_type_cache[cache_key]
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
@@ -573,6 +579,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
             try:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
+                    _detect_local_server_type_cache[cache_key] = "lm-studio"
                     return "lm-studio"
             except Exception:
                 pass
@@ -585,6 +592,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                     try:
                         data = r.json()
                         if "models" in data:
+                            _detect_local_server_type_cache[cache_key] = "ollama"
                             return "ollama"
                     except Exception:
                         pass
@@ -596,6 +604,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 if r.status_code != 200:
                     r = client.get(f"{server_url}/props")  # fallback for older builds
                 if r.status_code == 200 and "default_generation_settings" in r.text:
+                    _detect_local_server_type_cache[cache_key] = "llamacpp"
                     return "llamacpp"
             except Exception:
                 pass
@@ -605,12 +614,14 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 if r.status_code == 200:
                     data = r.json()
                     if "version" in data:
+                        _detect_local_server_type_cache[cache_key] = "vllm"
                         return "vllm"
             except Exception:
                 pass
     except Exception:
         pass
 
+    _detect_local_server_type_cache[cache_key] = None
     return None
 
 

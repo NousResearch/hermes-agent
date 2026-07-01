@@ -45,6 +45,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _resolve_child_cwd,
 )
 
 
@@ -914,6 +915,25 @@ class TestLoadConfig(unittest.TestCase):
              patch("hermes_cli.config.read_raw_config", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
+
+
+class TestResolveChildCwd(unittest.TestCase):
+    def test_project_mode_prefers_session_cwd_override(self):
+        from tools import terminal_tool
+
+        old = dict(terminal_tool._task_env_overrides)
+        try:
+            terminal_tool._task_env_overrides.clear()
+            session_cwd = os.getcwd()
+            terminal_tool.register_task_env_overrides("session-a", {"cwd": session_cwd})
+
+            self.assertEqual(
+                _resolve_child_cwd("project", "/tmp/staging", task_id="session-a"),
+                session_cwd,
+            )
+        finally:
+            terminal_tool._task_env_overrides.clear()
+            terminal_tool._task_env_overrides.update(old)
 
 
 # ---------------------------------------------------------------------------

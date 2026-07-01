@@ -269,6 +269,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
+        # Passive (read-only) mode: inbound messages are appended to the
+        # session transcript as observed context (observed=True, the same
+        # mechanism used for un-mentioned group chatter) but never dispatched
+        # to the agent - no replies, no model spend. Outbound paths (cron
+        # deliveries, `hermes send`) are unaffected. Useful for note-to-self
+        # capture inboxes where the user wants ingestion without responses.
+        self._passive_mode = str(
+            extra.get("passive_mode")
+            or _wenv("WHATSAPP_PASSIVE_MODE", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._dm_policy = str(extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
@@ -706,7 +716,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                if self._passive_mode:
+                                    await self._observe_passive(event)
+                                elif event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
@@ -729,6 +741,38 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     logger.warning("[%s] WhatsApp read receipt failed with HTTP %s", self.name, resp.status)
         except Exception as exc:
             logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
+
+    async def _observe_passive(self, event: MessageEvent) -> None:
+        """Record an inbound message as observed context without an agent turn.
+
+        Mirrors the observed-group-chatter pattern: the message lands in the
+        session transcript (and SQLite history) with ``observed: True`` so it
+        stays searchable and available as context, but the agent is never
+        invoked and no reply is sent.
+        """
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            from datetime import datetime, timezone
+
+            session_entry = store.get_or_create_session(event.source)
+            entry: Dict[str, Any] = {
+                "role": "user",
+                "content": event.text or "",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = event.message_id
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.debug(
+                "[%s] passive mode: message observed, not dispatched", self.name
+            )
+        except Exception as exc:
+            logger.warning("[%s] passive observe failed: %s", self.name, exc)
+
+    # ── Text debounce batching ──────────────────────────────────────
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
@@ -958,7 +1002,7 @@ def interactive_setup() -> None:
 
 
 # config.yaml whatsapp: key → env var. Env vars take precedence over YAML.
-_YAML_LOWERCASE_KEYS = (("require_mention", "WHATSAPP_REQUIRE_MENTION"), ("dm_policy", "WHATSAPP_DM_POLICY"), ("group_policy", "WHATSAPP_GROUP_POLICY"))
+_YAML_LOWERCASE_KEYS = (("passive_mode", "WHATSAPP_PASSIVE_MODE"), ("require_mention", "WHATSAPP_REQUIRE_MENTION"), ("dm_policy", "WHATSAPP_DM_POLICY"), ("group_policy", "WHATSAPP_GROUP_POLICY"))
 _YAML_LIST_KEYS = (("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"), ("allow_from", "WHATSAPP_ALLOWED_USERS"), ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS"))
 
 

@@ -352,10 +352,10 @@ _RULE_NAME_TO_ID = {
 # This fires in pytest on every PR, so desync is caught before merge.
 if set(_RULE_NAME_TO_ID) != {p["ruleName"] for p in SECURITY_PATTERNS}:
     raise RuntimeError(
-    f"RuleId enum out of sync with SECURITY_PATTERNS: "
-    f"missing={set(p['ruleName'] for p in SECURITY_PATTERNS) - set(_RULE_NAME_TO_ID)}, "
-    f"extra={set(_RULE_NAME_TO_ID) - set(p['ruleName'] for p in SECURITY_PATTERNS)}"
-)
+        f"RuleId enum out of sync with SECURITY_PATTERNS: "
+        f"missing={set(p['ruleName'] for p in SECURITY_PATTERNS) - set(_RULE_NAME_TO_ID)}, "
+        f"extra={set(_RULE_NAME_TO_ID) - set(p['ruleName'] for p in SECURITY_PATTERNS)}"
+    )
 
 
 def rule_names_to_mask(rule_names):

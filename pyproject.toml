@@ -392,3 +392,10 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+[tool.codespell]
+# Ref: https://github.com/codespell-project/codespell#using-a-config-file
+skip = '.git,.gitignore,.gitattributes,*.pdf,*.svg,package-lock.json,i18n,*.lock,*.css'
+check-hidden = true
+# ignore-regex = ''
+# ignore-words-list = ''

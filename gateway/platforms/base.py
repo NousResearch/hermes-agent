@@ -546,13 +546,12 @@ async def _ssrf_redirect_guard(response):
 
     Must be async because httpx.AsyncClient awaits response event hooks.
     """
-    if response.is_redirect and response.next_request:
-        redirect_url = str(response.next_request.url)
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
-            )
+    from tools.url_safety import is_safe_url, redirect_target_from_response
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url and not is_safe_url(redirect_url):
+        raise ValueError(
+            f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1160,12 +1159,18 @@ def _media_delivery_denied_paths() -> List[Path]:
         # Bitwarden Secrets Manager plaintext disk cache.
         os.path.join("cache", "bws_cache.json"),
     )
-    # Directory trees whose every child is credential material. (MCP OAuth
-    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
-    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
-    # overlap.)
+    # Directory trees whose every child is credential material.
+    #
+    # mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
+    # dynamically-registered client credentials (<server>.client.json); see
+    # tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
+    # The write side already denies it (file_tools _check_sensitive_path);
+    # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
+    # tag can't deliver a live bearer token as a native attachment.
+    # (session/kanban SQLite stores are handled by #41071 — kept out here.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:

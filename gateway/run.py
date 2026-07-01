@@ -1676,7 +1676,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from gateway.delivery import DeliveryRouter
+from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2653,6 +2653,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
+        # Monotonic-ish wall clock of when this GatewayRunner was constructed.
+        # Used by the /restart redelivery guard to bound the window in which a
+        # missing dedup marker is treated as a stale redelivery.
+        self._startup_time: float = time.time()
+        # Set True at startup when this process booted as the result of a
+        # chat-originated /restart (i.e. .restart_notify.json existed on boot).
+        # A one-shot signal consumed by _is_stale_restart_redelivery so the
+        # marker-missing fallback only suppresses a /restart when we KNOW we
+        # just came out of a restart cycle — never on a genuine fresh boot.
+        self._booted_from_restart: bool = False
         self._stop_task: Optional[asyncio.Task] = None
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
@@ -6579,6 +6589,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
+        # Capture, before _send_restart_notification() unlinks the marker,
+        # whether this process booted from a chat-originated /restart. Used as
+        # a one-shot signal by the /restart redelivery guard so a missing
+        # dedup marker only suppresses a /restart when we KNOW we just came out
+        # of a restart cycle (see _is_stale_restart_redelivery).
+        if _restart_notification_pending() or planned_restart_notification_pending:
+            self._booted_from_restart = True
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
@@ -6797,26 +6814,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(home.thread_id) if home.thread_id else None
         )
 
-        # Determine chat_type for the destination source. If we created a
-        # thread, key the session_key as a thread (build_session_key sets
-        # thread sessions to user-shared by default, which is what we
-        # want — the synthetic turn and any later real-user message both
-        # land on the same key without needing a user_id).
-        if new_thread_id:
+        # Determine chat_type/user_id for the destination source.
+        #
+        # Telegram private-chat DM topics are represented differently from
+        # group/forum threads by the inbound adapter. A handoff-created topic
+        # in a positive Telegram chat_id must therefore use the same DM-topic
+        # source shape as the user's next real message; otherwise the synthetic
+        # handoff turn binds a generic `thread` session key while real replies
+        # arrive on a `dm` session key.
+        home_chat_id = str(home.chat_id)
+        is_telegram_private_chat = (
+            platform == Platform.TELEGRAM
+            and looks_like_telegram_private_chat_id(home_chat_id)
+        )
+
+        if new_thread_id and not is_telegram_private_chat:
             dest_chat_type = "thread"
+            dest_user_id = "system:handoff"
         else:
-            # No thread — assume DM-style for the home channel. For
-            # group/channel home channels without thread support
-            # (Matrix/WhatsApp/Signal), the platform's own keying makes
-            # the synthetic turn shared anyway (single-DM platforms).
+            # No thread — assume DM-style for the home channel. For Telegram
+            # private-chat topics, use the real user id (same as chat_id) so
+            # topic-mode checks and binding persistence see the same identity as
+            # subsequent inbound user messages.
             dest_chat_type = "dm"
+            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
 
         dest_source = SessionSource(
             platform=platform,
-            chat_id=str(home.chat_id),
+            chat_id=home_chat_id,
             chat_name=home.name,
             chat_type=dest_chat_type,
-            user_id="system:handoff",
+            user_id=dest_user_id,
             user_name="Handoff",
             thread_id=effective_thread_id,
         )
@@ -11431,6 +11459,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             marker_path = _hermes_home / ".restart_last_processed.json"
             if not marker_path.exists():
+                # Belt-and-suspenders for when the dedup marker goes missing
+                # (manually cleaned up, or the previous cycle's write failed).
+                # Without a marker the update_id comparison below can't run, so
+                # a redelivered /restart would sail through and re-restart the
+                # gateway — an infinite loop (issue #18528).
+                #
+                # Suppress ONLY when we can independently confirm we just came
+                # out of a restart cycle: this process booted from a
+                # chat-originated /restart (_booted_from_restart) AND is still
+                # within a short post-boot window. This never swallows a
+                # genuine first /restart on a fresh boot (no restart marker on
+                # boot → flag stays False). Consume the flag one-shot so a
+                # legitimate /restart sent later in the same session is honored.
+                if (
+                    getattr(self, "_booted_from_restart", False)
+                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
+                ):
+                    self._booted_from_restart = False
+                    return True
                 return False
             data = json.loads(marker_path.read_text())
         except Exception:

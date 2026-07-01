@@ -2019,9 +2019,16 @@ def _run_single_child(
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
 
+        # The child emits the literal "(empty)" sentinel (see run_agent.py) when
+        # it gives up after repeated empty-LLM-response retries — typically a
+        # transport bug (misrouted provider, adapter returning empty
+        # ChatCompletion, etc.). Treat it as a failure so the parent surfaces
+        # it instead of silently accepting zero-content "success".
+        _empty_sentinel = summary.strip() == "(empty)"
+
         if interrupted:
             status = "interrupted"
-        elif summary:
+        elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
             # tells the parent *how* the task ended.
@@ -2968,7 +2975,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
-    if configured_base_url:
+    # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
+    # wire protocol — they cannot be reached via OpenAI chat_completions against
+    # a base_url. For these, always fall through to resolve_runtime_provider()
+    # so the proper SDK path is taken. The configured base_url is still
+    # forwarded through runtime-provider resolution when applicable (e.g. a
+    # custom Bedrock regional endpoint).
+    _NATIVE_SDK_PROVIDERS = {"bedrock", "vertex", "google", "google-genai"}
+    _provider_lower = (configured_provider or "").strip().lower()
+    _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
+
+    if configured_base_url and not _is_native_sdk_provider:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This

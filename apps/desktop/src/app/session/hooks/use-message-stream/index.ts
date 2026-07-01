@@ -358,6 +358,12 @@ export function useMessageStream({
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+          const streamedText = chatMessageText({ parts } as ChatMessage).trim()
+
+          if (visibleFinalText && streamedText && streamedText.endsWith(visibleFinalText)) {
+            return parts
+          }
+
           const dedupeReference = normalize(visibleFinalText)
 
           const kept = parts.filter(part => {

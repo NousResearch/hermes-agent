@@ -91,12 +91,13 @@ MODES = {
 # scalar _cast/auto-flag loop). DEFAULT ON. Families are domain EXPOSURE only (coverage +
 # diversity + report grouping); there is no family-level negation — every question is scored on
 # its own merit. Toggle `enabled` via --families/--no-families or INFOGAIN_FAMILIES; the rest are
-# constants here. Cost is bounded by questions_per_family × (n_scoped + contrarian + vantage).
+# constants here. Cost is bounded by questions_per_family × (n_scoped + contrarian + vantage + premortem).
 FAMILIES = {
     "enabled": True,
     "n_scoped": 3,
     "contrarian": True,
     "vantage": "auto",          # "auto" (gate on systems/access prompts) | "on" | "off"
+    "premortem": "auto",        # "auto" (gate on failure-surface prompts) | "on" | "off"
     "questions_per_family": 3,
     "family_sim": 0.5,          # MMR cross-family diversity penalty (vs 1.0 same-target collapse)
     "families_model": "glm",    # generation model for families + per-family questions
@@ -109,7 +110,8 @@ def _truthy(s):
 
 def _resolve_families(args):
     """families config with `enabled` resolved: CLI --families/--no-families > INFOGAIN_FAMILIES env
-    > FAMILIES['enabled']. (Kept out of the scalar DEFAULTS auto-loop on purpose.)"""
+    > FAMILIES['enabled']. (Kept out of the scalar DEFAULTS auto-loop on purpose.)
+    `premortem` lens: CLI --premortem on|off|auto > INFOGAIN_PREMORTEM env > FAMILIES['premortem']."""
     fam = dict(FAMILIES)
     cli = getattr(args, "families", None)
     env = os.environ.get("INFOGAIN_FAMILIES")
@@ -117,6 +119,9 @@ def _resolve_families(args):
         fam["enabled"] = bool(cli)
     elif env not in (None, ""):  # empty string = unset (don't silently disable the default-on feature)
         fam["enabled"] = _truthy(env)
+    pm = getattr(args, "premortem", None) or os.environ.get("INFOGAIN_PREMORTEM")
+    if pm not in (None, ""):
+        fam["premortem"] = str(pm).strip().lower()
     return fam
 
 
@@ -202,6 +207,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
             fams, _fe = pipeline.generate_families(
                 problem, framing, fam_model, n_scoped=fam_cfg.get("n_scoped", 3),
                 contrarian=fam_cfg.get("contrarian", True), vantage=fam_cfg.get("vantage", "auto"),
+                premortem=fam_cfg.get("premortem", "auto"),
                 timeout=cfg["gen_timeout"], sink=gen_sink)
             fams_q = pipeline.generate_family_questions(
                 problem, framing, fams, fam_model, n_per=fam_cfg.get("questions_per_family", 3),
@@ -610,11 +616,12 @@ def _dry_run(problem, cfg, evidence=None):
               "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem, evidence)]
     if fam.get("enabled"):
         stages.append("STAGE 1a — generate_families:\n\n" + pipeline.families_prompt(
-            problem, framing_stub, fam.get("n_scoped", 3), fam.get("contrarian", True), True))
-        stages.append("STAGE 1b — per-family questions (example: vantage lens):\n\n"
+            problem, framing_stub, fam.get("n_scoped", 3), fam.get("contrarian", True), True,
+            premortem=True))
+        stages.append("STAGE 1b — per-family questions (example: premortem lens):\n\n"
                       + pipeline.questions_prompt(
                           problem, framing_stub, fam.get("questions_per_family", 3), evidence=evidence,
-                          family={"name": "<family>", "scope": "<scope>", "lens": "vantage"}))
+                          family={"name": "<family>", "scope": "<scope>", "lens": "premortem"}))
     else:
         stages.append("STAGE 1 — generate_questions:\n\n" + pipeline.questions_prompt(
             problem, framing_stub, cfg["questions_per_round"],
@@ -657,9 +664,14 @@ def build_parser():
                         "Bradley-Terry; off-by-default experiment, #24). (Special-cased outside "
                         "the auto-flags, like --mode.)")
     p.add_argument("--families", action=argparse.BooleanOptionalAction, default=None,
-                   help="Generate FAMILIES of questions first (scoped + contrarian + vantage) for "
-                        "coverage, then score each question on its merit. Default ON; pass "
-                        "--no-families for the flat generator. (Special-cased outside the auto-flags.)")
+                   help="Generate FAMILIES of questions first (scoped + contrarian + vantage + "
+                        "premortem) for coverage, then score each question on its merit. Default ON; "
+                        "pass --no-families for the flat generator. (Special-cased outside the auto-flags.)")
+    p.add_argument("--premortem", choices=["auto", "on", "off"], default=None,
+                   help="PRE-MORTEM lens: a failure-mode question family (assume the plan shipped and "
+                        "failed — what unknown would have prevented it?). 'auto' (default — gate on "
+                        "failure-surface tasks) | 'on' | 'off'. Only applies when families are on. "
+                        "(Special-cased outside the auto-flags.)")
     # tunable overrides
     for key in DEFAULTS:
         flag = "--" + key.replace("_", "-")

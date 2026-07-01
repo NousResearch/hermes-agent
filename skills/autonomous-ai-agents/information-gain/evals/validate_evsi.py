@@ -125,6 +125,9 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
             shared = {
                 "prompt": pr["id"], "cat": pr.get("cat"), "question": q["question"][:120],
                 "target": q.get("target"), "answer": (a.get("answer") or "")[:90],
+                # lens/family carried from the scored record so analyze_evsi can attribute realized
+                # value per lens (e.g. premortem vs the rest). Flat generator leaves these empty.
+                "lens": q.get("lens") or "", "family": q.get("family") or "",
                 "prob": round(voi.clamp01(a.get("prob", 0)), 3),
                 "realized_change": None if realized is None else round(realized, 3),
                 "realized_stakes": None if r_stakes is None else round(r_stakes, 3),

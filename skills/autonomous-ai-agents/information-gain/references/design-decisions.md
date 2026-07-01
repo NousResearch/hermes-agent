@@ -137,14 +137,49 @@ the live skill:
   frozen formula is validated within-task, not just between-regime. See `evsi-validation-findings.md`
   §"Comparative elicitation (#24)".
 
+## Pre-mortem lens (#25) — a fourth question family, auto-on by design
+
+The three existing lenses cover coverage (scoped), premise (contrarian), and source-divergence
+(vantage) — but mapped onto `EVSI = Σ P·Δplan·stakes`, **none systematically hunts the `stakes`
+term**: the catastrophic/irreversible tail where getting it wrong is expensive. The **pre-mortem lens**
+fills that gap: a family whose questions assume the baseline plan *shipped and failed in production* and
+hunt the latent hazard (data loss, security compromise, irreversible/destructive actions, silent wrong
+output, runaway cost).
+
+- **It is the generation-side, formula-FROZEN half of the deferred "risk-averse tilt."** The tilt
+  (reweighting an improbable-but-catastrophic branch) is a *scoring* change → still deferred. The lens
+  only ensures the catastrophic-tail question **enters the candidate set** so it can be scored
+  risk-neutrally. No formula change; a lurid-but-improbable question still self-prunes on low P.
+- **Auto-on by design** (like vantage was), gated by `pipeline._premortem_relevant` — a *conservative*
+  failure-surface keyword gate (writes/deploys/payments/migrations/secrets), so read-only
+  summarize/research tasks are untouched. Force with `--premortem on|off|auto` / `INFOGAIN_PREMORTEM`.
+- **Mechanically:** one `_LENS_DIRECTIVE["premortem"]` entry + one `families_prompt` branch + the gate.
+  Nothing downstream branches on lens (scoring/MMR/dedup are lens-agnostic) — every question still scores
+  on its own merit; the lens is pure domain *exposure*. Chosen over success-criteria (overlaps the
+  stage-0 `success_criteria` framing field), stakeholder (niche; `audience` is already a question
+  `type`), and reversibility (folds into the pre-mortem directive) — see the `[[information-gain-skill]]`
+  plan for the graded comparison.
+- **Do-no-harm posture:** auto-on, but the eval ladder (`score_scan.py` / `validate_evsi.py` two-arm
+  premortem off-vs-on, rows now tagged with `lens`/`family`) *confirms* it earns its place — it should
+  add distinct realized-valuable questions on failure-surface tasks and stay quiet on read-only
+  controls. **Rollback trigger:** if it adds low-value noise on read-only prompts or drops adjudicator
+  `diversity`, downgrade `FAMILIES["premortem"]` to `"off"` (one-line change). The measurability caveat
+  (absolute realized-stakes collapses, §Comparative elicitation) means the primary evidence is the
+  **failure-surface-vs-read-only differential**, not absolute stakes.
+
 ## Decided / deferred
 
 - **Decided, keep:** one layer of projected answers (no chain) · within-round semantic consolidation
   only · `--mode focus` default behavior unchanged · report-only (never answers/asks itself) · the
-  **formula stays FROZEN** (pairwise changes only *how Δ/stakes are elicited*, never the √(U·EVSI) form).
+  **pre-mortem lens auto-on** (#25) · the **formula stays FROZEN** (pairwise changes only *how Δ/stakes
+  are elicited*, never the √(U·EVSI) form).
 - **Confirmation tooling (do-no-harm):** `saturation_scan.py --scored` tests whether the HIGH-value
   signal saturates earlier than distinct-target coverage (it shouldn't keep growing) — evidence that
   breadth is bounded by value, so modest breadth + the families layer is the right coverage mechanism.
+  The premortem off/on two-arm scan (rows lens-tagged) confirms the fourth lens adds distinct realized
+  value on failure-surface tasks, not noise.
 - **Deferred (not bundled):** making `deepseek` the default judge (the "generous judge" calibration
-  fix) · risk-averse tilt · realized-pairwise stakes for the de-confounded clean floor (#21) · pushing
-  the branch / baking into the image.
+  fix) · the risk-averse *scoring* tilt (its generation-side half is now built as the pre-mortem lens) ·
+  a success-criteria / stakeholder lens (documented as the sanctioned "add a second lens later" option) ·
+  realized-pairwise stakes for the de-confounded clean floor (#21) · pushing the branch / baking into
+  the image.

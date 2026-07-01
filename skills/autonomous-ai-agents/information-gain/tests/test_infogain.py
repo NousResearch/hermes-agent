@@ -319,6 +319,41 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertIn("vantage", vant.lower())
         self.assertNotIn("FAMILY", pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3))
 
+    def test_premortem_lens_directive_and_gate(self):
+        # directive registered
+        self.assertIn("premortem", pipeline._LENS_DIRECTIVE)
+        pm = pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3,
+                                       family={"name": "F", "scope": "s", "lens": "premortem"})
+        self.assertIn("FAILED", pm)  # the failure-mode directive is injected
+        # conservative auto-gate: fires on a failure surface, quiet on read-only
+        self.assertTrue(pipeline._premortem_relevant({"goal": "deploy to production", "decision": "ship"}))
+        self.assertTrue(pipeline._premortem_relevant({"goal": "send the payment", "decision": "charge card"}))
+        self.assertFalse(pipeline._premortem_relevant({"goal": "summarize this research paper",
+                                                       "decision": "explain the findings"}))
+
+    def test_families_prompt_premortem_block_is_gated(self):
+        on = pipeline.families_prompt("p", {"goal": "g", "decision": "d"}, 3, True, True, premortem=True)
+        off = pipeline.families_prompt("p", {"goal": "g", "decision": "d"}, 3, True, True, premortem=False)
+        self.assertIn("PRE-MORTEM", on)
+        self.assertIn('"premortem"', on)           # schema enum advertises it
+        self.assertNotIn("PRE-MORTEM", off)         # absent when off
+        self.assertNotIn('"premortem"', off)        # enum stays the original 3 lenses
+
+    def test_generate_families_premortem_auto_gate(self):
+        obj = {"families": [{"name": "Hazards", "scope": "s", "lens": "premortem"}]}
+        with mock.patch.object(pipeline, "_call_json", return_value=(obj, None)) as m:
+            pipeline.generate_families("p", {"goal": "deploy to production", "decision": "ship"},
+                                       "fast", premortem="auto")
+            self.assertIn("PRE-MORTEM", m.call_args[0][1])   # gate fired -> block present
+            m.reset_mock()
+            pipeline.generate_families("p", {"goal": "summarize a paper", "decision": "explain"},
+                                       "fast", premortem="auto")
+            self.assertNotIn("PRE-MORTEM", m.call_args[0][1])  # gate quiet -> block absent
+            m.reset_mock()
+            pipeline.generate_families("p", {"goal": "summarize a paper", "decision": "explain"},
+                                       "fast", premortem="on")
+            self.assertIn("PRE-MORTEM", m.call_args[0][1])   # forced on overrides the gate
+
     def test_generate_questions_multisample_union_dedup(self):
         # two independent samples; t2 appears in both -> deduped; union covers t1,t2,t3
         obj1 = {"questions": [{"question": "Q-A", "type": "scope", "why": "w", "target": "t1"},
@@ -655,6 +690,32 @@ class TestModeConfig(unittest.TestCase):
         finally:
             os.environ.pop("INFOGAIN_FAMILIES", None) if old is None else os.environ.update(
                 {"INFOGAIN_FAMILIES": old})
+
+    # ── premortem lens (auto-on by design) ──
+    def test_premortem_default_auto(self):
+        self.assertEqual(self._cfg(["a problem"])["families"]["premortem"], "auto")
+
+    def test_premortem_cli_override(self):
+        self.assertEqual(self._cfg(["--premortem", "off", "p"])["families"]["premortem"], "off")
+        self.assertEqual(self._cfg(["--premortem", "on", "p"])["families"]["premortem"], "on")
+
+    def test_premortem_env_and_cli_precedence(self):
+        old = os.environ.get("INFOGAIN_PREMORTEM")
+        try:
+            os.environ["INFOGAIN_PREMORTEM"] = "on"
+            self.assertEqual(self._cfg(["p"])["families"]["premortem"], "on")
+            self.assertEqual(self._cfg(["--premortem", "off", "p"])["families"]["premortem"], "off")
+        finally:
+            os.environ.pop("INFOGAIN_PREMORTEM", None) if old is None else os.environ.update(
+                {"INFOGAIN_PREMORTEM": old})
+
+    def test_premortem_key_stays_inside_families_dict(self):
+        # the new lens knob must live in the families dict, NOT leak into the scalar cfg (the DEFAULTS
+        # auto-loop / byte-identical-cfg safety invariant that keeps the live default composition safe)
+        cfg = self._cfg(["a problem"])
+        self.assertNotIn("premortem", {k: v for k, v in cfg.items() if k != "families"})
+        self.assertIn("premortem", cfg["families"])
+        self.assertNotIn("premortem", infogain.DEFAULTS)
 
     # ── value_judge_mode selector (#24, off by default) ──
     def test_value_judge_mode_defaults_absolute(self):

@@ -22,6 +22,7 @@ try:
     import infogain  # noqa: E402
     import adjudicator  # noqa: E402
     import analyze_evsi  # noqa: E402
+    import validate_evsi  # noqa: E402
     _OK = True
 except SystemExit:
     _OK = False
@@ -175,6 +176,48 @@ class TestAnalyzeEvsi(unittest.TestCase):
         self.assertEqual(analyze_evsi._GATE_TARGETS[0][0], "realized_regret")
         self.assertEqual({t[0] for t in analyze_evsi._GATE_TARGETS},
                          {"realized_regret", "realized_stakes", "realized_change"})
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestValidateEvsiRows(unittest.TestCase):
+    """The realized rows must carry lens/family so analyze_evsi can attribute value per lens."""
+
+    def test_rows_carry_lens_and_family(self):
+        record = {"question": "What breaks on token theft?", "target": "token_theft",
+                  "lens": "premortem", "family": "Failure Hazards",
+                  "answers": [{"answer": "rotate keys", "prob": 0.6, "delta_plan": 0.8, "stakes": 0.9}]}
+        fake_result = {"framing": {"baseline_plan": "B"}, "all_scored": [record], "bucket": [record]}
+        with mock.patch.object(validate_evsi.infogain, "run", return_value=fake_result), \
+             mock.patch.object(validate_evsi.pipeline, "resolve_alias", side_effect=lambda m: m), \
+             mock.patch.object(validate_evsi.pipeline, "frame_and_plan",
+                               return_value=({"baseline_plan": "B'"}, None)), \
+             mock.patch.object(validate_evsi, "change_judge", return_value=0.7), \
+             mock.patch.object(validate_evsi, "stakes_judge", return_value=0.5):
+            cfg = {"plan_model": "fast", "value_judge_model": "fast", "judge_timeout": 10}
+            rows, _ = validate_evsi.run_prompt({"id": "add-auth", "problem": "p"}, cfg,
+                                               judge_model="fast", max_answers=3, timeout=10,
+                                               source="all_scored")
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["lens"], "premortem")
+        self.assertEqual(rows[0]["family"], "Failure Hazards")
+        self.assertEqual(rows[0]["realized_regret"], round(0.7 * 0.5, 3))
+
+    def test_flat_generator_rows_have_empty_lens(self):
+        record = {"question": "Q", "target": "t",  # no lens/family (flat generator)
+                  "answers": [{"answer": "a", "prob": 0.5, "delta_plan": 0.4, "stakes": 0.3}]}
+        fake_result = {"framing": {"baseline_plan": "B"}, "all_scored": [record]}
+        with mock.patch.object(validate_evsi.infogain, "run", return_value=fake_result), \
+             mock.patch.object(validate_evsi.pipeline, "resolve_alias", side_effect=lambda m: m), \
+             mock.patch.object(validate_evsi.pipeline, "frame_and_plan",
+                               return_value=({"baseline_plan": "B2"}, None)), \
+             mock.patch.object(validate_evsi, "change_judge", return_value=0.2), \
+             mock.patch.object(validate_evsi, "stakes_judge", return_value=0.2):
+            cfg = {"plan_model": "fast", "value_judge_model": "fast", "judge_timeout": 10}
+            rows, _ = validate_evsi.run_prompt({"id": "gmail-triage", "problem": "p"}, cfg,
+                                               judge_model="fast", max_answers=3, timeout=10,
+                                               source="all_scored")
+        self.assertEqual(rows[0]["lens"], "")
+        self.assertEqual(rows[0]["family"], "")
 
 
 @unittest.skipUnless(_OK, "skill scripts not importable")

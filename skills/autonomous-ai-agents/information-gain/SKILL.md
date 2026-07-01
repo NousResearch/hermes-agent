@@ -132,21 +132,32 @@ Full rationale + citations: `references/methodology.md`. Prompt contracts: `refe
 ## Families (default ON — `--families`/`--no-families`)
 
 Before generating individual questions, it first generates **families of questions** for *coverage*:
-several **scoped** families (distinct regions of the unknowns) plus two lenses you'd otherwise miss —
-a **contrarian** family (challenges the baseline approach itself: *"should we even build this?"*) and a
+several **scoped** families (distinct regions of the unknowns) plus three lenses you'd otherwise miss —
+a **contrarian** family (challenges the baseline approach itself: *"should we even build this?"*), a
 **vantage** family (questions whose answer is *access-relative* — differs by environment / server /
-identity / credential / token; auto-enabled only for systems/access tasks). It then generates questions
-within each family (tagged with `family`/`lens`).
+identity / credential / token; auto-enabled only for systems/access tasks), and a **pre-mortem** family
+(*assume the plan shipped and FAILED — what unknown would have prevented it?*: data loss, security
+compromise, irreversible/destructive actions, silent wrong output, runaway cost; auto-enabled only for
+failure-surface tasks — writes/deploys/payments/migrations). It then generates questions within each
+family (tagged with `family`/`lens`).
+
+The three non-scoped lenses map onto the value formula `√(U·EVSI)`, `EVSI = Σ P·Δplan·stakes`: scoped
+maximizes Δplan-*coverage*, contrarian targets the *premise* (highest Δplan), vantage targets a *source*
+of hidden Δplan, and pre-mortem hunts the **`stakes` tail** — the catastrophic/irreversible branch no
+other lens systematically surfaces. (Pre-mortem is the generation-side, formula-frozen half of the
+deferred "risk-averse tilt": it only ensures the catastrophic-tail question *enters* the candidate set;
+scoring stays risk-neutral, so a lurid-but-improbable question still self-prunes on low P.)
 
 Families are **domain exposure only** — there is **no family-level negation**. Every question is still
 scored on its own merit (the same EVSI pipeline), so a low-average family can still surface the single
-highest-value question (this is common for the contrarian/vantage lenses); irrelevant families
+highest-value question (this is common for the contrarian/vantage/pre-mortem lenses); irrelevant families
 self-prune because their questions score low individually. The `family` tag adds a tier to the MMR
 diversity kernel (`family > target > question`) so selection **spreads across families**, and the
-report is **grouped by family** (contrarian/vantage labelled). Turn off with `--no-families` (or
-`INFOGAIN_FAMILIES=off`) for the flat generator. Cost ≈ `questions_per_family × (n_scoped + contrarian +
-vantage)` candidates (~12–15 at defaults), with a one-call fallback to the flat generator if family
-generation yields nothing.
+report is **grouped by family** (non-scoped lenses labelled). Turn off with `--no-families` (or
+`INFOGAIN_FAMILIES=off`) for the flat generator; force the pre-mortem lens with `--premortem on|off|auto`
+(or `INFOGAIN_PREMORTEM`). Cost ≈ `questions_per_family × (n_scoped + contrarian + vantage + premortem)`
+candidates (~12–18 at defaults), with a one-call fallback to the flat generator if family generation
+yields nothing.
 
 ## Automating the loop — the `investigator` skill
 

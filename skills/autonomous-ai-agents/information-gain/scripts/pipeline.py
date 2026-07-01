@@ -217,6 +217,10 @@ _LENS_DIRECTIVE = {
     "vantage": ("These MUST be questions whose answer would DIFFER depending on which environment / "
                 "server / identity / credential / token you investigate from — name the vantage axis "
                 "in each (e.g. 'from prod vs staging', 'as which DB user')."),
+    "premortem": ("These MUST assume the baseline plan shipped and FAILED in production. Hunt the "
+                  "latent hazard whose answer, known now, would have prevented it — data loss / "
+                  "corruption, security compromise, irreversible or destructive actions, silent wrong "
+                  "output, runaway cost. Name the failure each question targets."),
 }
 
 
@@ -432,7 +436,22 @@ def _vantage_relevant(framing):
     return any(h in blob for h in _VANTAGE_HINT)
 
 
-def families_prompt(problem, framing, n_scoped, contrarian, vantage):
+# Failure-surface hints: the task can cause a costly/irreversible failure (so a pre-mortem matters).
+# Deliberately CONSERVATIVE — the lens is auto-on, so read-only/summarize/research tasks must not trip
+# it. Side-effecting verbs + high-stakes nouns only; no generic "code"/"config" (too broad).
+_PREMORTEM_HINT = ("write", "send", "delete", "remove", "deploy", "release", "migrate", "drop",
+                   "overwrite", "payment", "charge", "refund", "production", "prod", "credential",
+                   "secret", "irreversible", "destructive", "publish", "broadcast", "mutate",
+                   "database", "transaction", "purchase", "email", "message", "commit", "merge")
+
+
+def _premortem_relevant(framing):
+    """Cheap gate: could acting on the baseline plan cause a costly/irreversible failure?"""
+    blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
+    return any(h in blob for h in _PREMORTEM_HINT)
+
+
+def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=False):
     lenses = [f"- {n_scoped} SCOPED families: each a DISTINCT region/dimension of the unknowns "
               "(lens \"scoped\")."]
     if contrarian:
@@ -441,6 +460,10 @@ def families_prompt(problem, framing, n_scoped, contrarian, vantage):
     if vantage:
         lenses.append("- 1 VANTAGE family (lens \"vantage\"): unknowns whose answer would DIFFER by which "
                       "environment / server / identity / credential / token you investigate from.")
+    if premortem:
+        lenses.append("- 1 PRE-MORTEM family (lens \"premortem\"): unknowns that, if wrong, cause a "
+                      "costly or irreversible FAILURE of the baseline plan in production.")
+    allowed = '"scoped"|"contrarian"|"vantage"' + ('|"premortem"' if premortem else '')
     return (
         "You are organizing the key unknowns about a prompt into FAMILIES before drilling into "
         "individual questions.\n\n"
@@ -449,18 +472,21 @@ def families_prompt(problem, framing, n_scoped, contrarian, vantage):
         "Propose these families (each a distinct grouping of related unknowns):\n"
         + "\n".join(lenses) + "\n\n"
         "Return ONLY a JSON object:\n"
-        '{"families": [{"name": str, "scope": str, "lens": "scoped"|"contrarian"|"vantage"}, ...]}\n'
+        '{"families": [{"name": str, "scope": str, "lens": ' + allowed + "}, ...]}\n"
         "- name: 2-5 word family label. scope: one sentence on what unknowns it covers.\n"
         "Respond ONLY with the JSON object."
     )
 
 
 def generate_families(problem, framing, model, n_scoped=3, contrarian=True, vantage="auto",
-                      timeout=180, sink=None):
-    """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage`:
-    "on" | "off" | "auto" (include only when the task involves systems/access)."""
+                      premortem="auto", timeout=180, sink=None):
+    """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage` and
+    `premortem`: "on" | "off" | "auto" (include only when the task involves systems/access, resp.
+    a failure surface)."""
     want_vantage = (vantage == "on") or (vantage == "auto" and _vantage_relevant(framing))
-    obj, err = _call_json(model, families_prompt(problem, framing, n_scoped, contrarian, want_vantage),
+    want_premortem = (premortem == "on") or (premortem == "auto" and _premortem_relevant(framing))
+    obj, err = _call_json(model, families_prompt(problem, framing, n_scoped, contrarian, want_vantage,
+                                                 want_premortem),
                           timeout, num_predict=600, sink=sink)
     fams = []
     items = obj.get("families") if isinstance(obj, dict) else None

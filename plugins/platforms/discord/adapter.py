@@ -5020,7 +5020,11 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
-        Returns the created thread object, or ``None`` on failure.
+        Returns the created thread object, or ``None`` on failure. Both the
+        primary ``message.create_thread`` and the seed-message fallback are
+        retried once after a short backoff so transient connect errors
+        (e.g. ``Cannot connect to host discord.com:443``) don't immediately
+        burn through to the caller's failure path (#20243).
         """
         # Build a short thread name from the message. Strip Discord mention
         # syntax (users / roles / channels) so thread titles don't end up
@@ -5035,28 +5039,44 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
 
-        try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-            return thread
-        except Exception as direct_error:
-            display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
-            reason = f"Auto-threaded from mention by {display_name}"
+        display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
+        reason = f"Auto-threaded from mention by {display_name}"
+
+        last_direct_error: Exception | None = None
+        last_fallback_error: Exception | None = None
+
+        for attempt in range(2):
             try:
-                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
-                thread = await seed_msg.create_thread(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
-                )
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                 return thread
-            except Exception as fallback_error:
-                logger.warning(
-                    "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
-                    self.name,
-                    direct_error,
-                    fallback_error,
-                )
-                return None
+            except Exception as direct_error:
+                last_direct_error = direct_error
+                try:
+                    seed_msg = await message.channel.send(
+                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                    )
+                    thread = await seed_msg.create_thread(
+                        name=thread_name,
+                        auto_archive_duration=1440,
+                        reason=reason,
+                    )
+                    return thread
+                except Exception as fallback_error:
+                    last_fallback_error = fallback_error
+                    if attempt == 0:
+                        # Brief backoff before the second attempt — most failures
+                        # in this path are transient connect errors that recover
+                        # within a second or two.
+                        await asyncio.sleep(0.75)
+                        continue
+
+        logger.warning(
+            "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",
+            self.name,
+            last_direct_error,
+            last_fallback_error,
+        )
+        return None
 
     async def create_handoff_thread(
         self,
@@ -5742,6 +5762,26 @@ class DiscordAdapter(BasePlatformAdapter):
                     # event is dropped before it can trigger a second agent run.
                     # Fixes #51057.
                     self._dedup.is_duplicate(str(thread.id))
+                else:
+                    # Auto-threading is the configured routing target for this
+                    # message; if it fails we must NOT silently fall back to an
+                    # inline parent-channel reply (#20243). That breaks
+                    # thread-first Discord workflows by dumping a new task into
+                    # a shared channel. Surface a short visible error so the
+                    # user can retry once Discord recovers, and skip agent
+                    # invocation for this message.
+                    try:
+                        await message.channel.send(
+                            "⚠️ Hermes could not create a Discord thread for "
+                            "this message, so the request was not processed. Please retry."
+                        )
+                    except Exception as notify_error:
+                        logger.warning(
+                            "[%s] Failed to notify user of auto-thread failure: %s",
+                            self.name,
+                            notify_error,
+                        )
+                    return
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)

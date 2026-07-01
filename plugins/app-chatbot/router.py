@@ -139,7 +139,13 @@ def format_router_context(
     default_user_id: str = "",
 ) -> str:
     """Build pre_llm_call context from intent router + user identity line."""
-    lines = []
+    lines = [
+        "[Data access policy]",
+        "- Fetch CRWD/gig/user data ONLY via: get_active_gigs, get_user_profile_by_id,",
+        "  get_gig_details, get_user_gig_history, get_user_joined_gigs.",
+        "- Do not attempt direct MongoDB queries for database data.",
+        "- If no predefined tool covers the question, say so and ask the user to rephrase.",
+    ]
     if default_user_id:
         lines.append(
             f"Current CLI user_id: {default_user_id} (from APP_CHATBOT_DEFAULT_USER_ID)"

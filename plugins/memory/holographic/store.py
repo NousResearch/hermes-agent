@@ -327,6 +327,21 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def find_facts_by_content(self, substring: str) -> list[dict]:
+        """Find facts whose content contains the given substring (case-insensitive).
+
+        Used by on_memory_write to locate facts to update or remove when the
+        built-in memory tool performs a replace or remove action.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT fact_id, content, category, tags, trust_score,"
+                "       retrieval_count, helpful_count, created_at, updated_at"
+                " FROM facts WHERE content LIKE ?",
+                (f"%{substring}%",),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
     def list_facts(
         self,
         category: str | None = None,

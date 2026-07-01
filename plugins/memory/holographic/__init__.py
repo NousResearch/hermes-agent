@@ -241,14 +241,39 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
+    def on_memory_write(self, action: str, target: str, content: str,
+                         metadata: dict | None = None) -> None:
+        """Mirror built-in memory writes as facts.
+
+        Handles add, replace, and remove so the fact store stays in sync with
+        MEMORY.md / USER.md. Without this, only adds were mirrored — every
+        consolidation (replace/remove) left stale facts behind in the DB.
+        """
+        if not self._store:
+            return
+        category = "user_pref" if target == "user" else "general"
+        try:
+            if action == "add" and content:
                 self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+            elif action == "replace":
+                old_text = (metadata or {}).get("old_text", "")
+                if old_text:
+                    matches = self._store.find_facts_by_content(old_text)
+                    for match in matches:
+                        self._store.update_fact(
+                            match["fact_id"], content=content, category=category,
+                        )
+                elif content:
+                    # No old_text — treat as add
+                    self._store.add_fact(content, category=category)
+            elif action == "remove":
+                old_text = (metadata or {}).get("old_text", "")
+                if old_text:
+                    matches = self._store.find_facts_by_content(old_text)
+                    for match in matches:
+                        self._store.remove_fact(match["fact_id"])
+        except Exception as e:
+            logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
         # Close the SQLite connection deterministically instead of leaking it

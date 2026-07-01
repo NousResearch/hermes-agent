@@ -202,6 +202,10 @@ async def test_discord_defaults_to_require_mention(adapter, monkeypatch):
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    # Auto-thread failures now correctly skip agent invocation (#20243), and
+    # FakeTextChannel has no real ``create_thread``. Disable auto-thread so the
+    # routing assertion below stays focused on free-response gating.
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     message = make_message(channel=FakeTextChannel(channel_id=123), content="hello from channel")
 
@@ -334,6 +338,10 @@ async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(ad
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    # Auto-thread failures now correctly skip agent invocation (#20243).
+    # FakeTextChannel can't satisfy the real ``create_thread`` API, so disable
+    # auto-thread to keep this test focused on mention-strip behaviour.
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     bot_user = adapter._client.user
     message = make_message(

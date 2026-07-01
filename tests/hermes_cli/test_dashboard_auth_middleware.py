@@ -325,6 +325,30 @@ def test_login_non_interactive_provider_returns_404_not_500(gated_app):
     assert "stub" in names
 
 
+def test_login_password_only_provider_returns_400_not_500(gated_app):
+    """Regression: a password-only provider (basic) must not crash on
+    /auth/login — it should return 400 instead of an unhandled
+    NotImplementedError that kills the ASGI server.
+    """
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    register_provider(
+        basic_plugin.BasicAuthProvider(
+            username="admin",
+            password_hash=basic_plugin.hash_password("pw"),
+            secret=b"test-secret-at-least-16b",
+        )
+    )
+
+    r = gated_app.get(
+        "/auth/login?provider=basic&next=%2F", follow_redirects=False
+    )
+    assert r.status_code == 400, (
+        f"basic login should 400, not 500: {r.status_code} {r.text}"
+    )
+    assert "password-only" in r.json()["detail"].lower()
+
+
 def test_callback_without_pkce_cookie_returns_400(gated_app):
     # No prior /auth/login → no PKCE cookie.
     r = gated_app.get(

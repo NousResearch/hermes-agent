@@ -192,6 +192,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Provider does not support interactive login: {provider!r}",
         )
+    if getattr(p, "supports_password", False):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider {provider!r} is password-only and does not support "
+                "OAuth redirect. Use /auth/password-login instead."
+            ),
+        )
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))

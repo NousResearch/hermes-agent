@@ -1250,6 +1250,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                    multi_select=next_args.get("multi_select", False),
+                    min_selections=next_args.get("min_selections", 0),
+                    max_selections=next_args.get("max_selections"),
+                    allow_other=next_args.get("allow_other", True),
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

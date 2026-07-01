@@ -174,6 +174,12 @@ describe('ClarifyTool selection status UX', () => {
     expect(screen.getByRole('button', { name: 'Select selected' })).toBeTruthy()
   })
 
+  it('hides Skip for constrained single-select prompts that disallow Other', () => {
+    renderClarifyTool(vi.fn().mockResolvedValue({ ok: true }), { allowOther: false })
+
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull()
+  })
+
   it('uses multi-select rows to stage multiple choices without submitting until Select selected', async () => {
     const request = renderClarifyTool(vi.fn().mockResolvedValue({ ok: true }), { multiSelect: true })
 

@@ -5215,6 +5215,36 @@ def test_clarify_respond_rejects_custom_answer_when_other_disallowed():
         server._answers.pop("rid-no-other", None)
 
 
+def test_clarify_respond_rejects_empty_single_select_when_other_disallowed():
+    ev = threading.Event()
+    server._pending["rid-required-choice"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-required-choice"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-required-choice", "answer": ""},
+            }
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4010
+        assert not ev.is_set()
+        assert "rid-required-choice" not in server._answers
+    finally:
+        server._pending.pop("rid-required-choice", None)
+        server._pending_prompt_payloads.pop("rid-required-choice", None)
+        server._answers.pop("rid-required-choice", None)
+
+
 def test_clarify_respond_normalizes_allowed_choice_text():
     ev = threading.Event()
     server._pending["rid-choice"] = ("sid_x", ev)

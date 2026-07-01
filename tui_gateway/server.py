@@ -9777,6 +9777,8 @@ def _coerce_clarify_response_from_payload(payload: dict, answer: str) -> tuple[b
     if not text:
         if multi_select and min_selections > 0:
             return False, "", f"Select at least {min_selections} choices."
+        if not multi_select and not allow_other:
+            return False, "", "Reply with one of the listed choices."
         return True, "", ""
 
     if multi_select:

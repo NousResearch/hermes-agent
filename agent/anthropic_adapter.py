@@ -1381,6 +1381,31 @@ _OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
+# Import-time default, used by ``_resolve_hermes_oauth_file`` below to detect
+# a test monkeypatch of the constant (test seam) vs. an unmodified import-time
+# value (in which case it re-resolves through the active profile override).
+_HERMES_OAUTH_FILE_IMPORT_DEFAULT = _HERMES_OAUTH_FILE
+
+
+def _resolve_hermes_oauth_file() -> Path:
+    """Resolve the Hermes-managed Anthropic OAuth credential file path.
+
+    ``_HERMES_OAUTH_FILE`` is frozen at import time, which pins every later
+    request to whichever profile's ``HERMES_HOME`` was active when this
+    module was first imported — a cross-profile credential leak (read AND
+    write) under the multiplexed gateway, where multiple profiles share one
+    process. Re-resolve through ``get_hermes_home()`` on every call so the
+    context-local profile override (``set_hermes_home_override``) is honored,
+    mirroring the cache-dir profile-isolation fix.
+
+    A test (or caller) that monkeypatches the module constant away from its
+    import-time default is respected (test seam preserved), matching
+    ``gateway/platforms/base.py::_resolve_cache_dir``.
+    """
+    current = _HERMES_OAUTH_FILE
+    if current != _HERMES_OAUTH_FILE_IMPORT_DEFAULT:
+        return current
+    return get_hermes_home() / ".anthropic_oauth.json"
 
 
 def _generate_pkce() -> tuple:
@@ -1527,9 +1552,10 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
-    if _HERMES_OAUTH_FILE.exists():
+    oauth_file = _resolve_hermes_oauth_file()
+    if oauth_file.exists():
         try:
-            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            data = json.loads(oauth_file.read_text(encoding="utf-8"))
             if data.get("accessToken"):
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:

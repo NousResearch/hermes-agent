@@ -143,6 +143,80 @@ class TestRichSentStorePathResolution:
         assert b_seen.endswith("state/rich_sent_index.json")
 
 
+class TestAnthropicOauthFilePathResolution:
+    """agent/anthropic_adapter.py's Hermes OAuth credential file must honor
+    the active profile — otherwise a completed OAuth login under one
+    profile reads/writes another profile's credential file under the
+    multiplexed gateway."""
+
+    def test_oauth_file_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import agent.anthropic_adapter as aa
+
+        a_seen = _under_override(prof_a, lambda: aa._resolve_hermes_oauth_file())
+        b_seen = _under_override(prof_b, lambda: aa._resolve_hermes_oauth_file())
+
+        assert a_seen == prof_a / ".anthropic_oauth.json"
+        assert b_seen == prof_b / ".anthropic_oauth.json"
+        assert a_seen != b_seen
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (monkeypatch the module constant, see
+        tests/hermes_cli/test_web_server_oauth_write.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import agent.anthropic_adapter as aa
+
+        forced = tmp_path / "forced_oauth.json"
+        monkeypatch.setattr("agent.anthropic_adapter._HERMES_OAUTH_FILE", forced)
+        seen = _under_override(prof_b, lambda: aa._resolve_hermes_oauth_file())
+        assert seen == forced
+
+
+class TestAuxiliaryClientAuthJsonPathResolution:
+    """agent/auxiliary_client.py's Nous Portal auth.json must honor the
+    active profile — otherwise auxiliary-model calls under one profile can
+    authenticate using another profile's Nous Portal tokens."""
+
+    def test_auth_json_path_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import agent.auxiliary_client as ac
+
+        a_seen = _under_override(prof_a, lambda: ac._resolve_auth_json_path())
+        b_seen = _under_override(prof_b, lambda: ac._resolve_auth_json_path())
+
+        assert a_seen == prof_a / "auth.json"
+        assert b_seen == prof_b / "auth.json"
+        assert a_seen != b_seen
+
+
+class TestMirrorSessionsIndexResolution:
+    """gateway/mirror.py's sessions.json index must honor the active
+    profile — otherwise a delivery-mirror lookup under one profile can read
+    or write into another profile's session index."""
+
+    def test_sessions_index_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import gateway.mirror as mirror_mod
+
+        a_seen = _under_override(prof_a, lambda: mirror_mod._resolve_sessions_index())
+        b_seen = _under_override(prof_b, lambda: mirror_mod._resolve_sessions_index())
+
+        assert a_seen == prof_a / "sessions" / "sessions.json"
+        assert b_seen == prof_b / "sessions" / "sessions.json"
+        assert a_seen != b_seen
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (monkeypatch the module constant, see
+        tests/gateway/test_mirror.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import gateway.mirror as mirror_mod
+
+        forced = tmp_path / "forced_sessions.json"
+        monkeypatch.setattr("gateway.mirror._SESSIONS_INDEX", forced)
+        seen = _under_override(prof_b, lambda: mirror_mod._resolve_sessions_index())
+        assert seen == forced
+
+
 # ---------------------------------------------------------------------------
 # M2 — thread / executor context propagation
 # ---------------------------------------------------------------------------

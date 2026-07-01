@@ -6233,11 +6233,11 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     try:
         from agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
-            _HERMES_OAUTH_FILE,
+            _resolve_hermes_oauth_file,
         )
     except ImportError:
         read_hermes_oauth_credentials = None  # type: ignore
-        _HERMES_OAUTH_FILE = None  # type: ignore
+        _resolve_hermes_oauth_file = None  # type: ignore
 
     hermes_creds = None
     if read_hermes_oauth_credentials:
@@ -6246,10 +6246,11 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         except Exception:
             hermes_creds = None
     if hermes_creds and hermes_creds.get("accessToken"):
+        oauth_file = _resolve_hermes_oauth_file() if _resolve_hermes_oauth_file else None
         return {
             "logged_in": True,
             "source": "hermes_pkce",
-            "source_label": f"Hermes PKCE ({_HERMES_OAUTH_FILE})",
+            "source_label": f"Hermes PKCE ({oauth_file})",
             "token_preview": _truncate_token(hermes_creds.get("accessToken")),
             "expires_at": hermes_creds.get("expiresAt"),
             "has_refresh_token": bool(hermes_creds.get("refreshToken")),
@@ -6686,9 +6687,10 @@ async def disconnect_oauth_provider(
         if provider_id == "anthropic":
             cleared = False
             try:
-                from agent.anthropic_adapter import _HERMES_OAUTH_FILE
-                if _HERMES_OAUTH_FILE.exists():
-                    _HERMES_OAUTH_FILE.unlink()
+                from agent.anthropic_adapter import _resolve_hermes_oauth_file
+                oauth_file = _resolve_hermes_oauth_file()
+                if oauth_file.exists():
+                    oauth_file.unlink()
                     cleared = True
             except Exception:
                 pass
@@ -6845,24 +6847,25 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
-    from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+    from agent.anthropic_adapter import _resolve_hermes_oauth_file
+    oauth_file = _resolve_hermes_oauth_file()
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = _HERMES_OAUTH_FILE.with_name(
-        f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    oauth_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = oauth_file.with_name(
+        f"{oauth_file.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     )
     try:
         with tmp_path.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, indent=2))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, _HERMES_OAUTH_FILE)
+        os.replace(tmp_path, oauth_file)
         try:
-            _HERMES_OAUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            oauth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
     finally:

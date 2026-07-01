@@ -551,6 +551,19 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
+
+def _resolve_auth_json_path() -> Path:
+    """Resolve the Nous Portal ``auth.json`` path, honoring the active profile.
+
+    ``_AUTH_JSON_PATH`` is frozen at import time, which pins every later
+    request to whichever profile's ``HERMES_HOME`` was active when this
+    module was first imported — a cross-profile Nous Portal credential leak
+    under the multiplexed gateway, where multiple profiles share one process.
+    Re-resolve through ``get_hermes_home()`` on every call so the
+    context-local profile override (``set_hermes_home_override``) is honored.
+    """
+    return get_hermes_home() / "auth.json"
+
 # Codex OAuth endpoint used when a caller explicitly requests
 # provider="openai-codex".  There is deliberately no hardcoded default
 # model: the set of models OpenAI accepts on this endpoint for
@@ -1363,9 +1376,10 @@ def _read_nous_auth() -> Optional[dict]:
         }
 
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_json_path = _resolve_auth_json_path()
+        if not auth_json_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text())
+        data = json.loads(auth_json_path.read_text())
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})

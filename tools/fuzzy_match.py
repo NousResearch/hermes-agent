@@ -69,6 +69,28 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
+    # ── Idempotency guard (#18426) ────────────────────────────────────
+    # When ``old_string`` is no longer present in the file but ``new_string``
+    # already is, the patch was almost certainly applied already (the caller
+    # re-sent the same edit without re-reading the file).  Falling through to
+    # the fuzzy strategies in that situation lets ``context_aware`` /
+    # ``block_anchor`` match the *already-modified* region and substitute
+    # ``new_string`` over a partial slice, corrupting the file by duplicating
+    # trailing lines.  Fail cleanly so the caller re-reads and retries.
+    #
+    # This is safe: a legitimate first patch has ``old_string`` exact-present
+    # (skips this check); a legitimate *fuzzy* first patch has ``old_string``
+    # absent but ``new_string`` also absent (the change has not landed yet), so
+    # the check does not fire and the strategy chain proceeds normally.
+    # ``new_string`` must be non-empty so a deletion (empty replacement) does
+    # not trip the vacuous ``"" in content`` test.
+    if new_string and old_string not in content and new_string in content:
+        return content, 0, None, (
+            "old_string was not found in the file, but new_string is already "
+            "present — this patch appears to have been applied already. "
+            "Re-read the file to see its current state before editing again."
+        )
+
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),

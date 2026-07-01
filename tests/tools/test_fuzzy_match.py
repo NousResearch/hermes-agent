@@ -666,3 +666,111 @@ class TestEscapeNormalizedNewString:
         assert count == 1
         assert "return 2" in new
 
+
+class TestIdempotencyGuard:
+    """#18426 — re-applying the same patch after it already landed must NOT
+    silently corrupt the file via a fuzzy strategy that matches the
+    already-modified region.  When ``old_string`` is no longer present but
+    ``new_string`` already is, the change was almost certainly applied
+    already; fail cleanly so the caller re-reads instead of duplicating
+    content.
+    """
+
+    def test_repatch_after_apply_does_not_duplicate(self):
+        """The headline reproduction: apply old->new, then re-apply the same
+        old->new.  The second call must error and leave content untouched,
+        not match the modified region and duplicate trailing lines.
+        """
+        content = (
+            "def handle(request):\n"
+            "    # process the thing\n"
+            "    data = request.json\n"
+            "    result = transform(data)\n"
+            "    return result\n"
+        )
+        old = (
+            "def handle(request):\n"
+            "    # process the thing\n"
+            "    data = request.json\n"
+            "    result = transform(data)\n"
+            "    return result"
+        )
+        new = (
+            "def handle(request):\n"
+            "    # process the thing (v2)\n"
+            "    data = request.json\n"
+            "    result = transform(data)\n"
+            "    logger.info(result)\n"
+            "    return result"
+        )
+        once, count, _, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1, f"first apply should succeed: {err}"
+
+        # Second application with the SAME old/new — already applied.
+        twice, count2, _, err2 = fuzzy_find_and_replace(once, old, new)
+        assert err2 is not None, (
+            "re-applying an already-applied patch must error, not corrupt"
+        )
+        assert count2 == 0
+        # Content must be unchanged — no duplication / corruption.
+        assert twice == once
+        # Specifically, no duplicated trailing line.
+        assert twice.count("    return result") == 1
+
+    def test_already_applied_error_guides_reread(self):
+        """The clean-failure message should point the caller at re-reading."""
+        once, _, _, _ = fuzzy_find_and_replace("value = 1\n", "value = 1", "value = 2")
+        _, _, _, err = fuzzy_find_and_replace(once, "value = 1", "value = 2")
+        assert err is not None
+        msg = err.lower()
+        assert "already" in msg or "re-read" in msg, (
+            f"error should guide a re-read, got: {err!r}"
+        )
+
+    def test_legitimate_fuzzy_match_with_new_absent_still_works(self):
+        """Regression guard: the idempotency check must NOT block a legitimate
+        fuzzy match where old_string is absent (whitespace/indent drift) but
+        the change has NOT been applied yet (new_string also absent).
+        """
+        content = "def  foo(  x  ):\n    return x\n"
+        old = "def foo(x):\n    return x"
+        new = "def bar(x):\n    return x"
+        out, count, _, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None, f"legitimate fuzzy match should succeed: {err}"
+        assert count == 1
+        assert "def bar" in out
+
+    def test_replace_all_already_applied_errors_cleanly(self):
+        """replace_all=True with old gone and new present is also already
+        applied — fail cleanly rather than fuzzy-matching the new content.
+        """
+        once, count, _, _ = fuzzy_find_and_replace("a\na\nb\n", "a", "c",
+                                                   replace_all=True)
+        assert count == 2
+        _, count2, _, err2 = fuzzy_find_and_replace(once, "a", "c",
+                                                    replace_all=True)
+        assert err2 is not None
+        assert count2 == 0
+
+    def test_old_absent_new_absent_still_fuzzy_matches(self):
+        """When neither old nor new is present but a fuzzy match exists, the
+        guard (old absent + new present) must not fire — fuzzy proceeds.
+        """
+        content = "    data = request.json\n    result = transform(data)\n"
+        old = "data = request.json\nresult = transform(data)"
+        new = "data = request.json\nresult = transform(data)\n    log(result)"
+        out, count, _, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None, f"fuzzy match should still work: {err}"
+        assert count == 1
+
+    def test_deletion_with_empty_new_does_not_trip_guard(self):
+        """A deletion (empty new_string) where old is absent must fall through
+        to the normal no-match path, not the idempotency guard — the vacuous
+        ``"" in content`` check must not fire for empty replacements.
+        """
+        _, count, _, err = fuzzy_find_and_replace("keep this\n", "gone", "")
+        assert err is not None
+        assert count == 0
+        # Should be a plain no-match, not the "already applied" message.
+        assert "already" not in err.lower()
+

@@ -41,6 +41,8 @@ from acp.schema import (
     PromptCapabilities,
     PromptResponse,
     ResumeSessionResponse,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -141,6 +143,17 @@ def _guess_image_mime_from_path(path: Path) -> str | None:
         ".bmp": "image/bmp",
         ".svg": "image/svg+xml",
     }.get(suffix)
+
+
+def _inject_skills_prompt(agent: Any, skills_prompt: str) -> None:
+    """Inject a preloaded skills prompt into an agent's system prompt."""
+    existing = getattr(agent, "system_prompt", "") or ""
+    agent.system_prompt = "\n\n".join(
+        part for part in (existing, skills_prompt) if part
+    ).strip()
+    invalidate = getattr(agent, "_invalidate_system_prompt", None)
+    if callable(invalidate):
+        invalidate()
 
 
 def _image_data_url(data: bytes, mime_type: str) -> str:
@@ -450,6 +463,7 @@ class HermesACPAgent(acp.Agent):
         "help": "Show available commands",
         "model": "Show or change current model",
         "tools": "List available tools",
+        "skill": "Load, list, or use skills (/skill list, /skill load <name>)",
         "context": "Show conversation context info",
         "reset": "Clear conversation history",
         "compact": "Compress conversation context",
@@ -471,6 +485,11 @@ class HermesACPAgent(acp.Agent):
         {
             "name": "tools",
             "description": "List available tools with descriptions",
+        },
+        {
+            "name": "skill",
+            "description": "Load, list, or use skills",
+            "input_hint": "list | load <name>",
         },
         {
             "name": "context",
@@ -514,10 +533,11 @@ class HermesACPAgent(acp.Agent):
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(self, session_manager: SessionManager | None = None, skills_prompt: str | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._preloaded_skills_prompt = skills_prompt or ""
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -637,6 +657,72 @@ class HermesACPAgent(acp.Agent):
             available_models=[ModelInfo(model_id=fallback_choice, name=model)],
             current_model_id=fallback_choice,
         )
+
+    def _build_config_options(self, state: SessionState) -> list[SessionConfigOptionSelect] | None:
+        """Return config_options with a model selector for Zed's model dropdown.
+
+        Zed uses ``configOptions`` (the ``SessionConfigOptionSelect`` array
+        in session lifecycle responses) for its prominent model-selector
+        dropdown instead of the legacy ``models`` (``SessionModelState``).
+        """
+        model = str(state.model or getattr(state.agent, "model", "") or "").strip()
+        provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+
+        try:
+            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+
+            normalized_provider = normalize_provider(provider)
+            provider_name = provider_label(normalized_provider)
+            options: list[SessionConfigSelectOption] = []
+            seen_ids: set[str] = set()
+
+            for model_id, description in curated_models_for_provider(normalized_provider):
+                rendered_model = str(model_id or "").strip()
+                if not rendered_model:
+                    continue
+                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
+                if choice_id in seen_ids:
+                    continue
+                desc_parts = [f"Provider: {provider_name}"]
+                if description:
+                    desc_parts.append(str(description).strip())
+                options.append(
+                    SessionConfigSelectOption(
+                        name=rendered_model,
+                        value=choice_id,
+                        description=" • ".join(part for part in desc_parts if part),
+                    )
+                )
+                seen_ids.add(choice_id)
+
+            # Ensure current model appears even if not in curated list
+            current_choice = self._encode_model_choice(normalized_provider, model)
+            if current_choice and current_choice not in seen_ids:
+                options.insert(
+                    0,
+                    SessionConfigSelectOption(
+                        name=model,
+                        value=current_choice,
+                        description=f"Provider: {provider_name} • current",
+                    ),
+                )
+
+            if options:
+                return [
+                    SessionConfigOptionSelect(
+                        id="model",
+                        name="Model",
+                        description="Select the model to use for this session",
+                        type="select",
+                        category="model",
+                        options=options,
+                        current_value=current_choice or options[0].value,
+                    )
+                ]
+        except Exception:
+            logger.debug("Could not build ACP config_options", exc_info=True)
+
+        return None
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -1114,12 +1200,15 @@ class HermesACPAgent(acp.Agent):
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        if self._preloaded_skills_prompt:
+            _inject_skills_prompt(state.agent, self._preloaded_skills_prompt)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
+            config_options=self._build_config_options(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
@@ -1167,6 +1256,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return LoadSessionResponse(
             models=self._build_model_state(state),
+            config_options=self._build_config_options(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 session_id, getattr(state.agent, "session_id", session_id)
@@ -1202,6 +1292,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return ResumeSessionResponse(
             models=self._build_model_state(state),
+            config_options=self._build_config_options(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
@@ -1738,6 +1829,7 @@ class HermesACPAgent(acp.Agent):
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
             "version": self._cmd_version,
+            "skill": self._cmd_skill,
         }.get(cmd)
 
         if handler is None:
@@ -1766,6 +1858,9 @@ class HermesACPAgent(acp.Agent):
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
         target_provider, new_model = self._resolve_model_selection(args, current_provider)
 
+        # Capture MCP-expanded toolsets before rebuilding the agent
+        old_enabled_toolsets = getattr(state.agent, "enabled_toolsets", None)
+
         state.model = new_model
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,
@@ -1773,6 +1868,37 @@ class HermesACPAgent(acp.Agent):
             model=new_model,
             requested_provider=target_provider,
         )
+
+        # Restore MCP-injected toolsets on the new agent
+        if old_enabled_toolsets:
+            try:
+                from model_tools import get_tool_definitions
+                from agent.memory_manager import inject_memory_provider_tools
+
+                if self._preloaded_skills_prompt:
+                    _inject_skills_prompt(state.agent, self._preloaded_skills_prompt)
+
+                state.agent.enabled_toolsets = old_enabled_toolsets
+                disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+                state.agent.tools = get_tool_definitions(
+                    enabled_toolsets=old_enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=True,
+                )
+                state.agent.valid_tool_names = {
+                    tool["function"]["name"] for tool in state.agent.tools or []
+                }
+                inject_memory_provider_tools(state.agent)
+                invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
+                if callable(invalidate):
+                    invalidate()
+            except Exception:
+                logger.warning(
+                    "Session %s: failed to refresh tool surface after /model switch",
+                    state.session_id,
+                    exc_info=True,
+                )
+
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
@@ -1984,41 +2110,145 @@ class HermesACPAgent(acp.Agent):
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"
 
+    def _cmd_skill(self, args: str, state: SessionState) -> str:
+        """Handle /skill slash command: list, load <name>.
+
+        Lists available skills or loads a named skill into the session.
+        Loaded skills are injected into the agent's system prompt.
+        """
+        parts = args.strip().split(maxsplit=1)
+        subcmd = parts[0].lower() if parts else "list"
+
+        if subcmd == "list" or not subcmd:
+            try:
+                from agent.skill_commands import get_skill_commands
+
+                cmds = get_skill_commands()
+                if not cmds:
+                    return "No skills available."
+                lines = ["Available skills:", ""]
+                for name, info in cmds.items():
+                    desc = info.get("description", "") if isinstance(info, dict) else ""
+                    if desc:
+                        lines.append(f"  {name:24s}  {desc}")
+                    else:
+                        lines.append(f"  {name}")
+                return "\n".join(lines)
+            except Exception:
+                return "Could not list skills (call may not be available in this mode)."
+
+        elif subcmd == "load":
+            if len(parts) < 2 or not parts[1]:
+                return "Usage: /skill load <skill-name>"
+
+            raw_name = parts[1]
+            # Normalize comma-separated list
+            names = [n.strip() for n in raw_name.split(",") if n.strip()]
+
+            if not names:
+                return "Usage: /skill load <skill-name>"
+
+            try:
+                from agent.skill_commands import build_preloaded_skills_prompt
+
+                prompt_text, loaded_names, missing_names = build_preloaded_skills_prompt(names)
+
+                result_lines = []
+                if loaded_names:
+                    _inject_skills_prompt(state.agent, prompt_text or "")
+                    result_lines.append(
+                        f"Loaded skill(s): {', '.join(loaded_names)}"
+                    )
+                if missing_names:
+                    result_lines.append(
+                        f"Unknown skill(s): {', '.join(missing_names)}"
+                    )
+                return "\n".join(result_lines) if result_lines else "No skills loaded."
+            except Exception:
+                return "Failed to load skill (call may not be available in this mode)."
+
+        else:
+            return f"Unknown subcommand: /skill {subcmd}. Use: /skill list, /skill load <name>"
+
     # ---- Model switching (ACP protocol method) -------------------------------
 
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModelResponse | None:
-        """Switch the model for a session (called by ACP protocol)."""
+        """Switch the model for a session (called by ACP protocol).
+
+        Preserves ACP-injected MCP toolsets across the model switch so
+        Zed-registered MCP servers remain functional after the change.
+        """
         state = self.session_manager.get_session(session_id)
-        if state:
-            current_provider = getattr(state.agent, "provider", None)
-            requested_provider, resolved_model = self._resolve_model_selection(
-                model_id,
-                current_provider or "openrouter",
-            )
-            state.model = resolved_model
-            provider_changed = bool(current_provider and requested_provider != current_provider)
-            current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
-            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
-            state.agent = self.session_manager._make_agent(
-                session_id=session_id,
-                cwd=state.cwd,
-                model=resolved_model,
-                requested_provider=requested_provider,
-                base_url=current_base_url,
-                api_mode=current_api_mode,
-            )
-            self.session_manager.save_session(session_id)
-            logger.info(
-                "Session %s: model switched to %s via provider %s",
-                session_id,
-                resolved_model,
-                requested_provider,
-            )
-            return SetSessionModelResponse()
-        logger.warning("Session %s: model switch requested for missing session", session_id)
-        return None
+        if not state:
+            logger.warning("Session %s: model switch requested for missing session", session_id)
+            return None
+
+        # Capture MCP-expanded toolsets before the agent is rebuilt
+        old_enabled_toolsets = getattr(state.agent, "enabled_toolsets", None)
+
+        current_provider = getattr(state.agent, "provider", None)
+        requested_provider, resolved_model = self._resolve_model_selection(
+            model_id,
+            current_provider or "openrouter",
+        )
+        state.model = resolved_model
+        provider_changed = bool(current_provider and requested_provider != current_provider)
+        current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
+        current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
+        state.agent = self.session_manager._make_agent(
+            session_id=session_id,
+            cwd=state.cwd,
+            model=resolved_model,
+            requested_provider=requested_provider,
+            base_url=current_base_url,
+            api_mode=current_api_mode,
+        )
+
+        # Restore MCP-injected toolsets on the new agent
+        if old_enabled_toolsets:
+            try:
+                from model_tools import get_tool_definitions
+                from agent.memory_manager import inject_memory_provider_tools
+
+                # Preserve skill-injected prompt across the rebuild
+                if self._preloaded_skills_prompt:
+                    _inject_skills_prompt(state.agent, self._preloaded_skills_prompt)
+
+                state.agent.enabled_toolsets = old_enabled_toolsets
+                disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+                state.agent.tools = get_tool_definitions(
+                    enabled_toolsets=old_enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=True,
+                )
+                state.agent.valid_tool_names = {
+                    tool["function"]["name"] for tool in state.agent.tools or []
+                }
+                inject_memory_provider_tools(state.agent)
+                invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
+                if callable(invalidate):
+                    invalidate()
+            except Exception:
+                logger.warning(
+                    "Session %s: failed to refresh tool surface after model switch",
+                    session_id,
+                    exc_info=True,
+                )
+
+        # Re-inject skills prompt on the new agent (plain fallback if MCP path didn't run)
+        elif self._preloaded_skills_prompt:
+            _inject_skills_prompt(state.agent, self._preloaded_skills_prompt)
+
+        self.session_manager.save_session(session_id)
+        logger.info(
+            "Session %s: model switched to %s via provider %s",
+            session_id,
+            resolved_model,
+            requested_provider,
+        )
+        return SetSessionModelResponse()
 
     async def set_session_mode(
         self, mode_id: str, session_id: str, **kwargs: Any
@@ -2048,6 +2278,13 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+        elif str(config_id) == "model":
+            # Zed's model selector uses configOptions with id="model";
+            # route to the dedicated model switch handler.
+            return await self.set_session_model(
+                model_id=str(value),
+                session_id=session_id,
+            )
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):

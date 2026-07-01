@@ -26,6 +26,109 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _assert_inherited_notify_sub(subs: list[dict]) -> None:
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "topic1"
+    assert subs[0]["user_id"] == "user1"
+    assert subs[0]["notifier_profile"] == "default"
+
+
+def test_create_task_inherits_parent_notify_subscriptions(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker1")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        child = kb.create_task(conn, title="child", parents=[parent], assignee="worker1")
+
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    _assert_inherited_notify_sub(subs)
+
+
+def test_link_tasks_inherits_parent_notify_subscriptions_without_replaying_old_child_events(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker1")
+        child = kb.create_task(conn, title="child", assignee="worker1")
+        with kb.write_txn(conn):
+            kb._append_event(conn, child, kind="blocked", payload={"reason": "old"})
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        kb.link_tasks(conn, parent, child)
+
+        subs = kb.list_notify_subs(conn, child)
+        _, old_events = kb.unseen_events_for_sub(
+            conn,
+            task_id=child,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            kinds=["blocked"],
+        )
+    finally:
+        conn.close()
+
+    _assert_inherited_notify_sub(subs)
+    assert old_events == []
+
+
+def test_decompose_triage_task_inherits_root_notify_subscriptions(kanban_home):
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="triage root", triage=True, assignee="orchestrator")
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "first child", "assignee": "worker1"},
+                {"title": "second child", "assignee": "worker2", "parents": [0]},
+            ],
+            author="triager",
+            auto_promote=False,
+        )
+
+        assert child_ids is not None
+        child_subs = [kb.list_notify_subs(conn, child_id) for child_id in child_ids]
+    finally:
+        conn.close()
+
+    assert len(child_subs) == 2
+    for subs in child_subs:
+        _assert_inherited_notify_sub(subs)
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """

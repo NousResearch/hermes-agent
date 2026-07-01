@@ -915,16 +915,19 @@ For Claude on **native Anthropic**, **OpenRouter**, and **Nous Portal**, Hermes 
 
 The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/integrations/providers#xai-grok--responses-api--prompt-caching).
 
-No knob exists to disable this — caching is always-on and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count.
+Caching is on by default and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count. It can be turned off entirely with the `enabled` knob below when a strict provider rejects `cache_control` markers.
 
-The one explicit knob is the cache TTL tier Hermes requests on Anthropic-style breakpoints:
+The explicit knobs are whether caching runs at all and the cache TTL tier Hermes requests on Anthropic-style breakpoints:
 
 ```yaml
 prompt_caching:
+  enabled: true    # set false to stop sending cache_control markers entirely
   cache_ttl: "5m"   # "5m" or "1h" (Anthropic-supported tiers); other values are ignored
 ```
 
 `cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. Only the two Anthropic-supported tiers (`"5m"`, `"1h"`) are honored — any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
+
+`enabled` defaults to `true`. Set it to `false` as an escape hatch for strict Anthropic-compatible proxies that inject their own `cache_control` markers server-side — stacking those on top of Hermes' breakpoints can exceed Anthropic's 4-breakpoint limit and return HTTP 400 `"A maximum of 4 blocks with cache_control may be provided"`. Disabling caching on that setup passes requests through without client-side markers so the proxy manages its own.
 
 ## Auxiliary Models
 

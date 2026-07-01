@@ -45,7 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -1645,15 +1645,68 @@ class AIAgent:
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
 
+    def _messages_with_persist_user_message_override(self, messages: List[Dict]) -> List[Dict]:
+        """Return a persistence/logging view with user-message overrides applied.
+
+        The live ``messages`` list may still be used for the next provider API
+        request after early crash-resilience persistence. Apply the clean
+        transcript override to a shallow copy only, so persistence can store the
+        user-facing content without mutating the provider-facing turn in place
+        (#56303).
+        """
+        idx = getattr(self, "_persist_user_message_idx", None)
+        override = getattr(self, "_persist_user_message_override", None)
+        timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        if idx is None or (override is None and timestamp is None):
+            return messages
+        if not (0 <= idx < len(messages)):
+            return messages
+        msg = messages[idx]
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            return messages
+
+        copied_msg = dict(msg)
+        if override is not None and not isinstance(copied_msg.get("content"), list):
+            copied_msg["content"] = override
+        if timestamp is not None:
+            copied_msg["timestamp"] = timestamp
+
+        copied_messages = list(messages)
+        copied_messages[idx] = copied_msg
+        return copied_messages
+
+    def _persistence_content_and_timestamp(self, msg: Dict, index: int) -> Tuple[Any, Any]:
+        """Return the content/timestamp that should be written for ``msg``.
+
+        Unlike ``_apply_persist_user_message_override()``, this does not mutate
+        the live message dict. ``_flush_messages_to_session_db()`` stamps
+        persistence markers on the original dicts for idempotence, so computing
+        the override at write time avoids duplicate rows while keeping
+        API-facing message content untouched.
+        """
+        content = msg.get("content")
+        timestamp = msg.get("timestamp")
+        idx = getattr(self, "_persist_user_message_idx", None)
+        if idx != index:
+            return content, timestamp
+        override = getattr(self, "_persist_user_message_override", None)
+        override_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        if msg.get("role") == "user":
+            if override is not None and not isinstance(content, list):
+                content = override
+            if override_timestamp is not None:
+                timestamp = override_timestamp
+        return content, timestamp
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
-        self._apply_persist_user_message_override(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
+        persisted_messages = self._messages_with_persist_user_message_override(messages)
+        self._session_messages = persisted_messages
+        self._save_session_log(persisted_messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
@@ -1742,7 +1795,6 @@ class AIAgent:
             return
         if not self._session_db:
             return
-        self._apply_persist_user_message_override(messages)
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -1784,7 +1836,7 @@ class AIAgent:
                 if isinstance(item, dict)
             }
 
-            for msg in messages:
+            for index, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
                 # Never write ephemeral recovery scaffolding to the session
@@ -1807,7 +1859,7 @@ class AIAgent:
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
-                content = msg.get("content")
+                content, timestamp = self._persistence_content_and_timestamp(msg, index)
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1843,7 +1895,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=msg.get("timestamp"),
+                    timestamp=timestamp,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the

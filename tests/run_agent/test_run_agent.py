@@ -143,6 +143,32 @@ def test_persist_user_message_override_preserves_multimodal_turns(agent):
     assert messages == [{"role": "user", "content": multimodal_content}]
 
 
+def test_flush_persist_user_message_override_does_not_mutate_live_messages(agent):
+    messages = [
+        {"role": "user", "content": "API-only synthetic prefix\nhello"},
+        {"role": "assistant", "content": "working", "tool_calls": []},
+    ]
+    agent.session_id = "session-override"
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = "hello"
+    agent._persist_user_message_timestamp = "2026-07-01T11:05:00Z"
+
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+    assert messages[0]["content"] == "API-only synthetic prefix\nhello"
+    assert "timestamp" not in messages[0]
+    first_call = agent._session_db.append_message.call_args_list[0]
+    assert first_call.kwargs["role"] == "user"
+    assert first_call.kwargs["content"] == "hello"
+    assert first_call.kwargs["timestamp"] == "2026-07-01T11:05:00Z"
+
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+    assert agent._session_db.append_message.call_count == 2
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""

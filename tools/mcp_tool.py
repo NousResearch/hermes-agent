@@ -34,6 +34,10 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+        skip_preflight: true  # bypass the content-type probe for a valid
+                              # Streamable HTTP endpoint that answers HEAD/GET
+                              # with a non-MCP content type (e.g. text/plain)
+                              # but serves real MCP over POST. Default: false.
       searxng:
         url: "http://localhost:8000/sse"
         transport: sse       # use SSE transport instead of Streamable HTTP
@@ -63,6 +67,9 @@ Features:
       sampling/createMessage (text and tool-use responses)
     - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
       flag allows concurrent execution of tools from the same server
+    - Preflight opt-out: per-server ``skip_preflight`` flag bypasses the
+      content-type probe for valid Streamable HTTP endpoints whose HEAD/GET
+      advertises a non-MCP content type (real MCP is served over POST)
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
@@ -2311,8 +2318,17 @@ class MCPServerTask:
             # prior successful connect) — the endpoint was validated once,
             # re-probing is a redundant round-trip. Also skip for OAuth servers:
             # without a cached token the endpoint returns HTML or 401, which
-            # would incorrectly block the OAuth flow before it can run.
-            if config.get("transport") != "sse" and not self._ready.is_set() and self._auth_type != "oauth":
+            # would incorrectly block the OAuth flow before it can run. Finally,
+            # honor an explicit ``skip_preflight`` opt-out for valid Streamable
+            # HTTP servers that answer HEAD/GET with a non-MCP content type
+            # (e.g. text/plain) yet serve real MCP over POST — the heuristic
+            # would otherwise reject them before the handshake gets a chance.
+            if (
+                config.get("transport") != "sse"
+                and not self._ready.is_set()
+                and self._auth_type != "oauth"
+                and not config.get("skip_preflight")
+            ):
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(

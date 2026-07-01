@@ -3837,6 +3837,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
+        # Incognito mode: when True, subsequent turns are not persisted to
+        # state.db or sessions/*.jsonl. Toggled via /incognito slash command.
+        self._incognito_mode = False
         self._clarify_deadline = 0
         self._sudo_state = None
         self._sudo_deadline = 0
@@ -8145,6 +8148,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "incognito":
+            self._handle_incognito_command(cmd_original)
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":
@@ -8750,6 +8755,52 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         return True
     
+
+    def _handle_incognito_command(self, cmd: str):
+        """Handle /incognito [on|off|status] — toggle ephemeral persistence.
+
+        When ON, subsequent turns in the current REPL session are NOT persisted
+        to state.db or sessions/*.jsonl. Useful as a scratchpad for adversarial
+        testing / probing where you don't want probes to contaminate the agent's
+        memory or auto-reflection. Toggle OFF to resume normal persistence.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        sub = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if sub == "status":
+            state = "🔒 ON" if self._incognito_mode else "🔓 OFF"
+            _cprint(f"  Incognito mode: {state}")
+            return
+
+        if sub == "on":
+            desired = True
+        elif sub == "off":
+            desired = False
+        elif sub == "":
+            desired = not self._incognito_mode
+        else:
+            _cprint("  Usage: /incognito [on|off|status]")
+            _cprint("  (no argument toggles the current state)")
+            return
+
+        if desired == self._incognito_mode:
+            current = "ON" if self._incognito_mode else "OFF"
+            _cprint(f"  Incognito mode already {current}.")
+            return
+
+        self._incognito_mode = desired
+        if self.agent is not None:
+            try:
+                self.agent.persist_session = not desired
+            except Exception as e:
+                _cprint(f"  ⚠ Warning: could not flip agent.persist_session: {e}")
+
+        if desired:
+            _cprint("  🔒 Incognito ON — subsequent turns will NOT be persisted.")
+            _cprint("     These turns won't be remembered; background reflection won't see them.")
+            _cprint("     Toggle back with /incognito or /incognito off.")
+        else:
+            _cprint("  🔓 Incognito OFF — persistence resumed for subsequent turns.")
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:

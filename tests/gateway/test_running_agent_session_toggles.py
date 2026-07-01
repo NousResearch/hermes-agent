@@ -136,6 +136,22 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_incognito_dispatches_mid_run(monkeypatch):
+    """/incognito mid-run must dispatch to its handler, not hit the catch-all."""
+    runner = _make_runner()
+    runner._handle_incognito_command = AsyncMock(
+        return_value="🔒 Incognito ON — subsequent turns in this chat will NOT be persisted."
+    )
+
+    result = await runner._handle_message(_make_event("/incognito on"))
+
+    runner._handle_incognito_command.assert_awaited_once()
+    assert result is not None
+    assert "can't run mid-turn" not in result
+    assert "Incognito ON" in result
+
+
+@pytest.mark.asyncio
 async def test_fast_rejected_mid_run():
     """/fast mid-run must hit the busy catch-all — config-only, next message."""
     runner = _make_runner()

@@ -2058,6 +2058,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
+            # Incognito guard: block durable memory writes when session
+            # persistence is disabled. Reads pass through. Covers single-op
+            # and batch `operations` shapes.
+            if not getattr(agent, "persist_session", True):
+                _ops = next_args.get("operations")
+                _is_write = (
+                    any(isinstance(op, dict) and op.get("action") in {"add", "replace", "remove"} for op in _ops)
+                    if _ops else next_args.get("action") in {"add", "replace", "remove"}
+                )
+                if _is_write:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Incognito mode is ON — durable memory writes are disabled for this session."
+                    }, ensure_ascii=False)
             target = next_args.get("target", "memory")
             operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
@@ -2084,6 +2098,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
+            # Incognito guard: block external memory retention tools
+            # (hindsight_retain, etc.) when persistence is disabled.
+            if not getattr(agent, "persist_session", True) and function_name.endswith("_retain"):
+                return json.dumps({
+                    "success": False,
+                    "error": "Incognito mode is ON — external memory retention is disabled for this session."
+                }, ensure_ascii=False)
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
     elif function_name == "clarify":
         def _execute(next_args: dict) -> Any:

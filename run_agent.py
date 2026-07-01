@@ -1626,7 +1626,12 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+
+        Incognito guard: if ``persist_session = False`` (set by ``/incognito``),
+        skip all durable writes entirely — the session leaves no trace.
         """
+        if not getattr(self, "persist_session", True):
+            return
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
@@ -3269,6 +3274,12 @@ class AIAgent:
         backend must not block the user from seeing their response.
         """
         if interrupted:
+            return
+        # Incognito uses ``persist_session = False`` as the session-wide
+        # contract for leaving no durable trace. Honor that here too so
+        # external memory providers (e.g. Hindsight auto_retain) do not
+        # ingest turns that were intentionally marked ephemeral.
+        if not getattr(self, "persist_session", True):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

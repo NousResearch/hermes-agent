@@ -129,6 +129,29 @@ class TestFlushDeduplication:
             finally:
                 db.close()
 
+    def test_persist_session_false_skips_db_and_jsonl_writes(self):
+        """persist_session=False must bypass both SQLite and session-log writes."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            agent.persist_session = False
+            agent._save_session_log = MagicMock()
+
+            messages = [
+                {"role": "user", "content": "secret prompt"},
+                {"role": "assistant", "content": "secret answer"},
+            ]
+
+            agent._persist_session(messages, [])
+
+            rows = db.get_messages(agent.session_id)
+            assert rows == []
+            agent._save_session_log.assert_not_called()
+
     def test_flush_reset_after_compression(self):
         """After compression creates a new session, flush index resets."""
         from hermes_state import SessionDB

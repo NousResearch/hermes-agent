@@ -1208,6 +1208,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
+                # Incognito guard: block durable memory writes when session
+                # persistence is disabled. Reads pass through. Covers single-op
+                # and batch `operations` shapes.
+                if not getattr(agent, "persist_session", True):
+                    _ops = next_args.get("operations")
+                    _is_write = (
+                        any(isinstance(op, dict) and op.get("action") in {"add", "replace", "remove"} for op in _ops)
+                        if _ops else next_args.get("action") in {"add", "replace", "remove"}
+                    )
+                    if _is_write:
+                        return json.dumps({
+                            "success": False,
+                            "error": "Incognito mode is ON — durable memory writes are disabled for this session."
+                        }, ensure_ascii=False)
                 target = next_args.get("target", "memory")
                 operations = next_args.get("operations")
                 from tools.memory_tool import memory_tool as _memory_tool
@@ -1366,6 +1380,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _mem_result = None
             try:
                 def _execute(next_args: dict) -> Any:
+                    # Incognito guard: block external memory retention tools
+                    # (hindsight_retain, etc.) when persistence is disabled.
+                    if not getattr(agent, "persist_session", True) and function_name.endswith("_retain"):
+                        return json.dumps({
+                            "success": False,
+                            "error": "Incognito mode is ON — external memory retention is disabled for this session."
+                        }, ensure_ascii=False)
                     return agent._memory_manager.handle_tool_call(function_name, next_args)
                 function_result, function_args = _run_agent_tool_execution_middleware(
                     agent,

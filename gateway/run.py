@@ -8732,11 +8732,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "incognito"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "incognito":
+                    return await self._handle_incognito_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
 
@@ -9000,6 +9002,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "incognito":
+            return await self._handle_incognito_command(event)
 
         if canonical == "start":
             logger.info("Ignoring /start platform ping for session %s", _quick_key)
@@ -11598,6 +11603,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+
+    async def _handle_incognito_command(self, event: MessageEvent) -> str:
+        """Handle /incognito [on|off|status] — toggle ephemeral persistence per session."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        if not hasattr(self, "_incognito_sessions"):
+            self._incognito_sessions: set = set()
+
+        arg = (event.get_command_args() or "").strip().lower()
+        currently_on = session_key in self._incognito_sessions
+
+        if arg == "status":
+            return f"Incognito mode: {'🔒 ON' if currently_on else '🔓 OFF'}"
+
+        if arg == "on":
+            desired = True
+        elif arg == "off":
+            desired = False
+        elif arg == "":
+            desired = not currently_on
+        else:
+            return "Usage: /incognito [on|off|status]\n(no argument toggles current state)"
+
+        if desired == currently_on:
+            state = "ON" if currently_on else "OFF"
+            return f"Incognito already {state}."
+
+        if desired:
+            self._incognito_sessions.add(session_key)
+        else:
+            self._incognito_sessions.discard(session_key)
+
+        try:
+            cached = getattr(self, "_agent_cache", {}).get(session_key)
+            _cached_agent = cached[0] if isinstance(cached, tuple) and cached else None
+            if _cached_agent is not None and _cached_agent is not _AGENT_PENDING_SENTINEL:
+                _cached_agent.persist_session = not desired
+        except Exception:
+            pass
+
+        if desired:
+            return (
+                "🔒 Incognito ON — subsequent turns in this chat will NOT be persisted.\n"
+                "They won't be remembered and background reflection won't see them.\n"
+                "Toggle back with /incognito (or /incognito off)."
+            )
+        return "🔓 Incognito OFF — persistence resumed for this chat."
 
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """Handle /suggestions in the gateway.
@@ -16793,6 +16846,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
+                            # Incognito: refresh persist_session from current
+                            # incognito state for this session_key.
+                            try:
+                                _inc = session_key in getattr(self, "_incognito_sessions", set())
+                                agent.persist_session = not _inc
+                            except Exception:
+                                pass
                             logger.debug("Reusing cached agent for session %s", session_key)
                             reused_cached_agent = True
 
@@ -16850,6 +16910,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
                 )
+                # Incognito: a freshly-built agent must inherit the current
+                # session incognito state, else a session toggled incognito
+                # before its first turn would persist despite /incognito ON.
+                _incognito = session_key in getattr(self, "_incognito_sessions", set())
+                agent.persist_session = not _incognito
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         # Record the session_id the snapshot was taken for

@@ -358,6 +358,62 @@ class TestSchemaConversion:
         # The $ref into the legacy location was rewritten too.
         assert schema["parameters"]["properties"]["payload"]["$ref"] == "#/$defs/Payload"
 
+    def test_property_named_required_does_not_inject_phantom_params(self):
+        """A tool parameter literally named ``required`` must not spawn
+        phantom ``type`` / ``properties`` parameters.
+
+        Regression: the object-shape repair (fill missing ``type``, ensure a
+        ``properties`` dict) used to recurse into the ``properties`` *map* the
+        same way it recurses into a schema node. When a tool declared a
+        parameter literally named ``required`` (or ``properties``), the map
+        itself looked object-shaped to the repair, so it stamped a ``type:
+        object`` and an empty ``properties`` onto the map — surfacing as
+        parameters ``type`` and ``properties`` that the MCP server never
+        declared, which the model could then fill with junk args. Sibling
+        ``_rewrite_local_refs`` already gates ``properties``; this path did
+        not. Real-world repro: a schema-builder / validation MCP tool whose
+        ``required`` parameter is an array of required field names.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"required": {"type": "boolean"}},
+        })
+
+        assert set(schema["properties"].keys()) == {"required"}
+        assert schema["properties"]["required"] == {"type": "boolean"}
+
+    def test_property_named_properties_does_not_inject_phantom_type(self):
+        """A tool parameter literally named ``properties`` is left untouched."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"properties": {"type": "string"}},
+        })
+
+        assert set(schema["properties"].keys()) == {"properties"}
+        assert schema["properties"]["properties"] == {"type": "string"}
+
+    def test_property_named_required_is_preserved_when_nested(self):
+        """The phantom-param gate also holds inside nested object properties."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {"required": {"type": "boolean"}},
+                },
+            },
+        })
+
+        nested = schema["properties"]["config"]["properties"]
+        assert set(nested.keys()) == {"required"}
+        assert nested["required"] == {"type": "boolean"}
+
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
         from tools.mcp_tool import _normalize_mcp_input_schema

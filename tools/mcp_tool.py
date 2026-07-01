@@ -3854,7 +3854,23 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         if not isinstance(node, dict):
             return node
 
-        repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+        # Recurse, but treat ``properties`` / ``patternProperties`` as
+        # name -> schema maps: their KEYS are user-facing parameter names, not
+        # JSON Schema meta-keywords. Recursing into such a map as if it were a
+        # schema node makes the object-shape repair below fire on the map
+        # itself whenever a tool declares a parameter literally named
+        # ``required`` or ``properties``, injecting phantom ``type`` /
+        # ``properties`` parameters the server never declared. This mirrors the
+        # identical gate in ``_rewrite_local_refs`` above.
+        repaired = {}
+        for k, v in node.items():
+            if k in ("properties", "patternProperties") and isinstance(v, dict):
+                repaired[k] = {
+                    prop_name: _repair_object_shape(prop_schema)
+                    for prop_name, prop_schema in v.items()
+                }
+            else:
+                repaired[k] = _repair_object_shape(v)
 
         # Coerce missing / null type when the shape is clearly an object
         # (has properties or required but no type).

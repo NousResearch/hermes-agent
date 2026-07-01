@@ -85,7 +85,10 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, **_kwargs) -> bool:
+        # Gateway reconnection plumbing passes adapter-agnostic kwargs such as
+        # ``is_reconnect``. A2A does not need them, but accepting them keeps the
+        # plugin compatible with the BasePlatformAdapter lifecycle contract.
         # Capture the running gateway loop so the HTTP thread can marshal
         # events onto it via run_coroutine_threadsafe.
         try:
@@ -280,12 +283,21 @@ class A2AAdapter(BasePlatformAdapter):
 
         ``chat_id`` is the A2A context id we set as the source chat_id, so it
         keys straight back to the blocked HTTP request.
+
+        The gateway marks final user-visible replies with ``metadata['notify']``.
+        Progress, status, and editable preview sends intentionally lack that
+        marker; those must not satisfy the JSON-RPC caller, or the caller sees
+        a banner/status update instead of the agent's actual answer.
         """
+        is_final_reply = bool((metadata or {}).get("notify"))
         with self._pending_lock:
             fut = self._pending_replies.get(chat_id)
-        if fut is not None and not fut.done():
-            fut.set_result(content or "")
-            return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+            if fut is not None and not fut.done():
+                if not is_final_reply:
+                    logger.debug("A2A: ignoring non-final send for context %s", chat_id)
+                    return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+                fut.set_result(content or "")
+                return SendResult(success=True, message_id=str(int(time.time() * 1000)))
         # No waiter (e.g. a late streamed chunk or out-of-band send) — drop it.
         logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))

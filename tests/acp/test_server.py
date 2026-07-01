@@ -54,10 +54,15 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_edit_approvals_as_modes_and_model_config_options(agent):
+    """Modes appear as ACP modes; model selector uses configOptions."""
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    assert resp.config_options is not None
+    assert len(resp.config_options) >= 1
+    model_opt = resp.config_options[0]
+    assert model_opt.id == "model"
+    assert model_opt.type == "select"
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -285,6 +290,7 @@ class TestSessionOps:
             "help",
             "model",
             "tools",
+            "skill",
             "context",
             "reset",
             "compact",

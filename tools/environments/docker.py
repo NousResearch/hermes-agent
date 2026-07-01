@@ -1019,7 +1019,8 @@ class DockerEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         """Spawn a bash process inside the Docker container."""
-        assert self._container_id, "Container not started"
+        if not self._container_id:
+            raise RuntimeError("Container not started")
         cmd = [self._docker_exe, "exec"]
         if stdin_data is not None:
             cmd.append("-i")

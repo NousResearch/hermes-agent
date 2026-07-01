@@ -886,21 +886,6 @@ class GatewayKanbanWatchersMixin:
             except Exception:
                 return default_assignee  # fall back to startup value
 
-        def _read_default_assignee() -> "Optional[str]":
-            """Re-read kanban.default_assignee from config on each tick.
-
-            The dispatcher captures most config once at startup, but
-            default_assignee is operator-tuned live (e.g. setting a
-            fallback so unassigned dashboard tasks stop idling). Without
-            this, a config edit requires a gateway restart to take effect.
-            """
-            try:
-                cfg = _load_config()
-                kc = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-                return (kc.get("default_assignee") or "").strip() or None
-            except Exception:
-                return default_assignee  # fall back to startup value
-
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 

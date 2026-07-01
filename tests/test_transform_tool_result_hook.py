@@ -5,6 +5,7 @@ Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -193,3 +194,63 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
         dispatch_result='{"payload": 42}',
     )
     assert out == 'CANON[some_tool]{"payload": 42}'
+
+
+def test_edit_approval_denial_emits_blocked_post_tool_call(monkeypatch):
+    observed = []
+
+    def _hook(hook_name, **kw):
+        if hook_name == "post_tool_call":
+            observed.append(kw)
+        return []
+
+    monkeypatch.setattr(
+        "acp_adapter.edit_approval.maybe_require_edit_approval",
+        lambda tool_name, arguments: '{"error": "Edit approval denied by ACP client; file was not modified."}',
+    )
+
+    out = _run_handle_function_call(
+        monkeypatch,
+        tool_name="write_file",
+        tool_args={"path": "/tmp/demo.txt", "content": "hello"},
+        invoke_hook=_hook,
+    )
+
+    assert json.loads(out)["error"] == "Edit approval denied by ACP client; file was not modified."
+    assert len(observed) == 1
+    assert observed[0]["tool_name"] == "write_file"
+    assert observed[0]["status"] == "blocked"
+    assert observed[0]["error_type"] == "edit_approval_denied"
+    assert observed[0]["error_message"] == "Edit approval denied by ACP client"
+
+
+
+def test_edit_approval_guard_failure_emits_blocked_post_tool_call(monkeypatch):
+    observed = []
+
+    def _hook(hook_name, **kw):
+        if hook_name == "post_tool_call":
+            observed.append(kw)
+        return []
+
+    def _raise(*_a, **_kw):
+        raise RuntimeError("approval pipe broke")
+
+    monkeypatch.setattr(
+        "acp_adapter.edit_approval.maybe_require_edit_approval",
+        _raise,
+    )
+
+    out = _run_handle_function_call(
+        monkeypatch,
+        tool_name="write_file",
+        tool_args={"path": "/tmp/demo.txt", "content": "hello"},
+        invoke_hook=_hook,
+    )
+
+    assert json.loads(out)["error"] == "Edit approval denied: approval guard failed"
+    assert len(observed) == 1
+    assert observed[0]["tool_name"] == "write_file"
+    assert observed[0]["status"] == "blocked"
+    assert observed[0]["error_type"] == "edit_approval_guard_error"
+    assert observed[0]["error_message"] == "Edit approval denied: approval guard failed"

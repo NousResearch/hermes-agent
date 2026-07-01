@@ -546,6 +546,34 @@ def mark_workspace_edited(
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
 
+def _claims_gate(status: str, evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Return an explicit low-risk claim contract for verification consumers.
+
+    The current ledger proves only the last recorded command outcome for this
+    session/workspace. It does NOT establish "repo green" on its own, even when
+    that command looked broad. Downstream surfaces can now read one stable field
+    instead of inferring this from nested evidence.
+    """
+
+    if status != "passed" or not isinstance(evidence, dict):
+        return {
+            "allow_fresh_verification_claim": False,
+            "allow_repo_green_claim": False,
+            "reason": "fresh passing verification evidence is not available",
+        }
+
+    scope = str(evidence.get("scope") or "unknown")
+    kind = str(evidence.get("kind") or "unknown")
+    return {
+        "allow_fresh_verification_claim": True,
+        "allow_repo_green_claim": False,
+        "reason": (
+            "last passing evidence was a single "
+            f"{kind}/{scope} command; the passive ledger does not prove repo-wide green"
+        ),
+    }
+
+
 def verification_status(
     *,
     session_id: str | None,
@@ -560,7 +588,11 @@ def verification_status(
     except Exception:
         facts = None
     if not facts:
-        return {"status": "not_applicable", "evidence": None}
+        return {
+            "status": "not_applicable",
+            "evidence": None,
+            "claims_gate": _claims_gate("not_applicable", None),
+        }
 
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
@@ -575,12 +607,14 @@ def verification_status(
                 (sid, root),
             ).fetchone()
             if state is None:
+                status = "unverified"
                 return {
-                    "status": "unverified",
+                    "status": status,
                     "evidence": None,
                     "root": root,
                     "session_id": sid,
                     "changed_paths": [],
+                    "claims_gate": _claims_gate(status, None),
                 }
             event = None
             if state["last_event_id"] is not None:
@@ -596,12 +630,14 @@ def verification_status(
         changed_paths = []
 
     if event is None:
+        status = "unverified"
         return {
-            "status": "unverified",
+            "status": status,
             "evidence": None,
             "root": root,
             "session_id": sid,
             "changed_paths": changed_paths,
+            "claims_gate": _claims_gate(status, None),
         }
 
     evidence = dict(event)
@@ -615,4 +651,5 @@ def verification_status(
         "root": root,
         "session_id": sid,
         "changed_paths": changed_paths,
+        "claims_gate": _claims_gate(status, evidence),
     }

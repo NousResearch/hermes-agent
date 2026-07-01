@@ -269,7 +269,9 @@ def build_verify_on_stop_nudge(
     ]
 
     state = str(status.get("status") or "unverified")
-    if state == "passed":
+    raw_claims_gate = status.get("claims_gate")
+    claims_gate = raw_claims_gate if isinstance(raw_claims_gate, dict) else {}
+    if bool(claims_gate.get("allow_fresh_verification_claim")):
         return None
 
     # Optional shipped coding guidance, only paid when this evidence gate fires.

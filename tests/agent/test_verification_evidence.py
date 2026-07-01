@@ -77,7 +77,13 @@ def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     )
 
     assert event is not None
-    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+    passed_status = verification_status(session_id="s1", cwd=tmp_path)
+    assert passed_status["status"] == "passed"
+    assert passed_status["claims_gate"] == {
+        "allow_fresh_verification_claim": True,
+        "allow_repo_green_claim": False,
+        "reason": "last passing evidence was a single test/full command; the passive ledger does not prove repo-wide green",
+    }
 
     mark_workspace_edited(
         session_id="s1",
@@ -88,6 +94,11 @@ def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     status = verification_status(session_id="s1", cwd=tmp_path)
     assert status["status"] == "stale"
     assert status["changed_paths"] == [str(tmp_path / "src" / "app.ts")]
+    assert status["claims_gate"] == {
+        "allow_fresh_verification_claim": False,
+        "allow_repo_green_claim": False,
+        "reason": "fresh passing verification evidence is not available",
+    }
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):
@@ -253,7 +264,13 @@ def test_status_is_unverified_without_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
 
-    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "unverified"
+    status = verification_status(session_id="s1", cwd=tmp_path)
+    assert status["status"] == "unverified"
+    assert status["claims_gate"] == {
+        "allow_fresh_verification_claim": False,
+        "allow_repo_green_claim": False,
+        "reason": "fresh passing verification evidence is not available",
+    }
 
 
 def test_edit_without_prior_evidence_stays_unverified(tmp_path, monkeypatch):

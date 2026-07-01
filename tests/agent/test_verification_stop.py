@@ -183,6 +183,40 @@ def test_no_nudge_after_fresh_pass(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 
 
+def test_claims_gate_controls_stop_nudge_even_when_status_says_passed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+
+    from agent import verification_stop
+
+    monkeypatch.setattr(
+        verification_stop,
+        "_verification_snapshot",
+        lambda **_kw: (
+            {
+                "status": "passed",
+                "evidence": {
+                    "canonical_command": "pnpm run test",
+                    "output_summary": "green but narrow",
+                },
+                "claims_gate": {
+                    "allow_fresh_verification_claim": False,
+                    "allow_repo_green_claim": False,
+                    "reason": "still needs a watcher-driven confirmation",
+                },
+            },
+            {"verifyCommands": ["pnpm run test"]},
+        ),
+    )
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+
+    assert nudge is not None
+    assert "green but narrow" in nudge
+    assert "`pnpm run test`" in nudge
+
+
 def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     project_a = tmp_path / "a"

@@ -5,8 +5,9 @@ import errno
 import json
 import logging
 import os
+import posixpath
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -101,7 +102,7 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
     """
@@ -117,6 +118,62 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _terminal_env_type_for_task(task_id: str = "default") -> str:
+    """Best-effort terminal backend type for path-resolution decisions."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            name = env.__class__.__name__.lower()
+            if "local" in name:
+                return "local"
+            if "ssh" in name:
+                return "ssh"
+            if "docker" in name:
+                return "docker"
+            if "singularity" in name:
+                return "singularity"
+            if "modal" in name:
+                return "modal"
+            if "daytona" in name:
+                return "daytona"
+        cfg = _get_env_config()
+        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    try:
+        from tools.terminal_tool import _CONTAINER_BACKENDS
+        container_backends = _CONTAINER_BACKENDS
+    except Exception:
+        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
+    return _terminal_env_type_for_task(task_id) in container_backends
+
+
+def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
+    """Normalize path syntax without following host symlinks.
+
+    Container backends use paths that are meaningful inside the sandbox. Calling
+    ``Path.resolve()`` on the host can dereference a host-side symlink such as
+    ``/workspace`` and rewrite the path before Docker sees it.
+    """
+    return PurePosixPath(posixpath.normpath(str(path)))
 
 
 def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
@@ -266,7 +323,11 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     return _configured_terminal_cwd()
 
 
-def _resolve_base_dir(task_id: str = "default") -> Path:
+def _resolve_base_dir(
+    task_id: str = "default",
+    *,
+    container_paths: bool | None = None,
+) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
@@ -290,10 +351,17 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     the process cwd only as a last resort, deterministically.
     """
     root = _authoritative_workspace_root(task_id)
+    if container_paths is None:
+        container_paths = _uses_container_paths(task_id)
     if root:
-        base = Path(_expand_tilde(root))
+        base_text = _expand_tilde(root)
     else:
-        base = Path(os.getcwd())
+        base_text = os.getcwd()
+    if container_paths:
+        if not posixpath.isabs(base_text):
+            base_text = posixpath.join(os.getcwd(), base_text)
+        return _normalize_without_host_deref(base_text)
+    base = Path(base_text)
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
         # terminal backend ever reports a relative cwd, anchor it to the process
@@ -302,16 +370,24 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(_expand_tilde(filepath))
+    container_paths = _uses_container_paths(task_id)
+    expanded = _expand_tilde(filepath)
+    if container_paths:
+        if posixpath.isabs(expanded):
+            return _normalize_without_host_deref(expanded)
+        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        return _normalize_without_host_deref(resolved)
+    p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    return (_resolve_base_dir(task_id) / p).resolve()
+    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    return resolved.resolve()
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
@@ -335,7 +411,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        root = Path(_expand_tilde(workspace_root)).resolve()
+        if _uses_container_paths(task_id):
+            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        else:
+            root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)

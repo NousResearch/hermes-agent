@@ -143,6 +143,70 @@ class TestRichSentStorePathResolution:
         assert b_seen.endswith("state/rich_sent_index.json")
 
 
+class TestCheckpointManagerPathResolution:
+    """tools/checkpoint_manager.py's checkpoint store root must honor the
+    active profile — otherwise one profile's CheckpointManager instance can
+    read/write code-edit checkpoints into a different profile's store under
+    the multiplexed gateway."""
+
+    def test_checkpoint_base_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import tools.checkpoint_manager as cm
+
+        a_seen = _under_override(prof_a, lambda: cm._resolve_checkpoint_base())
+        b_seen = _under_override(prof_b, lambda: cm._resolve_checkpoint_base())
+
+        assert a_seen == prof_a / "checkpoints"
+        assert b_seen == prof_b / "checkpoints"
+        assert a_seen != b_seen
+
+    def test_store_path_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import tools.checkpoint_manager as cm
+
+        b_seen = _under_override(prof_b, lambda: cm._store_path())
+        assert b_seen == prof_b / "checkpoints" / "store"
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (monkeypatch the module constant, see
+        tests/tools/test_checkpoint_manager.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import tools.checkpoint_manager as cm
+
+        forced = tmp_path / "forced_checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", forced)
+        seen = _under_override(prof_b, lambda: cm._resolve_checkpoint_base())
+        assert seen == forced
+
+
+class TestStickerCachePathResolution:
+    """gateway/sticker_cache.py's cache file must honor the active profile —
+    otherwise one profile's Telegram sticker-description cache leaks into a
+    different profile's under the multiplexed gateway."""
+
+    def test_cache_path_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import gateway.sticker_cache as sc
+
+        a_seen = _under_override(prof_a, lambda: sc._resolve_cache_path())
+        b_seen = _under_override(prof_b, lambda: sc._resolve_cache_path())
+
+        assert a_seen == prof_a / "sticker_cache.json"
+        assert b_seen == prof_b / "sticker_cache.json"
+        assert a_seen != b_seen
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (monkeypatch the module constant, see
+        tests/gateway/test_sticker_cache.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import gateway.sticker_cache as sc
+
+        forced = tmp_path / "forced_sticker_cache.json"
+        monkeypatch.setattr("gateway.sticker_cache.CACHE_PATH", forced)
+        seen = _under_override(prof_b, lambda: sc._resolve_cache_path())
+        assert seen == forced
+
+
 # ---------------------------------------------------------------------------
 # M2 — thread / executor context propagation
 # ---------------------------------------------------------------------------

@@ -605,6 +605,22 @@ class TestSensitivePathCheck:
         assert error is not None
         assert "sensitive system path" in error
 
+    def test_unsafe_temp_roots_do_not_widen_exemption(self, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import _check_sensitive_path
+
+        for temp_root, sensitive_path in (
+            ("/", "/etc/passwd"),
+            ("/private", "/private/var/agent-output.txt"),
+            ("/private/var", "/private/var/agent-output.txt"),
+        ):
+            monkeypatch.setattr(tempfile, "gettempdir", lambda root=temp_root: root)
+            error = _check_sensitive_path(sensitive_path)
+            assert error is not None
+            assert "sensitive system path" in error
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")

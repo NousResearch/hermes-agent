@@ -4,14 +4,14 @@
 Designed to be plugged into Hermes' STT pipeline via:
 
     stt.provider: local_command
-    HERMES_LOCAL_STT_COMMAND="/Users/cronus/.hermes/hermes-agent/scripts/whatsapp-bridge/whisper-local-bridge.py {input} {output}"
+    HERMES_LOCAL_STT_COMMAND="python scripts/whatsapp-bridge/whisper-local-bridge.py {input} {output}"
 
 Behavior:
-  1. Run /opt/homebrew/bin/whisper-cli with medium.en against the input WAV.
+  1. Run whisper-cli with a configured local model against the input audio.
   2. On any failure (non-zero exit, empty transcript, missing binary/model)
      fall back to OpenAI Whisper API (whisper-1).
   3. Write final transcript to {output} (the .txt path Hermes expects).
-  4. Append one structured line per call to /tmp/whisper-bridge.log:
+  4. Append one structured line per call to the Hermes logs directory:
        ts=... model=local|openai latency_ms=... bytes=... ok=true|false err=...
 
 Exit codes:
@@ -25,28 +25,48 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-WHISPER_CLI = os.environ.get("WHISPER_CLI_BIN", "/opt/homebrew/bin/whisper-cli")
+WHISPER_CLI = os.environ.get("WHISPER_CLI_BIN") or shutil.which("whisper-cli") or "whisper-cli"
 WHISPER_MODEL = os.environ.get(
     "WHISPER_LOCAL_MODEL",
-    str(Path.home() / "whisper-models" / "ggml-medium.en.bin"),
+    str(
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        / "whisper.cpp"
+        / "ggml-medium.en.bin"
+    ),
 )
 WHISPER_THREADS = os.environ.get("WHISPER_THREADS", "8")
 WHISPER_LANG = os.environ.get("WHISPER_LANG", "en")
 WHISPER_NO_GPU = os.environ.get("WHISPER_NO_GPU", "1").lower() not in {"0", "false", "no"}
-LOG_PATH = os.environ.get("WHISPER_BRIDGE_LOG", "/tmp/whisper-bridge.log")
+LOG_PATH = os.environ.get(
+    "WHISPER_BRIDGE_LOG",
+    str(
+        Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        / "logs"
+        / "whisper-bridge.log"
+    ),
+)
 
 
 def _log(record: dict) -> None:
     record.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S%z"))
     try:
-        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+        log_path = Path(LOG_PATH)
+        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        elif log_path.is_symlink():
+            return
+        fd = os.open(log_path, flags, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         pass  # logging must never break transcription
@@ -59,7 +79,8 @@ def _try_local(input_path: str, output_path: str) -> tuple[bool, str, str]:
     if not Path(WHISPER_MODEL).exists():
         return False, "", f"model not found at {WHISPER_MODEL}"
 
-    working_input = input_path
+    source_input = str(Path(input_path).resolve())
+    working_input = source_input
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None
     if Path(input_path).suffix.lower() != ".wav":
         tmp_dir = tempfile.TemporaryDirectory(prefix="whisper-local-bridge-")
@@ -67,7 +88,7 @@ def _try_local(input_path: str, output_path: str) -> tuple[bool, str, str]:
         convert_cmd = [
             "ffmpeg",
             "-y",
-            "-i", input_path,
+            "-i", source_input,
             "-ar", "16000",
             "-ac", "1",
             working_input,

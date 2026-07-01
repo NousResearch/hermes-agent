@@ -75,9 +75,9 @@ def expand_cron_date_tokens(text: str, now: datetime | None = None) -> str:
         (r"<YYYY-MM-DD>", today),
         (r"\{YYYY-MM-DD\}", today),
         # bare placeholders (longest first)
-        (r"\bYYYY-MM-DD\b", today),
-        (r"\bYYYYMMDD\b", ymd_compact),
-        (r"\bYYYY-MM\b", month),
+        (r"\bYYYY-MM-DD(?![-\w])", today),
+        (r"\bYYYYMMDD(?![-\w])", ymd_compact),
+        (r"\bYYYY-MM(?![-\w])", month),
     )
     for pattern, value in replacements:
         text = re.sub(pattern, value, text)

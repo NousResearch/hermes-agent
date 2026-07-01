@@ -1,6 +1,9 @@
 import asyncio
 import json
 
+import httpx
+import pytest
+
 
 async def _allow_all_urls(url):
     return True
@@ -23,6 +26,61 @@ def test_extract_x_status_id_accepts_supported_hosts():
     )
     assert web_tools._extract_x_status_id("https://x.com/home") is None
     assert web_tools._extract_x_status_id("https://example.com/i/status/12345") is None
+
+
+def test_fxtwitter_redirect_is_not_followed(monkeypatch):
+    from tools import web_tools
+
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            302,
+            headers={"location": "http://169.254.169.254/latest/meta-data/"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        assert kwargs["follow_redirects"] is False
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_tools.httpx, "Client", client_factory)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        web_tools._fetch_fxtwitter_status("2062546475888845157")
+
+    assert len(requests) == 1
+    assert requests[0].url.host == "api.fxtwitter.com"
+
+
+def test_fxtwitter_response_size_is_capped(monkeypatch):
+    from tools import web_tools
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(
+                b"x" * (web_tools._FXTWITTER_MAX_RESPONSE_BYTES + 1)
+            ),
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(web_tools.httpx, "Client", client_factory)
+
+    with pytest.raises(ValueError, match="response exceeds size limit"):
+        web_tools._fetch_fxtwitter_status("2062546475888845157")
 
 
 def test_web_extract_uses_fxtwitter_for_x_status(monkeypatch):

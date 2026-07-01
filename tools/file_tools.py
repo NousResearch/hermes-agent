@@ -535,6 +535,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         temp_root = os.path.realpath(tempfile.gettempdir())
     except Exception:
         temp_root = ""
+    temp_root_prefix = temp_root.rstrip(os.sep) + os.sep
+    if temp_root == os.sep or any(
+        prefix.rstrip(os.sep) == temp_root
+        or prefix.startswith(temp_root_prefix)
+        for prefix in _SENSITIVE_PATH_PREFIXES
+    ):
+        temp_root = ""
     if temp_root and (
         resolved == temp_root
         or resolved.startswith(temp_root.rstrip(os.sep) + os.sep)

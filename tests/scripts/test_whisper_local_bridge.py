@@ -70,7 +70,37 @@ def test_try_local_converts_non_wav_input(tmp_path, monkeypatch, bridge):
     assert text == "converted transcript"
     assert error == ""
     assert commands[0][0] == "ffmpeg"
+    input_arg = commands[0][commands[0].index("-i") + 1]
+    assert Path(input_arg).is_absolute()
+    assert not input_arg.startswith("-")
+    assert input_arg == str(input_path.resolve())
+    assert input_arg != commands[0][-1]
     assert commands[1][0] == str(whisper_cli)
+
+
+def test_log_refuses_symlink_target(tmp_path, monkeypatch, bridge):
+    target = tmp_path / "target.log"
+    target.write_text("sentinel\n", encoding="utf-8")
+    log_path = tmp_path / "whisper-bridge.log"
+    log_path.symlink_to(target)
+    monkeypatch.setattr(bridge, "LOG_PATH", str(log_path))
+
+    bridge._log({"ok": True})
+
+    assert target.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_log_file_is_private(tmp_path, monkeypatch, bridge):
+    log_path = tmp_path / "logs" / "whisper-bridge.log"
+    log_path.parent.mkdir()
+    log_path.write_text("existing\n", encoding="utf-8")
+    log_path.chmod(0o644)
+    monkeypatch.setattr(bridge, "LOG_PATH", str(log_path))
+
+    bridge._log({"ok": True})
+
+    assert log_path.exists()
+    assert log_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_main_falls_back_to_openai_and_writes_output(tmp_path, monkeypatch, bridge):

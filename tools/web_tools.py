@@ -111,6 +111,7 @@ _X_STATUS_HOSTS = {
     "www.twitter.com",
     "mobile.twitter.com",
 }
+_FXTWITTER_MAX_RESPONSE_BYTES = 256 * 1024
 
 
 def _extract_x_status_id(url: str) -> Optional[str]:
@@ -136,10 +137,28 @@ def _extract_x_status_id(url: str) -> Optional[str]:
 
 def _fetch_fxtwitter_status(status_id: str) -> Dict[str, Any]:
     api_url = f"https://api.fxtwitter.com/i/status/{status_id}"
-    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
-        response = client.get(api_url, headers={"User-Agent": "Hermes-Agent web_extract"})
-        response.raise_for_status()
-        return response.json()
+    with httpx.Client(timeout=12.0, follow_redirects=False) as client:
+        with client.stream(
+            "GET",
+            api_url,
+            headers={"User-Agent": "Hermes-Agent web_extract"},
+        ) as response:
+            response.raise_for_status()
+            try:
+                declared_size = int(response.headers.get("content-length", ""))
+            except (TypeError, ValueError):
+                declared_size = None
+            if declared_size is not None and declared_size > _FXTWITTER_MAX_RESPONSE_BYTES:
+                raise ValueError("fxtwitter response exceeds size limit")
+
+            chunks = []
+            total_bytes = 0
+            for chunk in response.iter_bytes():
+                total_bytes += len(chunk)
+                if total_bytes > _FXTWITTER_MAX_RESPONSE_BYTES:
+                    raise ValueError("fxtwitter response exceeds size limit")
+                chunks.append(chunk)
+            return json.loads(b"".join(chunks))
 
 
 def _format_fxtwitter_result(url: str, status_id: str) -> Dict[str, Any]:

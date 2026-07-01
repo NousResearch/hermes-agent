@@ -55,7 +55,7 @@ def test_week_ending_sunday_uses_coming_sunday_midweek():
 
 
 def test_plain_text_and_malformed_tokens_are_unchanged():
-    text = "No dates here. Keep $(date +%Q) and <TODAYS> unchanged."
+    text = "No dates here. Keep $(date +%Q), <TODAYS>, and YYYY-MM-DDx unchanged."
     assert expand_cron_date_tokens(text, now=datetime(2026, 7, 1)) == text
 
 

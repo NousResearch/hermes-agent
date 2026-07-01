@@ -32,6 +32,11 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call, clear_lifecycle_state, finalize_protected_write_result
+from agent.no_progress_loop import (
+    preflight_no_progress_block,
+    record_no_progress_block,
+    record_no_progress_observation,
+)
 from agent.runtime_evidence import update_runtime_evidence
 from toolsets import resolve_toolset, validate_toolset
 
@@ -1089,7 +1094,42 @@ def handle_function_call(
                     error_message=block_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                record_no_progress_observation(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                )
                 return result
+
+        no_progress_block_message = preflight_no_progress_block(
+            function_name=function_name,
+            function_args=function_args,
+            task_id=task_id,
+        )
+        if no_progress_block_message is not None:
+            result = json.dumps({"error": no_progress_block_message}, ensure_ascii=False)
+            record_no_progress_block(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="no_progress_loop",
+                error_message=no_progress_block_message,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return result
 
         self_mod_block_message = before_self_modification_tool_call(
             function_name,
@@ -1111,6 +1151,12 @@ def handle_function_call(
                 error_type="self_modification_block",
                 error_message=self_mod_block_message,
                 middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
             )
             return result
 
@@ -1246,11 +1292,24 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        record_no_progress_observation(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+        )
         return result
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        result = json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        record_no_progress_observation(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+        )
+        return result
     finally:
         clear_lifecycle_state()
         _current_user_task.reset(_user_task_token)

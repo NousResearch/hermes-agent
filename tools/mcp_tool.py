@@ -101,6 +101,38 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+
+def _truncate_mcp_text_result(text: str) -> str:
+    """Bound oversized MCP tool text before it enters conversation context.
+
+    MCP servers can return arbitrarily large text — a buggy or malicious
+    server could flood the context window with multi-MB output, causing
+    context overflow, OOM on constrained deployments, or unbounded API
+    costs.  This applies the same ``get_max_bytes()`` cap used by the
+    terminal tool, with a 40% head / 60% tail split so the model sees both
+    the beginning (often the primary result) and the end (often the most
+    recent output). (#56059)
+    """
+    try:
+        from tools.tool_output_limits import get_max_bytes
+        max_chars = get_max_bytes()
+    except Exception:
+        max_chars = 50_000
+
+    if len(text) <= max_chars:
+        return text
+
+    head_chars = int(max_chars * 0.4)
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - head_chars - tail_chars
+    return (
+        text[:head_chars]
+        + f"\n\n... [MCP RESULT TRUNCATED - {omitted:,} chars omitted "
+          f"out of {len(text):,} total] ...\n\n"
+        + text[-tail_chars:]
+    )
+
+
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
 # check makes a blocking urllib HTTPS call whose own timeout can fail to
 # interrupt a stalled SSL handshake, which froze the asyncio event loop and
@@ -3400,7 +3432,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         error_text += block.text
                 return json.dumps({
                     "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
+                        _truncate_mcp_text_result(
+                            error_text or "MCP tool returned an error"
+                        )
                     )
                 }, ensure_ascii=False)
 
@@ -3425,12 +3459,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
+            # Cap text_result size to prevent unbounded allocation (#56059).
+            text_result = _truncate_mcp_text_result(text_result)
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
+                # Cap structuredContent too — a malicious server could flood
+                # context via a multi-MB JSON payload (#56059).  When the
+                # serialized form exceeds the limit, replace it with a
+                # truncated string (preserving head + tail) so the structure
+                # degrades gracefully instead of flooding context.
+                structured_json = json.dumps(
+                    structured, ensure_ascii=False, default=str
+                )
+                truncated_json = _truncate_mcp_text_result(structured_json)
+                if truncated_json is not structured_json:
+                    structured = truncated_json
                 if text_result:
                     return json.dumps({
                         "result": text_result,

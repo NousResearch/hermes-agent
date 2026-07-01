@@ -121,6 +121,11 @@ logger = logging.getLogger(__name__)
 # them independently.
 _LOGGED_UNKNOWN_PROVIDER_KEYS: set = set()
 _LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
+# Same treatment for the two "registered provider, unsupported sub-branch"
+# routing dead-ends — external-process and OAuth providers that fall through
+# with no matching handler. Keyed by provider name.
+_LOGGED_UNSUPPORTED_EXTPROC_KEYS: set = set()
+_LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 
 def _openai_http_client_kwargs(
@@ -4495,8 +4500,10 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
-        logger.warning("resolve_provider_client: external-process provider %s not "
-                       "directly supported", provider)
+        if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
+            _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
+            logger.debug("resolve_provider_client: external-process provider %s not "
+                         "directly supported", provider)
         return None, None
 
     elif pconfig.auth_type == "aws_sdk":
@@ -4541,8 +4548,10 @@ def resolve_provider_client(
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
-        logger.warning("resolve_provider_client: OAuth provider %s not "
-                       "directly supported, try 'auto'", provider)
+        if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
+            _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
+            logger.debug("resolve_provider_client: OAuth provider %s not "
+                         "directly supported, try 'auto'", provider)
         return None, None
 
     # Demoted from logger.warning to debug; dedup keyed on (auth_type,

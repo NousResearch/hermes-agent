@@ -2921,8 +2921,6 @@ class TestTurnPairPreservation:
             )
 
 
-
-
 class TestSanitizerStripsOrphanedToolCalls:
     """PR #51218 (salvaged from #51225): orphaned tool_calls are stripped from
     assistant messages instead of having stub tool results inserted, avoiding
@@ -2997,6 +2995,8 @@ class TestSanitizerStripsOrphanedToolCalls:
         asst = next(m for m in sanitized if m.get("role") == "assistant")
         assert asst["content"] == "Let me search for that."
         assert not asst.get("tool_calls")
+        # The placeholder must NOT overwrite existing text content.
+        assert asst["content"] != "(tool call removed)"
 
     def test_sanitizer_strips_orphaned_with_call_id_mismatch(self, compressor):
         """Stubs with call_id != id used to be dropped by downstream
@@ -3023,8 +3023,6 @@ class TestSanitizerStripsOrphanedToolCalls:
         asst = next(m for m in sanitized if m.get("role") == "assistant")
         assert not asst.get("tool_calls")
         # No stub tool messages (which would have call_id != id mismatch)
-
-
 
 
 class TestCooldownReentryAbort:
@@ -3104,8 +3102,6 @@ class TestCooldownReentryAbort:
         )
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
-
-
 
 
 class TestDoubleCompactionSummaryRole:

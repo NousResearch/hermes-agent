@@ -510,7 +510,45 @@ def test_coder_environment_rejects_pty_url_that_exceeds_http_query_limit(monkeyp
     assert result["returncode"] == 1
     assert "Coder PTY command is too long" in result["output"]
     assert "limit is 250 bytes" in result["output"]
-    assert "Shorten the command to roughly" in result["output"]
+    assert "put the script in a file/stdin" in result["output"]
+    connect_mock.assert_not_called()
+
+
+def test_coder_long_command_suggestion_uses_encoded_url_budget(monkeypatch):
+    reconnect_id = uuid.UUID("44444444-5555-6666-7777-888888888888")
+    connect_mock = MagicMock()
+    monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
+    monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_MAX_PTY_URL_LENGTH", 900, raising=False)
+    env = CoderEnvironment(
+        base_url="https://coder.example",
+        task_id="20260521_180000_ef3456",
+        api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
+        timeout=5,
+        init_session=False,
+    )
+    command = "printf '%s'\n" * 200
+    full_url_length = len(
+        env._pty_url(
+            "agent-123",
+            command=env._pty_command(
+                command,
+                login=True,
+                exit_marker=env._exit_marker(str(reconnect_id)),
+            ),
+            reconnect_id=str(reconnect_id),
+        ).encode("utf-8")
+    )
+    result = env.execute(command)
+    match = re.search(r"roughly (\d+) characters", result["output"])
+    assert result["returncode"] == 1
+    assert match is not None
+    suggested = int(match.group(1))
+    assert suggested > 0
+    assert suggested < len(command)
+    assert max(0, len(command) - (full_url_length - env._MAX_PTY_URL_LENGTH)) == 0
     connect_mock.assert_not_called()
 
 

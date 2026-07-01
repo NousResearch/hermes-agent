@@ -497,6 +497,32 @@ class CoderEnvironment(BaseEnvironment):
         with cancel_state["lock"]:
             return bool(cancel_state.get("cancelled"))
 
+    def _suggest_command_length_for_url_limit(
+        self,
+        *,
+        agent_id: str,
+        reconnect_id: str,
+        cmd_string: str,
+        login: bool,
+    ) -> int:
+        """Return the longest command prefix whose encoded PTY URL fits."""
+        lo = 0
+        hi = len(cmd_string)
+        best = 0
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            exit_marker = self._exit_marker(reconnect_id)
+            pty_command = self._pty_command(cmd_string[:mid], login=login, exit_marker=exit_marker)
+            pty_url = self._pty_url(agent_id, command=pty_command, reconnect_id=reconnect_id)
+            if len(pty_url.encode("utf-8")) <= self._MAX_PTY_URL_LENGTH:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return best
+
     def _execute_via_pty(
         self,
         cmd_string: str,
@@ -513,14 +539,27 @@ class CoderEnvironment(BaseEnvironment):
         pty_url = self._pty_url(agent_id, command=pty_command, reconnect_id=reconnect_id)
         encoded_url_length = len(pty_url.encode("utf-8"))
         if encoded_url_length > self._MAX_PTY_URL_LENGTH:
-            excess = encoded_url_length - self._MAX_PTY_URL_LENGTH
-            suggested_command_length = max(0, len(cmd_string) - excess)
+            suggested_command_length = self._suggest_command_length_for_url_limit(
+                agent_id=agent_id,
+                reconnect_id=reconnect_id,
+                cmd_string=cmd_string,
+                login=login,
+            )
+            if suggested_command_length <= 0:
+                suggestion = (
+                    "The fixed PTY URL overhead already exceeds the limit; "
+                    "put the script in a file/stdin and execute that instead."
+                )
+            else:
+                suggestion = (
+                    f"Shorten the command to roughly {suggested_command_length} characters "
+                    "or put the script in a file/stdin and execute that instead."
+                )
             return (
                 "Coder PTY command is too long for the HTTP query URL: "
                 f"encoded URL is {encoded_url_length} bytes, "
                 f"limit is {self._MAX_PTY_URL_LENGTH} bytes. "
-                f"Shorten the command to roughly {suggested_command_length} characters "
-                "or put the script in a file/stdin and execute that instead.",
+                + suggestion,
                 1,
             )
         output_parts: list[str] = []

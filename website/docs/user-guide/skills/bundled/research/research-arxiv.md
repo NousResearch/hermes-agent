@@ -56,7 +56,8 @@ curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+
 
 ```bash
 curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python3 -c "
-import sys, xml.etree.ElementTree as ET
+import sys
+from defusedxml import ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom'}
 root = ET.parse(sys.stdin).getroot()
 for i, entry in enumerate(root.findall('a:entry', ns)):
@@ -136,7 +137,8 @@ After fetching metadata for a paper, generate a BibTeX entry:
 &#123;% raw %&#125;
 ```bash
 curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python3 -c "
-import sys, xml.etree.ElementTree as ET
+import sys
+from defusedxml import ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
 root = ET.parse(sys.stdin).getroot()
 entry = root.find('a:entry', ns)

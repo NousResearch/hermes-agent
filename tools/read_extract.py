@@ -13,6 +13,9 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from defusedxml.ElementTree import fromstring as _safe_fromstring
+from defusedxml.common import DefusedXmlException
+
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
@@ -97,10 +100,10 @@ def _extract_notebook(path: str) -> str:
 
 def _zip_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
     try:
-        return ET.fromstring(zf.read(name))
+        return _safe_fromstring(zf.read(name))
     except KeyError as exc:
         raise ExtractionError(f"Missing {name}") from exc
-    except ET.ParseError as exc:
+    except (ET.ParseError, DefusedXmlException) as exc:
         raise ExtractionError(f"Malformed XML in {name}: {exc}") from exc
 
 
@@ -146,7 +149,7 @@ def _extract_xlsx(path: str) -> str:
                     continue
                 try:
                     rows = _sheet_rows(zf.read(part), shared)
-                except ET.ParseError:
+                except (ET.ParseError, DefusedXmlException):
                     continue
                 out.append(f"# ── Sheet: {name} ──")
                 out.extend("\t".join(row) for row in rows)
@@ -167,8 +170,8 @@ def _shared_strings(zf: zipfile.ZipFile, names: set[str]) -> list[str]:
     if "xl/sharedStrings.xml" not in names:
         return []
     try:
-        root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
-    except ET.ParseError:
+        root = _safe_fromstring(zf.read("xl/sharedStrings.xml"))
+    except (ET.ParseError, DefusedXmlException):
         return []
     s = f"{{{_NS_S}}}"
     return ["".join(t.text or "" for t in item.iter(f"{s}t")) for item in root.iter(f"{s}si")]
@@ -188,8 +191,8 @@ def _workbook_rels(zf: zipfile.ZipFile, names: set[str]) -> dict[str, str]:
     if rels_path not in names:
         return {}
     try:
-        root = ET.fromstring(zf.read(rels_path))
-    except ET.ParseError:
+        root = _safe_fromstring(zf.read(rels_path))
+    except (ET.ParseError, DefusedXmlException):
         return {}
     rel_tag = f"{{{_NS_PKG_REL}}}Relationship"
     return {rel.get("Id", ""): rel.get("Target", "") for rel in root.iter(rel_tag) if rel.get("Id")}
@@ -210,7 +213,7 @@ def _col_index(ref: str) -> int:
 
 
 def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
-    root = ET.fromstring(xml_bytes)
+    root = _safe_fromstring(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
     for row in root.iter(f"{s}row"):

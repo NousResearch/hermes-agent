@@ -175,6 +175,16 @@ class TestDocxExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+    def test_malicious_dtd_is_rejected(self):
+        p = os.path.join(self.tmp, "xxe.docx")
+        _write_docx(p, (
+            '<!DOCTYPE w:document [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            f'<w:document xmlns:w="{_NS_W}"><w:body><w:p><w:r>'
+            '<w:t>&xxe;</w:t></w:r></w:p></w:body></w:document>'
+        ))
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
 
 # ---------------------------------------------------------------------------
 # Excel workbooks (.xlsx) — #10740
@@ -236,6 +246,40 @@ class TestXlsxExtraction(unittest.TestCase):
             fh.write(b"nope")
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+    def test_malicious_sheet_dtd_is_skipped(self):
+        p = os.path.join(self.tmp, "xxe.xlsx")
+        r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        workbook = (
+            f'<workbook xmlns="{_NS_S}" xmlns:r="{r}"><sheets>'
+            '<sheet name="Bad" sheetId="1" r:id="rId1"/>'
+            '<sheet name="Good" sheetId="2" r:id="rId2"/>'
+            '</sheets></workbook>')
+        rels = (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="x"/>'
+            '<Relationship Id="rId2" Target="worksheets/sheet2.xml" Type="x"/>'
+            '</Relationships>')
+        bad_sheet = (
+            '<!DOCTYPE worksheet [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            f'<worksheet xmlns="{_NS_S}"><sheetData><row r="1">'
+            '<c r="A1" t="inlineStr"><is><t>&xxe;</t></is></c>'
+            '</row></sheetData></worksheet>')
+        good_sheet = (
+            f'<worksheet xmlns="{_NS_S}"><sheetData><row r="1">'
+            '<c r="A1" t="inlineStr"><is><t>SAFE</t></is></c>'
+            '</row></sheetData></worksheet>')
+        _write_xlsx(
+            p,
+            workbook=workbook,
+            rels=rels,
+            shared=None,
+            sheets={"xl/worksheets/sheet1.xml": bad_sheet, "xl/worksheets/sheet2.xml": good_sheet},
+        )
+        text = extract_document_text(p)
+        self.assertIn("# ── Sheet: Good ──", text)
+        self.assertIn("SAFE", text)
+        self.assertNotIn("root:", text)
 
 
 # ---------------------------------------------------------------------------

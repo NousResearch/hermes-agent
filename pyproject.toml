@@ -121,6 +121,9 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # XXE-safe XML parsing for core read_file document extraction (DOCX/XLSX)
+  # and other user-controlled XML surfaces. Pure-Python, no transitive deps.
+  "defusedxml==0.7.1",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -159,12 +162,7 @@ messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", 
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
-# WeCom callback-mode adapter — parses untrusted XML POST bodies from
-# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
-# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
-# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
-# here to keep the dependency local to wecom_callback's threat model.
-wecom = ["defusedxml==0.7.1"]
+wecom = []  # defusedxml is core: read_file DOCX/XLSX extraction also parses untrusted XML.
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [

@@ -31,7 +31,141 @@ support.
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+import math
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+_EMBED_MODEL = "text-embedding-3-large"
+_EMBED_DIM = 3072
+_EMBED_TABLE = "message_embeddings"
+_EMBED_BATCH_SIZE = 16
+_EMBED_REQUEST_TIMEOUT = 60
+
+
+def _db_conn(db):
+    return getattr(db, "_conn", None)
+
+
+def _embedding_blob_to_list(blob):
+    if blob is None:
+        return []
+    try:
+        import numpy as np
+        return np.frombuffer(blob, dtype=np.float32).tolist()
+    except Exception:
+        return list(blob)
+
+
+def _create_embedding_table(db):
+    conn = _db_conn(db)
+    if conn is None:
+        return
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {_EMBED_TABLE} (
+            message_id INTEGER PRIMARY KEY,
+            embedding BLOB NOT NULL,
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{_EMBED_TABLE}_model ON {_EMBED_TABLE}(model)")
+    conn.commit()
+
+
+def _embedding_config():
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    aux = (cfg.get("auxiliary") or {}).get("embeddings") or {}
+    return aux
+
+
+def get_embedding(text: str) -> List[float]:
+    cfg = _embedding_config()
+    base_url = (cfg.get("base_url") or "https://api.fuelix.ai/v1").rstrip("/")
+    api_key = cfg.get("api_key") or os.getenv("FUELIX_API_KEY") or os.getenv("API_KEY")
+    if not api_key:
+        raise RuntimeError("FuelIX embeddings API key is not configured")
+    payload = {"model": cfg.get("model") or _EMBED_MODEL, "input": text}
+    import urllib.request
+    req = urllib.request.Request(
+        f"{base_url}/embeddings",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=int(cfg.get("timeout") or _EMBED_REQUEST_TIMEOUT)) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["data"][0]["embedding"]
+
+
+def _store_embedding(db, message_id: int, embedding: Sequence[float], model: str = _EMBED_MODEL):
+    conn = _db_conn(db)
+    if conn is None:
+        return
+    try:
+        import numpy as np
+        blob = np.asarray(embedding, dtype=np.float32).tobytes()
+    except Exception:
+        import array
+        blob = array.array("f", embedding).tobytes()
+    conn.execute(
+        f"INSERT OR REPLACE INTO {_EMBED_TABLE}(message_id, embedding, model, created_at) VALUES (?, ?, ?, ?)",
+        (message_id, blob, model, datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _load_embeddings_for_message_ids(db, message_ids: Sequence[int]) -> Dict[int, List[float]]:
+    conn = _db_conn(db)
+    if conn is None or not message_ids:
+        return {}
+    q = ",".join(["?"] * len(message_ids))
+    rows = conn.execute(f"SELECT message_id, embedding FROM {_EMBED_TABLE} WHERE message_id IN ({q})", tuple(message_ids)).fetchall()
+    return {row[0]: _embedding_blob_to_list(row[1]) for row in rows}
+
+
+def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if not na or not nb:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _semantic_rank(db, query: str, raw_results: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if not raw_results:
+        return []
+    qvec = get_embedding(query)
+    message_ids = [r.get("id") for r in raw_results if r.get("id") is not None]
+    embeddings = _load_embeddings_for_message_ids(db, message_ids)
+    scored = []
+    for r in raw_results:
+        mid = r.get("id")
+        vec = embeddings.get(mid)
+        if vec is None:
+            continue
+        scored.append((mid, _cosine_similarity(qvec, vec)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = {mid: score for mid, score in scored[:limit]}
+    blended = []
+    for r in raw_results:
+        if r.get("id") in top:
+            row = dict(r)
+            row["semantic_score"] = top[r["id"]]
+            blended.append(row)
+    blended.sort(key=lambda r: r.get("semantic_score", 0.0), reverse=True)
+    return blended[:limit]
+
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
@@ -503,6 +637,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    semantic: bool = False,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -628,6 +763,7 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    semantic: bool = False,
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -737,6 +873,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        semantic=semantic,
     )
 
 

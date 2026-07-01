@@ -1749,10 +1749,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
-
     # 1. Prebuilt bundle (nix / packaged release): just run it.
+    #
+    # This must run BEFORE _ensure_tui_workspace() below. A pip/pipx install
+    # ships hermes_cli/tui_dist/entry.js in the wheel but never ships ui-tui/
+    # at all (that directory only exists in a git checkout) — so requiring
+    # the workspace to exist first made every pip/pipx dashboard Chat tab
+    # connection hard-exit before it ever got a chance to try the bundled
+    # entry.js it already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1765,6 +1769,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
+
+    # No prebuilt bundle available (or --dev, which never uses one) — we're
+    # about to npm install/build from source, so the workspace must exist.
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.

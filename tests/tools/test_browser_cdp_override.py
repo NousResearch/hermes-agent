@@ -256,3 +256,95 @@ class TestCDPSupervisorTimeoutRedaction:
                 assert "127.0.0.1:9222" in str(exc)
             else:
                 raise AssertionError("TimeoutError was not raised")
+
+
+class TestCDPSupervisorStartErrorRedaction:
+    """CDPSupervisor.start() must not leak the CDP URL via the connect-error path.
+
+    The more common failure mode than attach-timeout: the first
+    websockets.connect(self.cdp_url) raises (bad URI, refused, TLS), the raw
+    exception is stashed as self._start_error, and start() re-raises it. Those
+    websockets exceptions embed the full raw cdp_url -- token and userinfo --
+    in their message. start() must re-raise a REDACTED error and must not leak
+    the secret via the exception message or the traceback cause chain.
+    """
+
+    def _run_start_hitting_error(self, cdp_url: str, start_error: BaseException):
+        """Invoke start() so it takes the _start_error re-raise branch.
+
+        start() clears _ready_event / _start_error and launches a thread, so we
+        can't pre-seed them. Instead we stub threading.Thread: the fake thread's
+        start() synchronously populates _start_error and sets the ready event,
+        exactly as the real supervisor loop does on a first-connect failure.
+        """
+        import threading
+        from tools.browser_supervisor import CDPSupervisor
+
+        sup = CDPSupervisor.__new__(CDPSupervisor)
+        sup.task_id = "test-task"
+        sup.cdp_url = cdp_url
+        sup._start_error = None
+        sup._stop_requested = False
+        sup._loop = None
+        sup._thread = None
+        sup._ready_event = threading.Event()
+
+        def _fake_thread(*args, **kwargs):
+            fake = Mock()
+
+            def _start():
+                sup._start_error = start_error
+                sup._ready_event.set()
+
+            fake.start.side_effect = _start
+            fake.is_alive.return_value = False
+            return fake
+
+        with patch("threading.Thread", side_effect=_fake_thread), patch.object(sup, "stop"):
+            sup.start(timeout=5.0)
+
+    def test_start_error_redacts_query_token(self):
+        # A realistic websockets-style error embedding the raw URL + token.
+        raw = "wss://cdp.example/devtools/browser/abc?token=super-secret-999"
+        err = ValueError(f"{raw} isn't a valid URI: hostname isn't provided")
+        try:
+            self._run_start_hitting_error(raw, err)
+        except Exception as exc:  # noqa: BLE001 - asserting on the surface
+            msg = str(exc)
+            assert "super-secret-999" not in msg, (
+                "raw token must not appear in the re-raised error message"
+            )
+            # The raw cause must be suppressed so it can't leak via traceback.
+            assert exc.__cause__ is None
+            assert getattr(exc, "__suppress_context__", False) is True
+        else:
+            raise AssertionError("start() did not re-raise the start error")
+
+    def test_start_error_redacts_userinfo_password(self):
+        raw = "wss://user:p4ssw0rd@cdp.example/devtools/browser/x"
+        err = ValueError(f"{raw} isn't a valid URI: hostname isn't provided")
+        try:
+            self._run_start_hitting_error(raw, err)
+        except Exception as exc:  # noqa: BLE001
+            assert "p4ssw0rd" not in str(exc)
+        else:
+            raise AssertionError("start() did not re-raise the start error")
+
+
+class TestRedactCdpErrorText:
+    """The supervisor's error-text chokepoint masks credentials, keeps context."""
+
+    def test_masks_query_token_in_exception(self):
+        from tools.browser_supervisor import _redact_cdp_error_text
+
+        err = ConnectionError("connect wss://h/x?token=leak-me failed")
+        out = _redact_cdp_error_text(err)
+        assert "leak-me" not in out
+
+    def test_preserves_non_secret_context(self):
+        from tools.browser_supervisor import _redact_cdp_error_text
+
+        err = ConnectionError("connect ws://127.0.0.1:9222/x failed: refused")
+        out = _redact_cdp_error_text(err)
+        assert "127.0.0.1:9222" in out
+        assert "refused" in out

@@ -3535,8 +3535,13 @@ class BasePlatformAdapter(ABC):
         """Translate one container path to a host-readable path.
 
         1. Map via the longest matching bind-mount prefix.
-        2. If still unmapped (e.g. /tmp/) and absent on the host, ``docker cp`` it
-           out to a temp file the host can read.
+        2. If still unmapped (e.g. /tmp/) and absent on the host, extract it via
+           ``docker exec cat`` into a temp file the host can read. ``docker cp``
+           is avoided here because it fails against the overlayfs storage driver
+           on some hosts; ``exec`` + ``cat`` works regardless of storage driver.
+           The extracted file keeps the container path's original basename
+           (rather than a hash) since some platform adapters use the local
+           filename as a fallback display title when no explicit title is set.
         """
         import os
         from pathlib import Path
@@ -3552,16 +3557,20 @@ class BasePlatformAdapter(ABC):
 
         if host_path == path and not Path(path).exists() and container_id:
             try:
-                import hashlib
                 import subprocess
-                tag = hashlib.md5(path.encode()).hexdigest()[:8]
-                dest_path = f"/tmp/hermes_docker_media_{tag}{os.path.splitext(path)[1]}"
-                r = subprocess.run(
-                    ["docker", "cp", f"{container_id}:{path}", dest_path],
-                    capture_output=True, timeout=30,
-                )
-                if r.returncode == 0:
+                dest_path = os.path.join("/tmp", os.path.basename(path))
+                with open(dest_path, "wb") as fh:
+                    r = subprocess.run(
+                        ["docker", "exec", container_id, "cat", path],
+                        stdout=fh, stderr=subprocess.DEVNULL, timeout=30,
+                    )
+                if r.returncode == 0 and os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
                     host_path = dest_path
+                else:
+                    try:
+                        os.unlink(dest_path)
+                    except OSError:
+                        pass
             except Exception:
                 pass
         return host_path

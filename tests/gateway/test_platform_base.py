@@ -1969,3 +1969,64 @@ class TestDockerPathTranslation:
         # Early return before any docker call.
         assert BasePlatformAdapter.translate_docker_media_paths([]) == []
         assert BasePlatformAdapter.translate_docker_local_paths([]) == []
+
+    def test_extraction_uses_exec_cat_not_cp(self):
+        # docker cp fails against the overlayfs storage driver on some hosts;
+        # exec+cat must be used instead for the last-resort extraction path.
+        container_path = "/tmp/song_deadbeef01.mp3"
+        dest_path = os.path.join("/tmp", os.path.basename(container_path))
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            kwargs["stdout"].write(b"fake-audio-bytes")
+            return type("R", (), {"returncode": 0})()
+
+        try:
+            with patch("subprocess.run", side_effect=fake_run), \
+                 patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                              return_value=([], "abc123")):
+                out = BasePlatformAdapter.translate_docker_local_paths([container_path])
+            assert out == [dest_path]
+            assert captured["cmd"][:3] == ["docker", "exec", "abc123"]
+            assert captured["cmd"][3] == "cat"
+            assert "cp" not in captured["cmd"]
+        finally:
+            if os.path.exists(dest_path):
+                os.unlink(dest_path)
+
+    def test_extraction_preserves_original_basename(self):
+        # Regression: the old implementation renamed extracted files to
+        # hermes_docker_media_<md5hash>.<ext>, which some platform adapters
+        # then used as a fallback display title instead of the real filename.
+        container_path = "/tmp/my_generated_track.mp3"
+        dest_path = os.path.join("/tmp", "my_generated_track.mp3")
+
+        def fake_run(cmd, **kwargs):
+            kwargs["stdout"].write(b"fake-audio-bytes")
+            return type("R", (), {"returncode": 0})()
+
+        try:
+            with patch("subprocess.run", side_effect=fake_run), \
+                 patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                              return_value=([], "abc123")):
+                out = BasePlatformAdapter.translate_docker_local_paths([container_path])
+            assert out == [dest_path]
+            assert "hermes_docker_media_" not in out[0]
+        finally:
+            if os.path.exists(dest_path):
+                os.unlink(dest_path)
+
+    def test_extraction_failure_falls_back_to_original_path_and_cleans_up(self):
+        container_path = "/tmp/missing_in_container.mp3"
+        dest_path = os.path.join("/tmp", os.path.basename(container_path))
+
+        def fake_run(cmd, **kwargs):
+            return type("R", (), {"returncode": 1})()
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths([container_path])
+        assert out == [container_path]
+        assert not os.path.exists(dest_path)

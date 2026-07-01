@@ -155,6 +155,58 @@ def test_successful_spawn_does_not_reset_failure_counter(kanban_home, all_assign
         conn.close()
 
 
+
+
+def test_complete_task_rejects_missing_declared_artifact(kanban_home, all_assignees_spawnable):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="artifact producer", assignee="worker")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, str(workspace))
+        kb.claim_task(conn, tid)
+
+        with pytest.raises(kb.CompletionArtifactError):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="claims a missing artifact",
+                metadata={"artifact_paths": ["missing.json"]},
+            )
+
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_task_records_sha256_for_declared_artifacts(kanban_home, all_assignees_spawnable):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="artifact producer", assignee="worker")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        workspace.mkdir(parents=True, exist_ok=True)
+        artifact = workspace / "packet.json"
+        artifact.write_text("{\"ok\": true}\n", encoding="utf-8")
+        kb.set_workspace_path(conn, tid, str(workspace))
+        kb.claim_task(conn, tid)
+
+        metadata = {"artifact_paths": ["packet.json"]}
+        expected_size = artifact.stat().st_size
+        assert kb.complete_task(conn, tid, summary="done", metadata=metadata) is True
+
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        readback = run.metadata["artifact_readback"]
+        assert readback[0]["path"] == "packet.json"
+        assert readback[0]["size_bytes"] == expected_size
+        assert len(readback[0]["sha256"]) == 64
+        durable_path = Path(readback[0]["durable_path"])
+        assert durable_path.exists()
+        assert durable_path.read_text(encoding="utf-8") == "{\"ok\": true}\n"
+    finally:
+        conn.close()
+
 def test_successful_completion_resets_failure_counter(kanban_home, all_assignees_spawnable):
     """A successful kb.complete_task wipes the counter — the task+profile
     combination proved it can succeed, so past failures are history."""

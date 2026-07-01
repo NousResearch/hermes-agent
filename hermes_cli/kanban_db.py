@@ -3975,6 +3975,105 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionArtifactError(ValueError):
+    """Raised when completion metadata declares artifacts that cannot be read back."""
+
+
+def _declared_completion_artifact_paths(metadata: Optional[dict]) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    paths: list[str] = []
+    for key in ("artifacts", "artifact_paths"):
+        raw = metadata.get(key)
+        if isinstance(raw, str):
+            candidates = [raw]
+        elif isinstance(raw, (list, tuple)):
+            candidates = list(raw)
+        else:
+            continue
+        for item in candidates:
+            if isinstance(item, str):
+                value = item.strip()
+            elif isinstance(item, dict):
+                value = str(item.get("path") or item.get("file") or item.get("artifact_path") or "").strip()
+            else:
+                value = ""
+            if value and value not in paths:
+                paths.append(value)
+    return paths
+
+
+def _readback_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> list[dict[str, Any]]:
+    declared = _declared_completion_artifact_paths(metadata)
+    if not declared:
+        return []
+    row = conn.execute(
+        "SELECT workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    workspace = Path(row["workspace_path"]).expanduser() if row and row["workspace_path"] else Path.cwd()
+    checked: list[tuple[str, Path, os.stat_result, str]] = []
+    errors: list[str] = []
+    for raw_path in declared:
+        candidate = Path(raw_path).expanduser()
+        path = candidate if candidate.is_absolute() else workspace / candidate
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        try:
+            stat = resolved.stat()
+        except OSError:
+            errors.append(f"{raw_path}: missing")
+            continue
+        if not resolved.is_file():
+            errors.append(f"{raw_path}: not a file")
+            continue
+        if stat.st_size <= 0:
+            errors.append(f"{raw_path}: empty")
+            continue
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        checked.append((raw_path, resolved, stat, digest))
+    if errors:
+        raise CompletionArtifactError(
+            "kanban completion refused because declared artifacts are not durable/readable: "
+            + "; ".join(errors)
+        )
+
+    attachment_dir = task_attachments_dir(task_id)
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    readback: list[dict[str, Any]] = []
+    for raw_path, resolved, stat, digest in checked:
+        leaf = Path(raw_path).name or resolved.name or "artifact"
+        safe_leaf = re.sub(r"[^A-Za-z0-9._-]+", "_", leaf).strip("._") or "artifact"
+        stored = attachment_dir / f"{digest[:12]}_{safe_leaf}"
+        if not stored.exists():
+            shutil.copy2(resolved, stored)
+        attachment_id = add_attachment(
+            conn,
+            task_id,
+            filename=safe_leaf,
+            stored_path=str(stored.resolve()),
+            size=int(stored.stat().st_size),
+            uploaded_by="kanban-complete-artifact-gate",
+        )
+        readback.append(
+            {
+                "path": raw_path,
+                "resolved_path": str(resolved),
+                "durable_path": str(stored.resolve()),
+                "attachment_id": attachment_id,
+                "size_bytes": int(stat.st_size),
+                "sha256": digest,
+            }
+        )
+    return readback
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4041,6 +4140,14 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    artifact_readback = _readback_completion_artifacts(conn, task_id, metadata)
+    if artifact_readback:
+        if metadata is None:
+            metadata = {}
+        else:
+            metadata = dict(metadata)
+        metadata["artifact_readback"] = artifact_readback
 
     with write_txn(conn):
         if expected_run_id is None:

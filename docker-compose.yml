@@ -64,13 +64,17 @@ services:
     image: hermes-agent
     container_name: hermes-dashboard
     restart: unless-stopped
-    network_mode: host
     depends_on:
       - gateway
+    ports:
+      - "127.0.0.1:9119:9119"
     volumes:
       - ~/.hermes:/opt/data
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+    # Bind inside the container so Docker can publish the port, but only publish
+    # it on host loopback. This works on Docker Desktop macOS/Windows where
+    # network_mode: host targets the Linux VM, not the real host browser.
+    # For remote access, tunnel via `ssh -L 9119:localhost:9119`.
+    command: ["dashboard", "--host", "0.0.0.0", "--no-open"]

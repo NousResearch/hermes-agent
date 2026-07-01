@@ -428,6 +428,23 @@ class TestLifecycleGuardModule:
         from cron.lifecycle_guard import check_gateway_lifecycle
         check_gateway_lifecycle("clean prompt", str(tmp_path / "nonexistent.sh"))
 
+    def test_tilde_unknown_user_script_does_not_crash(self):
+        """A ``~user``-shaped script path with no matching system user must
+        degrade to "can't scan it" instead of raising RuntimeError.
+
+        ``Path.expanduser()`` raises ``RuntimeError`` (not ``OSError``) for
+        an unresolvable ``~user`` prefix — same bug class as
+        agent/subdirectory_hints.py's tilde-expansion crash (an LLM-authored
+        script value like ``~nonexistent_user_xyzzy_12345/restart.sh`` must
+        not crash cron job creation).
+        """
+        from cron.lifecycle_guard import check_gateway_lifecycle
+        # Must not raise RuntimeError — the guard treats an unscannable
+        # script as absent and only judges the (clean) prompt.
+        check_gateway_lifecycle(
+            "clean prompt", "~nonexistent_user_xyzzy_12345/restart.sh",
+        )
+
     def test_relative_script_resolved_under_scripts_dir(self, tmp_path, monkeypatch):
         """A bare/relative script name resolves under HERMES_HOME/scripts (the
         same place the scheduler runs it from) — otherwise the guard would read

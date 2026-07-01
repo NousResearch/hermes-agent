@@ -937,6 +937,16 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         return False
 
 
+def _print_subprocess_failure_detail(result, *, max_chars: int = 200) -> None:
+    detail = (getattr(result, "stderr", None) or getattr(result, "stdout", None) or "").strip()
+    if detail:
+        _print_info(f"      {detail[:max_chars]}")
+        return
+    returncode = getattr(result, "returncode", None)
+    if returncode is not None:
+        _print_info(f"      exited with code {returncode}")
+
+
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
@@ -964,8 +974,7 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
-                if result.stderr:
-                    _print_info(f"      {result.stderr.strip()[:200]}")
+                _print_subprocess_failure_detail(result)
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
             return
@@ -1069,6 +1078,7 @@ def _run_post_setup(post_setup_key: str):
                 _print_success("    Camofox installed")
             else:
                 _print_warning("    npm install failed - run manually: npm install --workspaces=false")
+                _print_subprocess_failure_detail(result)
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")

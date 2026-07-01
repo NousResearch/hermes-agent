@@ -274,7 +274,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'gemini',
     'neutts',
     'kittentts',
-    'piper'
+    'piper',
+    'supertonic'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
@@ -413,6 +414,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     },
     piper: {
       voice: 'Piper Voice'
+    },
+    supertonic: {
+      voice: 'Supertonic Voice',
+      lang: 'Supertonic Language',
+      speed: 'Supertonic Speed',
+      totalSteps: 'Supertonic Quality Steps'
     }
   },
   memory: {
@@ -505,6 +512,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     },
     neutts: {
       device: 'Local inference device for NeuTTS.'
+    },
+    supertonic: {
+      voice: 'Built-in voice style, M1-M5 or F1-F5.',
+      lang: 'Spoken language code for Supertonic synthesis.',
+      speed: 'Speech speed from 0.7 to 2.0.',
+      totalSteps: 'Quality/speed tradeoff from 5 to 12 steps.'
     }
   },
   stt: {
@@ -618,6 +631,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.kittentts.model',
       'tts.kittentts.voice',
       'tts.piper.voice',
+      'tts.supertonic.voice',
+      'tts.supertonic.lang',
+      'tts.supertonic.speed',
+      'tts.supertonic.total_steps',
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',

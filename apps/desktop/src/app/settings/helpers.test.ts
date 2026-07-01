@@ -182,6 +182,7 @@ describe('settings helpers', () => {
       expect(opts).toContain('xai')
       expect(opts).toContain('edge')
       expect(opts).toContain('elevenlabs')
+      expect(opts).toContain('supertonic')
     })
 
     it('renders a dropdown for the STT provider including xAI (Grok)', () => {

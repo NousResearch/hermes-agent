@@ -4407,6 +4407,44 @@ def run_conversation(
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(
                     assistant_message.tool_calls
                 )
+                assistant_message.tool_calls, replayed_tool_calls = (
+                    agent._filter_completed_tool_call_replays(
+                        assistant_message.tool_calls,
+                        messages,
+                    )
+                )
+                if replayed_tool_calls:
+                    replayed_ids = [
+                        _ra().AIAgent._get_tool_call_id_static(tc)
+                        for tc in replayed_tool_calls
+                    ]
+                    logger.warning(
+                        "Skipping %d replayed completed tool call(s): %s",
+                        len(replayed_ids),
+                        ", ".join(cid for cid in replayed_ids if cid),
+                    )
+                    if not assistant_message.tool_calls and not agent._has_content_after_think_block(
+                        assistant_message.content or ""
+                    ):
+                        decision = agent._duplicate_tool_call_halt_decision(
+                            replayed_tool_calls
+                        )
+                        agent._set_tool_guardrail_halt(decision)
+                        _turn_exit_reason = "guardrail_halt"
+                        final_response = agent._toolguard_controlled_halt_response(decision)
+                        agent._emit_status(
+                            f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                        )
+                        messages.append({"role": "assistant", "content": final_response})
+                        if final_response:
+                            agent._safe_print(f"\n{final_response}\n")
+                            if agent.stream_delta_callback:
+                                try:
+                                    agent.stream_delta_callback(final_response)
+                                    agent.stream_delta_callback(None)
+                                except Exception:
+                                    pass
+                        break
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 

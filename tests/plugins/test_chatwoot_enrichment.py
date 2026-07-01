@@ -164,8 +164,9 @@ def test_recent_syncs_cache(monkeypatch):
 # --- orchestrator -----------------------------------------------------------
 
 class FakeAdapter:
-    def __init__(self, contact=None):
+    def __init__(self, contact=None, avatar_ok=True):
         self._contact = contact
+        self._avatar_ok = avatar_ok
         self.updated = None
         self.labels = None
 
@@ -179,6 +180,9 @@ class FakeAdapter:
     async def add_contact_labels(self, account_id, contact_id, labels):
         self.labels = labels
         return True
+
+    async def url_is_image(self, url):
+        return self._avatar_ok
 
 
 def _event(email="lizardreyes13@gmail.com", phone=None):
@@ -201,6 +205,7 @@ def _enable(monkeypatch):
 
 
 def test_enrich_happy_path(monkeypatch):
+    monkeypatch.setenv("CRWD_ASSET_BASE_URL", "https://cdn.crwd.app/uploads")
     monkeypatch.setattr(en, "fetch_user", lambda email, phone: dict(SAMPLE_USER))
     monkeypatch.setattr(en, "fetch_interests", lambda uid: ["Music", "Movies"])
     monkeypatch.setattr(en, "fetch_answers", lambda uid, cap=25: [("demographics", "$50K–$75K")])
@@ -209,8 +214,22 @@ def test_enrich_happy_path(monkeypatch):
     asyncio.run(en.enrich(adapter, _event()))
 
     assert adapter.updated["email"] == "lizardreyes13@gmail.com"
+    assert adapter.updated["avatar_url"].endswith("profile_pic_1776448509925_ABC.jpeg")
     assert adapter.labels == ["music", "movies"]
     assert en._recently_synced("77")  # marked synced
+
+
+def test_enrich_drops_avatar_when_not_an_image(monkeypatch):
+    monkeypatch.setattr(en, "fetch_user", lambda email, phone: dict(SAMPLE_USER))
+    monkeypatch.setattr(en, "fetch_interests", lambda uid: [])
+    monkeypatch.setattr(en, "fetch_answers", lambda uid, cap=25: [])
+    monkeypatch.setenv("CRWD_ASSET_BASE_URL", "https://cdn.crwd.app/uploads")
+    adapter = FakeAdapter(contact=None, avatar_ok=False)  # URL serves HTML, not image
+
+    asyncio.run(en.enrich(adapter, _event()))
+
+    assert "avatar_url" not in adapter.updated  # broken avatar stripped
+    assert adapter.updated["email"] == "lizardreyes13@gmail.com"  # rest still synced
 
 
 def test_enrich_no_match_negative_caches(monkeypatch):

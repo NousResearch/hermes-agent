@@ -57,7 +57,7 @@ import mimetypes
 import os
 import re
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
@@ -128,6 +128,7 @@ from gateway.platforms.base import (
     SendResult,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
+    _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -1766,36 +1767,57 @@ class MatrixAdapter(BasePlatformAdapter):
 
         fname = url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
 
+        def _safe_redirect_target(current_url: str, location: str) -> str:
+            """Resolve a redirect Location and re-validate it against SSRF policy.
+
+            A public-looking URL can 302-redirect the gateway toward loopback,
+            private-network, or cloud-metadata endpoints. Validating only the
+            final URL is insufficient because the connection to the unsafe hop
+            has already been made. Re-check every hop before following it.
+            """
+            next_url = urljoin(current_url, location)
+            if not is_safe_url(next_url):
+                raise ValueError("blocked unsafe redirect URL")
+            return next_url
+
         try:
             import aiohttp as _aiohttp
 
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
             async with _aiohttp.ClientSession(**_sess_kw) as http:
-                async with http.get(
-                    url,
-                    timeout=_aiohttp.ClientTimeout(total=30),
-                    allow_redirects=True,
-                    **_req_kw,
-                ) as resp:
-                    resp.raise_for_status()
-                    if not is_safe_url(str(resp.url)):
-                        raise ValueError("blocked unsafe redirect URL")
-                    _check_content_length(resp.headers)
-                    parts: list[bytes] = []
-                    total = 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        total = _append_chunk(parts, total, bytes(chunk))
-                    ct = _check_image_content_type(
-                        getattr(resp, "content_type", None)
-                        or resp.headers.get("content-type", "application/octet-stream")
-                    )
-                    return b"".join(parts), ct, fname
+                fetch_url = url
+                for _ in range(20):
+                    async with http.get(
+                        fetch_url,
+                        timeout=_aiohttp.ClientTimeout(total=30),
+                        allow_redirects=False,
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status in {301, 302, 303, 307, 308}:
+                            location = resp.headers.get("Location")
+                            if not location:
+                                raise ValueError("redirect missing Location")
+                            fetch_url = _safe_redirect_target(fetch_url, location)
+                            continue
+                        resp.raise_for_status()
+                        _check_content_length(resp.headers)
+                        parts: list[bytes] = []
+                        total = 0
+                        async for chunk in resp.content.iter_chunked(65536):
+                            total = _append_chunk(parts, total, bytes(chunk))
+                        ct = _check_image_content_type(
+                            getattr(resp, "content_type", None)
+                            or resp.headers.get("content-type", "application/octet-stream")
+                        )
+                        return b"".join(parts), ct, fname
+                raise ValueError("too many redirects")
         except ImportError:
             import httpx
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
+            _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
             async with httpx.AsyncClient(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
@@ -1804,8 +1826,6 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=30,
                 ) as resp:
                     resp.raise_for_status()
-                    if not is_safe_url(str(resp.url)):
-                        raise ValueError("blocked unsafe redirect URL")
                     _check_content_length(resp.headers)
                     parts: list[bytes] = []
                     total = 0

@@ -3385,6 +3385,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {"Content-Length": "11"}
             content_type = "image/png"
             content = _Content()
@@ -3434,6 +3435,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3472,15 +3474,82 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_redirect(self, monkeypatch):
+        """A 302 to a private/loopback target must be blocked per-hop, before
+        the redirect is followed (not only re-checked on the final URL)."""
+        import aiohttp
+        import tools.url_safety as url_safety
+
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "http://127.0.0.1/private.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _Session:
+            def __init__(self):
+                self.requested = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse()
+
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
+
+        with pytest.raises(ValueError, match="unsafe redirect"):
+            await self.adapter._download_external_media_with_cap(
+                "https://example.com/image.png"
+            )
+
+        # Only the initial public URL was fetched — the loopback hop was never
+        # followed because it was rejected before the next GET.
+        assert session.requested == ["https://example.com/image.png"]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
+        """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
         import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
-                yield b"ok"
+                yield b"imgbytes"
 
-        class _Response:
-            url = "http://127.0.0.1/private.png"
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "https://cdn.example.com/final.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _OkResponse:
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3495,26 +3564,85 @@ class TestMatrixImageOnlyMediaNormalization:
                 return None
 
         class _Session:
+            def __init__(self):
+                self.requested = []
+
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_args):
                 return None
 
-            def get(self, *_args, **_kwargs):
-                return _Response()
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse() if len(self.requested) == 1 else _OkResponse()
 
-        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
-        monkeypatch.setattr(
-            url_safety,
-            "is_safe_url",
-            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+
+        data, ct, _fname = await self.adapter._download_external_media_with_cap(
+            "https://example.com/image.png"
         )
 
-        with pytest.raises(ValueError, match="unsafe redirect"):
-            await self.adapter._download_external_media_with_cap(
-                "https://example.com/image.png"
-            )
+        assert data == b"imgbytes"
+        assert ct == "image/png"
+        assert session.requested == [
+            "https://example.com/image.png",
+            "https://cdn.example.com/final.png",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_httpx_installs_redirect_guard(self, monkeypatch):
+        """The httpx fallback re-checks redirect targets via the shared guard."""
+        import tools.url_safety as url_safety
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        clients = []
+
+        class _Content:
+            async def iter_chunked(self, _size):
+                yield b"ok"
+
+        class _Response:
+            headers = {"content-type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"ok"
+
+        class _Client:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                clients.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, *_args, **_kwargs):
+                return _Response()
+
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+        with patch.dict(sys.modules, {"aiohttp": None}):
+            with patch("httpx.AsyncClient", _Client):
+                data, ct, _fname = await self.adapter._download_external_media_with_cap(
+                    "https://example.com/image.png"
+                )
+
+        assert data == b"ok"
+        assert ct == "image/png"
+        assert clients[0].kwargs["event_hooks"]["response"] == [_ssrf_redirect_guard]
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_initial_url(self):
@@ -3534,6 +3662,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "text/html"
             content = _Content()

@@ -2613,8 +2613,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
-        self._last_summary_auth_failure = False
-        self._last_summary_network_failure = False
+        # NOTE: do NOT reset _last_summary_auth_failure or
+        # _last_summary_network_failure here.  These flags are set by
+        # _generate_summary() on a terminal failure and are already cleared on
+        # a successful summary.  Resetting them eagerly defeats the cooldown
+        # protection: _generate_summary() returns None from the cooldown
+        # early-return without re-asserting these flags, so the abort guard
+        # below would see False and fall through to the destructive
+        # static-fallback — the exact data-loss #29559 describes.  Letting them
+        # persist across compress() calls is safe because a successful summary
+        # always clears both.
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without

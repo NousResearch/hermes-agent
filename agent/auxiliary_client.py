@@ -110,6 +110,19 @@ from utils import base_url_host_matches, base_url_hostname, env_float, model_for
 logger = logging.getLogger(__name__)
 
 
+# ── resolve_provider_client fall-through dedup ───────────────────────────
+# Both fall-through warning sites in resolve_provider_client (the "unknown
+# provider" and "unhandled auth_type" branches) fire on every retry of a
+# misconfigured provider, spamming the logs. Demote them to logger.debug with
+# per-process dedup: the FIRST occurrence still surfaces (it carries real
+# diagnostic value — a provider-name typo or PROVIDER_REGISTRY/auth_type
+# drift), and identical repeats are suppressed for the lifetime of the
+# process. Two independent sets keep each branch linear and let tests clear
+# them independently.
+_LOGGED_UNKNOWN_PROVIDER_KEYS: set = set()
+_LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
@@ -4336,7 +4349,11 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        logger.warning("resolve_provider_client: unknown provider %r", provider)
+        # Demoted from logger.warning to debug; dedup keyed by provider name
+        # so the first occurrence surfaces but repeated retries stay silent.
+        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+            logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -4528,8 +4545,14 @@ def resolve_provider_client(
                        "directly supported, try 'auto'", provider)
         return None, None
 
-    logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
-                   pconfig.auth_type, provider)
+    # Demoted from logger.warning to debug; dedup keyed on (auth_type,
+    # provider) so the first occurrence surfaces (real schema-drift bug) but
+    # per-call retries stay silent.
+    _auth_dedup_key = (pconfig.auth_type, provider)
+    if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
+        _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
+        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
+                     pconfig.auth_type, provider)
     return None, None
 
 

@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
+# Live provider catalogs are advisory: callers fall back to static models when
+# fetching fails. Keep the response bounded so a broken or hostile endpoint
+# cannot force the model picker/doctor path to buffer an unbounded body.
+_MAX_MODELS_RESPONSE_BYTES = 8 * 1024 * 1024
+
 
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
@@ -33,6 +38,21 @@ def _profile_user_agent() -> str:
         return f"hermes-cli/{_ver}"
     except Exception:
         return "hermes-cli"
+
+
+def _read_bounded_response(resp: Any, *, limit: int = _MAX_MODELS_RESPONSE_BYTES) -> bytes:
+    raw_length = resp.headers.get("Content-Length") if getattr(resp, "headers", None) is not None else None
+    if raw_length:
+        try:
+            if int(raw_length) > limit:
+                raise ValueError("provider model catalog response is too large")
+        except ValueError:
+            raise
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("provider model catalog response is too large")
+    return body
 
 
 @dataclass
@@ -209,7 +229,7 @@ class ProviderProfile:
 
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(_read_bounded_response(resp).decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
         except Exception as exc:

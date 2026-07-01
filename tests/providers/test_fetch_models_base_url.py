@@ -5,7 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch, MagicMock
 
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, _MAX_MODELS_RESPONSE_BYTES
 
 
 class _FakeModelHandler(BaseHTTPRequestHandler):
@@ -57,6 +57,56 @@ class TestFetchModelsBaseUrlOverride:
             assert result == ["proxy-model-a"]
         finally:
             server.shutdown()
+
+    def test_oversized_content_length_returns_none_without_reading_body(self):
+        """Oversized live catalogs should fail closed before buffering the body."""
+
+        class _FakeResponse:
+            headers = {"Content-Length": str(_MAX_MODELS_RESPONSE_BYTES + 1)}
+            read_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, *_args):
+                self.read_called = True
+                return b"{}"
+
+        response = _FakeResponse()
+        profile = ProviderProfile(name="test", base_url="https://example.invalid/v1")
+
+        with patch("urllib.request.urlopen", return_value=response):
+            assert profile.fetch_models(api_key="test-key") is None
+
+        assert response.read_called is False
+
+    def test_body_without_content_length_is_read_with_cap(self):
+        """Responses without Content-Length are still read with a hard cap."""
+
+        class _FakeResponse:
+            headers = {}
+            read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return b'{"data":[{"id":"small"}]}'
+
+        response = _FakeResponse()
+        profile = ProviderProfile(name="test", base_url="https://example.invalid/v1")
+
+        with patch("urllib.request.urlopen", return_value=response):
+            assert profile.fetch_models(api_key="test-key") == ["small"]
+
+        assert response.read_sizes == [_MAX_MODELS_RESPONSE_BYTES + 1]
 
     def test_fallback_to_self_base_url(self):
         """When base_url is None, falls back to self.base_url."""

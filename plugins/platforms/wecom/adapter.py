@@ -93,6 +93,9 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+# Worst-case reconnect budget with MAX_CONSECUTIVE_RECONNECT_FAILURES=50:
+# 2+5+10+30 + 46×60 = 2807s ≈ 47 min before _set_fatal_error trips.
+MAX_CONSECUTIVE_RECONNECT_FAILURES = 50
 
 DEDUP_MAX_SIZE = 1000
 
@@ -336,24 +339,29 @@ class WeComAdapter(BasePlatformAdapter):
         """Read websocket events forever, reconnecting on errors."""
         backoff_idx = 0
         consecutive_failures = 0
-        max_consecutive_failures = 50  # cap total retries to prevent infinite loops
         while self._running:
-            if consecutive_failures >= max_consecutive_failures:
+            if consecutive_failures >= MAX_CONSECUTIVE_RECONNECT_FAILURES:
                 logger.error(
                     "[%s] WeCom reconnect exceeded %d attempts — giving up. "
                     "Restart the gateway to recover.",
-                    self.name, max_consecutive_failures,
+                    self.name, MAX_CONSECUTIVE_RECONNECT_FAILURES,
                 )
                 self._set_fatal_error(
                     "wecom_reconnect_exhausted",
-                    f"WeCom reconnect failed after {max_consecutive_failures} attempts",
+                    f"WeCom reconnect failed after {MAX_CONSECUTIVE_RECONNECT_FAILURES} attempts",
                     retryable=True,
                 )
                 return
             try:
-                await self._read_events()
+                frames_seen = await self._read_events()
+                # Only reset failure counter after _read_events actually processed
+                # at least one frame.  A connection that opens and immediately
+                # closes (e.g. server accepts handshake then drops) must still
+                # count toward the cap — otherwise consecutive_failures never
+                # grows past 1 and _set_fatal_error never fires.
+                if frames_seen > 0:
+                    consecutive_failures = 0
                 backoff_idx = 0
-                consecutive_failures = 0
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -371,8 +379,10 @@ class WeComAdapter(BasePlatformAdapter):
 
                 try:
                     await self._open_connection()
+                    # Connection re-established — reset backoff but NOT the
+                    # failure counter.  The counter only resets once we have
+                    # evidence of a healthy connection (frames_seen > 0 above).
                     backoff_idx = 0
-                    consecutive_failures = 0
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
@@ -382,26 +392,46 @@ class WeComAdapter(BasePlatformAdapter):
                     # return from (busy-loop root cause).
                     await self._cleanup_ws()
 
-    async def _read_events(self) -> None:
-        """Read websocket frames until the connection closes."""
+    async def _read_events(self) -> int:
+        """Read websocket frames until the connection closes.
+
+        Returns the number of frames successfully processed.  The caller
+        (``_listen_loop``) uses this to decide whether the connection was
+        healthy enough to reset the consecutive-failure counter.
+
+        Two exit paths:
+        - **Server-initiated close** (CLOSE/CLOSED/ERROR frame): returns
+          ``frames_seen`` so the caller knows the connection was healthy.
+        - **Silent close** (ws.closed flips True between while-check and
+          ``receive()``): raises to prevent the busy-loop that starved the
+          event loop at 100% CPU.
+        """
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
+        frames_seen = 0
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
+                    frames_seen += 1
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
-                raise RuntimeError("WeCom websocket closed")
+                # Server-initiated close — connection was valid, frames were
+                # processed.  Return (not raise) so _listen_loop can reset the
+                # consecutive-failure counter when frames_seen > 0.
+                return frames_seen
 
-        # while loop exited without raising — ws closed externally (e.g.
-        # during handshake). If we don't raise here, _listen_loop sees a
-        # normal return, resets backoff to 0, and re-enters _read_events
-        # which exits immediately again → busy-loop consuming 100% CPU.
+        # while loop exited without a close frame — ws closed externally
+        # between the loop condition check and receive().  This is the
+        # busy-loop trigger: without raising here, _listen_loop sees a normal
+        # return, resets backoff to 0, and re-enters _read_events which exits
+        # immediately again → 100% CPU.
         if self._running:
             raise RuntimeError("WeCom websocket closed (loop exit without error frame)")
+
+        return frames_seen
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""

@@ -951,5 +951,151 @@ class TestTextBatchFlushRace:
 
         assert handle_calls == [event], "active task must call handle_message"
         assert adapter._pending_text_batches.get(key) is None, (
-            "active task must pop the event after processing"
+            "active task must pop the event"
+        )
+
+
+class TestWeComListenLoopBusyLoopPrevention:
+    """Regression tests for the busy-loop fix (PR #55486).
+
+    The invariant: ``_listen_loop`` must not reset ``consecutive_failures``
+    unless ``_read_events`` actually processed at least one frame.  A
+    connection that opens and immediately closes must still count toward
+    the fatal-error cap.
+    """
+
+    def _make_adapter(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._cleanup_ws = AsyncMock()
+        adapter._fail_pending_responses = MagicMock()
+        adapter._set_fatal_error = MagicMock()
+        adapter._mark_connected = MagicMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_zero_frames_does_not_reset_failure_counter(self):
+        """consecutive_failures must grow when _read_events returns 0.
+
+        Scenario: _read_events raises (ws closed immediately after connect).
+        Even though _open_connection succeeds on each retry, the failure
+        counter must never be reset because no frames were processed.
+        """
+        import plugins.platforms.wecom.adapter as wecom_mod
+
+        adapter = self._make_adapter()
+        # _read_events always raises (ws closed, 0 frames processed)
+        adapter._read_events = AsyncMock(
+            side_effect=RuntimeError("WeCom websocket closed (loop exit without error frame)")
+        )
+        # _open_connection always succeeds (but produces 0 frames next time)
+        adapter._open_connection = AsyncMock()
+
+        call_count = 0
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(delay):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= wecom_mod.MAX_CONSECUTIVE_RECONNECT_FAILURES + 2:
+                adapter._running = False
+            await original_sleep(0)
+
+        with patch.object(wecom_mod.asyncio, "sleep", side_effect=fast_sleep):
+            await adapter._listen_loop()
+
+        assert adapter._set_fatal_error.called, (
+            "consecutive_failures must reach the cap even when reconnect succeeds, "
+            "because _read_events never processed any frames"
+        )
+        assert adapter._set_fatal_error.call_args[0][0] == "wecom_reconnect_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_healthy_frames_reset_failure_counter(self):
+        """consecutive_failures must reset to 0 when _read_events returns >0.
+
+        Scenario: a transient failure followed by a healthy session (10 frames
+        processed) must clear the failure counter.
+        """
+        adapter = self._make_adapter()
+
+        # First call raises (transient failure), second returns 10 frames,
+        # third call: stop the loop.
+        adapter._read_events = AsyncMock(
+            side_effect=[
+                RuntimeError("WeCom websocket closed"),
+                10,   # healthy session, 10 frames processed
+                asyncio.CancelledError(),  # graceful shutdown
+            ]
+        )
+        adapter._open_connection = AsyncMock()
+
+        await adapter._listen_loop()
+
+        # After the healthy session, consecutive_failures should have been
+        # reset.  The loop should have exited via CancelledError, not fatal.
+        assert not adapter._set_fatal_error.called, (
+            "healthy session must reset consecutive_failures; no fatal error expected"
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_close_with_frames_resets_counter(self):
+        """Server-initiated CLOSE after processing frames resets the counter.
+
+        _read_events returns frames_seen (not raises) on CLOSE/CLOSED frames,
+        so _listen_loop sees a normal return with frames_seen > 0 and resets.
+        """
+        adapter = self._make_adapter()
+
+        # First: raise (failure, counter=1). Second: server close after 5
+        # frames (return 5, counter=0). Third: cancel.
+        adapter._read_events = AsyncMock(
+            side_effect=[
+                RuntimeError("WeCom websocket closed"),
+                5,    # server CLOSE after 5 frames
+                asyncio.CancelledError(),
+            ]
+        )
+        adapter._open_connection = AsyncMock()
+
+        await adapter._listen_loop()
+
+        assert not adapter._set_fatal_error.called
+
+    @pytest.mark.asyncio
+    async def test_open_then_immediate_close_counts_toward_cap(self):
+        """The exact scenario from reviewer feedback: connect succeeds but
+        server drops immediately, _read_events returns 0 frames.
+
+        This must NOT loop forever — the cap must eventually trip.
+        """
+        import plugins.platforms.wecom.adapter as wecom_mod
+
+        adapter = self._make_adapter()
+
+        # _read_events returns 0 (connection opened, no frames, then silent close
+        # that gets caught by the post-loop raise)
+        adapter._read_events = AsyncMock(
+            side_effect=RuntimeError("WeCom websocket closed (loop exit without error frame)")
+        )
+        adapter._open_connection = AsyncMock()
+
+        iterations = 0
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(delay):
+            nonlocal iterations
+            iterations += 1
+            if iterations >= wecom_mod.MAX_CONSECUTIVE_RECONNECT_FAILURES + 2:
+                adapter._running = False
+            await original_sleep(0)
+
+        with patch.object(wecom_mod.asyncio, "sleep", side_effect=counting_sleep):
+            await adapter._listen_loop()
+
+        # The cap must have been reached — this is the core invariant.
+        assert adapter._set_fatal_error.called, (
+            f"After {iterations} reconnect cycles with 0 frames each, "
+            f"_set_fatal_error must fire (cap={wecom_mod.MAX_CONSECUTIVE_RECONNECT_FAILURES})"
         )

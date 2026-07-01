@@ -58,9 +58,16 @@ class TestOAuthUserAgentPrefix:
         except AttributeError:
             pytest.skip("run_hermes_oauth_login_pure not found")
 
-        assert "claude-cli/" not in source, (
-            "run_hermes_oauth_login_pure still uses claude-cli/ UA"
-        )
+        # Only fail on claude-cli/ in an actual User-Agent header line — a
+        # comment that references the old behavior (e.g. "Anthropic blocks
+        # claude-cli/ on the OAuth endpoint") is allowed. Mirrors the
+        # header-scoped check in test_no_claude_cli_in_source.
+        for i, line in enumerate(source.split("\n"), 1):
+            stripped = line.strip()
+            if "claude-cli/" in stripped and ("User-Agent" in stripped or "user-agent" in stripped):
+                pytest.fail(
+                    f"Line {i}: run_hermes_oauth_login_pure still uses claude-cli/ UA header: {stripped}"
+                )
         assert "claude-code/" in source, (
             "run_hermes_oauth_login_pure should use claude-code/ UA"
         )

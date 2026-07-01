@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -271,6 +272,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._bridge_token = secrets.token_urlsafe(32)
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -527,6 +529,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._message_mentions_bot(data):
             return True
         return self._message_matches_mention_patterns(data)
+
+    def _bridge_token_value(self) -> str:
+        """Return the per-adapter bridge token, creating one for legacy tests."""
+        token = getattr(self, "_bridge_token", None)
+        if not token:
+            token = secrets.token_urlsafe(32)
+            self._bridge_token = token
+        return token
+
+    def _bridge_headers(self) -> Dict[str, str]:
+        """Authorization headers for local bridge control endpoints."""
+        token = self._bridge_token_value()
+        return {"Authorization": f"Bearer {token}"}
     
     async def connect(self) -> bool:
         """
@@ -629,12 +644,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             data = await resp.json()
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._mark_connected()
-                                self._bridge_process = None  # Not managed by us
-                                self._http_session = aiohttp.ClientSession()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
-                                return True
+                                try:
+                                    async with session.get(
+                                        f"http://127.0.0.1:{self._bridge_port}/auth-check",
+                                        headers=self._bridge_headers(),
+                                        timeout=aiohttp.ClientTimeout(total=2),
+                                    ) as auth_resp:
+                                        if auth_resp.status == 200:
+                                            print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                            self._mark_connected()
+                                            self._bridge_process = None  # Not managed by us
+                                            self._http_session = aiohttp.ClientSession()
+                                            self._poll_task = asyncio.create_task(self._poll_messages())
+                                            return True
+                                except Exception:
+                                    pass
+                                print(f"[{self.name}] Bridge found but auth check failed, restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -659,6 +684,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_env = os.environ.copy()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            bridge_env["HERMES_WHATSAPP_BRIDGE_TOKEN"] = self._bridge_token_value()
 
             self._bridge_process = subprocess.Popen(
                 [
@@ -949,6 +975,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
                     json=payload,
+                    headers=self._bridge_headers(),
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
@@ -987,6 +1014,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             import aiohttp
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/edit",
+                headers=self._bridge_headers(),
                 json={
                     "chatId": chat_id,
                     "messageId": message_id,
@@ -1035,6 +1063,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
                 json=payload,
+                headers=self._bridge_headers(),
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 if resp.status == 200:
@@ -1129,6 +1158,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": chat_id},
+                headers=self._bridge_headers(),
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass
@@ -1147,6 +1177,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             async with self._http_session.get(
                 f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                headers=self._bridge_headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
@@ -1175,6 +1206,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
+                    headers=self._bridge_headers(),
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
@@ -1278,6 +1310,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             "chatId": chat_id,
                             "message": verify_ack_text(result),
                         },
+                        headers=self._bridge_headers(),
                         timeout=aiohttp.ClientTimeout(total=30),
                     ):
                         pass

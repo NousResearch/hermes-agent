@@ -29,6 +29,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { createBridgeAuthMiddleware } from './bridge-auth.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -57,6 +58,7 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const BRIDGE_TOKEN = process.env.HERMES_WHATSAPP_BRIDGE_TOKEN || '';
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
@@ -481,6 +483,12 @@ app.use((req, res, next) => {
     });
   }
   next();
+});
+
+app.use(createBridgeAuthMiddleware(BRIDGE_TOKEN));
+
+app.get('/auth-check', (req, res) => {
+  res.json({ ok: true });
 });
 
 // Poll for new messages (long-poll style)

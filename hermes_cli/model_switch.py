@@ -31,6 +31,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    is_routing_aggregator,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -802,6 +803,7 @@ def switch_model(
         ModelSwitchResult with all information the caller needs.
     """
     from hermes_cli.models import (
+        _AGGREGATOR_PROVIDERS as _MODEL_AGGREGATOR_PROVIDERS,
         copilot_model_api_mode,
         detect_provider_for_model,
         validate_requested_model,
@@ -1104,7 +1106,37 @@ def switch_model(
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
-                target_provider, new_model = detected
+                detected_provider, detected_model = detected
+                current_routes_vendor_slugs = (
+                    current_provider in _MODEL_AGGREGATOR_PROVIDERS
+                    or is_routing_aggregator(current_provider)
+                )
+                detected_routes_vendor_slugs = (
+                    detected_provider in _MODEL_AGGREGATOR_PROVIDERS
+                    or is_aggregator(detected_provider)
+                )
+                if (
+                    detected_provider != current_provider
+                    and current_routes_vendor_slugs
+                    and not detected_routes_vendor_slugs
+                ):
+                    try:
+                        resolve_runtime_provider(
+                            requested=detected_provider,
+                            target_model=detected_model,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Detected provider %s for model %s has no usable "
+                            "credentials; keeping current provider %s",
+                            detected_provider,
+                            detected_model,
+                            current_provider,
+                        )
+                    else:
+                        target_provider, new_model = detected_provider, detected_model
+                else:
+                    target_provider, new_model = detected_provider, detected_model
 
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata

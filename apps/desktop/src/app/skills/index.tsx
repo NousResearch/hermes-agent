@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { zhSkillDescription } from '@/lib/skill-descriptions-zh'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -28,7 +29,16 @@ function categoryFor(skill: SkillInfo): string {
   return asText(skill.category) || 'general'
 }
 
-function filteredSkills(skills: SkillInfo[], query: string, category: string | null): SkillInfo[] {
+// Description shown for a skill. In Simplified Chinese we swap in OUR translation
+// (lib/skill-descriptions-zh.ts) keyed by skill.name, falling back to the
+// runtime's English description; other locales keep the original.
+function skillDescription(skill: SkillInfo, zh: boolean): string {
+  const original = asText(skill.description)
+
+  return zh ? zhSkillDescription(skill.name, original) : original
+}
+
+function filteredSkills(skills: SkillInfo[], query: string, category: string | null, zh: boolean): SkillInfo[] {
   const q = query.trim().toLowerCase()
 
   return skills
@@ -41,7 +51,14 @@ function filteredSkills(skills: SkillInfo[], query: string, category: string | n
         return true
       }
 
-      return includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+      // Search over the original English description AND the localized one so a
+      // query still matches whether the user types English or Chinese.
+      return (
+        includesQuery(skill.name, q) ||
+        includesQuery(skill.description, q) ||
+        includesQuery(skillDescription(skill, zh), q) ||
+        includesQuery(skill.category, q)
+      )
     })
     .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
 }
@@ -73,7 +90,8 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
+  const zh = locale === 'zh'
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
@@ -129,8 +147,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   }, [skills])
 
   const visibleSkills = useMemo(
-    () => (skills ? filteredSkills(skills, query, mode === 'skills' ? activeCategory : null) : []),
-    [activeCategory, mode, query, skills]
+    () => (skills ? filteredSkills(skills, query, mode === 'skills' ? activeCategory : null, zh) : []),
+    [activeCategory, mode, query, skills, zh]
   )
 
   const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
@@ -262,7 +280,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-sm font-medium text-foreground">{skill.name}</div>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                              {asText(skill.description) || t.skills.noDescription}
+                              {skillDescription(skill, zh) || t.skills.noDescription}
                             </p>
                           </div>
                           <Switch

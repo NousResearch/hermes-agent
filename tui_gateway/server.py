@@ -1874,11 +1874,13 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         _pending_prompt_payloads[rid] = (event, dict(payload))
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
+    if not answered:
+        _emit(f"{event}.expire", sid, {"request_id": rid})
     with _prompt_lock:
         return _answers.pop(rid, "")
 
@@ -9712,11 +9714,13 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key):
+def _respond(rid, params, key, *, allow_expired: bool = False):
     r = params.get("request_id", "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
+            if allow_expired:
+                return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
         _answers[r] = params.get(key, "")
@@ -9726,7 +9730,7 @@ def _respond(rid, params, key):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    return _respond(rid, params, "answer", allow_expired=True)
 
 
 @method("terminal.read.respond")

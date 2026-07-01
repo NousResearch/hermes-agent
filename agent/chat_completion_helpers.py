@@ -757,6 +757,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.provider_data_collection:
         _prefs["data_collection"] = agent.provider_data_collection
 
+    # When a fallback is active, merge its extra_body.provider routing
+    # directives (e.g. order, allow_fallbacks set via fallback_providers[].extra_body)
+    # on top of the global _prefs so fallback-local routing is honoured.
+    # The fallback entry's directives take precedence over global ones because
+    # they are explicitly scoped to a specific fallback target.  See #26460.
+    _fb_extra_body = getattr(agent, "_fallback_extra_body", None) or {}
+    _fb_provider_prefs = _fb_extra_body.get("provider") if isinstance(_fb_extra_body, dict) else None
+    if _fb_provider_prefs and isinstance(_fb_provider_prefs, dict):
+        _prefs.update(_fb_provider_prefs)
+
     # Anthropic-compatible max-output fallback (last resort only — applied in
     # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
     # an explicit value).  Model-gated, not URL-gated: any chat-completions
@@ -766,6 +776,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # as 4096 output tokens — easily exhausted by thinking + large tool calls
     # like write_file/patch.  OpenRouter/Nous were the only routes covered
     # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
+    # Claude max-output override on aggregators
     _ant_max = None
     try:
         from agent.anthropic_adapter import (
@@ -1351,6 +1362,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        # Carry the fallback entry's extra_body (e.g. OpenRouter provider
+        # routing metadata) into the active request path.  Without this,
+        # fallback-local routing directives such as:
+        #
+        #   fallback_providers:
+        #   - provider: openrouter
+        #     extra_body:
+        #       provider:
+        #         order: [baidu/fp8, gmicloud/fp8]
+        #         allow_fallbacks: false
+        #
+        # are silently dropped because _prefs is assembled from agent-level
+        # attributes (providers_order, providers_allowed, …) that are never
+        # updated when the fallback is activated.  See issue #26460.
+        agent._fallback_extra_body = fb.get("extra_body") or None
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream

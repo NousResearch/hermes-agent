@@ -151,6 +151,80 @@ export interface MemoryProviderConfig {
   name: string
 }
 
+export interface OpenVikingConnectionValues {
+  account?: string
+  actor_peer_id: string
+  api_key?: string
+  api_key_set?: boolean
+  api_key_type?: 'none' | 'root' | 'user'
+  ovcli_config_path?: string
+  root_api_key?: string
+  source?: 'hermes' | 'ovcli'
+  url: string
+  user?: string
+}
+
+export interface OpenVikingProfile {
+  account: string
+  actor_peer_id: string
+  api_key_set: boolean
+  api_key_type?: 'none' | 'root' | 'user'
+  description: string
+  display_name: string
+  is_active: boolean
+  name: string
+  path: string
+  source: 'active' | 'env' | 'saved'
+  url: string
+  user: string
+}
+
+export interface OpenVikingHealth {
+  label: string
+  message: string
+  status: 'healthy' | 'unhealthy' | 'unreachable'
+}
+
+export interface OpenVikingSetup {
+  active: OpenVikingConnectionValues
+  defaults: {
+    actor_peer_id: string
+    service_url: string
+    url: string
+  }
+  health: OpenVikingHealth
+  legacy_env_present: string[]
+  local_server?: {
+    openviking_server_path?: string
+  }
+  profiles: OpenVikingProfile[]
+}
+
+export interface OpenVikingSetupSaveRequest {
+  profile_name?: string
+  profile_path?: string
+  save_mode: 'profile'
+  values: Partial<OpenVikingConnectionValues>
+}
+
+export interface OpenVikingSetupSaveResponse {
+  mode?: 'profile'
+  ok: boolean
+  profile_path?: string
+}
+
+export interface OpenVikingSetupValidationRequest {
+  profile_path?: string
+  require_api_key?: boolean
+  values: Partial<OpenVikingConnectionValues>
+}
+
+export interface OpenVikingSetupValidationResponse {
+  message: string
+  ok: boolean
+  role: 'root' | 'user' | null
+}
+
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string

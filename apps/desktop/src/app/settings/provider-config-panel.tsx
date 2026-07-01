@@ -10,6 +10,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
+import { OpenVikingConfigPanel } from './openviking-config-panel'
 import { LoadingState, Pill } from './primitives'
 
 /** Seed editable values from the schema: non-secret fields keep their current
@@ -82,6 +83,14 @@ function FieldControl({
 }
 
 export function ProviderConfigPanel({ provider }: { provider: string }) {
+  if (provider === 'openviking') {
+    return <OpenVikingConfigPanel />
+  }
+
+  return <GenericProviderConfigPanel provider={provider} />
+}
+
+function GenericProviderConfigPanel({ provider }: { provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)

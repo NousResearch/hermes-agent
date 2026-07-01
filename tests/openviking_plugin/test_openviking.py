@@ -1032,10 +1032,10 @@ class TestOpenVikingAutoRecallPrefetch:
             "OPENVIKING_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("OPENVIKING_ENDPOINT", endpoint)
+        monkeypatch.setenv("OPENVIKING_URL", endpoint)
         monkeypatch.setenv("OPENVIKING_ACCOUNT", "acct")
         monkeypatch.setenv("OPENVIKING_USER", "user")
-        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+        monkeypatch.setenv("OPENVIKING_ACTOR_PEER_ID", "hermes")
 
         provider = OpenVikingMemoryProvider()
         try:

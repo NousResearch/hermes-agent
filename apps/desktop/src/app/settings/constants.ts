@@ -227,7 +227,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-  'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
+  'memory.provider': ['', 'builtin', 'hindsight', 'honcho', 'openviking'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
@@ -260,6 +260,12 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
+}
+
+export const FIELD_OPTION_LABELS: Record<string, Record<string, string>> = {
+  'memory.provider': {
+    openviking: 'OpenViking'
+  }
 }
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({

@@ -776,6 +776,26 @@ class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, str] = {}
 
 
+class OpenVikingSetupUpdate(BaseModel):
+    values: Dict[str, str] = {}
+    save_mode: str = "profile"
+    profile_name: str = ""
+    profile_path: str = ""
+    profile: Optional[str] = None
+
+
+class OpenVikingValidateRequest(BaseModel):
+    values: Dict[str, str] = {}
+    require_api_key: Optional[bool] = None
+    profile_path: str = ""
+    profile: Optional[str] = None
+
+
+class OpenVikingStartLocalRequest(BaseModel):
+    url: str
+    profile: Optional[str] = None
+
+
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: Dict[str, str] = {}
@@ -3894,6 +3914,92 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/memory/providers/%s/config failed", name)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/memory/providers/openviking/setup")
+async def get_openviking_setup(profile: Optional[str] = None):
+    try:
+        import plugins.memory.openviking as openviking
+
+        with _config_profile_scope(profile):
+            config = load_config()
+            memory_config = config.get("memory") if isinstance(config, dict) else {}
+            provider_config = (
+                memory_config.get("openviking", {})
+                if isinstance(memory_config, dict)
+                else {}
+            )
+            return openviking.get_desktop_openviking_setup(provider_config)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/memory/providers/openviking/setup failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/memory/providers/openviking/validate")
+async def validate_openviking_setup(body: OpenVikingValidateRequest, profile: Optional[str] = None):
+    try:
+        import plugins.memory.openviking as openviking
+
+        with _config_profile_scope(body.profile or profile):
+            return openviking.validate_desktop_openviking_setup(
+                body.values,
+                require_api_key=body.require_api_key,
+                profile_path=body.profile_path,
+            )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("POST /api/memory/providers/openviking/validate failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.put("/api/memory/providers/openviking/setup")
+async def update_openviking_setup(body: OpenVikingSetupUpdate, profile: Optional[str] = None):
+    try:
+        import plugins.memory.openviking as openviking
+
+        with _config_profile_scope(body.profile or profile):
+            config = load_config()
+            result = openviking.save_desktop_openviking_setup(
+                config=config,
+                hermes_home=get_hermes_home(),
+                values=body.values,
+                save_mode=body.save_mode,
+                profile_name=body.profile_name,
+                profile_path=body.profile_path,
+            )
+            save_config(config)
+            from hermes_cli.config import reload_env
+
+            reload_env()
+            return result
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("PUT /api/memory/providers/openviking/setup failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/memory/providers/openviking/start-local")
+async def start_openviking_local(body: OpenVikingStartLocalRequest, profile: Optional[str] = None):
+    try:
+        import plugins.memory.openviking as openviking
+
+        with _config_profile_scope(body.profile or profile):
+            return openviking.start_desktop_openviking_local(body.url)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("POST /api/memory/providers/openviking/start-local failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

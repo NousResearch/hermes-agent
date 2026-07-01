@@ -298,12 +298,12 @@ openviking-server
 
 # Then configure Hermes
 hermes memory setup    # select "openviking"
-# Or manually:
-hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
-# Authenticated servers should use a user/admin API key:
-echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 ```
+
+OpenViking setup links Hermes to an existing OpenViking CLI profile or creates a
+new `~/.openviking/ovcli.conf.<name>` profile. Environment variables such as
+`OPENVIKING_URL`, `OPENVIKING_API_KEY`, and `OPENVIKING_ACTOR_PEER_ID` are still
+supported as advanced runtime overrides.
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
@@ -311,7 +311,7 @@ echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 - `viking://` URI scheme for hierarchical knowledge browsing
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+`OPENVIKING_ACTOR_PEER_ID` is Hermes' Agent ID in OpenViking for peer-scoped memories.
 
 ---
 
@@ -608,9 +608,9 @@ hermes memory setup
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Honcho, Mem0, Hindsight, OpenViking, Supermemory) store or link config files so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
-- **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **Env var providers** use each profile's `.env` file for runtime overrides
 
 ## Building a Memory Provider
 

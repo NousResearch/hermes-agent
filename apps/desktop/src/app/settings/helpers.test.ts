@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { FIELD_OPTION_LABELS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
-  it('lists Hindsight as a built-in desktop memory provider option', () => {
+  it('lists Hindsight and OpenViking as built-in desktop memory provider options', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 
     expect(options).toContain('hindsight')
+    expect(options).toContain('openviking')
+    expect(FIELD_OPTION_LABELS['memory.provider'].openviking).toBe('OpenViking')
   })
 
   describe('defineFieldCopy', () => {

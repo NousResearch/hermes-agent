@@ -14,27 +14,28 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 hermes memory setup    # select "openviking"
 ```
 
-The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
-connection values into Hermes, or create a minimal `ovcli.conf` when one does
-not exist.
+The setup links Hermes to an existing OpenViking CLI profile or creates a new
+`~/.openviking/ovcli.conf.<name>` profile and links Hermes to it.
 
-Or manually:
+Manual env overrides are still supported for advanced/runtime use:
 ```bash
 hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+echo "OPENVIKING_URL=http://localhost:1933" >> ~/.hermes/.env
 ```
 
 ## Config
 
-All config via environment variables in `.env`:
+Normal setup stores connection values in an OpenViking CLI profile and stores
+only the profile link in Hermes. These environment variables can override the
+linked profile at runtime:
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
+| `OPENVIKING_URL` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+| `OPENVIKING_ACTOR_PEER_ID` | `hermes` | Hermes Agent ID in OpenViking, used for peer-scoped memories |
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
@@ -55,9 +56,10 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 
 `viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
 and `mode=create`. It creates peer-scoped memory files under
-`viking://user/peers/${OPENVIKING_AGENT}/memories/...`; OpenViking may return a
-canonical user-scoped form such as
-`viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
+`viking://user/peers/${OPENVIKING_ACTOR_PEER_ID}/memories/...`; OpenViking may
+return a canonical user-scoped form such as
+`viking://user/default/peers/${OPENVIKING_ACTOR_PEER_ID}/memories/...` in
+API-key mode.
 Explicit remembers do not depend on session commit extraction.
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the

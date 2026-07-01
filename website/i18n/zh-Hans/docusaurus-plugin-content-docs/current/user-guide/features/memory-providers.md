@@ -281,15 +281,19 @@ openviking-server
 
 # 然后配置 Hermes
 hermes memory setup    # 选择 "openviking"
-# 或手动配置：
-hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 ```
+
+OpenViking 设置会将 Hermes 链接到已有的 OpenViking CLI profile，或创建新的
+`~/.openviking/ovcli.conf.<name>` profile 并链接到 Hermes。`OPENVIKING_URL`、
+`OPENVIKING_API_KEY`、`OPENVIKING_ACTOR_PEER_ID` 等环境变量仍可作为高级运行时覆盖项使用。
 
 **主要特性：**
 - 分层上下文加载：L0（约 100 tokens）→ L1（约 2k）→ L2（完整）
 - 会话提交时自动提取记忆（profile、偏好、实体、事件、案例、模式）
 - `viking://` URI 方案用于层级知识浏览
+
+`OPENVIKING_ACCOUNT` 和 `OPENVIKING_USER` 用于本地/可信模式。
+`OPENVIKING_ACTOR_PEER_ID` 是 Hermes 在 OpenViking 中用于 peer-scoped memories 的 Agent ID。
 
 ---
 
@@ -540,9 +544,9 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
 
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
-- **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
+- **配置文件提供者**（Honcho、Mem0、Hindsight、OpenViking、Supermemory）存储或链接配置文件，每个 profile 拥有独立凭证
 - **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
-- **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
+- **环境变量提供者**通过每个 profile 的 `.env` 文件提供运行时覆盖项
 
 ## 构建记忆提供者
 

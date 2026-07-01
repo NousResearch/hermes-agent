@@ -3734,9 +3734,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
-    "OPENVIKING_ENDPOINT": {
+    "OPENVIKING_URL": {
         "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
-        "prompt": "OpenViking endpoint",
+        "prompt": "OpenViking URL",
+        "category": "tool",
+        "advanced": True,
+    },
+    "OPENVIKING_ACTOR_PEER_ID": {
+        "description": "OpenViking Agent ID for peer-scoped memories (default: hermes)",
+        "prompt": "OpenViking Agent ID",
         "category": "tool",
         "advanced": True,
     },

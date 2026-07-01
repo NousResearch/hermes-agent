@@ -462,6 +462,254 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
 
+    def test_get_openviking_setup_returns_plugin_payload(self, monkeypatch):
+        from hermes_cli.config import load_config, save_config
+        import plugins.memory.openviking as openviking_module
+
+        config = load_config()
+        config.setdefault("memory", {})["openviking"] = {
+            "use_ovcli_config": True,
+            "ovcli_config_path": "/tmp/ovcli.conf",
+        }
+        save_config(config)
+        seen = {}
+
+        def fake_setup(provider_config):
+            seen["provider_config"] = provider_config
+            return {
+                "defaults": {
+                    "url": "http://127.0.0.1:1933",
+                    "service_url": "https://service.example",
+                    "actor_peer_id": "hermes",
+                },
+                "active": {"source": "ovcli", "url": "https://vps.example"},
+                "profiles": [],
+                "legacy_env_present": [],
+            }
+
+        monkeypatch.setattr(openviking_module, "get_desktop_openviking_setup", fake_setup)
+
+        resp = self.client.get("/api/memory/providers/openviking/setup")
+
+        assert resp.status_code == 200
+        assert seen["provider_config"] == {
+            "use_ovcli_config": True,
+            "ovcli_config_path": "/tmp/ovcli.conf",
+        }
+        assert resp.json()["active"] == {"source": "ovcli", "url": "https://vps.example"}
+
+    def test_get_openviking_setup_reads_requested_profile_config(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        import plugins.memory.openviking as openviking_module
+
+        default_home = get_hermes_home()
+        profiles_root = default_home / "profiles"
+        worker_home = profiles_root / "worker_alpha"
+        worker_home.mkdir(parents=True, exist_ok=True)
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "memory": {
+                    "provider": "openviking",
+                    "openviking": {
+                        "use_ovcli_config": True,
+                        "ovcli_config_path": "/tmp/worker-ovcli.conf",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+        seen = {}
+
+        def fake_setup(provider_config):
+            seen["provider_config"] = provider_config
+            return {
+                "defaults": {
+                    "url": "http://127.0.0.1:1933",
+                    "service_url": "https://service.example",
+                    "actor_peer_id": "hermes",
+                },
+                "active": {"source": "ovcli", "url": "https://worker.example"},
+                "profiles": [],
+                "legacy_env_present": [],
+            }
+
+        monkeypatch.setattr(openviking_module, "get_desktop_openviking_setup", fake_setup)
+
+        resp = self.client.get(
+            "/api/memory/providers/openviking/setup",
+            params={"profile": "worker_alpha"},
+        )
+
+        assert resp.status_code == 200
+        assert seen["provider_config"] == {
+            "use_ovcli_config": True,
+            "ovcli_config_path": "/tmp/worker-ovcli.conf",
+        }
+        assert resp.json()["active"] == {"source": "ovcli", "url": "https://worker.example"}
+
+    def test_put_openviking_setup_rejects_hermes_only_save_mode(self):
+        resp = self.client.put(
+            "/api/memory/providers/openviking/setup",
+            json={
+                "save_mode": "hermes",
+                "values": {
+                    "url": "https://openviking.example",
+                    "api_key": "ov-secret",
+                    "actor_peer_id": "agent",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "save_mode must be 'profile'."
+
+    def test_put_openviking_setup_writes_openviking_profile_and_selects_provider(self, monkeypatch, tmp_path):
+        from hermes_cli.config import load_config, load_env
+        import plugins.memory.openviking as openviking_module
+
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+
+        resp = self.client.put(
+            "/api/memory/providers/openviking/setup",
+            json={
+                "save_mode": "profile",
+                "profile_name": "VPS",
+                "values": {
+                    "url": "https://openviking.example",
+                    "api_key": "ov-secret",
+                    "actor_peer_id": "agent",
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        profile_path = tmp_path / ".openviking" / "ovcli.conf.VPS"
+        assert resp.json()["profile_path"] == str(profile_path)
+        assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+            "url": "https://openviking.example",
+            "api_key": "ov-secret",
+            "actor_peer_id": "agent",
+        }
+        config = load_config()
+        assert config["memory"]["provider"] == "openviking"
+        assert config["memory"]["openviking"] == {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(profile_path),
+        }
+        env = load_env()
+        assert "OPENVIKING_URL" not in env
+        assert "OPENVIKING_API_KEY" not in env
+        assert "OPENVIKING_ACTOR_PEER_ID" not in env
+        assert "OPENVIKING_ENDPOINT" not in env
+        assert "OPENVIKING_AGENT" not in env
+
+    def test_put_openviking_setup_writes_requested_profile_config(self, monkeypatch, tmp_path):
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        import plugins.memory.openviking as openviking_module
+
+        default_home = get_hermes_home()
+        profiles_root = default_home / "profiles"
+        worker_home = profiles_root / "worker_alpha"
+        worker_home.mkdir(parents=True, exist_ok=True)
+        (default_home / "config.yaml").write_text(
+            yaml.safe_dump({"memory": {"provider": "builtin"}}),
+            encoding="utf-8",
+        )
+        (worker_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (worker_home / ".env").write_text(
+            "OPENVIKING_ENDPOINT=http://legacy.local\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+
+        resp = self.client.put(
+            "/api/memory/providers/openviking/setup",
+            params={"profile": "worker_alpha"},
+            json={
+                "save_mode": "profile",
+                "profile_name": "VPS",
+                "values": {
+                    "url": "https://openviking.example",
+                    "api_key": "ov-secret",
+                    "actor_peer_id": "agent",
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        profile_path = tmp_path / ".openviking" / "ovcli.conf.VPS"
+        worker_config = yaml.safe_load((worker_home / "config.yaml").read_text(encoding="utf-8"))
+        assert worker_config["memory"]["provider"] == "openviking"
+        assert worker_config["memory"]["openviking"] == {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(profile_path),
+        }
+        root_config = yaml.safe_load((default_home / "config.yaml").read_text(encoding="utf-8"))
+        assert root_config == {"memory": {"provider": "builtin"}}
+        assert "OPENVIKING_ENDPOINT" not in (worker_home / ".env").read_text(encoding="utf-8")
+
+    def test_post_openviking_validate_delegates_to_plugin(self, monkeypatch):
+        import plugins.memory.openviking as openviking_module
+
+        seen = {}
+
+        def fake_validate(values, *, require_api_key=None, profile_path=""):
+            seen["values"] = values
+            seen["require_api_key"] = require_api_key
+            seen["profile_path"] = profile_path
+            return {"ok": True, "message": "", "role": "user"}
+
+        monkeypatch.setattr(openviking_module, "validate_desktop_openviking_setup", fake_validate)
+
+        resp = self.client.post(
+            "/api/memory/providers/openviking/validate",
+            json={
+                "values": {
+                    "url": "https://openviking.example",
+                    "actor_peer_id": "agent",
+                },
+                "require_api_key": True,
+                "profile_path": "/tmp/ovcli.conf.VPS",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "message": "", "role": "user"}
+        assert seen == {
+            "values": {"url": "https://openviking.example", "actor_peer_id": "agent"},
+            "require_api_key": True,
+            "profile_path": "/tmp/ovcli.conf.VPS",
+        }
+
+    def test_post_openviking_start_local_delegates_to_plugin(self, monkeypatch):
+        import plugins.memory.openviking as openviking_module
+
+        monkeypatch.setattr(
+            openviking_module,
+            "start_desktop_openviking_local",
+            lambda url: {"ok": False, "message": f"missing server for {url}"},
+        )
+
+        resp = self.client.post(
+            "/api/memory/providers/openviking/start-local",
+            json={"url": "http://localhost:1933"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": False,
+            "message": "missing server for http://localhost:1933",
+        }
+
     def test_get_moa_models_returns_provider_model_slots(self):
         resp = self.client.get("/api/model/moa")
         assert resp.status_code == 200

@@ -8,11 +8,12 @@ import type { MemoryProviderOAuthStatus } from '@/types/hermes'
 
 const POLL_MS = 1500
 const POLL_TIMEOUT_MS = 120_000
+const MEMORY_OAUTH_CONNECT_PROVIDERS = new Set(['honcho'])
 
-// Small connect affordance rendered under the provider dropdown. Capability is
-// backend-driven: the status route 404s for providers without an oauth_flow
-// module, so non-OAuth providers render nothing.
+// Small connect affordance rendered under the provider dropdown for memory
+// providers that implement plugins.memory.<provider>.oauth_flow.
 export function MemoryConnect({ provider }: { provider: string }) {
+  const supportsOAuthConnect = MEMORY_OAUTH_CONNECT_PROVIDERS.has(provider)
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
   const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
@@ -29,6 +30,12 @@ export function MemoryConnect({ provider }: { provider: string }) {
   }, [])
 
   useEffect(() => {
+    if (!supportsOAuthConnect) {
+      setCapable('no')
+
+      return
+    }
+
     let active = true
     setCapable('unknown')
     getMemoryProviderOAuthStatus(provider)
@@ -51,7 +58,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
       active = false
       stop()
     }
-  }, [provider, stop])
+  }, [provider, stop, supportsOAuthConnect])
 
   // An error message isn't sticky — it clears back to the steady state
   // (Connect link, plus the connected badge if a credential is stored).
@@ -120,7 +127,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     setPhase('idle')
   }, [stop])
 
-  if (capable !== 'yes') {
+  if (!supportsOAuthConnect || capable !== 'yes') {
     return null
   }
 

@@ -32,6 +32,11 @@ import type {
   OAuthProvidersResponse,
   OAuthStartResponse,
   OAuthSubmitResponse,
+  OpenVikingSetup,
+  OpenVikingSetupSaveRequest,
+  OpenVikingSetupSaveResponse,
+  OpenVikingSetupValidationRequest,
+  OpenVikingSetupValidationResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileSetupCommand,
@@ -93,6 +98,13 @@ export type {
   ModelInfoResponse,
   ModelOptionProvider,
   ModelOptionsResponse,
+  OpenVikingConnectionValues,
+  OpenVikingProfile,
+  OpenVikingSetup,
+  OpenVikingSetupSaveRequest,
+  OpenVikingSetupSaveResponse,
+  OpenVikingSetupValidationRequest,
+  OpenVikingSetupValidationResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
@@ -358,15 +370,53 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
 
 export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
   return window.hermesDesktop.api<MemoryProviderConfig>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
   })
 }
 
 export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
     body: { values }
+  })
+}
+
+export function getOpenVikingSetup(): Promise<OpenVikingSetup> {
+  return window.hermesDesktop.api<OpenVikingSetup>({
+    ...profileScoped(),
+    path: '/api/memory/providers/openviking/setup'
+  })
+}
+
+export function saveOpenVikingSetup(body: OpenVikingSetupSaveRequest): Promise<OpenVikingSetupSaveResponse> {
+  return window.hermesDesktop.api<OpenVikingSetupSaveResponse>({
+    ...profileScoped(),
+    path: '/api/memory/providers/openviking/setup',
+    method: 'PUT',
+    body
+  })
+}
+
+export function validateOpenVikingSetup(
+  body: OpenVikingSetupValidationRequest
+): Promise<OpenVikingSetupValidationResponse> {
+  return window.hermesDesktop.api<OpenVikingSetupValidationResponse>({
+    ...profileScoped(),
+    path: '/api/memory/providers/openviking/validate',
+    method: 'POST',
+    body
+  })
+}
+
+export function startOpenVikingLocal(url: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/memory/providers/openviking/start-local',
+    method: 'POST',
+    body: { url }
   })
 }
 

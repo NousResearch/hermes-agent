@@ -8,7 +8,11 @@ const saveMemoryProviderConfig = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
+  getOpenVikingSetup: vi.fn(),
+  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values),
+  saveOpenVikingSetup: vi.fn(),
+  startOpenVikingLocal: vi.fn(),
+  validateOpenVikingSetup: vi.fn()
 }))
 
 vi.mock('@/store/notifications', () => ({

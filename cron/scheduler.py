@@ -236,7 +236,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2781,6 +2781,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
+        # Pre-run dispatch claim (issue #38758): atomically commit a finite
+        # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
+        # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
+        # re-fire the job forever on restart. No-op for recurring jobs (they
+        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
+        # the shared body so BOTH the built-in ticker and the external provider
+        # (Chronos fire_due) get at-most-times semantics.
+        if not claim_dispatch(job["id"]):
+            logger.info(
+                "Job '%s': one-shot dispatch limit reached — skipping",
+                job.get("name", job["id"]),
+            )
+            return True  # not an error — already handled/removed
+
         success, output, final_response, error = run_job(job)
 
         output_file = save_job_output(job["id"], output)

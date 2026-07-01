@@ -38,14 +38,57 @@ import os
 import re
 import shutil
 import tempfile
+import contextvars as _ctxvars
 from pathlib import Path
-from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
+
+_background_review_read_paths: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
+    "background_review_read_paths", default=frozenset()
+)
+
+
+def mark_background_review_skill_read(path: Path) -> None:
+    """Record that the active background-review fork has read a skill file.
+
+    The autonomous review fork is allowed to evolve skills, but it must not
+    patch or rewrite content it has only inferred from the transcript.  The
+    skill_view tool calls this after returning file content to the model; write
+    paths below require the corresponding target path to be present when the
+    current origin is ``background_review``.
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return
+    except Exception:
+        return
+
+    try:
+        resolved = str(path.resolve())
+    except Exception:
+        resolved = str(path)
+    current = set(_background_review_read_paths.get())
+    current.add(resolved)
+    _background_review_read_paths.set(frozenset(current))
+
+
+def _background_review_has_read(path: Path) -> bool:
+    try:
+        resolved = str(path.resolve())
+    except Exception:
+        resolved = str(path)
+    return resolved in _background_review_read_paths.get()
+
+
+def _reset_background_review_read_marks() -> None:
+    """Test helper: clear read-before-write marks for the current context."""
+    _background_review_read_paths.set(frozenset())
 
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.
@@ -318,6 +361,36 @@ def _background_review_write_guard(
     except Exception:
         logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
     return None
+
+
+def _background_review_read_before_write_guard(
+    name: str,
+    target: Path,
+    action: str,
+    file_label: str,
+) -> Optional[Dict[str, Any]]:
+    """Require review forks to load the exact target before mutating it."""
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return None
+    except Exception:
+        return None
+
+    if _background_review_has_read(target):
+        return None
+
+    return {
+        "success": False,
+        "error": (
+            f"Refusing background curator {action} for skill '{name}': "
+            f"the current {file_label} content has not been loaded in this "
+            "review turn. Call skill_view(name) for SKILL.md, or "
+            "skill_view(name, file_path=...) for a supporting file, then "
+            "retry the write using the content just returned."
+        ),
+        "_read_before_write_required": True,
+    }
 
 
 def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
@@ -786,6 +859,12 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return guard
 
     skill_md = existing["path"] / "SKILL.md"
+    read_guard = _background_review_read_before_write_guard(
+        name, skill_md, "edit", "SKILL.md"
+    )
+    if read_guard:
+        return read_guard
+
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
@@ -849,12 +928,22 @@ def _patch_skill(
         target, err = _resolve_skill_target(skill_dir, file_path)
         if err:
             return {"success": False, "error": err}
+        assert target is not None
     else:
         # Patching SKILL.md
         target = skill_dir / "SKILL.md"
 
     if not target.exists():
         return {"success": False, "error": f"File not found: {target.relative_to(skill_dir)}"}
+
+    read_guard = _background_review_read_before_write_guard(
+        name,
+        target,
+        "patch",
+        "SKILL.md" if not file_path else file_path,
+    )
+    if read_guard:
+        return read_guard
 
     content = target.read_text(encoding="utf-8")
 
@@ -1057,6 +1146,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
+    assert target is not None
+    if target.exists():
+        read_guard = _background_review_read_before_write_guard(
+            name, target, "write_file", file_path
+        )
+        if read_guard:
+            return read_guard
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
@@ -1096,6 +1192,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
         return {"success": False, "error": err}
+    assert target is not None
     if not target.exists():
         # List what's actually there for the model to see
         available = []
@@ -1110,6 +1207,12 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
             "error": f"File '{file_path}' not found in skill '{name}'.",
             "available_files": available if available else None,
         }
+
+    read_guard = _background_review_read_before_write_guard(
+        name, target, "remove_file", file_path
+    )
+    if read_guard:
+        return read_guard
 
     target.unlink()
 

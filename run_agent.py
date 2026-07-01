@@ -1314,6 +1314,11 @@ class AIAgent:
         # completions endpoint; its /v1/responses endpoint returns 404.
         if normalized_provider == "nous":
             return False
+        if normalized_provider == "custom":
+            # Generic custom endpoints are conservative by default. They may
+            # relay GPT-5 models without full Responses semantics, so only
+            # direct OpenAI/xAI URL detection should auto-upgrade them.
+            return False
         if normalized_provider == "copilot":
             try:
                 from hermes_cli.models import _should_use_copilot_responses_api
@@ -1525,13 +1530,18 @@ class AIAgent:
         keep working.
         """
         from agent.background_review import spawn_background_review_thread
+        from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
             self,
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
         )
-        t = threading.Thread(target=target, daemon=True, name="bg-review")
+        # Carry the active profile into the review thread so MEMORY.md / skill
+        # review writes land in the right profile (#54937).
+        t = threading.Thread(
+            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
+        )
         t.start()
 
     def _build_memory_write_metadata(

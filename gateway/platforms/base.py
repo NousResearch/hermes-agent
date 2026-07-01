@@ -564,8 +564,20 @@ async def _ssrf_redirect_guard(response):
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
+# Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
+# re-resolve per call so the active profile override is honored.
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
+
+
+def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
+    """Resolve fresh via get_hermes_dir (active profile), unless a test has
+    monkeypatched the constant away from its import-time default."""
+    fresh = get_hermes_dir(new_subpath, old_name)
+    current = globals().get(constant_name)
+    default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
+    if current is not None and default is not None and current != default:
+        return Path(current)
+    return fresh
 
 # ---------------------------------------------------------------------------
 # Inbound media size cap (#13145)
@@ -660,8 +672,9 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
-    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return IMAGE_CACHE_DIR
+    d = _resolve_cache_dir("IMAGE_CACHE_DIR", "cache/images", "image_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _looks_like_image(data: bytes) -> bool:
@@ -806,8 +819,9 @@ AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 def get_audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if it doesn't exist."""
-    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return AUDIO_CACHE_DIR
+    d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
@@ -912,8 +926,9 @@ SUPPORTED_VIDEO_TYPES = {
 
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""
-    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return VIDEO_CACHE_DIR
+    d = _resolve_cache_dir("VIDEO_CACHE_DIR", "cache/videos", "video_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
@@ -935,6 +950,17 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+# Import-time defaults; _resolve_cache_dir compares against these to tell a
+# test monkeypatch from an unmodified constant.
+_CACHE_DIR_IMPORT_DEFAULTS = {
+    "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
+    "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
+    "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR,
+    "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
+    "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR,
+}
+
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -1442,11 +1468,58 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Extension-less absolute paths (e.g. Caddyfile, Dockerfile, Makefile) are
+# intentionally excluded from MEDIA_TAG_CLEANUP_RE — they are validated and
+# delivered via MEDIA_EXTENSIONLESS_TAG_RE so prompt-injection paths that do
+# not exist on disk are left visible instead of silently dropped. Paths with
+# an unknown but present extension (e.g. .weirdext) stay on the #34517
+# bare-path fallback and are not handled here.
+MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
+    r'''[`"']?MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+)'''
+    r'''[`"']?\s*''',
+    re.IGNORECASE,
+)
+
+
+def _normalize_media_tag_path(raw: str) -> str:
+    path = str(raw or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+        path = path[1:-1].strip()
+    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+
+
+def _path_lacks_deliverable_extension(path: str) -> bool:
+    """True only when the basename has no extension (Caddyfile, Makefile, …)."""
+    return not Path(path).suffix
+
+
+def _strip_media_tag_directives(text: str) -> str:
+    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
+    if (
+        "MEDIA:" not in text
+        and "[[audio_as_voice]]" not in text
+        and "[[as_document]]" not in text
+    ):
+        return text
+    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+
+    def _strip_extensionless(match: re.Match) -> str:
+        path = _normalize_media_tag_path(match.group("path"))
+        if not path or not _path_lacks_deliverable_extension(path):
+            return match.group(0)
+        return "" if validate_media_delivery_path(path) else match.group(0)
+
+    cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
+    return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
+
 
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
-    DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return DOCUMENT_CACHE_DIR
+    d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -2118,13 +2191,13 @@ def _strip_media_directives(text: str) -> str:
     Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
     ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
     extension are removed; an unknown-extension tag is intentionally left so the
-    bare-path detector downstream can still pick it up, per #34517). [[...]] is
-    exact.
+    bare-path detector downstream can still pick it up, per #34517). Validated
+    extension-less tags (e.g. ``MEDIA:/output/Caddyfile``) are also removed.
+    [[...]] is exact.
     """
     if not text:
         return text
-    text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return MEDIA_TAG_CLEANUP_RE.sub("", text)
+    return _strip_media_tag_directives(text)
 
 
 class BasePlatformAdapter(ABC):
@@ -3447,10 +3520,7 @@ class BasePlatformAdapter(ABC):
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = _normalize_media_tag_path(match.group("path"))
             if path:
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
@@ -3458,6 +3528,16 @@ class BasePlatformAdapter(ABC):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
+
+        seen_paths = {p for p, _ in media}
+        for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path or not _path_lacks_deliverable_extension(path):
+                continue
+            safe = validate_media_delivery_path(path)
+            if safe and safe not in seen_paths:
+                media.append((safe, has_voice_tag))
+                seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
@@ -3471,6 +3551,12 @@ class BasePlatformAdapter(ABC):
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked_cleaned):
+                path = _normalize_media_tag_path(match.group("path"))
+                if not path or not _path_lacks_deliverable_extension(path):
+                    continue
+                if validate_media_delivery_path(path):
+                    spans.append(match.span())
             if spans:
                 chars = list(cleaned)
                 for start, end in sorted(spans, reverse=True):
@@ -3479,6 +3565,25 @@ class BasePlatformAdapter(ABC):
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
+
+    @staticmethod
+    def strip_media_directives_for_display(text: str) -> str:
+        """Strip MEDIA: directives from streamed/display text.
+
+        Known-extension tags are removed unconditionally (same as
+        ``MEDIA_TAG_CLEANUP_RE``). Extension-less tags are removed only when
+        ``validate_media_delivery_path`` accepts the path so undeliverable
+        paths stay visible for debugging.
+        """
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "[[as_document]]" not in text
+        ):
+            return text
+        cleaned = _strip_media_tag_directives(text)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.rstrip()
 
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:

@@ -649,6 +649,69 @@ class TestMediaExtensionAllowlistParity:
         assert "Here is your report:" in stripped
 
 
+class TestExtensionlessMediaDelivery:
+    """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    def test_extensionless_media_extracted_when_file_validates(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("localhost {}", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here is your config:\nMEDIA:{caddy}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(caddy.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_extensionless_media_left_visible_when_not_on_disk(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/Caddyfile"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/Caddyfile" in cleaned
+
+    def test_strip_media_directives_for_display_strips_validated_extensionless(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{caddy}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_as_document_directive_stripped_without_media_tag(self):
+        """[[as_document]] must be stripped even when no MEDIA: tag is present.
+
+        The display/strip guards short-circuit on text containing none of the
+        delivery directives; [[as_document]] must be in that guard or it leaks
+        to the user as visible text on any image-only response.
+        """
+        from gateway.platforms.base import _strip_media_directives
+
+        text = "Here is your image. [[as_document]]"
+        assert "[[as_document]]" not in _strip_media_directives(text)
+        assert "[[as_document]]" not in (
+            BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

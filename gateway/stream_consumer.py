@@ -813,14 +813,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        # Strip trailing whitespace/newlines but preserve leading content
-        return cleaned.rstrip()
+        return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     async def _send_new_chunk(
         self,

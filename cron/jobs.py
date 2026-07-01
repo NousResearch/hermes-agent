@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Tuple, Union
+from typing import Optional, Dict, List, Any, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -960,6 +960,15 @@ def create_job(
         context_from = None
 
     prompt_text = _coerce_job_text(prompt)
+
+    # Reject cron jobs that schedule gateway-lifecycle commands. Prevents
+    # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
+    # (#30719). Enforced here (not only in the CLI layer) so the agent's
+    # `cronjob` model tool — which calls create_job directly — is also
+    # covered, not just `hermes cron create`.
+    from cron.lifecycle_guard import check_gateway_lifecycle
+    check_gateway_lifecycle(prompt_text, normalized_script)
+
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -1249,13 +1258,27 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
                 
-                # Increment completed count
+                # Increment completed count.  Finite one-shot jobs are
+                # pre-claimed by claim_dispatch() BEFORE the side effect runs
+                # (issue #38758), which already incremented completed — do not
+                # double-count them here.  Recurring jobs and direct callers
+                # with no pre-run claim still get the legacy increment.
                 if job.get("repeat"):
-                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
+                    repeat = job["repeat"]
+                    times = repeat.get("times")
+                    completed = repeat.get("completed", 0)
+                    kind = job.get("schedule", {}).get("kind")
+                    preclaimed_oneshot = (
+                        kind == "once"
+                        and times is not None
+                        and times > 0
+                        and completed > 0
+                    )
+                    if not preclaimed_oneshot:
+                        completed += 1
+                        repeat["completed"] = completed
+
                     # Check if we've hit the repeat limit
-                    times = job["repeat"].get("times")
-                    completed = job["repeat"]["completed"]
                     if times is not None and times > 0 and completed >= times:
                         # Remove the job (limit reached)
                         jobs.pop(i)
@@ -1298,6 +1321,69 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+
+
+def claim_dispatch(job_id: str) -> bool:
+    """Atomically claim a finite one-shot job dispatch BEFORE execution.
+
+    Increments ``repeat.completed`` under the cross-process jobs lock and
+    persists the claim immediately, so that if the tick dies mid-execution
+    (gateway kill, OOM, segfault, hard-timeout) the dispatch is not lost.
+    This converts finite one-shot jobs from *at-least-once* to *at-most-times*
+    semantics — a job that self-destructs fires at most ``repeat.times`` times
+    instead of infinitely (issue #38758).
+
+    Returns ``True`` if the caller may proceed to run the job, ``False`` if the
+    dispatch limit is already reached (in which case the stale job is removed).
+
+    Only claims jobs with ``schedule.kind == "once"`` and ``repeat.times > 0``.
+    Recurring jobs (they use ``advance_next_run``) and infinite-repeat / no-repeat
+    jobs are left unchanged and always allowed to proceed.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
+            if job.get("schedule", {}).get("kind") != "once":
+                return True  # recurring jobs use advance_next_run(), not dispatch claims
+            repeat = job.get("repeat")
+            if not repeat:
+                return True  # no repeat limit — always dispatch
+            times = repeat.get("times")
+            if times is None or times <= 0:
+                return True  # infinite — always dispatch
+            completed = repeat.get("completed", 0)
+            if completed >= times:
+                # Already dispatched the max number of times (e.g. a prior
+                # tick claimed then died before mark_job_run could remove it).
+                # Clean up so it stops appearing as due on every tick.
+                jobs.pop(i)
+                save_jobs(jobs)
+                logger.info(
+                    "Job '%s': dispatch limit reached (%d/%d) — removing",
+                    job.get("name", job["id"]),
+                    completed,
+                    times,
+                )
+                return False
+            # Claim this dispatch before the side effect runs.
+            repeat["completed"] = completed + 1
+            save_jobs(jobs)
+            logger.debug(
+                "Job '%s': claimed dispatch %d/%d",
+                job.get("name", job["id"]),
+                repeat["completed"],
+                times,
+            )
+            return True
+
+        logger.debug(
+            "claim_dispatch: job_id %s not in store — proceeding without claim "
+            "(handed-in job dict; nothing to persist a claim against)",
+            job_id,
+        )
+        return True
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -1543,6 +1629,31 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             break
                     # Fall through to due.append(job) — execute once now
 
+            # One-shot dispatch-limit guard (issue #38758): a finite one-shot
+            # claimed via claim_dispatch() but whose tick died before
+            # mark_job_run could remove it will have completed >= times while
+            # still looking due (last_run_at was never written, so the
+            # recovery helper re-armed it). Remove it instead of re-firing.
+            if kind == "once":
+                repeat = job.get("repeat")
+                if repeat:
+                    times = repeat.get("times")
+                    completed = repeat.get("completed", 0)
+                    if times is not None and times > 0 and completed >= times:
+                        logger.info(
+                            "Job '%s': one-shot dispatch limit reached (%d/%d) "
+                            "— removing stale due entry",
+                            job.get("name", job["id"]),
+                            completed,
+                            times,
+                        )
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                raw_jobs.remove(rj)
+                                needs_save = True
+                                break
+                        continue
+
             due.append(job)
 
     if needs_save:
@@ -1633,6 +1744,35 @@ def save_job_output(job_id: str, output: str):
 # =============================================================================
 # Skill reference rewriting (curator integration)
 # =============================================================================
+
+def referenced_skill_names() -> Set[str]:
+    """Return the set of skill names referenced by ANY cron job.
+
+    Includes paused and disabled jobs deliberately: a paused job never
+    fires, so its skills never get a ``bump_use`` from the scheduler, yet
+    resuming it must still find its skills present. The curator uses this
+    set to protect referenced skills from inactivity archival — a skill a
+    live job depends on is "in use" regardless of when it was last loaded.
+
+    Best-effort: a corrupt/unreadable jobs store returns an empty set
+    rather than raising, so a cron issue can never break the curator.
+    """
+    try:
+        jobs = load_jobs()
+    except Exception:
+        logger.debug("referenced_skill_names: failed to load cron jobs", exc_info=True)
+        return set()
+
+    names: Set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
+            cleaned = str(name).strip().lstrip("/")
+            if cleaned:
+                names.add(cleaned)
+    return names
+
 
 def rewrite_skill_refs(
     consolidated: Optional[Dict[str, str]] = None,

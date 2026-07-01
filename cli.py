@@ -175,7 +175,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches
+from utils import base_url_host_matches, fast_safe_load
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -510,7 +510,7 @@ def load_cli_config() -> Dict[str, Any]:
             with open(config_path, "r", encoding="utf-8") as f:
                 from hermes_cli.config import _normalize_root_model_keys
 
-                file_config = _normalize_root_model_keys(yaml.safe_load(f) or {})
+                file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
             
             _file_has_terminal_config = "terminal" in file_config
 
@@ -748,6 +748,14 @@ try:
     from agent.display import set_tool_preview_max_len
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+except Exception:
+    pass
+
+# Initialize friendly tool labels from config (default on)
+try:
+    from agent.display import set_friendly_tool_labels
+    _ftl = CLI_CONFIG.get("display", {}).get("friendly_tool_labels", True)
+    set_friendly_tool_labels(bool(_ftl))
 except Exception:
     pass
 
@@ -1521,6 +1529,89 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
+def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
+    """Return whether a worktree has uncommitted changes (staged, unstaged, or
+    untracked).
+
+    Fails SAFE: on any error returns True so callers do not delete a worktree
+    whose state they cannot determine.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
+        )
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
+    except Exception:
+        return True
+
+
+def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
+    """Classify a worktree's git lock as live, dead, or absent.
+
+    ``hermes -w`` locks each worktree with reason ``hermes pid=<pid>`` so a
+    concurrent hermes process' startup prune leaves an in-use worktree alone.
+    But a *crashed* session leaves the lock behind forever, and
+    ``git worktree remove --force`` (single ``-f``) refuses to remove a locked
+    worktree — so dead-locked worktrees accumulate indefinitely. This lets the
+    pruner tell the two apart:
+
+    - ``"live"``  — locked and the owning pid is still running (skip it).
+    - ``"dead"``  — locked but the owning pid is gone, or the reason isn't a
+                    parseable hermes lock (safe to unlock + reap).
+    - ``None``    — not locked at all.
+
+    Fails SAFE toward ``"live"``: if git can't be queried at all we cannot
+    prove the worktree is safe to touch, so we report it as live.
+    """
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=timeout, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            return "live"
+    except Exception:
+        return "live"
+
+    target = Path(worktree_path).resolve()
+    current: Optional[Path] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            try:
+                current = Path(line[len("worktree "):].strip()).resolve()
+            except Exception:
+                current = None
+        elif line == "locked" or line.startswith("locked "):
+            if current != target:
+                continue
+            reason = line[len("locked"):].strip()
+            m = re.search(r"hermes pid=(\d+)", reason)
+            if not m:
+                # Locked by something we don't recognize as a hermes session
+                # (or lock reason unavailable). Treat as dead — a foreign lock
+                # on a hermes -w worktree is almost certainly a leftover, and
+                # the age/dirty/unpushed gates already ran before we got here.
+                return "dead"
+            pid = int(m.group(1))
+            if pid == os.getpid():
+                return "live"
+            try:
+                from gateway.status import _pid_exists
+                return "live" if _pid_exists(pid) else "dead"
+            except Exception:
+                # Can't determine liveness — fail safe toward keeping it.
+                return "live"
+    return None
+
+
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
@@ -1665,10 +1756,22 @@ def _run_checkpoint_auto_maintenance() -> None:
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     """Remove stale worktrees and orphaned branches on startup.
 
-    Age-based tiers:
+    Age-based tiers (aggressive cleanup keeps ``.worktrees/`` from growing
+    unbounded):
     - Under max_age_hours (24h): skip — session may still be active.
     - 24h–72h: remove if no unpushed commits.
     - Over 72h: force remove regardless (nothing should sit this long).
+
+    Lock handling (orthogonal to age): ``hermes -w`` locks each worktree with
+    reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
+    worktree alone. A *live*-locked worktree is skipped at any age; a
+    *dead*-locked one (owning pid gone — a crashed session) is unlocked first
+    so ``git worktree remove --force`` can actually reap it, otherwise those
+    leftovers accumulate forever (``remove --force`` refuses a locked tree).
+
+    Branch deletion is gated on ``git worktree remove`` succeeding, so a failed
+    removal never orphans the branch (which would drop easy reachability of any
+    commits still in the worktree).
 
     Also prunes orphaned ``hermes/*`` and ``pr-*`` local branches that
     have no corresponding worktree.
@@ -1697,12 +1800,37 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         except Exception:
             continue
 
-        force = mtime <= hard_cutoff  # Over 72h — force remove
+        force = mtime <= hard_cutoff  # Over 72h — reap aggressively
 
+        # Never delete real work, regardless of age. Unpushed commits and
+        # uncommitted changes may be a crashed session's in-flight work; the
+        # >72h tier reaps only abandoned *clean, fully-pushed* worktrees (the
+        # scratch trees that actually cause .worktrees/ bloat).
+        if _worktree_has_unpushed_commits(str(entry), timeout=5):
+            continue  # Has unpushed commits or can't check — skip
         if not force:
-            # 24h–72h tier: only remove if no unpushed commits
-            if _worktree_has_unpushed_commits(str(entry), timeout=5):
-                continue  # Has unpushed commits or can't check — skip
+            # 24h–72h tier is conservative: unpushed check above is enough.
+            pass
+        elif _worktree_is_dirty(str(entry), timeout=5):
+            continue  # >72h but dirty — preserve uncommitted work
+
+        # Respect git-native session locks. A lock owned by a still-running
+        # hermes process means the worktree is actively in use — never touch
+        # it. A lock whose owning pid is gone is a crashed session's leftover:
+        # unlock it so `git worktree remove --force` (single -f) can reap it,
+        # otherwise dead-locked worktrees pile up indefinitely.
+        lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)
+        if lock_state == "live":
+            logger.debug("Skipping live-locked worktree: %s", entry.name)
+            continue
+        if lock_state == "dead":
+            try:
+                subprocess.run(
+                    ["git", "worktree", "unlock", str(entry)],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root,
+                )
+            except Exception as e:
+                logger.debug("Failed to unlock dead worktree %s: %s", entry.name, e)
 
         # Safe to remove
         try:
@@ -1712,10 +1840,18 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             )
             branch = branch_result.stdout.strip()
 
-            subprocess.run(
+            remove_result = subprocess.run(
                 ["git", "worktree", "remove", str(entry), "--force"],
                 capture_output=True, text=True, timeout=15, cwd=repo_root,
             )
+            if remove_result.returncode != 0:
+                # Removal failed — keep the branch so any commits stay
+                # reachable rather than orphaning it.
+                logger.debug(
+                    "Failed to remove worktree %s: %s",
+                    entry.name, remove_result.stderr.strip(),
+                )
+                continue
             if branch:
                 subprocess.run(
                     ["git", "branch", "-D", branch],
@@ -2500,6 +2636,26 @@ def _prepend_note_to_message(message, note: str):
         # No text part (image-only) — insert the note as a leading text block.
         return [{"type": "text", "text": note}, *parts]
     return message
+
+
+def _cli_visible_print(text: str = "") -> None:
+    """Print normally unless prompt_toolkit owns the live terminal.
+
+    Bare ``print()`` output is swallowed by ``patch_stdout`` while an
+    interactive ``Application`` is running, so ``/sessions`` and ``/history``
+    would render nothing. Route through ``_cprint`` (prompt_toolkit-native)
+    in that case, and fall back to ``print`` otherwise.
+    """
+    try:
+        from prompt_toolkit.application import get_app_or_none
+        app = get_app_or_none()
+    except Exception:
+        app = None
+
+    if app is not None and getattr(app, "_is_running", False):
+        _cprint(text)
+    else:
+        print(text)
 
 
 # ---------------------------------------------------------------------------
@@ -4004,6 +4160,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _recover_terminal_after_interrupt(self) -> None:
+        """Recover the terminal after an interrupted agent turn (#33271).
+
+        When the user interrupts a running turn by typing a new message,
+        prompt_toolkit may have an in-flight ``CSI 6n`` cursor-position query
+        whose reply (``ESC[<row>;<col>R``) arrives on stdin after the input
+        parser has torn down. The reply then leaks as literal text
+        (``^[[19;1R``) and the VT100 parser can stall in a partial-escape
+        state, accepting no further keystrokes — the terminal appears frozen.
+
+        Two steps recover a sane state:
+          1. ``flush_stdin()`` drains stray escape bytes from the OS input
+             buffer (``termios.tcflush(TCIFLUSH)``; no-op on non-TTY).
+          2. ``_force_full_redraw()`` drops prompt_toolkit's cached
+             screen/cursor state and forces a clean repaint.
+
+        Both steps are independently safe and self-guard, so a failure of one
+        never prevents the other.
+        """
+        try:
+            from hermes_cli.curses_ui import flush_stdin
+            flush_stdin()
+        except Exception:
+            pass
+        self._force_full_redraw()
+
     def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
         """Clear the terminal and reset prompt_toolkit renderer state."""
         try:
@@ -5389,10 +5571,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._stream_last_was_newline = True  # start of stream = boundary
 
         if not getattr(self, "_in_reasoning_block", False):
+            # Case-insensitive matching against a lowercased view so
+            # mixed-case tag variants (<Think>, <THINKING>, …) are caught.
+            prefilt_lower = self._stream_prefilt.lower()
             for tag in _OPEN_TAGS:
+                tag_lower = tag.lower()
                 search_start = 0
                 while True:
-                    idx = self._stream_prefilt.find(tag, search_start)
+                    idx = prefilt_lower.find(tag_lower, search_start)
                     if idx == -1:
                         break
                     # Check if this is a block boundary position
@@ -5432,11 +5618,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Could also be a partial open tag at the end — hold it back
             if not getattr(self, "_in_reasoning_block", False):
-                # Check for partial tag match at the end
+                # Check for partial tag match at the end (case-insensitive)
                 safe = self._stream_prefilt
                 for tag in _OPEN_TAGS:
+                    tag_lower = tag.lower()
                     for i in range(1, len(tag)):
-                        if self._stream_prefilt.endswith(tag[:i]):
+                        if prefilt_lower.endswith(tag_lower[:i]):
                             safe = self._stream_prefilt[:-i]
                             break
                 if safe:
@@ -5449,8 +5636,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Keep accumulating _stream_prefilt because close tags can arrive
         # split across multiple tokens (e.g. "</REASONING_SCRATCH" + "PAD>...").
         if getattr(self, "_in_reasoning_block", False):
+            prefilt_lower = self._stream_prefilt.lower()
             for tag in _CLOSE_TAGS:
-                idx = self._stream_prefilt.find(tag)
+                idx = prefilt_lower.find(tag.lower())
                 if idx != -1:
                     self._in_reasoning_block = False
                     # When show_reasoning is on, route inner content to
@@ -5880,6 +6068,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                provider=self.provider,
             )
         
         # Tool discovery is intentionally deferred on the Termux bare prompt
@@ -6514,30 +6703,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         from hermes_cli.main import _relative_time
 
-        print()
+        _cli_visible_print()
         if reason == "history":
-            print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+            _cli_visible_print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
         else:
-            print("  Recent sessions:")
-        print()
-        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            _cli_visible_print("  Recent sessions:")
+        _cli_visible_print()
+        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
-        print()
-        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
-        print("  Example: /resume 2")
-        print()
+            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+        _cli_visible_print()
+        _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
+        _cli_visible_print("  Example: /resume 2")
+        _cli_visible_print()
         return True
 
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
-                print("(._.) No conversation history yet.")
+                _cli_visible_print("(._.) No conversation history yet.")
             return
 
         preview_limit = 400
@@ -6566,14 +6755,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
 
             noun = "message" if hidden_tool_messages == 1 else "messages"
-            print("\n  [Tools]")
-            print(f"    ({hidden_tool_messages} tool {noun} hidden)")
+            _cli_visible_print("\n  [Tools]")
+            _cli_visible_print(f"    ({hidden_tool_messages} tool {noun} hidden)")
             hidden_tool_messages = 0
 
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
-        print("+" + "-" * 50 + "+")
+        _cli_visible_print()
+        _cli_visible_print("+" + "-" * 50 + "+")
+        _cli_visible_print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
+        _cli_visible_print("+" + "-" * 50 + "+")
 
         for msg in self.conversation_history:
             role = msg.get("role", "unknown")
@@ -6592,13 +6781,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             content_text = "" if content is None else str(content)
 
             if role == "user":
-                print(f"\n  [You #{visible_index}]{_ts_suffix(msg)}")
-                print(
+                _cli_visible_print(f"\n  [You #{visible_index}]{_ts_suffix(msg)}")
+                _cli_visible_print(
                     f"    {content_text[:preview_limit]}{'...' if len(content_text) > preview_limit else ''}"
                 )
                 continue
 
-            print(f"\n  [Hermes #{visible_index}]{_ts_suffix(msg)}")
+            _cli_visible_print(f"\n  [Hermes #{visible_index}]{_ts_suffix(msg)}")
             tool_calls = msg.get("tool_calls") or []
             if content_text:
                 preview = content_text[:preview_limit]
@@ -6611,10 +6800,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 preview = "(no text response)"
                 suffix = ""
-            print(f"    {preview}{suffix}")
+            _cli_visible_print(f"    {preview}{suffix}")
 
         flush_tool_summary()
-        print()
+        _cli_visible_print()
     
     def _notify_session_boundary(self, event_type: str) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
@@ -8148,6 +8337,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        provider=self.provider,
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
@@ -8349,7 +8539,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
-            self._handle_debug_command()
+            self._handle_debug_command(cmd_original)
         elif canonical == "update":
             if self._handle_update_command():
                 return False
@@ -8449,6 +8639,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "journey":
+            try:
+                import argparse
+                import shlex
+
+                from hermes_cli.journey import register_cli as _register_journey_cli
+
+                parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+                _register_journey_cli(parser)
+                argv = shlex.split(cmd_original.split(None, 1)[1]) if len(cmd_original.split(None, 1)) > 1 else []
+                args = parser.parse_args(argv)
+                args.func(args)
+            except SystemExit:
+                pass
+            except Exception as exc:
+                _cprint(f"  /journey failed: {exc}")
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -8548,12 +8754,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.
+                            # Sanitize env to prevent credential leakage —
+                            # quick commands run in the CLI process which
+                            # has all API keys in os.environ.
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                text=True, timeout=30, env=sanitized_env
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
                                 self._console_print(_rich_text_from_ansi(output))
                             else:
                                 self._console_print("[dim]Command returned no output[/]")
@@ -8722,6 +8935,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return mgr
 
 
+
+    def _drain_interrupt_queue_to_pending_input(self) -> None:
+        """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
+
+        While the agent is running, user input is routed into
+        ``_interrupt_queue`` (see the architecture comment near
+        ``_route_user_input_when_busy``). The explicit-interrupt path at the
+        top of ``process_loop`` only drains that queue when
+        ``busy_input_mode == "interrupt"`` AND a ``pending_message`` was
+        acknowledged. If the agent's turn finishes naturally (no interrupt),
+        any messages typed during the turn stay stuck in ``_interrupt_queue``
+        forever. Subsequent ``Enter`` presses re-route to the same blocked
+        queue and the CLI appears to hang.
+
+        Called once at the end of every turn from ``process_loop``'s ``finally``
+        block. Catches and swallows ``Exception`` because the drain must never
+        break the main loop. (#20271)
+        """
+        try:
+            while not self._interrupt_queue.empty():
+                stray = self._interrupt_queue.get_nowait()
+                if stray:
+                    self._pending_input.put(stray)
+        except Exception:
+            pass  # Non-fatal — never break the main loop
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
@@ -9177,7 +9415,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         total = agent.session_total_tokens
 
         compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
+        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compressions = compressor.compression_count
@@ -10055,9 +10293,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             target=self._reload_mcp, daemon=True
         )
         _reload_thread.start()
-        _reload_thread.join(timeout=30)
-        if _reload_thread.is_alive():
-            print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+        # Do NOT join here — process_loop calls this from its idle branch, so a
+        # blocking join would freeze input consumption for up to 30s (and a hung
+        # MCP server could block far longer). The reload runs purely in the
+        # background daemon thread, which reports its own progress/completion
+        # status via print() inside _reload_mcp().
 
     # Inline-skip tokens that bypass the destructive-slash confirmation modal.
     # A general escape hatch for non-interactive use (scripting/automation) and
@@ -10472,6 +10712,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
+        # MoA reference-model outputs: render each reference's answer as a
+        # labelled thinking-style block BEFORE the aggregator acts, so the user
+        # sees the mixture-of-agents process instead of a silent pause. These
+        # are display-only events emitted by the MoA facade (agent_init relay);
+        # they never enter message history.
+        if event_type == "moa.reference":
+            label = function_name or "reference"
+            text = preview or ""
+            idx = kwargs.get("moa_index")
+            count = kwargs.get("moa_count")
+            header = f"Reference {idx}/{count} — {label}" if idx and count else f"Reference — {label}"
+            try:
+                self._flush_reasoning_preview(force=True)
+            except Exception:
+                pass
+            _cprint(f"  {_DIM}┊ ◇ {header}{_RST}")
+            try:
+                self._emit_reasoning_preview(text)
+            except Exception:
+                # Fallback: print the raw text dimmed if the preview helper fails.
+                if text.strip():
+                    _cprint(f"  {_DIM}{text.strip()}{_RST}")
+            self._invalidate()
+            return
+        if event_type == "moa.aggregating":
+            agg = function_name or ""
+            self._spinner_text = f"◆ aggregating ({agg})" if agg else "◆ aggregating"
+            self._invalidate()
+            return
+
         # Feed the pet: tools mean "running" (not reasoning); a failed tool
         # latches the turn so it ends on a sulk.
         if event_type == "tool.started":
@@ -10483,8 +10753,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
-            # Print stacked scrollback line for "all" / "new" modes
-            if function_name and self.tool_progress_mode in {"all", "new"}:
+            # Print stacked scrollback line for "new" / "all" / "verbose" modes.
+            # "verbose" was previously omitted here, so non-streaming model
+            # calls (MoA aggregator, copilot-acp) rendered each tool only into
+            # the transient spinner line — which overwrites itself, so no
+            # scrollable tool history accumulated. Streaming models hid the bug
+            # because _on_tool_gen_start commits a "preparing" line per tool;
+            # non-streaming calls never emit that, leaving verbose mode with no
+            # committed line at all. "verbose" is strictly more than "all", so
+            # it must commit at least the same line.
+            if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
                 duration = kwargs.get("duration", 0.0)
                 is_error = kwargs.get("is_error", False)
                 # Pop stored args from tool.started for this function
@@ -10647,8 +10925,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+        # Recorder creation can fail (no input device, PortAudio init error).
+        # Reset the flag on failure or _voice_recording stays True forever and
+        # every future voice start is silently skipped by the guard above.
         if self._voice_recorder is None:
-            self._voice_recorder = create_audio_recorder()
+            try:
+                self._voice_recorder = create_audio_recorder()
+            except Exception:
+                with self._voice_lock:
+                    self._voice_recording = False
+                raise
 
         # Apply config-driven silence params (numeric-guarded so YAML
         # scalar corruption doesn't break recording start-up).
@@ -11476,6 +11762,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _clear_active_overlays_for_interrupt(self) -> None:
+        """Drain and clear every input-blocking overlay left by an interrupted agent.
+
+        approval/clarify/sudo/secret prompts each block a worker thread on a
+        ``response_queue.get()``.  When the agent is interrupted the worker
+        thread is torn down, but the overlay's state dict stays set — leaving
+        the CLI input gated (``read_only`` condition + keypress filter) with no
+        thread servicing the prompt.  The result is a frozen terminal until the
+        prompt's own timeout expires.  Push a terminal value onto each queue so
+        any still-blocked thread unblocks cleanly, then nil the state out and
+        restore the user's pre-modal draft (#14026).
+
+        Safe default per prompt: approval -> "deny", clarify/sudo/secret ->
+        cancel (None / empty).  Each step is wrapped so a dead queue can't
+        prevent clearing the others.
+        """
+        if self._approval_state:
+            try:
+                self._approval_state["response_queue"].put("deny")
+            except Exception:
+                pass
+            self._approval_state = None
+        if self._clarify_state:
+            try:
+                self._clarify_state["response_queue"].put(
+                    "The user cancelled. Use your best judgement to proceed."
+                )
+            except Exception:
+                pass
+            self._clarify_state = None
+            self._clarify_freetext = False
+        if self._sudo_state:
+            try:
+                self._sudo_state["response_queue"].put("")
+            except Exception:
+                pass
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+        if self._secret_state:
+            try:
+                self._cancel_secret_capture()
+            except Exception:
+                self._secret_state = None
+
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
             return
@@ -11852,6 +12183,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             if stop_event is not None:
                                 stop_event.set()
                             self.agent.interrupt(interrupt_msg)
+                            # Clear any active overlay states the interrupted agent
+                            # left behind.  approval/clarify/sudo/secret prompts gate
+                            # input (read_only condition + keypress filter) until
+                            # explicitly reset — without this the CLI freezes after
+                            # an interrupt until the prompt's own timeout expires (#14026).
+                            self._clear_active_overlays_for_interrupt()
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
@@ -13179,50 +13516,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt
+            # Cancel slash confirmation prompt (foreground UI, not an
+            # agent-blocking overlay — cancel and stop here).
             if self._slash_confirm_state:
                 self._submit_slash_confirm_response("cancel")
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel /model picker
+            # Cancel /model picker (foreground UI — cancel and stop here).
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
+            # Clear all agent-blocking overlays (approval/clarify/sudo/secret)
+            # in one shot.  We do NOT return after clearing — we fall through so
+            # that if the agent is also running we fire the interrupt on the same
+            # Ctrl+C press.  This fixes the case where a stale/orphaned overlay
+            # (left behind by a previous interrupt) consumes the press without
+            # ever reaching the agent-interrupt branch, leaving the chat frozen
+            # (#14026).
+            _overlay_cleared = bool(
+                self._sudo_state
+                or self._secret_state
+                or self._approval_state
+                or self._clarify_state
+            )
+            if _overlay_cleared:
+                self._clear_active_overlays_for_interrupt()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
+
+            # If we only cleared overlays and the agent is NOT running, stop here
+            # (don't fall through to the interrupt/exit path).
+            if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
             if self._agent_running and self.agent:
@@ -13279,50 +13608,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt
+            # Cancel slash confirmation prompt (foreground UI — cancel and stop).
             if self._slash_confirm_state:
                 self._submit_slash_confirm_response("cancel")
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel /model picker
+            # Cancel /model picker (foreground UI — cancel and stop).
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
+            # Clear all agent-blocking overlays in one shot, then fall through to
+            # the agent-interrupt branch so a single Ctrl+Q both clears a stale
+            # overlay and interrupts a still-running agent (#14026).
+            _overlay_cleared = bool(
+                self._sudo_state
+                or self._secret_state
+                or self._approval_state
+                or self._clarify_state
+            )
+            if _overlay_cleared:
+                self._clear_active_overlays_for_interrupt()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
+
+            if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
             if self._agent_running and self.agent:
@@ -14662,6 +14976,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                         app.invalidate()  # Refresh status line
 
+                        # Post-turn terminal recovery (#33271): after an
+                        # interrupt the prompt_toolkit renderer may have
+                        # drifted from the physical terminal state — CSI 6n
+                        # cursor position reports can leak as literal text
+                        # (^[[19;1R), and the VT100 input parser can stall in
+                        # a partial-escape state, accepting no further
+                        # keystrokes.  Drain stray escape bytes from the OS
+                        # input buffer and force a clean renderer redraw.
+                        if self._last_turn_interrupted:
+                            self._recover_terminal_after_interrupt()
+
+                        # Re-queue any messages that arrived in _interrupt_queue
+                        # while the agent was running and were never claimed by
+                        # the explicit interrupt path. See
+                        # _drain_interrupt_queue_to_pending_input for the full
+                        # rationale. Regression of #17666 / #18760 — the drain
+                        # block from the original PR #17939 was deferred as
+                        # "worth its own review" and never re-landed (#20271).
+                        self._drain_interrupt_queue_to_pending_input()
+
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and
                         # there's no real user message already queued, push the
@@ -15274,7 +15608,21 @@ def main(
         )
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            # If at least one skill loaded, degrade gracefully: skip the
+            # unknown ones and continue. A typo'd skill name should not crash
+            # the worker (which auto-blocks the Kanban task after retries).
+            # Only when EVERY requested skill is missing do we hard-fail, so a
+            # fully-misconfigured worker fails loudly instead of running blind.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

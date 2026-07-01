@@ -25,6 +25,8 @@ def _make_entry(
     label: str,
     access_token: str,
     *,
+    provider: str = "openai-codex",
+    base_url: str = "https://chatgpt.com/backend-api/codex",
     source: str = "device_code",
     priority: int = 0,
     last_status: str | None = None,
@@ -33,25 +35,30 @@ def _make_entry(
     return {
         "id": label,
         "label": label,
-        "provider": "openai-codex",
+        "provider": provider,
         "auth_type": AUTH_TYPE_OAUTH,
         "source": source,
         "priority": priority,
         "access_token": access_token,
         "refresh_token": f"rt-{label}",
-        "base_url": "https://chatgpt.com/backend-api/codex",
+        "base_url": base_url,
         "last_status": last_status,
         "last_status_at": last_status_at,
     }
 
 
-def _build_mock_pool(entries: list[dict], *, strategy: str = "round_robin"):
+def _build_mock_pool(
+    entries: list[dict],
+    *,
+    provider: str = "openai-codex",
+    strategy: str = "round_robin",
+):
     """Build a mock CredentialPool with the given entries."""
     from agent.credential_pool import CredentialPool
 
     pool = CredentialPool(
-        provider="openai-codex",
-        entries=[PooledCredential.from_dict("openai-codex", e) for e in entries],
+        provider=provider,
+        entries=[PooledCredential.from_dict(provider, e) for e in entries],
     )
     pool._strategy = strategy
     return pool
@@ -220,3 +227,65 @@ class TestRestorePrimaryPoolReselect:
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
         assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+    def test_restore_skips_pool_from_fallback_provider(self):
+        """Restoring primary must not reselect a credential from a fallback provider pool."""
+        entries = [
+            _make_entry(
+                "openrouter-entry",
+                "openrouter-key",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                priority=0,
+            ),
+        ]
+        pool = _build_mock_pool(entries, provider="openrouter")
+
+        agent = self._make_agent(pool)
+        result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "openai-codex"
+        assert agent.base_url == "https://chatgpt.com/backend-api/codex"
+        assert agent.api_key == "original-key-entry-1"
+        assert agent._client_kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert agent._client_kwargs["api_key"] == "original-key-entry-1"
+        assert agent._credential_pool is None
+        agent._replace_primary_openai_client.assert_not_called()
+
+    def test_restore_skips_custom_pool_for_different_custom_endpoint(self):
+        """A custom:<name> pool must match the restored custom base_url before reselect."""
+        pool = MagicMock()
+        pool.provider = "custom:primary"
+        agent = self._make_agent(pool)
+        agent._primary_runtime.update(
+            {
+                "model": "custom-model",
+                "provider": "custom",
+                "base_url": "https://other-custom.example.com/v1",
+                "api_mode": "chat_completions",
+                "api_key": "primary-custom-key",
+                "client_kwargs": {
+                    "api_key": "primary-custom-key",
+                    "base_url": "https://other-custom.example.com/v1",
+                },
+                "compressor_model": "custom-model",
+                "compressor_base_url": "https://other-custom.example.com/v1",
+                "compressor_api_key": "primary-custom-key",
+                "compressor_provider": "custom",
+            }
+        )
+
+        with patch("agent.credential_pool.get_custom_provider_pool_key", return_value="custom:other"):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "custom"
+        assert agent.base_url == "https://other-custom.example.com/v1"
+        assert agent.api_key == "primary-custom-key"
+        assert agent._client_kwargs["base_url"] == "https://other-custom.example.com/v1"
+        assert agent._client_kwargs["api_key"] == "primary-custom-key"
+        assert agent._credential_pool is None
+        pool.has_available.assert_not_called()
+        pool.select.assert_not_called()
+        agent._replace_primary_openai_client.assert_not_called()

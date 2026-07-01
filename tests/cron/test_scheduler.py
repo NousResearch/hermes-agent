@@ -1,5 +1,6 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import contextlib
 import json
 import logging
 import os
@@ -1197,10 +1198,24 @@ class TestRunJobSessionPersistence:
         assert success is True
         cleanup_mock.assert_called_once()
 
-    def _make_run_job_patches(self, tmp_path):
-        """Common patches for run_job tests."""
+    @contextlib.contextmanager
+    def _run_job_patches(self, tmp_path, extra=()):
+        """Apply every patch run_job tests need, as one bundle.
+
+        Yields ``(fake_db, mock_agent_cls)``. Using an ExitStack that enters
+        the whole list means a caller can never silently drop a patch by
+        index — the previous positional-list form let a seam split shift
+        ``resolve_runtime_provider`` off the end of the applied slice, so the
+        real resolver ran and (only on a dev machine with ambient creds) hid
+        an auth failure that CI then caught. Every test enters all patches.
+
+        ``extra`` is an iterable of additional context managers (e.g. a
+        per-test ``_get_platform_tools`` patch) entered alongside the base set.
+        """
         fake_db = MagicMock()
-        return fake_db, [
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        base = [
             patch("cron.scheduler._hermes_home", tmp_path),
             patch("cron.scheduler._resolve_origin", return_value=None),
             patch("hermes_cli.env_loader.load_hermes_dotenv"),
@@ -1215,7 +1230,14 @@ class TestRunJobSessionPersistence:
                     "api_mode": "chat_completions",
                 },
             ),
+            patch("run_agent.AIAgent", return_value=mock_agent),
         ]
+        with contextlib.ExitStack() as stack:
+            entered = [stack.enter_context(cm) for cm in base]
+            for cm in extra:
+                stack.enter_context(cm)
+            mock_agent_cls = entered[-1]  # the AIAgent patch
+            yield fake_db, mock_agent_cls
 
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
@@ -1224,12 +1246,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["web", "terminal", "file"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1258,12 +1275,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["web", "terminal", "file"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1285,12 +1297,7 @@ class TestRunJobSessionPersistence:
             "name": "test",
             "prompt": "hello",
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1311,18 +1318,10 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["terminal"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
         # Even if the user has ``hermes tools`` configured to enable web+file
         # for cron, the per-job override wins.
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
-             patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch(
-                 "hermes_cli.tools_config._get_platform_tools",
-                 return_value={"web", "file"},
-             ):
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        extra = [patch("hermes_cli.tools_config._get_platform_tools", return_value={"web", "file"})]
+        with self._run_job_patches(tmp_path, extra=extra) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs

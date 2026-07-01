@@ -557,6 +557,50 @@ def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
     assert "Settings" in delete_resp.text
 
 
+def test_suppressed_anthropic_sources_hide_accounts_rows(monkeypatch):
+    """Removing Anthropic/Claude sources should make the Accounts tab stay clean.
+
+    The user can suppress env, Hermes PKCE, and Claude Code credential sources
+    after disconnecting. Once suppressed, the dashboard must neither report them
+    connected nor keep dangling Anthropic/Claude rows visible.
+    """
+    from agent import anthropic_adapter
+    from hermes_cli import web_server as ws
+    from hermes_cli.auth import suppress_credential_source
+
+    for source in (
+        "claude_code",
+        "hermes_pkce",
+        "env:ANTHROPIC_API_KEY",
+        "env:ANTHROPIC_TOKEN",
+        "env:CLAUDE_CODE_OAUTH_TOKEN",
+    ):
+        suppress_credential_source("anthropic", source)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "read_hermes_oauth_credentials",
+        lambda: {"accessToken": "pkce-token", "refreshToken": "refresh"},
+    )
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "read_claude_code_credentials",
+        lambda: {"accessToken": "cc-token", "refreshToken": "refresh"},
+    )
+
+    assert ws._anthropic_oauth_status()["logged_in"] is False
+    assert ws._claude_code_only_status()["logged_in"] is False
+    assert ws._oauth_provider_hidden_by_suppression("anthropic") is True
+    assert ws._oauth_provider_hidden_by_suppression("claude-code") is True
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"] for p in resp.json()["providers"]}
+    assert "anthropic" not in providers
+    assert "claude-code" not in providers
+
+
 def test_xai_loopback_start_returns_authorize_url(monkeypatch):
     """Start MUST bind the loopback listener and hand back an xAI authorize URL."""
     from hermes_cli import auth as auth_mod

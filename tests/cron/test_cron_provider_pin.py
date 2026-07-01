@@ -52,7 +52,8 @@ def _run_with_current_provider(job, current_provider, tmp_path):
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
-         patch("dotenv.load_dotenv"), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_state.SessionDB", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -252,7 +253,8 @@ def _run_with_current_provider_and_model(job, current_provider, current_model, t
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
-         patch("dotenv.load_dotenv"), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_state.SessionDB", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",

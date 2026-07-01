@@ -108,14 +108,50 @@ class TestParseModelInput:
         assert model == "qwen-2.5"
 
     def test_custom_triple_syntax(self):
-        """custom:name:model → named custom provider."""
-        provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
+        """custom:name:model → named custom provider (when name is registered)."""
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=True,
+        ):
+            provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
         assert provider == "custom:local-server"
         assert model == "qwen-2.5"
 
+    def test_custom_triple_unregistered_falls_back(self):
+        """custom:name:model → when name is NOT a registered custom provider,
+        treat everything after custom: as the model id.
+
+        Ollama models use colons in tags (e.g. glm-5.2:cloud).
+        Without this guard, parse_model_input truncates the model name
+        to just the part after the last colon (e.g. 'cloud' instead of
+        'glm-5.2:cloud'), causing HTTP 404 errors.
+        """
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=False,
+        ):
+            provider, model = parse_model_input("custom:glm-5.2:cloud", "custom")
+        assert provider == "custom"
+        assert model == "glm-5.2:cloud"
+
+    def test_custom_ollama_tag_not_truncated(self):
+        """custom:glm-5.2:cloud must not be truncated to custom:glm-5.2 / cloud.
+
+        Regression test: Ollama cloud models have colons in their tags.
+        The triple-syntax parser must only split when the middle part is a
+        registered custom provider name.
+        """
+        provider, model = parse_model_input("custom:glm-5.2:cloud", "custom")
+        assert provider == "custom"
+        assert model == "glm-5.2:cloud"
+
     def test_custom_triple_spaces(self):
         """Triple syntax should handle whitespace."""
-        provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=True,
+        ):
+            provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
         assert provider == "custom:my-server"
         assert model == "my-model"
 

@@ -1855,16 +1855,45 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             # Support custom:name:model triple syntax for named custom
-            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
-            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
+            # providers.  `custom:local:qwen` → ("custom:local", "qwen").
+            # Single colon `custom:qwen` → ("custom", "qwen") as before.
+            #
+            # BUT: Ollama models use colons in their tags (e.g.
+            # `glm-5.2:cloud`, `nomic-embed-text:latest`).  When the
+            # middle part is NOT a registered custom provider name, we must
+            # treat everything after `custom:` as the model id to avoid
+            # truncating `glm-5.2:cloud` into just `cloud`.
             if provider_part == "custom" and ":" in model_part:
                 second_colon = model_part.find(":")
                 custom_name = model_part[:second_colon].strip()
                 actual_model = model_part[second_colon + 1:].strip()
-                if custom_name and actual_model:
+                if custom_name and actual_model and _is_registered_custom_provider(custom_name):
                     return (f"custom:{custom_name}", actual_model)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
+
+
+def _is_registered_custom_provider(name: str) -> bool:
+    """Check whether *name* matches a custom provider in config.yaml.
+
+    Used by :func:`parse_model_input` to distinguish ``custom:ollama:qwen``
+    (provider ``custom:ollama``, model ``qwen``) from ``custom:glm-5.2:cloud``
+    (provider ``custom``, model ``glm-5.2:cloud`` — an Ollama tag).
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        providers = get_compatible_custom_providers()
+        normalized = name.strip().lower()
+        for entry in providers:
+            entry_name = str(entry.get("name", "") or "").strip().lower()
+            entry_key = str(entry.get("provider_key", "") or "").strip().lower()
+            if normalized and (normalized == entry_name or normalized == entry_key):
+                return True
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("Failed to check custom provider registry", exc_info=True)
+    return False
 
 
 def _get_custom_base_url() -> str:

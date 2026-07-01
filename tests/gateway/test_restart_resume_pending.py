@@ -1192,6 +1192,84 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_skips_unauthorized_owner():
+    """A resume-pending session whose owner is no longer authorized under the
+    current allowlist must not receive a synthesized agent turn on restart.
+
+    Auto-resume dispatches a full agent turn without going through the normal
+    inbound-message auth gate, so it re-checks _is_user_authorized here
+    (issue #23778).  An unauthorized owner is skipped WITHOUT claiming a
+    _running_agents slot or persisting one — the slot claim happens only
+    after this gate passes.
+    """
+    runner, adapter = make_restart_runner()
+    runner._is_user_authorized = lambda _source: False
+    runner._persist_active_agents = MagicMock()
+    source = make_restart_source(chat_id="revoked-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:revoked-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    # No slot was claimed and nothing was persisted for the skipped session.
+    assert pending_entry.session_key not in runner._running_agents
+    runner._persist_active_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_fails_closed_on_auth_error():
+    """If the authorization check itself raises, the session is skipped
+    (fail-closed) rather than resumed — a broken auth check must never
+    default to granting a full agent turn.
+    """
+    runner, adapter = make_restart_runner()
+
+    def _boom(_source):
+        raise RuntimeError("allowlist backend down")
+
+    runner._is_user_authorized = _boom
+    runner._persist_active_agents = MagicMock()
+    source = make_restart_source(chat_id="err-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:err-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.session_key not in runner._running_agents
+    runner._persist_active_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_skips_when_adapter_unavailable():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="resume-chat")

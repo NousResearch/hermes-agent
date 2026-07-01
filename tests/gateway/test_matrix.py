@@ -4816,6 +4816,16 @@ class TestDeviceIdNoneResolution:
 
         assert result is True
         assert adapter._device_id_unverified is False
+        # Positive path (W1 hardening, salvage of #53997): the resolution query
+        # must use an empty device list ({mxid: []}), and once RESOLVED_DEV is
+        # adopted the verification query must carry the REAL id, never [None]
+        # (the [null] body Synapse/Dendrite reject — the original bug).
+        assert mock_client.device_id == "RESOLVED_DEV"
+        assert mock_client.query_keys.await_count == 2
+        _resolution_call, _verify_call = mock_client.query_keys.await_args_list
+        assert _resolution_call.args[0] == {"@bot:example.org": []}
+        assert _verify_call.args[0] == {"@bot:example.org": ["RESOLVED_DEV"]}
+        assert None not in _verify_call.args[0]["@bot:example.org"]
 
         await adapter.disconnect()
 
@@ -5247,6 +5257,15 @@ class TestDeviceIdRecoveryOnReconnect:
 
         assert result is True
         assert adapter._device_id_unverified is False
-        mock_client2.query_keys.assert_awaited()
+        # Verification must genuinely re-run on the second connect — not just
+        # the resolution query. Two awaited query_keys calls: resolution
+        # ({mxid: []}) then verification ({mxid: [<resolved id>]}). The
+        # verification call must carry the REAL resolved device id ("DEV2"),
+        # never [None] (the original bug). (W2 hardening, salvage of #53997)
+        assert mock_client2.query_keys.await_count == 2
+        _resolution_call, _verify_call = mock_client2.query_keys.await_args_list
+        assert _resolution_call.args[0] == {"@bot:example.org": []}
+        assert _verify_call.args[0] == {"@bot:example.org": ["DEV2"]}
+        assert None not in _verify_call.args[0]["@bot:example.org"]
 
         await adapter.disconnect()

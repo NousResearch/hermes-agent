@@ -11,27 +11,36 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_DIR = _REPO_ROOT / "plugins" / "app-chatbot"
+_PKG_NAME = "hermes_plugins.app_chatbot"
+
 
 def _plugin_dir() -> Path:
-    return Path.home() / ".hermes" / "plugins" / "app-chatbot"
+    return _PLUGIN_DIR
+
+
+def _purge_plugin_modules() -> None:
+    for key in list(sys.modules):
+        if key == _PKG_NAME or key.startswith(f"{_PKG_NAME}."):
+            del sys.modules[key]
 
 
 def _ensure_plugin_package():
     plugin_dir = _plugin_dir()
-    pkg_name = "hermes_plugins.app_chatbot"
-    if pkg_name not in sys.modules:
+    if _PKG_NAME not in sys.modules:
         if "hermes_plugins" not in sys.modules:
             ns = types.ModuleType("hermes_plugins")
             ns.__path__ = []
             sys.modules["hermes_plugins"] = ns
-        pkg = types.ModuleType(pkg_name)
+        pkg = types.ModuleType(_PKG_NAME)
         pkg.__path__ = [str(plugin_dir)]
-        pkg.__package__ = pkg_name
-        sys.modules[pkg_name] = pkg
+        pkg.__package__ = _PKG_NAME
+        sys.modules[_PKG_NAME] = pkg
 
     load_order = ("_utils", "queries", "handlers", "router", "schemas", "prefetch")
     for sub in load_order:
-        fq = f"hermes_plugins.app_chatbot.{sub}"
+        fq = f"{_PKG_NAME}.{sub}"
         if fq in sys.modules:
             continue
         sub_path = plugin_dir / f"{sub}.py"
@@ -39,52 +48,47 @@ def _ensure_plugin_package():
             continue
         spec = importlib.util.spec_from_file_location(fq, sub_path)
         submod = importlib.util.module_from_spec(spec)
-        submod.__package__ = "hermes_plugins.app_chatbot"
+        submod.__package__ = _PKG_NAME
         sys.modules[fq] = submod
         spec.loader.exec_module(submod)
-    return sys.modules["hermes_plugins.app_chatbot"]
+    return sys.modules[_PKG_NAME]
 
 
 def _load_module(name: str):
     _ensure_plugin_package()
-    fq = f"hermes_plugins.app_chatbot.{name}"
+    fq = f"{_PKG_NAME}.{name}"
     if fq.endswith(".py"):
         fq = fq[:-3]
     if name.endswith(".py"):
         name = name[:-3]
     if not fq.startswith("hermes_plugins"):
-        fq = f"hermes_plugins.app_chatbot.{name}"
+        fq = f"{_PKG_NAME}.{name}"
     return sys.modules[fq]
 
 
 def _load_plugin_init():
     _ensure_plugin_package()
     plugin_dir = _plugin_dir()
-    pkg_name = "hermes_plugins.app_chatbot"
-    if pkg_name in sys.modules and hasattr(sys.modules[pkg_name], "register"):
-        return sys.modules[pkg_name]
+    if _PKG_NAME in sys.modules and hasattr(sys.modules[_PKG_NAME], "register"):
+        return sys.modules[_PKG_NAME]
     spec = importlib.util.spec_from_file_location(
-        pkg_name,
+        _PKG_NAME,
         plugin_dir / "__init__.py",
         submodule_search_locations=[str(plugin_dir)],
     )
     mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = pkg_name
+    mod.__package__ = _PKG_NAME
     mod.__path__ = [str(plugin_dir)]
-    sys.modules[pkg_name] = mod
+    sys.modules[_PKG_NAME] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
+    _purge_plugin_modules()
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    plugins_dir = hermes_home / "plugins" / "app-chatbot"
-    plugins_dir.mkdir(parents=True)
-    for src in (_plugin_dir()).glob("*.py"):
-        (plugins_dir / src.name).write_text(src.read_text())
-    (plugins_dir / "plugin.yaml").write_text((_plugin_dir() / "plugin.yaml").read_text())
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
     monkeypatch.setenv("APP_CHATBOT_DEFAULT_USER_ID", "69a6f191cb29b0b371b3a156")
@@ -109,6 +113,10 @@ class TestUtils:
         with pytest.raises(ValueError):
             utils.parse_object_id("not-an-id")
 
+    def test_default_user_id_from_env(self):
+        utils = _load_module("_utils")
+        assert utils.default_user_id() == "69a6f191cb29b0b371b3a156"
+
 
 class TestRouter:
     def test_active_gigs_intent(self):
@@ -129,10 +137,16 @@ class TestRouter:
         router = _load_module("router")
         assert router.route_intent("hello world random chat", "69a6f191cb29b0b371b3a156") is None
 
+    def test_identity_question_not_routed_as_gig(self):
+        router = _load_module("router")
+        assert router.route_intent("tell me about u", "69a6f191cb29b0b371b3a156") is None
+        assert router.route_intent("who are you", "69a6f191cb29b0b371b3a156") is None
+
     def test_format_router_context_includes_user_line(self):
         router = _load_module("router")
         ctx = router.format_router_context("hello", default_user_id="69a6f191cb29b0b371b3a156")
         assert "Current CLI user_id" in ctx
+        assert "APP_CHATBOT_DEFAULT_USER_ID" in ctx
 
 
 class TestQueries:
@@ -208,3 +222,9 @@ class TestPluginRegistration:
         ):
             result = plugin._prefetch_context(user_message="active gigs")
         assert result == {"context": "[Database Context]\nfoo"}
+
+    def test_prefetch_context_uses_env_default_user_id(self):
+        plugin = _load_plugin_init()
+        with patch.object(plugin, "format_router_context", return_value="ctx") as mock_fmt:
+            plugin._prefetch_context(user_message="active gigs")
+        mock_fmt.assert_called_once_with("active gigs", default_user_id="69a6f191cb29b0b371b3a156")

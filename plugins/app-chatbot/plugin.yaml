@@ -1,0 +1,14 @@
+name: app-chatbot
+version: 2.0.0
+description: CRWD support chatbot — MongoDB-first prefetch plus structured gig/user query tools.
+author: Anvento
+requires_env:
+  - MONGODB_URI
+hooks:
+  - pre_llm_call
+provides_tools:
+  - get_active_gigs
+  - get_user_profile_by_id
+  - get_gig_details
+  - get_user_gig_history
+  - get_user_joined_gigs

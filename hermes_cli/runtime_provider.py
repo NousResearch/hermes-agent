@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -245,6 +246,23 @@ def _anthropic_base_url_override_ok(base_url: str) -> bool:
     return False
 
 
+_LOCAL_MODELS_RESPONSE_LIMIT = 1024 * 1024
+
+
+def _read_bounded_response_text(resp, limit: int = _LOCAL_MODELS_RESPONSE_LIMIT) -> str:
+    """Read a small HTTP response body without allowing unbounded buffering."""
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            raise ValueError(f"response body exceeds {limit} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -254,9 +272,10 @@ def _auto_detect_local_model(base_url: str) -> str:
         url = base_url.rstrip("/")
         if not url.endswith("/v1"):
             url += "/v1"
-        resp = requests.get(url + "/models", timeout=5)
+        resp = requests.get(url + "/models", timeout=5, stream=True)
         if resp.ok:
-            models = resp.json().get("data", [])
+            data = json.loads(_read_bounded_response_text(resp) or "{}")
+            models = data.get("data", []) if isinstance(data, dict) else []
             if len(models) == 1:
                 model_id = models[0].get("id", "")
                 if model_id:

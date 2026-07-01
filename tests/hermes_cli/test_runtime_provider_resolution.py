@@ -1783,6 +1783,46 @@ def test_custom_provider_no_key_gets_placeholder(monkeypatch):
     assert resolved["base_url"] == "http://localhost:8080/v1"
 
 
+def test_auto_detect_local_model_reads_models_response_with_size_cap(monkeypatch):
+    class _Response:
+        ok = True
+        encoding = "utf-8"
+
+        def json(self):  # pragma: no cover - guard against unbounded resp.json()
+            raise AssertionError("resp.json() should not be used")
+
+        def iter_content(self, chunk_size=65536):
+            yield b'{"data":[{"id":"local-model"}]}'
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return _Response()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    assert rp._auto_detect_local_model("http://localhost:8080") == "local-model"
+    assert calls == [("http://localhost:8080/v1/models", {"timeout": 5, "stream": True})]
+
+
+def test_auto_detect_local_model_rejects_oversized_models_response(monkeypatch):
+    class _Response:
+        ok = True
+        encoding = "utf-8"
+
+        def json(self):  # pragma: no cover - guard against unbounded resp.json()
+            raise AssertionError("resp.json() should not be used")
+
+        def iter_content(self, chunk_size=65536):
+            yield b"{"
+            yield b"x" * (rp._LOCAL_MODELS_RESPONSE_LIMIT + 1)
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: _Response())
+
+    assert rp._auto_detect_local_model("http://localhost:8080") == ""
+
+
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
     """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
     from hermes_cli.auth import AuthError

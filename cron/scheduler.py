@@ -1635,6 +1635,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),

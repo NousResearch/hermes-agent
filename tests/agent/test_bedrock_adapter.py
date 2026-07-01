@@ -957,6 +957,76 @@ class TestClientCache:
 
 
 # ---------------------------------------------------------------------------
+# Client timeout configuration
+# ---------------------------------------------------------------------------
+
+class TestBedrockClientTimeout:
+    """Bedrock runtime client must use a generous read_timeout.
+
+    The default boto3 read_timeout (60s) is too low for large-context agentic
+    workloads. Opus processing 100K+ token prompts can take >60s to return the
+    first byte. The Anthropic SDK path uses 900s — Bedrock should match.
+    """
+
+    def test_default_read_timeout_is_900(self):
+        """Without env vars, the client should use 900s read_timeout."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            _bedrock_runtime_client_cache,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        # Patch env to ensure no override is set
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_BEDROCK_READ_TIMEOUT", None)
+            os.environ.pop("HERMES_BEDROCK_CONNECT_TIMEOUT", None)
+            client = _get_bedrock_runtime_client("us-west-2")
+            cfg = client._client_config
+            assert cfg.read_timeout == 900
+            assert cfg.connect_timeout == 10
+        reset_client_cache()
+
+    def test_env_var_overrides_read_timeout(self):
+        """HERMES_BEDROCK_READ_TIMEOUT should override the default."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        with patch.dict(os.environ, {"HERMES_BEDROCK_READ_TIMEOUT": "300"}):
+            client = _get_bedrock_runtime_client("us-east-1")
+            assert client._client_config.read_timeout == 300
+        reset_client_cache()
+
+    def test_env_var_overrides_connect_timeout(self):
+        """HERMES_BEDROCK_CONNECT_TIMEOUT should override the default."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        with patch.dict(os.environ, {"HERMES_BEDROCK_CONNECT_TIMEOUT": "30"}):
+            client = _get_bedrock_runtime_client("eu-west-1")
+            assert client._client_config.connect_timeout == 30
+        reset_client_cache()
+
+    def test_retries_configured(self):
+        """Client should have retries configured (max_attempts=2 → total_max_attempts=3)."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_BEDROCK_READ_TIMEOUT", None)
+            client = _get_bedrock_runtime_client("us-west-2")
+            # botocore transforms max_attempts=2 into total_max_attempts=3
+            # (initial attempt + 2 retries)
+            assert client._client_config.retries["total_max_attempts"] == 3
+        reset_client_cache()
+
+
+# ---------------------------------------------------------------------------
 # Streaming with callbacks
 # ---------------------------------------------------------------------------
 

@@ -609,6 +609,11 @@ _agent_browser_resolved = False
 _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
 
+# External CDP fallback support.  When enabled, a user-supplied CDP endpoint
+# (for example Obscura) can fail over to the configured local engine chain.
+_cached_cdp_fallback_to_local: Optional[bool] = None
+_cdp_fallback_to_local_resolved = False
+
 
 def _is_legacy_provider_registry_overridden() -> bool:
     """Return True when a test has patched ``_PROVIDER_REGISTRY`` to a custom value.
@@ -894,6 +899,156 @@ def _using_lightpanda_engine() -> bool:
     return _get_browser_engine() == "lightpanda"
 
 
+def _cdp_fallback_to_local() -> bool:
+    """Return whether external CDP override failures should retry locally.
+
+    This is intentionally opt-in. A configured CDP endpoint usually means the
+    operator wants that specific browser (visible Chrome, Obscura, remote
+    Playwright, etc.); silently hiding a dead endpoint would make stale config
+    harder to notice.  When enabled, Hermes retries eligible failed CDP commands
+    through the normal local engine path, so ``browser.engine=lightpanda`` still
+    gets the existing Lightpanda→Chrome fallback chain.
+    """
+    global _cached_cdp_fallback_to_local, _cdp_fallback_to_local_resolved
+    if _cdp_fallback_to_local_resolved:
+        return bool(_cached_cdp_fallback_to_local)
+
+    _cdp_fallback_to_local_resolved = True
+    _cached_cdp_fallback_to_local = False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            _cached_cdp_fallback_to_local = is_truthy_value(
+                browser_cfg.get("cdp_fallback_to_local"), default=False
+            )
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_fallback_to_local from config: %s", e)
+    return bool(_cached_cdp_fallback_to_local)
+
+
+_CDP_FALLBACK_ELIGIBLE: frozenset[str] = frozenset({
+    "open", "snapshot", "screenshot", "eval", "click", "fill",
+    "scroll", "back", "press", "console", "errors",
+})
+
+
+def _cdp_fallback_reason(
+    session_info: Dict[str, Any],
+    command: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
+    """Return why a CDP command should fall back to local, or ``None``.
+
+    Only user-supplied CDP overrides participate. Cloud providers also expose
+    CDP URLs internally, but their fallback semantics are provider-specific and
+    should not be conflated with an operator-provided Obscura/Chrome endpoint.
+    """
+    if not session_info.get("cdp_url"):
+        return None
+    features = session_info.get("features") or {}
+    if not isinstance(features, dict) or not features.get("cdp_override"):
+        return None
+    if not _cdp_fallback_to_local():
+        return None
+    if command not in _CDP_FALLBACK_ELIGIBLE:
+        return None
+
+    if not result.get("success"):
+        error = str(result.get("error") or "command failed").strip()
+        return f"CDP backend {command!r} failed ({error}); retried with local browser."
+
+    data = result.get("data", {})
+    if command == "snapshot" and isinstance(data, dict):
+        snap = data.get("snapshot", "")
+        if not snap or len(str(snap).strip()) < 20:
+            return "CDP backend returned an empty/too-short snapshot; retried with local browser."
+
+    return None
+
+
+def _append_fallback_warning(result: Dict[str, Any], warning: str) -> Dict[str, Any]:
+    """Append a fallback warning without clobbering an inner fallback warning."""
+    current = result.get("fallback_warning")
+    if current:
+        result["fallback_warning"] = f"{warning}\n{current}"
+    else:
+        result["fallback_warning"] = warning
+    return result
+
+
+def _annotate_cdp_fallback(
+    result: Dict[str, Any],
+    reason: str,
+    local_session_key: str,
+) -> Dict[str, Any]:
+    """Add user-visible CDP→local fallback metadata to a browser result."""
+    warning = f"⚠ CDP fallback: local browser was used. {reason}"
+    annotated = dict(result)
+    _append_fallback_warning(annotated, warning)
+    annotated["browser_session_key"] = local_session_key
+    annotated["browser_backend_fallback"] = {
+        "from": "cdp",
+        "to": "local",
+        "reason": reason,
+    }
+    data = annotated.get("data")
+    if isinstance(data, dict):
+        data = dict(data)
+        existing_data_warning = data.get("fallback_warning")
+        if existing_data_warning:
+            data["fallback_warning"] = f"{warning}\n{existing_data_warning}"
+        else:
+            data["fallback_warning"] = annotated["fallback_warning"]
+        data["browser_session_key"] = local_session_key
+        data["browser_backend_fallback"] = annotated["browser_backend_fallback"]
+        annotated["data"] = data
+    return annotated
+
+
+def _run_cdp_local_fallback_command(
+    task_id: str,
+    command: str,
+    args: List[str],
+    timeout: int,
+    reason: str,
+) -> Dict[str, Any]:
+    """Retry a failed external-CDP command through the configured local engine."""
+    local_session_key = task_id if _is_local_sidecar_key(task_id) else f"{task_id}{_LOCAL_SUFFIX}"
+    logger.info(
+        "CDP fallback: retrying '%s' with local browser (task=%s local=%s): %s",
+        command,
+        task_id,
+        local_session_key,
+        reason,
+    )
+
+    if command != "open":
+        current_url = _last_browser_url_by_session_key.get(task_id)
+        if current_url:
+            warmup = _run_browser_command(
+                local_session_key,
+                "open",
+                [current_url],
+                timeout=_get_open_command_timeout(first_open=True),
+            )
+            if not warmup.get("success"):
+                logger.debug(
+                    "CDP fallback: local warm-up navigation to %s failed before %s: %s",
+                    current_url,
+                    command,
+                    warmup.get("error"),
+                )
+
+    fallback_result = _run_browser_command(local_session_key, command, args, timeout)
+    # Future non-nav calls for this task should follow the browser that actually
+    # served the fallback command. browser_navigate also reads browser_session_key
+    # and preserves it before running its automatic snapshot.
+    _last_active_session_key[task_id] = local_session_key
+    return _annotate_cdp_fallback(fallback_result, reason, local_session_key)
+
+
 def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
@@ -982,8 +1137,14 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
     """Copy browser fallback metadata from an internal result into a tool response."""
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
+    if result.get("browser_engine"):
         target["browser_engine"] = result.get("browser_engine")
+    if result.get("browser_engine_fallback"):
         target["browser_engine_fallback"] = result.get("browser_engine_fallback")
+    if result.get("browser_backend_fallback"):
+        target["browser_backend_fallback"] = result.get("browser_backend_fallback")
+    if result.get("browser_session_key"):
+        target["browser_session_key"] = result.get("browser_session_key")
     return target
 
 
@@ -1400,6 +1561,7 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # navigation.  Without this, a task that navigated to localhost on the local
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+_last_browser_url_by_session_key: Dict[str, str] = {}  # session_key -> last successful URL
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -2557,10 +2719,23 @@ def _run_browser_command(
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
 
+    # --- External CDP automatic local fallback ---
+    # CDP overrides (e.g. Obscura) are backend selections, not local engines. If
+    # they fail and the user opted in, retry through the normal local engine
+    # chain. This deliberately runs before Lightpanda fallback so a CDP failure
+    # is not misclassified as a Lightpanda failure when browser.engine=lightpanda.
+    cdp_fallback_reason = _cdp_fallback_reason(session_info, command, result)
+    if cdp_fallback_reason:
+        return _run_cdp_local_fallback_command(task_id, command, args, timeout, cdp_fallback_reason)
+
     # --- Lightpanda automatic Chrome fallback ---
-    # If engine is lightpanda and the result looks broken, retry with Chrome.
+    # If engine is lightpanda and the local result looks broken, retry with Chrome.
     # This runs for ALL exit paths (timeout, empty, non-JSON, nonzero rc, parsed).
-    fallback_reason = _lightpanda_fallback_reason(engine, command, result)
+    # Do not apply it to external CDP sessions — CDP failures are backend failures
+    # and may opt into the CDP→local fallback above.
+    fallback_reason = None
+    if not session_info.get("cdp_url"):
+        fallback_reason = _lightpanda_fallback_reason(engine, command, result)
     if fallback_reason:
         logger.info(
             "Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s",
@@ -2814,10 +2989,23 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         timeout=_get_open_command_timeout(first_open=is_first_nav),
     )
 
+    # Remember which session served this nav so snapshot/click/fill/...
+    # on the same task_id hit it (critical when hybrid routing has both a
+    # cloud session and a local sidecar alive concurrently). Backend fallback
+    # can change the serving session inside _run_browser_command.
+    served_session_key = result.get("browser_session_key") or nav_session_key
+    _last_active_session_key[effective_task_id] = served_session_key
     if result.get("success"):
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
+        if final_url:
+            _last_browser_url_by_session_key[served_session_key] = final_url
+            # If a backend fallback served this navigation, keep the original
+            # session key's last URL too so a later fallback can warm up local
+            # state even before _last_active_session_key is consulted.
+            if served_session_key != nav_session_key:
+                _last_browser_url_by_session_key[nav_session_key] = final_url
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
@@ -2895,7 +3083,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
         try:
-            snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
+            snap_result = _run_browser_command(served_session_key, "snapshot", ["-c"])
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
@@ -4326,6 +4514,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+            _last_browser_url_by_session_key.pop(task_id, None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
@@ -4382,6 +4571,7 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_cdp_fallback_to_local, _cdp_fallback_to_local_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -4394,6 +4584,8 @@ def cleanup_all_browsers() -> None:
     _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _cached_cdp_fallback_to_local = None
+    _cdp_fallback_to_local_resolved = False
 
 # ============================================================================
 # Requirements Check

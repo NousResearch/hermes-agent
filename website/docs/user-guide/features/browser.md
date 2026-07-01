@@ -363,6 +363,18 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
 
+If you point `browser.cdp_url` at a non-Chromium CDP-compatible engine such as Obscura and want Hermes to keep working when that endpoint is down, enable the explicit local fallback:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  cdp_url: http://127.0.0.1:9223
+  cdp_fallback_to_local: true
+  engine: lightpanda   # optional: local fallback uses Lightpanda first, then Chrome when needed
+```
+
+This makes the chain `external CDP → configured local engine`. With `engine: lightpanda`, the existing local fallback continues to use Chrome for screenshots, vision, or broken Lightpanda results. The fallback is opt-in so stale `/browser connect` or `browser.cdp_url` settings do not get hidden accidentally. When a fallback happens, the tool result includes `fallback_warning`, `browser_backend_fallback`, and the local session key used for subsequent same-task browser actions.
+
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
 If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.

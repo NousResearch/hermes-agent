@@ -34,6 +34,7 @@ from agent.auxiliary_client import (
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _pool_runtime_base_url,
 )
 
 
@@ -3603,6 +3604,102 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
+class TestCodexAdapterPromptCacheKey:
+    """_CodexCompletionsAdapter emits a stable content-addressed prompt_cache_key
+    on the Codex/Responses aux path, matching the main transport
+    (agent/transports/codex.py). Regression for issue #53735: MoA acting-
+    aggregator and other auxiliary Responses calls stayed cache-cold because
+    the adapter never set prompt_cache_key.
+    """
+
+    @staticmethod
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        return adapter, captured_kwargs
+
+    def test_cache_key_set_and_prefixed(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ])
+        key = captured.get("prompt_cache_key")
+        assert isinstance(key, str) and key.startswith("pck_")
+
+    def test_cache_key_stable_across_identical_prefix(self):
+        """Same instructions + tools → same key (content-addressed, not per-call)."""
+        a1, c1 = self._build_adapter()
+        a1.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "first"},
+        ])
+        a2, c2 = self._build_adapter()
+        a2.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "second — different user turn"},
+        ])
+        # User-turn content differs but the static prefix (instructions) matches,
+        # so the routing key is identical → same warm cache bucket.
+        assert c1["prompt_cache_key"] == c2["prompt_cache_key"]
+
+    def test_cache_key_differs_on_different_instructions(self):
+        a1, c1 = self._build_adapter()
+        a1.create(messages=[{"role": "system", "content": "SYS-A"}, {"role": "user", "content": "x"}])
+        a2, c2 = self._build_adapter()
+        a2.create(messages=[{"role": "system", "content": "SYS-B"}, {"role": "user", "content": "x"}])
+        assert c1["prompt_cache_key"] != c2["prompt_cache_key"]
+
+    def test_cache_key_skipped_for_xai_host(self):
+        """xAI Responses takes the key in extra_body, not top-level — skip here."""
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_key" not in captured
+
+    def test_cache_key_skipped_for_github_copilot_host(self):
+        """GitHub/Copilot Responses opts out of cache-key routing entirely."""
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_key" not in captured
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through
@@ -4374,6 +4471,18 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+
+def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
+    entry = SimpleNamespace(
+        provider="nous",
+        runtime_base_url="https://inference-api.nousresearch.com/v1",
+        inference_base_url="https://inference-api.nousresearch.com/v1",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
+
+    assert _pool_runtime_base_url(entry) == "https://ai.wildebeest-newton.ts.net/v1"
 
 
 class TestAnthropicExplicitApiKey:

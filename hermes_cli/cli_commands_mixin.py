@@ -712,6 +712,14 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -850,6 +858,15 @@ class CLICommandsMixin:
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
 
         # End the old session
         try:
@@ -2593,7 +2610,12 @@ class CLICommandsMixin:
         words = {w.lower() for w in cmd_original.split()[1:]}
         local = "local" in words
         nous = "nous" in words and not local
-        args = SimpleNamespace(lines=200, expire=7, local=local, nous=nous)
+        # Typing the /debug slash command is itself the explicit consent to
+        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
+        # input() would hang inside prompt_toolkit's event loop anyway.
+        args = SimpleNamespace(
+            lines=200, expire=7, local=local, nous=nous, yes=True
+        )
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:

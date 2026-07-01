@@ -146,6 +146,16 @@ class TestCoerceValue:
         """A non-numeric string in [number, string] should stay a string."""
         assert _coerce_value("hello", ["number", "string"]) == "hello"
 
+    def test_union_string_first_preserves_numeric_string(self):
+        """A leading "string" member matches, honoring declared order."""
+        assert _coerce_value("007", ["string", "integer"]) == "007"
+        assert _coerce_value("42", ["string", "integer"]) == "42"
+        assert _coerce_value("3.14", ["string", "number"]) == "3.14"
+
+    def test_union_integer_first_still_coerces(self):
+        """Declared order is honored the other way too: integer-first coerces."""
+        assert _coerce_value("7", ["integer", "string"]) == 7
+
     def test_array_type_parsed_from_json_string(self):
         """Stringified JSON arrays are parsed into native lists."""
         assert _coerce_value('["a", "b"]', "array") == ["a", "b"]

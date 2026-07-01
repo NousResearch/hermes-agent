@@ -737,8 +737,16 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
-        # Union type — try each in order, return first successful coercion
+        # Union type — try each member in declared order, return first match.
+        # `value` is already a str, so a "string" member is always a valid
+        # representation and must match immediately. Without this short-circuit
+        # the string branch returns `value` unchanged, the `is not value`
+        # success check never fires for it, and the loop falls through to a
+        # later numeric member — ignoring the declared order (e.g. "007" under
+        # ["string", "integer"] would wrongly coerce to 7).
         for t in expected_type:
+            if t == "string":
+                return value
             result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result

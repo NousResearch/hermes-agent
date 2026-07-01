@@ -1751,16 +1751,24 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         await asyncio.sleep(delay)
 
+        # Capture a stable local reference: self._app can be reassigned to None
+        # by a concurrent disconnect() while we're suspended across the awaits
+        # below, and re-reading self._app after that point would silently swap
+        # in None mid-sequence instead of failing fast in one place.
+        app = self._app
+
         try:
-            if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
+            if app and app.updater and app.updater.running:
+                await app.updater.stop()
         except Exception:
             pass
 
         await self._drain_polling_connections()
 
         try:
-            await self._app.updater.start_polling(
+            if not app:
+                raise RuntimeError("Telegram application was torn down during reconnect")
+            await app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
@@ -1802,6 +1810,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+                # This chained retry IS the in-flight recovery attempt — it
+                # must replace the reentrancy guard, otherwise the heartbeat
+                # loop, the pending-updates probe, and the PTB error callback
+                # all see _polling_error_task as "done" and can each start a
+                # second, concurrent recovery for the same outage.
+                self._polling_error_task = task
 
     async def _polling_heartbeat_loop(self) -> None:
         """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.

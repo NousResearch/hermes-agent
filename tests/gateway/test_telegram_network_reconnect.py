@@ -118,6 +118,43 @@ async def test_reconnect_does_not_self_schedule_when_fatal_error_set():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_chained_retry_updates_polling_error_task():
+    """
+    When start_polling() fails and the handler self-schedules a retry, that
+    retry task must become the new `_polling_error_task` — otherwise the
+    reentrancy guard used by the heartbeat loop, the pending-updates probe,
+    and the PTB error callback goes stale while a recovery is still in
+    flight, letting a second concurrent recovery start for the same outage.
+
+    Regression test for the race behind the "half-destroyed adapter" bug
+    (gateway reports connected but silently stops processing messages).
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock(side_effect=Exception("Timed out"))
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
+    assert adapter._polling_error_task is not None
+    assert not adapter._polling_error_task.done()
+
+    adapter._polling_error_task.cancel()
+    try:
+        await adapter._polling_error_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_reconnect_success_resets_error_count():
     """
     When start_polling() succeeds, _polling_network_error_count should reset to 0.

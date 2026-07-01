@@ -1,0 +1,71 @@
+name: linq-platform
+label: Linq iMessage
+kind: platform
+version: 0.1.0
+description: >
+  Linq iMessage gateway adapter for Hermes Agent. Sends and receives real
+  iMessage "blue bubbles" through the hosted Linq partner API
+  (https://linqapp.com) — no Mac and no BlueBubbles server required.
+
+  Inbound messages arrive as HMAC-signed webhooks on a local aiohttp server;
+  outbound messages, typing indicators, and read receipts are direct REST
+  calls to the Linq API (no Node sidecar, unlike the Photon channel). The
+  plugin ships a `hermes linq` CLI for one-time token + from-phone setup and
+  persists credentials to ``~/.hermes/auth.json`` under
+  ``credential_pool.linq``.
+author: Linq
+requires_env:
+  - name: LINQ_API_TOKEN
+    description: "Linq partner API bearer token (set by `hermes linq setup`)"
+    prompt: "Linq API token"
+    url: "https://linqapp.com"
+    password: true
+optional_env:
+  - name: LINQ_FROM_PHONE
+    description: "Linq number this agent sends from (E.164). Pins a multi-number account to one line."
+    prompt: "Linq from-phone (E.164)"
+    password: false
+  - name: LINQ_WEBHOOK_SECRET
+    description: "HMAC-SHA256 signing secret from your Linq dashboard webhook config"
+    prompt: "Linq webhook signing secret"
+    password: true
+  - name: LINQ_WEBHOOK_PORT
+    description: "Local port the webhook receiver listens on (default 8790)"
+    prompt: "Webhook receiver port"
+    password: false
+  - name: LINQ_WEBHOOK_PATH
+    description: "Path the webhook receiver listens on (default /linq/webhook)"
+    prompt: "Webhook receiver path"
+    password: false
+  - name: LINQ_WEBHOOK_BIND
+    description: "Bind address for the webhook receiver (default 0.0.0.0)"
+    prompt: "Webhook bind address"
+    password: false
+  - name: LINQ_API_BASE
+    description: "Linq API base URL (default https://api.linqapp.com/api/partner/v3)"
+    prompt: "Linq API base URL"
+    password: false
+  - name: LINQ_SEND_READ_RECEIPTS
+    description: "Send read receipts + typing indicators on inbound (true/false, default true)"
+    prompt: "Send read receipts?"
+    password: false
+  - name: LINQ_ALLOWED_USERS
+    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: LINQ_ALLOW_ALL_USERS
+    description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: LINQ_REQUIRE_MENTION
+    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+    prompt: "Require a mention in group chats?"
+    password: false
+  - name: LINQ_MENTION_PATTERNS
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    prompt: "Group mention patterns"
+    password: false
+  - name: LINQ_HOME_CHANNEL
+    description: "Default Linq chat id for cron / notification delivery"
+    prompt: "Home chat id"
+    password: false

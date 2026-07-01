@@ -48,18 +48,17 @@ Outbound:  agent → Linq REST API (httpx) → iMessage
 
 ## Installation
 
-Linq ships as a standalone plugin (the adapter is published separately
-from the Hermes core), so install it once before configuring the
-channel:
+Linq is a **bundled platform plugin** — it ships in-tree with Hermes under
+`plugins/platforms/linq/`, so there is nothing to install. The gateway
+discovers it automatically; you only need to configure it (below).
+
+Its one optional dependency is `aiohttp`, used by the inbound webhook
+listener. It ships with the `hermes-agent[messaging]` extra rather than the
+core install; if `hermes linq status` reports it missing, run:
 
 ```bash
-pip install hermes-linq-plugin
-hermes plugins enable linq-platform
+pip install aiohttp
 ```
-
-Or drop the plugin directory into `~/.hermes/plugins/linq/` and run the
-same `enable`. Source and issues:
-[github.com/linq-team/hermes-linq-plugin][repo].
 
 ## First-time setup
 
@@ -251,4 +250,3 @@ Common issues:
 | `LINQ_MENTION_PATTERNS`   | Hermes wake words                          | JSON list / comma / newline regex patterns for group mentions|
 
 [linq]: https://linqapp.com/
-[repo]: https://github.com/linq-team/hermes-linq-plugin

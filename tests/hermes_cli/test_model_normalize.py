@@ -182,6 +182,27 @@ class TestIssue6211NativeProviderPrefixNormalization:
         assert normalize_model_for_provider(model, target_provider) == expected
 
 
+class TestCustomProviderIsNotAVendorIdentity:
+    """``custom`` is a generic bucket, not a vendor -- an alias that merely
+    *resolves to* ``custom`` (e.g. ``ollama`` -> ``custom`` in
+    ``_PROVIDER_ALIASES``) must not be treated as a redundant prefix the
+    way ``zai/``, ``gemini/``, etc. are for their own native providers.
+
+    Regression for: a named custom provider (e.g. a LiteLLM proxy fronting
+    Ollama) registers its own routing name as ``ollama/glm-5.2``. Stripping
+    the ``ollama/`` prefix because it happens to alias to ``custom``
+    produced a bare ``glm-5.2`` the proxy doesn't recognise.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("ollama/glm-5.2", "ollama/glm-5.2"),
+        ("ollama/llama3.2", "ollama/llama3.2"),
+        ("custom/some-model", "some-model"),
+    ])
+    def test_only_literal_custom_prefix_is_stripped(self, model, expected):
+        assert normalize_model_for_provider(model, "custom") == expected
+
+
 # ── detect_vendor ──────────────────────────────────────────────────────
 
 class TestDetectVendor:

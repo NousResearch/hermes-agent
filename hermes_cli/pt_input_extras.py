@@ -11,6 +11,38 @@ can be unit-tested without importing the whole CLI runtime.
 
 from __future__ import annotations
 
+import sys
+
+
+def enable_kitty_keyboard_protocol() -> bool:
+    """Enable the Kitty keyboard protocol so the terminal sends distinct
+    byte sequences for Shift+Enter, Ctrl+Enter, etc.
+
+    Sends the CSI > 1 u sequence to push the terminal into kitty protocol
+    mode (level 1 — disambiguate escape keys). This makes Shift+Enter emit
+    \\x1b[13;2u instead of a bare CR, which the existing shift_enter_alias
+    handler then maps to a newline.
+
+    Only sent on POSIX (not Windows). Safe no-op on terminals that don't
+    support it — they ignore the sequence.
+
+    The protocol is automatically disabled when the application exits
+    (prompt_toolkit sends the pop sequence on teardown), but we also
+    register an atexit fallback for safety.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        seq = "\x1b[>1u"
+        sys.stdout.write(seq)
+        sys.stdout.flush()
+        # Register pop on exit (prompt_toolkit should handle this, but be safe)
+        import atexit
+        atexit.register(lambda: (sys.stdout.write("\x1b[<1u"), sys.stdout.flush()))
+        return True
+    except Exception:
+        return False
+
 
 def install_shift_enter_alias() -> int:
     """Map Shift+Enter byte sequences to the (Escape, ControlM) key tuple

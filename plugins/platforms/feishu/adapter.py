@@ -561,6 +561,30 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+def _build_table_card_payload(content: str) -> str:
+    """Build a Feishu Schema 2.0 interactive card that renders GFM tables.
+
+    Feishu's post-type ``md`` element drops table rows, and the legacy plain
+    text fallback shows raw markdown. Schema 2.0 ``markdown`` elements support
+    full GFM rendering (tables, code blocks, blockquotes) in a single card.
+    """
+    return json.dumps(
+        {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": content,
+                    }
+                ]
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -4470,10 +4494,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Use a Schema 2.0 interactive card with a markdown element instead,
+        # which natively renders GFM tables, code blocks and blockquotes.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_table_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

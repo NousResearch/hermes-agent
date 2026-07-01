@@ -1941,6 +1941,15 @@ def run_conversation(
                                 canonical_usage = canonical_usage + _ref_usage
                         except Exception as _moa_acct_exc:  # pragma: no cover - defensive
                             logger.debug("MoA reference usage accounting failed: %s", _moa_acct_exc)
+                    # Flush the full-turn MoA trace (references + aggregator I/O)
+                    # to disk when moa.save_traces is on. No-op otherwise and
+                    # for non-MoA clients. Uses the live session_id so traces
+                    # land in the right per-session file.
+                    if _moa_client is not None and hasattr(_moa_client, "consume_and_save_trace"):
+                        try:
+                            _moa_client.consume_and_save_trace(agent.session_id)
+                        except Exception as _moa_trace_exc:  # pragma: no cover - defensive
+                            logger.debug("MoA trace flush failed: %s", _moa_trace_exc)
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens

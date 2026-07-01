@@ -171,6 +171,17 @@ def _frame_renderable(payload, *, cols, rows, reveal, color):
     return Group(*parts)
 
 
+def _console(*, color: bool, width: Optional[int] = None, force: bool = False):
+    """A Rich console. ``force`` emits truecolor ANSI even into a captured
+    stream — the interactive CLI grabs that output and re-renders it through
+    prompt_toolkit (raw escapes to a real terminal would otherwise be
+    swallowed). Mirrors the ``ChatConsole`` idiom in ``cli.py``."""
+    from rich.console import Console
+
+    extra = {"force_terminal": True, "color_system": "truecolor"} if force else {}
+    return Console(no_color=not color, width=width, **extra)
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     from rich.console import Console
 
@@ -183,7 +194,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     payload = _build_payload()
     color = not bool(getattr(args, "no_color", False))
     cols, rows = _term_size(getattr(args, "width", None), getattr(args, "height", None))
-    console = Console(no_color=not color, width=cols)
+    console = _console(color=color, width=cols, force=bool(getattr(args, "force_color", False)))
 
     if not payload.get("nodes"):
         console.print(
@@ -226,11 +237,9 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    from rich.console import Console
-
     from agent.learning_graph_render import format_date
 
-    console = Console(no_color=bool(getattr(args, "no_color", False)))
+    console = _console(color=not bool(getattr(args, "no_color", False)), force=bool(getattr(args, "force_color", False)))
     nodes = sorted(_build_payload().get("nodes", []), key=lambda n: n.get("timestamp") or 0)
     if not nodes:
         console.print("[grey62]No learning yet.[/grey62]")
@@ -315,6 +324,8 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     parent.add_argument("--width", type=int, default=None, help="Override render width in columns.")
     parent.add_argument("--height", type=int, default=None, help="Override render height in rows.")
     parent.add_argument("--no-color", action="store_true", help="Disable color output.")
+    # Force ANSI even when stdout is captured — the interactive CLI re-renders it.
+    parent.add_argument("--force-color", action="store_true", help=argparse.SUPPRESS)
     parent.add_argument("--json", action="store_true", help="Print the raw graph payload as JSON and exit.")
     parent.set_defaults(func=_cmd_show)
 
@@ -322,6 +333,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_list = sub.add_parser("list", help="List node ids (for delete/edit).")
     p_list.add_argument("--no-color", action="store_true")
+    p_list.add_argument("--force-color", action="store_true", help=argparse.SUPPRESS)
     p_list.set_defaults(func=_cmd_list)
 
     p_del = sub.add_parser("delete", help="Delete a learned skill (archived) or memory by node id.")

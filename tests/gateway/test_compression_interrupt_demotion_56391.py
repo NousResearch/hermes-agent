@@ -148,6 +148,23 @@ class TestEnsureSessionEntryAtCompressionTip:
         assert result is entry
         runner.session_store.switch_session.assert_not_called()
 
+    def test_noop_when_tip_is_not_a_string(self) -> None:
+        # get_compression_tip() contractually returns Optional[str]. If a
+        # mis-wired/mock session_db hands back a non-string sentinel (e.g. a
+        # bare MagicMock leaking through a shared fixture), the tip-advance
+        # must NOT fire switch_session — a truthiness-only guard would let a
+        # MagicMock through and swap the live entry for a mock, corrupting
+        # downstream update_session(session_key=...) calls.
+        runner = _make_runner(session_id="parent-session")
+        sk = build_session_key(_make_event().source)
+        entry = runner.session_store._entries[sk]
+        runner._session_db._db.get_compression_tip.return_value = MagicMock()
+
+        result = runner._ensure_session_entry_at_compression_tip(sk, entry)
+
+        assert result is entry
+        runner.session_store.switch_session.assert_not_called()
+
 
 class TestBusyHandlerDemotesInterruptForCompression:
     @pytest.mark.asyncio

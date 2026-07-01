@@ -4842,7 +4842,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
             return session_entry
-        if not canonical or canonical == session_id:
+        # get_compression_tip() contractually returns Optional[str]; only act
+        # on a real string id.  Guarding on isinstance (not mere truthiness)
+        # also keeps a mis-wired/mock session_db from spuriously advancing the
+        # entry to a non-id sentinel.
+        if not isinstance(canonical, str) or not canonical or canonical == session_id:
             return session_entry
         switched = self.session_store.switch_session(session_key, canonical)
         if switched is not None:

@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,10 @@ def _make_source() -> SessionSource:
 
 def _make_event() -> MessageEvent:
     return MessageEvent(text="/reload-mcp", source=_make_source(), message_id="m1")
+
+
+def _make_event_text(text: str) -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
 def _make_runner_with_cached_agents(num_agents: int = 2):
@@ -174,3 +178,87 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
     assert captured_calls, "get_tool_definitions was never called to refresh the cache"
     assert captured_calls[0]["enabled_toolsets"] == ["safe"]
     assert captured_calls[0]["disabled_toolsets"] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_one_connects_only_target_without_global_shutdown():
+    """A targeted reload should connect one configured server, not shut down all MCP."""
+    runner = _make_runner_with_cached_agents(num_agents=1)
+
+    fresh_tool_defs = [
+        {"type": "function", "function": {"name": "mcp_github_list_repos"}},
+    ]
+
+    def _register_one(servers):
+        assert list(servers) == ["github"]
+        import tools.mcp_tool as mcp_tool
+
+        server = SimpleNamespace(_registered_tool_names=["mcp_github_list_repos"])
+        mcp_tool._servers["github"] = server
+        return ["mcp_github_list_repos"]
+
+    with (
+        patch("tools.mcp_tool._load_mcp_config", return_value={
+            "github": {"command": "npx", "env": {"TOKEN": "env-secret"}},
+            "fetch": {"command": "uvx"},
+        }),
+        patch("tools.mcp_tool.shutdown_mcp_servers", side_effect=AssertionError("global shutdown called")),
+        patch("tools.mcp_tool.discover_mcp_tools", side_effect=AssertionError("global discovery called")),
+        patch("tools.mcp_tool.register_mcp_servers", side_effect=_register_one),
+        patch.dict("tools.mcp_tool._servers", {}, clear=True),
+        patch("model_tools.get_tool_definitions", return_value=fresh_tool_defs),
+    ):
+        result = await runner._execute_mcp_reload_one(_make_event_text("/reload-mcp github"), "github")
+
+    assert "MCP Reload One" in result
+    assert "Target: github" in result
+    assert "Status: connected" in result
+    assert "Tools available from target: 1" in result
+    assert "no global MCP shutdown" in result
+    assert "env-secret" not in result
+    assert "npx" not in result
+    runner.session_store.append_to_transcript.assert_called_once()
+    agent, _sig = runner._agent_cache["session-0"]
+    assert agent.tools == fresh_tool_defs
+    assert agent.valid_tool_names == {"mcp_github_list_repos"}
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_one_blocks_unknown_target_without_leaking_config():
+    runner = _make_runner_with_cached_agents(num_agents=0)
+
+    with (
+        patch("tools.mcp_tool._load_mcp_config", return_value={
+            "github": {"command": "npx", "env": {"TOKEN": "env-secret"}},
+        }),
+        patch("tools.mcp_tool.register_mcp_servers", side_effect=AssertionError("should not connect")),
+        patch("tools.mcp_tool.shutdown_mcp_servers", side_effect=AssertionError("global shutdown called")),
+    ):
+        result = await runner._execute_mcp_reload_one(
+            _make_event_text("/reload-mcp missing"),
+            "missing",
+        )
+
+    assert "MCP Reload One" in result
+    assert "Target: missing" in result
+    assert "Status: blocked" in result
+    assert "server is not configured" in result
+    assert "env-secret" not in result
+    assert "npx" not in result
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_with_server_arg_uses_single_server_path_when_confirm_disabled():
+    runner = _make_runner_with_cached_agents(num_agents=0)
+    runner._read_user_config = lambda: {"approvals": {"mcp_reload_confirm": False}}
+    runner._session_key_for_source = lambda source: build_session_key(source)
+    runner._execute_mcp_reload = AsyncMock(
+        side_effect=AssertionError("full reload should not run")
+    )
+    runner._execute_mcp_reload_one = AsyncMock(return_value="single-ok")
+
+    result = await runner._handle_reload_mcp_command(_make_event_text("/reload-mcp github"))
+
+    assert result == "single-ok"
+    runner._execute_mcp_reload_one.assert_called_once()
+    assert runner._execute_mcp_reload_one.call_args.args[1] == "github"

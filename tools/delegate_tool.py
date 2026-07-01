@@ -19,8 +19,6 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import threading
 import time
@@ -31,6 +29,11 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.metrics import (
+    SUBAGENT_STARTUP_LATENCY_SECONDS,
+    SUBAGENT_STALE_CYCLES_TOTAL,
+    SUBAGENT_ERRORS_TOTAL,
+)
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -897,6 +900,15 @@ def _build_child_progress_callback(
         except Exception as e:
             logger.debug("Parent callback failed: %s", e)
 
+        # --- New Observability ---
+        if event_type in ("subagent.tool_started", "subagent.task_progress", "subagent.task_completed", "subagent.task_failed"):
+            if hasattr(child, "_first_event_ts"):
+                latency = time.monotonic() - child._first_event_ts
+                SUBAGENT_STARTUP_LATENCY_SECONDS.labels(task_id=child_task_id, model=effective_model).observe(latency)
+            else:
+                child._first_event_ts = time.monotonic()
+        # -------------------------
+
     def _callback(
         event_type, tool_name: str = None, preview: str = None, args=None, **kwargs
     ):
@@ -1745,6 +1757,14 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # Get the subagent timeout monitor for stale detection + retry tracking
+    try:
+        from tools.subagent_timeout_monitor import get_default_monitor
+
+        _timeout_monitor = get_default_monitor()
+    except Exception:
+        _timeout_monitor = None
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -1828,6 +1848,24 @@ def _run_single_child(
                         _stale_count[0],
                         child_tool or "<none>",
                     )
+
+                    # Also check the timeout monitor for stale detection + auto-interrupt
+                    if _timeout_monitor is not None:
+                        try:
+                            event = _timeout_monitor.check_activity(child, task_index)
+                            if event is not None:
+                                logger.warning(
+                                    "Subagent %d stale event: %s",
+                                    task_index,
+                                    event.kind.value,
+                                )
+                        except Exception as mon_exc:
+                            logger.debug(
+                                "Timeout monitor check failed for subagent %d: %s",
+                                task_index,
+                                mon_exc,
+                            )
+
                     break  # stop touching parent, let gateway timeout fire
 
                 if child_tool:
@@ -2018,6 +2056,27 @@ def _run_single_child(
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call or unresponsive network request."
                     )
+
+                # Notify the timeout monitor so it can track retries
+                if _timeout_monitor is not None:
+                    try:
+                        exit_event = _timeout_monitor.on_child_exit(
+                            {"status": "timeout", "api_calls": child_api_calls, "duration_seconds": duration},
+                            task_index,
+                        )
+                        if exit_event is not None:
+                            logger.warning(
+                                "Subagent %d timeout event: %s",
+                                task_index,
+                                exit_event.kind.value,
+                            )
+                    except Exception as mon_exc:
+                        logger.debug(
+                            "Timeout monitor on_child_exit failed for subagent %d: %s",
+                            task_index,
+                            mon_exc,
+                        )
+
             else:
                 _err = str(_timeout_exc)
 
@@ -2659,6 +2718,39 @@ def delegate_task(
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
+
+        # Retry timed-out subagents if the timeout monitor says so.
+        # This runs after all children have finished (or timed out) and before
+        # summary budget capping.  Each retry re-uses the same child agent
+        # instance — _run_single_child resets its internal stale state via
+        # monitor.reset_state() before re-running.
+        try:
+            from tools.subagent_timeout_monitor import get_default_monitor
+
+            _retry_monitor = get_default_monitor()
+        except Exception:
+            _retry_monitor = None
+
+        if _retry_monitor is not None and n_tasks > 0:
+            retry_indices = []
+            for entry in results:
+                if _retry_monitor.should_retry(entry, entry["task_index"]):
+                    retry_indices.append(entry["task_index"])
+
+            for idx in retry_indices:
+                if idx < len(children):
+                    _i, _t, child = children[idx]
+                    try:
+                        _retry_monitor.reset_state(idx)
+                        retry_result = _run_single_child(
+                            _i, _t["goal"], child, parent_agent
+                        )
+                        # Replace the original timeout result with the retry result
+                        results[idx] = retry_result
+                    except Exception as retry_exc:
+                        logger.debug(
+                            "Retry for subagent %d failed: %s", idx, retry_exc
+                        )
 
         # Cap subagent summaries against the parent's remaining context
         # headroom (split across the batch) before they enter the parent's

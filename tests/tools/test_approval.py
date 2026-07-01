@@ -83,6 +83,91 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
 
+class TestWindowsShellDestructiveCommands:
+    def test_cmd_del_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"cmd /c del /f /q C:\tmp\hermes-victim\file.txt"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows cmd destructive delete"
+
+    def test_cmd_rmdir_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"cmd.exe /k rmdir /s /q C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows cmd destructive delete"
+
+    def test_powershell_remove_item_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell -NoProfile -Command Remove-Item -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_pwsh_rm_alias_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"pwsh -c rm -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_powershell_encoded_command_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -EncodedCommand SQBFAFgA"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "PowerShell encoded command execution"
+
+    def test_powershell_bare_remove_item_requires_approval(self):
+        # Regression: PowerShell runs the verb as the default positional arg,
+        # so `powershell Remove-Item ...` with NO explicit -Command must still
+        # be gated (the original pattern required -Command and missed this).
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell Remove-Item -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_pwsh_bare_remove_item_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"pwsh Remove-Item -Recurse C:\tmp\x"
+        )
+        assert dangerous is True
+        assert "delete" in (desc or "").lower()
+
+    def test_powershell_ri_alias_requires_approval(self):
+        # `ri` is the canonical Remove-Item alias.
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell ri -Recurse -Force C:\tmp\x"
+        )
+        assert dangerous is True
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_powershell_benign_path_containing_del_not_flagged(self):
+        # A benign file path that merely contains "del" must NOT trip the guard
+        # (verb-position anchoring prevents matching inside a -File arg).
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell -File C:\del-logs\run.ps1"
+        )
+        assert dangerous is False
+        assert key is None
+
+    def test_plain_text_does_not_trigger_windows_delete(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "echo remember to del old notes"
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")
@@ -1394,6 +1479,33 @@ class TestGitDestructiveOps:
         assert dangerous is True
         assert "reset" in desc.lower() or "hard" in desc.lower()
 
+    def test_git_reset_hard_abbreviated_har_detected(self):
+        # git's own option parser resolves unambiguous long-flag prefixes,
+        # so `git reset --har` executes identically to `--hard` (verified
+        # against a live git binary) — confirmed real bypass of the
+        # exact-string `--hard` pattern.
+        cmd = "git reset --har HEAD~3"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "reset" in desc.lower() or "hard" in desc.lower()
+
+    def test_git_reset_hard_abbreviated_single_h_detected(self):
+        cmd = "git reset --h"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_reset_soft_not_flagged(self):
+        """--soft doesn't discard uncommitted work; must not be flagged."""
+        cmd = "git reset --soft HEAD~1"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_git_reset_help_not_flagged(self):
+        """--help must not resolve as an abbreviation of --hard."""
+        cmd = "git reset --help"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
     def test_git_push_force_detected(self):
         cmd = "git push --force origin main"
         dangerous, _, desc = detect_dangerous_command(cmd)
@@ -1436,6 +1548,34 @@ class TestGitDestructiveOps:
         cmd = "git branch -d feature-branch"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is True
+
+    def test_git_branch_long_flag_delete_force_detected(self):
+        # `--delete --force` performs the exact same unmerged-branch force
+        # delete as `-D` (verified live), but is a different token
+        # spelling entirely so the `-D\b` pattern never sees it.
+        cmd = "git branch --delete --force feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force delete" in desc.lower()
+
+    def test_git_branch_short_delete_long_force_detected(self):
+        # `-d --force` is git's own documented equivalent of `-D`.
+        cmd = "git branch -d --force feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_branch_force_first_delete_detected(self):
+        cmd = "git branch --force --delete feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_branch_long_delete_without_force_not_flagged(self):
+        """Plain --delete (merged-only, equivalent to -d) has no force
+        token, so the new combined delete+force patterns must not fire —
+        only an actual force flag alongside it should trigger."""
+        cmd = "git branch --delete feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
 
 
 class TestChmodExecuteCombo:
@@ -1604,6 +1744,25 @@ class TestDetectSudoStdin:
         is_dangerous, _, _ = detect_dangerous_command("sudo --askpass id")
         assert is_dangerous is True
 
+    def test_stdin_abbreviated_flag_detected(self):
+        # sudo's option parser resolves unambiguous long-flag prefixes
+        # just like git's does — `sudo --stdi` runs identically to
+        # `sudo --stdin` (verified against a live sudo binary: both
+        # produce the same "a password is required" outcome, versus a
+        # genuinely unrecognized option which errors differently).
+        is_dangerous, _, _ = detect_dangerous_command("sudo --stdi id")
+        assert is_dangerous is True
+
+    def test_askpass_abbreviated_flag_detected(self):
+        # `--askpass` is the only sudo long option starting with "a", so
+        # any prefix from `--a` up resolves to it unambiguously.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --ask id")
+        assert is_dangerous is True
+
+    def test_askpass_single_char_abbreviation_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --a id")
+        assert is_dangerous is True
+
     def test_two_sudo_invocations_second_caught(self):
         # The first sudo here is benign (no -S); the second has -S.
         # Lazy [^;|&\n]*? does NOT span past `;`, so re.search anchors
@@ -1625,6 +1784,17 @@ class TestDetectSudoStdin:
 
     def test_sudo_with_user_no_stdin_flag_safe(self):
         is_dangerous, _, _ = detect_dangerous_command("sudo -u root -i")
+        assert is_dangerous is False
+
+    def test_sudo_set_home_not_confused_with_stdin_abbreviation(self):
+        # `--set-home` shares no prefix with `--stdin` beyond "--s", so
+        # the broadened `--st[a-z]*` pattern must not catch it.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --set-home id")
+        assert is_dangerous is False
+
+    def test_sudo_shell_flag_not_confused_with_stdin_abbreviation(self):
+        # `--shell` shares "--s" but not "--st" with `--stdin`.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --shell id")
         assert is_dangerous is False
 
     def test_man_sudo_safe(self):

@@ -447,6 +447,48 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
+    def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Regression for the multi-profile gateway restart-loop flap (#48700):
+        # ~/.local/bin/node is often a symlink into a *specific* profile's node
+        # install. The generated unit's PATH must contain the symlink's own
+        # directory (~/.local/bin), NOT the resolved profile target — otherwise
+        # one profile's node path leaks into every profile's unit, making
+        # systemd_unit_is_current() perpetually false and forcing a
+        # daemon-reload restart loop on every boot.
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert str(local_bin) in unit
+        assert str(profile_node_bin) not in unit
+
+    def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Same #48700 regression for the macOS twin generate_launchd_plist().
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(local_bin) in plist
+        assert str(profile_node_bin) not in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(
@@ -3469,3 +3511,82 @@ class TestLaunchctlBootstrapEioRetry:
         assert excinfo.value.returncode == 125
         # A non-EIO failure is not the already-loaded case: no bootout/retry.
         assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+
+class TestRetryLaunchctlBootstrapUntilRegistered:
+    """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
+
+    Covers the three review findings the salvage hardens: retry until the
+    label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
+    is retried (not escaped leaving the service unloaded), and the retry is
+    bounded by a wall-clock deadline rather than a fixed short window.
+    """
+
+    DOMAIN = "gui/501"
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    LABEL = "ai.hermes.gateway"
+
+    def test_returns_true_once_label_is_registered(self, monkeypatch):
+        """Success requires launchctl list to confirm registration, not just
+        a zero bootstrap exit."""
+        list_results = iter([1, 0])  # first check: not registered, second: registered
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=next(list_results))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+
+    def test_timeout_expired_is_retried_not_escaped(self, monkeypatch):
+        """A bootstrap that times out must be retried — it leaves the service
+        unloaded, so it must not escape the retry/log path (finding #2)."""
+        attempts = {"bootstrap": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap":
+                attempts["bootstrap"] += 1
+                if attempts["bootstrap"] == 1:
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["launchctl", "list"]:
+                # registered only after the second (successful) bootstrap
+                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+        assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
+
+    def test_returns_false_when_deadline_exhausts(self, monkeypatch):
+        """When the label never registers, the loop stops at the deadline and
+        returns False (so the caller logs the persistent orphan)."""
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=1)  # never registered
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(1, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        # Deadline already in the past → exactly one attempt, then give up.
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() - 1,
+        )
+        assert ok is False

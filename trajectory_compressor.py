@@ -831,6 +831,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
 
+        # If the region we can safely compress is no larger than the summary
+        # that would replace it, compression cannot reduce the token count --
+        # it would grow the trajectory and still spend a summarization call.
+        if (
+            sum(turn_tokens[compress_start:compress_until])
+            <= self.config.summary_target_tokens
+        ):
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
@@ -941,6 +953,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
         if compress_until <= compress_start:
             # Snapping collapsed the region; nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
+        # If the region we can safely compress is no larger than the summary
+        # that would replace it, compression cannot reduce the token count --
+        # it would grow the trajectory and still spend a summarization call.
+        if (
+            sum(turn_tokens[compress_start:compress_until])
+            <= self.config.summary_target_tokens
+        ):
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens

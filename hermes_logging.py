@@ -57,12 +57,68 @@ from typing import Optional, Sequence
 # Aliasing keeps every existing ``RotatingFileHandler`` reference in this
 # module (class declaration, ``isinstance`` checks, docstring) working
 # unchanged. See #44873.
+_USING_CONCURRENT_LOG_HANDLER = False
+
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
+    try:
+        from concurrent_log_handler import (  # noqa: E402
+            ConcurrentRotatingFileHandler as RotatingFileHandler,
+        )
+        _USING_CONCURRENT_LOG_HANDLER = True
+    except ImportError:
+        # concurrent-log-handler is a base dependency (pyproject.toml), but if
+        # a Windows install somehow ends up without it (stale venv, broken
+        # PyInstaller bundle, corrupted install cache — see #48316), falling
+        # through to an unguarded ImportError here used to take down this
+        # entire module. hermes_cli/main.py wraps setup_logging() in a broad
+        # `except Exception: pass`, so that ImportError was swallowed and
+        # ALL file logging silently went dark instead of raising anything
+        # visible — the CLI/gateway kept running with zero log output. Fall
+        # back to the stdlib handler (same one POSIX already uses) instead:
+        # rollover can hit the WinError 32 rename race this module works
+        # around elsewhere, but that's a cosmetic rotation hiccup, not a
+        # silent total loss of logging.
+        from logging.handlers import RotatingFileHandler  # noqa: E402
+        try:
+            print(
+                "hermes_logging: concurrent_log_handler not installed; "
+                "falling back to stdlib RotatingFileHandler (log rotation "
+                "may intermittently fail with WinError 32 under concurrent "
+                "writers). See #48316.",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
+
+
+# ``concurrent_log_handler``'s ``_do_lock()`` retries ``lock(stream_lock,
+# LOCK_EX)`` up to ``maxLockAttempts`` (20) times, sleeping 1ms between tries
+# and swallowing whatever exception each attempt raises. On Windows,
+# ``portalocker``'s ``LOCK_EX`` (without ``NON_BLOCKING``) maps to
+# ``msvcrt.locking(fd, LK_LOCK, ...)``, and the Windows CRT itself retries
+# ``LK_LOCK`` internally for up to ~10s before giving up and raising —
+# i.e. each one of those 20 "quick" retries can itself block for ~10s,
+# for a worst case of ~200s of synchronous blocking on whatever thread
+# called ``logger.*()`` (often the gateway's asyncio event-loop thread)
+# before ``RuntimeError: Cannot acquire lock after 20 attempts`` is even
+# raised. See docs/rca-windows-gateway-log-lock-freeze.md.
+#
+# Forcing ``LOCK_NB`` here makes every one of CLH's own attempts fail (or
+# succeed) in milliseconds instead of blocking for up to ~10s each, while
+# leaving CLH's own retry loop, thread-lock, and fork-detection logic
+# untouched — only the low-level primitive changes, not CLH's control flow.
+if _USING_CONCURRENT_LOG_HANDLER:
+    import concurrent_log_handler as _clh_module
+    from portalocker import LOCK_NB as _CLH_LOCK_NB
+
+    _clh_original_lock = _clh_module.lock
+
+    def _clh_non_blocking_lock(file_, flags):
+        _clh_original_lock(file_, flags | _CLH_LOCK_NB)
+
+    _clh_module.lock = _clh_non_blocking_lock
 
 
 from hermes_constants import get_config_path, get_hermes_home
@@ -116,7 +172,12 @@ def _safe_stderr():  # type: ignore[return]
     return stream
 
 
-_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
+_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after"
+# Match on the message prefix, not the exact attempt count: CLH formats it as
+# f"Cannot acquire lock after {self.maxLockAttempts} attempts", and
+# _ManagedRotatingFileHandler.__init__ raises maxLockAttempts above CLH's
+# default of 20 on Windows (see the LOCK_NB monkeypatch further up), so the
+# literal count in the raised message no longer matches "20" exactly.
 
 
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
@@ -133,6 +194,32 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
         and isinstance(exc, RuntimeError)
         and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
     )
+
+
+def _sweep_stale_windows_log_locks(log_dir: Path) -> None:
+    """Best-effort removal of orphaned concurrent-log-handler lock files.
+
+    ``concurrent_log_handler`` names its cross-process lock files
+    ``.__<name>.lock`` next to each rotated log. If the owning process died
+    without a clean shutdown (kill, crash, an orphaned child left behind by
+    the Desktop Electron process), the lock file can outlive it. This is
+    purely additive cleanup, safe by construction: on Windows, deleting a
+    file that another live process still has open (without
+    ``FILE_SHARE_DELETE``) raises ``PermissionError``, so a lock genuinely
+    still in use is left untouched — only files nobody holds anymore are
+    removed.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        candidates = list(log_dir.glob(".__*.lock"))
+    except OSError:
+        return
+    for lock_path in candidates:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass  # still held by a live process — leave it alone
 
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
@@ -299,6 +386,7 @@ def setup_logging(
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_windows_log_locks(log_dir)
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
@@ -442,6 +530,15 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._stat_dev: Optional[int] = None
         self._stat_ino: Optional[int] = None
         self._record_stream_stat()
+        if _USING_CONCURRENT_LOG_HANDLER:
+            # Each attempt now fails fast (LOCK_NB, see the module-level
+            # monkeypatch above) instead of blocking ~10s, so we can afford
+            # far more attempts for the same, much smaller, time budget:
+            # 300 attempts * ~1ms sleep between tries (CLH's own retry
+            # loop) is on the order of a few hundred ms worst case — plenty
+            # to ride out a writer that holds the lock for a few ms to
+            # open+write+close, versus the previous 20 * ~10s ~= 200s.
+            self.maxLockAttempts = 300
 
     def _chmod_if_managed(self):
         if self._managed:

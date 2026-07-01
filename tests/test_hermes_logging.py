@@ -3,8 +3,10 @@ import io
 import logging
 import os
 import stat
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1165,3 +1167,228 @@ class TestSafeStderr:
             logger.info("Session hygiene: 400 messages — auto-compressing")
         finally:
             logger.removeHandler(handler)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="concurrent-log-handler locking behaviour is Windows-only",
+)
+class TestWindowsNonBlockingLock:
+    """Root-cause fix: the LOCK_NB monkeypatch keeps lock attempts fast.
+
+    See docs/rca-windows-gateway-log-lock-freeze.md. Before the fix, each of
+    concurrent_log_handler's own 20 retry attempts could itself block for up
+    to ~10s inside msvcrt.locking(LK_LOCK), for a worst case of ~200s of
+    synchronous blocking on the calling thread. Forcing LOCK_NB makes each
+    attempt fail fast instead.
+    """
+
+    def test_lock_monkeypatch_installed(self):
+        import concurrent_log_handler
+        assert concurrent_log_handler.lock is hermes_logging._clh_non_blocking_lock
+
+    def test_max_lock_attempts_raised_for_clh_handlers(self, tmp_path):
+        """Each attempt is now cheap, so we can afford far more of them for
+        a much smaller total time budget than the CLH default of 20."""
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(tmp_path / "agent.log"), maxBytes=1024, backupCount=1,
+            encoding="utf-8",
+        )
+        try:
+            assert handler.maxLockAttempts > 20
+        finally:
+            handler.close()
+
+    def test_emit_does_not_block_seconds_under_contention(self, tmp_path):
+        """A concurrent holder of the lock file must not stall emit() for
+        anywhere near the ~10s/attempt msvcrt.locking(LK_LOCK) would have
+        caused before the LOCK_NB monkeypatch."""
+        import portalocker
+
+        log_path = tmp_path / "agent.log"
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=10 * 1024 * 1024, backupCount=1,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        # Target the exact lock file CLH itself will try to acquire.
+        lock_path = Path(handler.lockFilename)
+        holder = open(lock_path, "a+b")
+        portalocker.lock(holder, portalocker.LOCK_EX)
+        released = threading.Event()
+
+        def hold_then_release():
+            time.sleep(0.3)
+            portalocker.unlock(holder)
+            holder.close()
+            released.set()
+
+        t = threading.Thread(target=hold_then_release)
+        t.start()
+        try:
+            record = logging.LogRecord(
+                "test", logging.INFO, "", 0, "contended write", (), None,
+            )
+            record.session_tag = ""
+            start = time.monotonic()
+            handler.emit(record)
+            elapsed = time.monotonic() - start
+        finally:
+            t.join(timeout=5)
+            handler.close()
+
+        assert released.is_set(), "holder thread never released the lock"
+        # Old behaviour: a single blocked attempt alone could take ~10s;
+        # worst case across 20 attempts could reach ~200s. New behaviour is
+        # bounded by maxLockAttempts * ~1ms CLH sleep between fast
+        # non-blocking tries, so this must resolve in well under the ~10s a
+        # *single* old-style blocking attempt would have taken.
+        assert elapsed < 5.0, f"emit() took {elapsed:.2f}s under contention"
+
+
+class TestConcurrentLogHandlerImportFallback:
+    """hermes_logging falls back to the stdlib handler instead of letting a
+    missing concurrent_log_handler silently take down all file logging
+    (previously swallowed by hermes_cli/main.py's broad
+    ``except Exception: pass`` around setup_logging() — see #48316)."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="fallback only matters on win32")
+    def test_falls_back_to_stdlib_handler_and_still_logs(self, tmp_path):
+        repo_root = Path(hermes_logging.__file__).resolve().parent
+        script = (
+            "import sys\n"
+            "sys.modules['concurrent_log_handler'] = None\n"
+            "import logging, logging.handlers\n"
+            "import hermes_logging\n"
+            "assert hermes_logging.RotatingFileHandler is "
+            "logging.handlers.RotatingFileHandler, hermes_logging.RotatingFileHandler\n"
+            "from pathlib import Path\n"
+            f"log_dir = hermes_logging.setup_logging(hermes_home=Path(r'{tmp_path}'))\n"
+            "logging.getLogger('fallback_test').info('still logs fine')\n"
+            "for h in logging.getLogger().handlers:\n"
+            "    h.flush()\n"
+            "content = (log_dir / 'agent.log').read_text()\n"
+            "assert 'still logs fine' in content, content\n"
+            "print('FALLBACK_OK')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=30, cwd=str(repo_root),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "FALLBACK_OK" in result.stdout
+
+
+class TestStaleWindowsLockSweep:
+    """_sweep_stale_windows_log_locks() — best-effort orphaned-lock cleanup."""
+
+    def test_noop_on_non_windows(self, tmp_path):
+        lock_path = tmp_path / ".__agent.lock"
+        lock_path.write_bytes(b"")
+        with patch.object(hermes_logging.sys, "platform", "linux"):
+            hermes_logging._sweep_stale_windows_log_locks(tmp_path)
+        assert lock_path.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="lock semantics are Windows-only")
+    def test_removes_orphaned_lock_file(self, tmp_path):
+        lock_path = tmp_path / ".__agent.lock"
+        lock_path.write_bytes(b"")
+
+        hermes_logging._sweep_stale_windows_log_locks(tmp_path)
+
+        assert not lock_path.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="lock semantics are Windows-only")
+    def test_leaves_actively_held_lock_untouched(self, tmp_path):
+        lock_path = tmp_path / ".__agent.lock"
+        lock_path.write_bytes(b"")
+        # Hold an open handle without FILE_SHARE_DELETE, simulating a live
+        # process still using this lock file.
+        handle = open(lock_path, "r+b")
+        try:
+            hermes_logging._sweep_stale_windows_log_locks(tmp_path)
+            assert lock_path.exists(), "sweep must never remove a lock still in use"
+        finally:
+            handle.close()
+
+    def test_called_from_setup_logging(self, hermes_home):
+        with patch.object(
+            hermes_logging, "_sweep_stale_windows_log_locks"
+        ) as mock_sweep:
+            hermes_logging.setup_logging(hermes_home=hermes_home)
+        mock_sweep.assert_called_once_with(hermes_home / "logs")
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="reproduces the Windows-specific gateway freeze from the RCA",
+)
+class TestGatewayFreezeRegression:
+    """End-to-end regression guard for the reported gateway freeze.
+
+    Two real _ManagedRotatingFileHandler instances (standing in for two
+    Hermes processes, e.g. the gateway and a CLI subcommand) write to the
+    SAME log file concurrently under tight contention. Before the fix, this
+    kind of contention could stall a single emit() for up to ~200s
+    (20 attempts * up to ~10s each of blocking msvcrt.locking(LK_LOCK)).
+    After the fix, contention resolves in milliseconds.
+    """
+
+    def test_concurrent_writers_do_not_freeze(self, tmp_path):
+        log_path = tmp_path / "agent.log"
+        handler_a = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=10 * 1024 * 1024, backupCount=1,
+            encoding="utf-8",
+        )
+        handler_b = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=10 * 1024 * 1024, backupCount=1,
+            encoding="utf-8",
+        )
+        formatter = logging.Formatter("%(message)s")
+        handler_a.setFormatter(formatter)
+        handler_b.setFormatter(formatter)
+
+        stop = threading.Event()
+        max_emit_time = {"value": 0.0}
+        errors = []
+
+        def hammer(handler, name):
+            i = 0
+            while not stop.is_set():
+                record = logging.LogRecord(
+                    "test", logging.INFO, "", 0, f"{name}-{i}", (), None,
+                )
+                record.session_tag = ""
+                start = time.monotonic()
+                try:
+                    handler.emit(record)
+                except Exception as exc:  # pragma: no cover - diagnostic only
+                    errors.append(exc)
+                elapsed = time.monotonic() - start
+                if elapsed > max_emit_time["value"]:
+                    max_emit_time["value"] = elapsed
+                i += 1
+
+        t1 = threading.Thread(target=hammer, args=(handler_a, "A"))
+        t2 = threading.Thread(target=hammer, args=(handler_b, "B"))
+        t1.start()
+        t2.start()
+        try:
+            time.sleep(1.0)
+        finally:
+            stop.set()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+            handler_a.close()
+            handler_b.close()
+
+        assert not errors, f"emit() raised unexpectedly: {errors}"
+        # The historical failure mode is a multi-second-to-multi-minute
+        # stall on a single emit() under contention. A generous but strict
+        # upper bound proves the fix: no single call was allowed to block
+        # anywhere near the old ~10s-per-attempt behaviour.
+        assert max_emit_time["value"] < 5.0, (
+            f"slowest emit() under contention took {max_emit_time['value']:.2f}s"
+        )
+        assert log_path.exists()

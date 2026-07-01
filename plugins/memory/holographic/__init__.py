@@ -372,10 +372,37 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            # French — optimisés d'après analyse de 16 messages réels (juin 2026)
+            # Verbes d'usage/préférence avec apostrophe optionnelle (j'ai, jutilise, jaime, j'aime...)
+            re.compile(r"(?:je\s+|)j'?(?:e\s+|)(?:préfère|aime|utilise|veux|veut|garde|prends|adore)\s+(.+)", re.IGNORECASE),
+            # Conditionnel/souhait : je voudrais, je voudrai, j'aimerais
+            re.compile(r"(?:je\s+|)j'?(?:e\s+|)(?:voudrais|voudrai|voulais|aimerais)\s+(.+)", re.IGNORECASE),
+            # Obligation : il faut, faut que (sujet personnel obligatoire pour éviter faux positifs)
+            re.compile(r"(?:il\s+)?faut\s+(?:que\s+)?(?:je\s+|on\s+)(?:pas\s+)?(.+)", re.IGNORECASE),
+            # Verbes d'action au passé (apostrophe optionnelle) : jai installé, j'ai configuré, jai supprimé
+            re.compile(r"(?:je\s+|)j'?ai\s+(?:installé|configuré|supprimé|pris|fait|lancé|changé|modifié|ajouté|gardé|mis|vu|eu)\s+(.+)", re.IGNORECASE),
+            # Négation/envie : j'ai pas envie, jai envie, j'en ai marre
+            re.compile(r"(?:je\s+|)j'?(?:e\s+|)(?:n'?|)ai\s+(?:pas\s+)?(?:pas|envie\s+de|marre\s+de)\s*(.+)", re.IGNORECASE),
+            # État/déclaration (filtre négatif pour interrogatifs)
+            re.compile(r"c'?(?:est|était)\s+(?!(?:quoi|qui|pourquoi|comment|où|quand|quel|quelle|qui)\s)(.+)", re.IGNORECASE),
+            # Adverbes de fréquence (verbe interposé géré : "je suis toujours", "je vais souvent")
+            re.compile(r"\bje\s+(?:\w+\s+)?(?:toujours|jamais|souvent|rarement|plutôt)\s+(.+)", re.IGNORECASE),
+            # Verbes à l'infinitif : je vais, je veux, on va, on peut
+            re.compile(r"(?:je\s+|j'?(?:e\s+|)|on\s+)(?:vais|veux|dois|peux|peut|va)\s+(.+)", re.IGNORECASE),
         ]
         _DECISION_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            # French — optimisés
+            # Décision explicite : on a décidé, on a choisi
+            re.compile(r"(?:on\s+a|nous\s+avons)\s+(?:décidé|choisi)\s+(?:de\s+)?(.+)", re.IGNORECASE),
+            # Action future décidée : on va installer, on va configurer, on va faire
+            re.compile(r"(?:on\s+va|nous\s+allons)\s+(.+)(?:installer|configurer|mettre|faire|prendre|lancer|garder|supprimer|changer|modifier|ajouter|remettre|repartir)\s*(.+)", re.IGNORECASE),
+            # Action collective décidée : on continue, on repart, on reste, on part
+            re.compile(r"\bon\s+(?:continue|repart|reste|garde|passe|prend|utilise|met)\s+(.+)", re.IGNORECASE),
+            # Confirmation d'état : c'est bon, cest bon, voilà, c'est fait, OK pour, oui pour
+            re.compile(r"(?:c'?(?:est|était)\s+|cest\s+)(?:bon|fait|ok|pr\u00eat|d'accord|pr\u00e8t)\s*(.+)", re.IGNORECASE),
+            re.compile(r"(?:ok\s+|oui\s+)?(?:pour|d'accord)\s+(.+)", re.IGNORECASE),
         ]
 
         extracted = 0

@@ -38,6 +38,7 @@ _PEER_GONE_ERRNOS = frozenset({
     errno.ECONNRESET,   # peer reset the connection
     errno.EBADF,        # fd closed under us
     errno.ESHUTDOWN,    # transport endpoint shut down
+    errno.EINVAL,       # Windows: stdout detached → errno 22
     getattr(errno, "WSAECONNRESET", -1),  # win32 mapping (no-op on POSIX)
     getattr(errno, "WSAESHUTDOWN", -1),
 } - {-1})

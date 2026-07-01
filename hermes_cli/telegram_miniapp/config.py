@@ -10,7 +10,11 @@ from .server import MiniAppSettings, _default_allowed_origins
 
 
 def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSettings:
-    """Resolve Mini App settings without mutating config.yaml or .env."""
+    """Resolve Mini App settings without mutating config.yaml or .env.
+
+    Public HTTPS smoke activation is deliberately not read from config or env.
+    It is a per-run foreground CLI decision only.
+    """
     cfg = load_config() if config is None else config
     section = cfg_get(cfg, "telegram_miniapp", default={})
     if not isinstance(section, dict):
@@ -26,4 +30,6 @@ def settings_from_config(config: dict[str, Any] | None = None) -> MiniAppSetting
         session_ttl_seconds=int(section.get("session_ttl_seconds") or 3600),
         allowed_users={str(value) for value in allowed if str(value).strip()},
         cors_allowed_origins=cors_allowed_origins or _default_allowed_origins(),
+        enable_actions=False,
+        public_smoke=False,
     )

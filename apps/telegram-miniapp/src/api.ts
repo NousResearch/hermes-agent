@@ -36,8 +36,8 @@ export type AuthResponse = {
 
 const API_URL = (import.meta.env.VITE_HERMES_MINIAPP_API_URL ?? "").replace(/\/$/, "");
 
-export function hasMiniAppApi(): boolean {
-  return API_URL.length > 0;
+export function hasMiniAppApi(isTelegramRuntime = false): boolean {
+  return API_URL.length > 0 || (import.meta.env.PROD && isTelegramRuntime);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {

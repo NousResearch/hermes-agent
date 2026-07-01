@@ -22,7 +22,8 @@ export function App() {
   }, []);
 
   const telegram = getTelegramRuntime();
-  const apiConfigured = hasMiniAppApi();
+  const apiConfigured = hasMiniAppApi(telegram.isTelegram);
+  const publicSmoke = snapshot?.miniapp.public_exposure === true;
 
   useEffect(() => {
     if (!telegram.isTelegram || !telegram.initData || !apiConfigured) {
@@ -74,7 +75,9 @@ export function App() {
 
   const connectionLabel =
     apiState === "connected"
-      ? "real read-only status"
+      ? publicSmoke
+        ? "HTTPS smoke / read-only"
+        : "real read-only status"
       : apiState === "connecting"
         ? "connecting to sidecar"
         : apiState === "offline"
@@ -87,10 +90,10 @@ export function App() {
     <main className="shell" data-mode={telegram.colorScheme}>
       <section className="hero panel">
         <div>
-          <p className="eyebrow">Hermes Telegram Mini App · Milestone 2</p>
+          <p className="eyebrow">Hermes Telegram Mini App · Milestone 3</p>
           <h1>Control Deck</h1>
           <p className="hero-copy">
-            Read-only status integration with mock fallback. No tunnel, no launchd,
+            Read-only Telegram WebView smoke path with mock fallback. No launchd,
             no privileged actions, no stored Telegram initData.
           </p>
           <div className={`connection-banner state-${apiState}`}>{connectionLabel}</div>

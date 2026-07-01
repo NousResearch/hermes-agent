@@ -200,7 +200,8 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
             }
             elements.append(cur)
             cur_key = key
-        assert cur is not None
+        if cur is None:
+            raise ValueError("Slack Block Kit: current element unexpectedly None during tree traversal")
         cur["elements"].append(
             {"type": "rich_text_section", "elements": _inline_elements(text)}
         )

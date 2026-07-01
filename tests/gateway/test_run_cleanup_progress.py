@@ -104,6 +104,27 @@ class NoDeleteAdapter(CleanupCaptureAdapter):
 NoDeleteAdapter.delete_message = BasePlatformAdapter.delete_message
 
 
+class StatusUpdateCaptureAdapter(CleanupCaptureAdapter):
+    """Adapter that distinguishes permanent sends from editable status updates."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform)
+        self.status_updates = []
+
+    async def send_or_update_status(self, chat_id, status_key, content, metadata=None):
+        mid = self._mint_id()
+        self.status_updates.append(
+            {
+                "chat_id": chat_id,
+                "status_key": status_key,
+                "content": content,
+                "message_id": mid,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=mid)
+
+
 class ProgressAgent:
     """Emits two tool-progress events and returns a normal final response."""
 
@@ -141,6 +162,32 @@ class FailingAgent:
             "failed": True,
             "error": "simulated provider failure",
         }
+
+
+class ModelChangeStatusAgent:
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.status_callback
+        if cb is not None:
+            cb("lifecycle", "ordinary editable status")
+            cb(
+                "model_change",
+                "⚠️ Model changed without your direction: "
+                "openai-codex/gpt-5.5 → custom/qwen3.5:9b",
+            )
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class RuntimeFallbackAgent:
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 def _make_runner(adapter):
@@ -377,3 +424,103 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_model_change_status_uses_permanent_send_not_editable_status(monkeypatch, tmp_path):
+    """Fallback/model-change warnings must remain visible in chat history.
+
+    Normal lifecycle status can go through send_or_update_status() and be edited
+    away. A model_change event is safety-significant, so it must be delivered as
+    a standalone send() even when the platform supports editable status bubbles.
+    """
+    adapter = StatusUpdateCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ModelChangeStatusAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.sent and adapter.status_updates:
+            break
+
+    assert any(update["status_key"] == "lifecycle" for update in adapter.status_updates)
+    assert not any(update["status_key"] == "model_change" for update in adapter.status_updates)
+    assert any(
+        "Model changed without your direction" in sent["content"]
+        for sent in adapter.sent
+    ), f"sent={adapter.sent} status_updates={adapter.status_updates}"
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_fallback_emits_permanent_model_change_notice(monkeypatch, tmp_path):
+    """Gateway-start auth fallback happens before the agent can emit status.
+
+    The gateway must still tell the chat when runtime resolution silently
+    switches from configured primary to fallback before AIAgent is constructed.
+    """
+    adapter = StatusUpdateCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, RuntimeFallbackAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "display": {"platforms": {"telegram": {"cleanup_progress": True}}},
+        },
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "api_key": "fake",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "model": "qwen3.5:9b",
+            "_hermes_runtime_fallback": True,
+            "_hermes_fallback_reason": "auth",
+        },
+    )
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.sent:
+            break
+
+    assert not any(update["status_key"] == "model_change" for update in adapter.status_updates)
+    assert any(
+        "Model changed without your direction" in sent["content"]
+        and "openai-codex/gpt-5.5" in sent["content"]
+        and "custom/qwen3.5:9b" in sent["content"]
+        and "auth" in sent["content"].lower()
+        for sent in adapter.sent
+    ), f"sent={adapter.sent} status_updates={adapter.status_updates}"

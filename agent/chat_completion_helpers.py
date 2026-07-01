@@ -1217,6 +1217,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback(reason)
 
+    from agent.model_change_notice import (
+        build_anthropic_auto_fallback_blocked_notice,
+        build_fallback_model_change_notice,
+        emit_model_change_notice,
+        should_block_anthropic_auto_fallback,
+    )
+
+    if should_block_anthropic_auto_fallback(fb):
+        notice = build_anthropic_auto_fallback_blocked_notice(fb)
+        logger.warning(notice)
+        emit_model_change_notice(agent, notice)
+        return agent._try_activate_fallback(reason=reason)
+
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
     # base_url too so two distinct custom_providers entries pointing at the
@@ -1323,6 +1336,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = getattr(agent, "provider", "")
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1468,6 +1482,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
+        notice = build_fallback_model_change_notice(
+            old_provider,
+            old_model,
+            fb_provider,
+            fb_model,
+            reason=reason,
+            base_url=fb_base_url,
+        )
+        emit_model_change_notice(agent, notice)
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,

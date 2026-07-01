@@ -113,3 +113,42 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         assert calls == ["openrouter", "nous"]
         assert result["provider"] == "nous"
         assert result["model"] == "Hermes-4"
+
+    def test_anthropic_auth_fallback_requires_explicit_allow(self, tmp_path, monkeypatch):
+        """Native Anthropic API must not be used as an automatic auth fallback by default."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "    model: claude-sonnet-4-20250514\n"
+            "  - provider: openrouter\n"
+            "    model: meta-llama/llama-4-maverick\n"
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        calls = []
+
+        def _mock_resolve(**kwargs):
+            calls.append(kwargs.get("requested"))
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": kwargs.get("requested"),
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _try_resolve_fallback_provider
+
+            result = _try_resolve_fallback_provider()
+
+        assert calls == ["openrouter"]
+        assert result is not None
+        assert result["provider"] == "openrouter"
+        assert result["model"] == "meta-llama/llama-4-maverick"

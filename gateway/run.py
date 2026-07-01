@@ -1788,6 +1788,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
+            fb_config = dict(fb_config)
+            fb_config["_hermes_runtime_fallback"] = True
+            fb_config["_hermes_fallback_reason"] = "rate limit" if is_rate_limited_auth_error(auth_exc) else "auth"
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
@@ -1838,7 +1841,15 @@ def _try_resolve_fallback_provider() -> dict | None:
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
+        from agent.model_change_notice import (
+            build_anthropic_auto_fallback_blocked_notice,
+            should_block_anthropic_auto_fallback,
+        )
+
         for entry in fb_list:
+            if should_block_anthropic_auto_fallback(entry):
+                logger.warning(build_anthropic_auto_fallback_blocked_notice(entry))
+                continue
             try:
                 explicit_api_key = entry.get("api_key")
                 if not explicit_api_key:
@@ -3557,6 +3568,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+        configured_model = model
+        configured_provider = ""
+        try:
+            cfg_for_provider = user_config if user_config is not None else _load_gateway_config()
+            model_cfg_for_provider = (cfg_for_provider or {}).get("model", {})
+            if isinstance(model_cfg_for_provider, dict):
+                configured_provider = str(model_cfg_for_provider.get("provider") or "").strip()
+        except Exception:
+            configured_provider = ""
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -3588,6 +3608,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if runtime_kwargs.get("_hermes_runtime_fallback"):
+            runtime_kwargs["_hermes_primary_model"] = configured_model
+            runtime_kwargs["_hermes_primary_provider"] = configured_provider
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -16725,6 +16748,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
+            if event_type == "model_change":
+                safe_schedule_threadsafe(
+                    _status_adapter.send(
+                        _status_chat_id,
+                        prepared_message,
+                        metadata=_status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="model_change status_callback scheduling error",
+                )
+                return
             _fut = safe_schedule_threadsafe(
                 _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
                 _loop_for_step,
@@ -16793,6 +16828,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "run_agent resolved: model=%s provider=%s session=%s",
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
+                if runtime_kwargs.get("_hermes_runtime_fallback"):
+                    try:
+                        from agent.model_change_notice import build_fallback_model_change_notice
+
+                        _status_callback_sync(
+                            "model_change",
+                            build_fallback_model_change_notice(
+                                runtime_kwargs.get("_hermes_primary_provider"),
+                                runtime_kwargs.get("_hermes_primary_model"),
+                                runtime_kwargs.get("provider"),
+                                model,
+                                reason=runtime_kwargs.get("_hermes_fallback_reason"),
+                                base_url=runtime_kwargs.get("base_url"),
+                            ),
+                        )
+                    except Exception:
+                        logger.debug("Failed to emit runtime fallback notice", exc_info=True)
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",

@@ -1124,6 +1124,8 @@ def restore_primary_runtime(agent) -> bool:
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime
+    old_model = getattr(agent, "model", "")
+    old_provider = getattr(agent, "provider", "")
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
@@ -1212,6 +1214,23 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        try:
+            from agent.model_change_notice import (
+                build_primary_runtime_restored_notice,
+                emit_model_change_notice,
+            )
+
+            emit_model_change_notice(
+                agent,
+                build_primary_runtime_restored_notice(
+                    old_provider,
+                    old_model,
+                    agent.provider,
+                    agent.model,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to emit primary runtime restored notice", exc_info=True)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

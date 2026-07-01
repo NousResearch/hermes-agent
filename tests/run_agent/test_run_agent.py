@@ -6330,9 +6330,100 @@ class TestAnthropicImageFallback:
 class TestFallbackAnthropicProvider:
     """Bug fix: _try_activate_fallback had no case for anthropic provider."""
 
-    def test_fallback_to_anthropic_sets_api_mode(self, agent):
+    def test_fallback_activation_emits_model_change_notice(self, agent):
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.5"
+        agent._primary_runtime["provider"] = "openai-codex"
+        agent._primary_runtime["model"] = "gpt-5.5"
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "custom", "model": "qwen3.5:9b"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        events = []
+        agent.status_callback = lambda event_type, message: events.append((event_type, message))
+
+        mock_client = MagicMock()
+        mock_client.base_url = "http://127.0.0.1:11434/v1"
+        mock_client.api_key = "ollama"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback(reason=FailoverReason.auth)
+
+        assert result is True
+        assert any(
+            event_type == "model_change"
+            and "without your direction" in message
+            and "openai-codex/gpt-5.5" in message
+            and "custom/qwen3.5:9b" in message
+            and "auth" in message.lower()
+            for event_type, message in events
+        ), events
+
+    def test_restore_primary_runtime_emits_model_recovery_notice(self, agent):
+        agent.provider = "custom"
+        agent.model = "qwen3.5:9b"
+        agent._fallback_activated = True
+        agent._fallback_index = 1
+        agent._rate_limited_until = 0
+        agent._primary_runtime.update(
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "base_url": "https://api.openai.com/v1",
+                "api_mode": "codex_responses",
+                "api_key": "test-key-1234567890",
+                "client_kwargs": {
+                    "api_key": "test-key-1234567890",
+                    "base_url": "https://api.openai.com/v1",
+                },
+            }
+        )
+
+        events = []
+        agent.status_callback = lambda event_type, message: events.append((event_type, message))
+
+        with patch.object(agent, "_create_openai_client", return_value=MagicMock()):
+            restored = agent._restore_primary_runtime()
+
+        assert restored is True
+        assert any(
+            event_type == "model_change"
+            and "restored" in message.lower()
+            and "custom/qwen3.5:9b" in message
+            and "openai-codex/gpt-5.5" in message
+            for event_type, message in events
+        ), events
+
+    def test_native_anthropic_fallback_blocked_without_explicit_allow(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        events = []
+        agent.status_callback = lambda event_type, message: events.append((event_type, message))
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            result = agent._try_activate_fallback()
+
+        assert result is False
+        mock_resolve.assert_not_called()
+        assert agent._fallback_activated is False
+        assert any(
+            event_type == "model_change"
+            and "Anthropic" in message
+            and "blocked" in message.lower()
+            for event_type, message in events
+        ), events
+
+    def test_fallback_to_anthropic_sets_api_mode(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "allow_auto_fallback": True,
+        }
         agent._fallback_chain = [agent._fallback_model]
         agent._fallback_index = 0
 
@@ -6355,7 +6446,11 @@ class TestFallbackAnthropicProvider:
 
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_model = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "allow_auto_fallback": True,
+        }
         agent._fallback_chain = [agent._fallback_model]
         agent._fallback_index = 0
 
@@ -7431,7 +7526,11 @@ class TestFallbackSetsOAuthFlag:
 
     def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
         agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_model = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "allow_auto_fallback": True,
+        }
         agent._fallback_chain = [agent._fallback_model]
         agent._fallback_index = 0
 
@@ -7454,7 +7553,11 @@ class TestFallbackSetsOAuthFlag:
 
     def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
         agent._fallback_activated = False
-        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_model = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "allow_auto_fallback": True,
+        }
         agent._fallback_chain = [agent._fallback_model]
         agent._fallback_index = 0
 

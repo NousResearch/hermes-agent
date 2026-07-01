@@ -40,6 +40,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _windows_to_msys_path(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).lower()
+    tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
+    return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -186,6 +204,9 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_DELIVERY_KEY",
     })
     return frozenset(blocked)
 
@@ -205,6 +226,51 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
 
 
+def _is_hermes_internal_secret(key: str) -> bool:
+    """Return True for Hermes-internal secrets injected under *dynamic* names.
+
+    ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
+    provider/tool registries, but the gateway and CLI also inject secrets into
+    ``os.environ`` at runtime under names no static registry knows about:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
+      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
+      compression, and any plugin-registered auxiliary task). These are
+      separate, often higher-spend API keys plus base URLs that may point at
+      private endpoints; a model-authored shell command must never see them.
+    - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /
+      ``GATEWAY_RELAY_*_TOKEN`` — relay-auth material provisioned by the
+      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+      These are Tier-1 gateway secrets, like the messaging bot tokens in
+      ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
+      (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
+      and remain visible.
+
+    ``code_execution_tool.py`` already catches these via substring matching on
+    ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
+    blocklist did not, which is the leak this predicate closes.
+
+    This is the single source of truth for "Hermes-internal dynamic secret"
+    across every spawn path — the terminal ``_make_run_env`` /
+    ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
+    non-terminal :func:`hermes_subprocess_env` helper all call it, so the
+    dynamic patterns are stripped **unconditionally** regardless of
+    ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
+    a model-driving CLI legitimately needs matches these patterns.
+    """
+    upper = key.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    if upper.startswith("GATEWAY_RELAY_") and (
+        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
+    ):
+        return True
+    return False
+
+
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
     try:
@@ -215,6 +281,53 @@ def _inject_context_hermes_home(env: dict) -> None:
             env["HERMES_HOME"] = value
     except Exception:
         pass
+
+
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge gateway session ContextVars into a subprocess environment dict.
+
+    ContextVars don't propagate to child processes, so the live session vars
+    (HERMES_SESSION_*) are bridged onto the child env here.
+
+    🔴 Cross-session leak guard. The session vars also have a process-global
+    os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
+    cleared). Under a concurrent multi-session host (the messaging gateway, ACP
+    adapter, API server, TUI) that global belongs to *whichever turn wrote it
+    last* — NOT necessarily this task. A subprocess spawned from a task whose
+    ContextVar is _UNSET (e.g. a sibling message task that never bound, or one
+    that inherited another session's context) would otherwise inherit the
+    FOREIGN global and act on another session's identity.
+
+    So once the session-context machinery is engaged in this process (any host
+    has called set_session_vars), the session vars are ContextVar-authoritative:
+    - ContextVar set (incl. explicitly-empty "") → that value wins, overriding
+      any stale snapshot/global value.
+    - ContextVar _UNSET → STRIP the var from the child env rather than inherit
+      the possibly-foreign process-global.
+    In a pure single-process CLI/one-shot that never engaged the session-context
+    system there is no concurrency to leak across, so the inherited fallback is
+    kept. See gateway/session_context.session_context_engaged and
+    tests/tools/test_local_env_session_leak.py.
+    """
+    try:
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_context_engaged,
+        )
+    except Exception:
+        return
+
+    _engaged = session_context_engaged()
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is not _UNSET:
+            # Explicitly bound (including "") — authoritative for this task.
+            env[var_name] = "" if value is None else str(value)
+        elif _engaged:
+            # Unset for THIS task while a concurrent host is engaged: drop any
+            # inherited global so a sibling session's value can't leak in.
+            env.pop(var_name, None)
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
@@ -229,13 +342,19 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if _is_hermes_internal_secret(key):
+            continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             sanitized[real_key] = value
+        elif _is_hermes_internal_secret(key):
+            continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -243,6 +362,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
+
+    # Same cross-session leak guard as _make_run_env, for the background/PTY
+    # spawn path (process_registry.spawn_local builds env via this function).
+    _inject_session_context_env(sanitized)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
@@ -273,6 +396,16 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "SLACK_SIGNING_SECRET",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
+    # Gateway relay auth — the ID/secret/delivery-key triplet the gateway
+    # provisions and persists to the 0600 .env. Stripped unconditionally on
+    # EVERY spawn surface (terminal + model-driving CLIs) so it can't drift
+    # between paths: _SECRET / _DELIVERY_KEY are also matched by
+    # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
+    # enumerated here to stay stripped on the inherit_credentials=True path
+    # (codex / copilot), which skips the Tier-2 blocklist.
+    "GATEWAY_RELAY_ID",
+    "GATEWAY_RELAY_SECRET",
+    "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN",
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
@@ -320,9 +453,15 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
         env.pop(key, None)
-    # Internal routing hints must never reach a child.
+    # Internal routing hints and Hermes-internal dynamic secrets
+    # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
+    # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
+    # regardless of ``inherit_credentials`` — a model-driving CLI has no
+    # legitimate use for them. See :func:`_is_hermes_internal_secret`.
     for key in list(env):
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:
@@ -340,6 +479,16 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
+
+    # Cross-session leak guard, same as the terminal spawn paths: this helper
+    # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
+    # global under a concurrent multi-session host. A caller that re-binds the
+    # session identity explicitly (slash_worker/ACP via --session-key argv) is
+    # unaffected — bound ContextVars win here — but a caller that spawns without
+    # re-binding (e.g. tui_gateway cli.exec) would otherwise inherit a FOREIGN
+    # session's identity. Strip _UNSET session vars when engaged so that can't
+    # happen; single uniform policy across every spawn surface.
+    _inject_session_context_env(env)
 
     return env
 
@@ -378,10 +527,10 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Check known Git for Windows install locations before PATH lookup.
+    # On machines with both WSL and Git for Windows, shutil.which("bash")
+    # may return WSL's bash (which doesn't understand Windows paths and
+    # will fail silently).  Explicit Git-for-Windows paths avoid that.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -389,6 +538,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -610,7 +763,11 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             run_env[real_key] = v
+        elif _is_hermes_internal_secret(k):
+            continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)
@@ -626,16 +783,10 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # Bridge ContextVar-based session vars into the subprocess env (with the
+    # cross-session leak guard — strips _UNSET vars when a concurrent host is
+    # engaged so a sibling session's os.environ mirror can't leak in).
+    _inject_session_context_env(run_env)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
@@ -787,6 +938,11 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

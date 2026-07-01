@@ -3052,6 +3052,8 @@ class OptionalSkillSource(SkillSource):
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
+    OFFICIAL_REPO = "NousResearch/hermes-agent"
+
     def __init__(self):
         from hermes_constants import get_optional_skills_dir
 
@@ -3183,7 +3185,7 @@ class OptionalSkillSource(SkillSource):
                 if isinstance(hermes_meta, dict):
                     tags = hermes_meta.get("tags", [])
 
-            rel_path = str(parent.relative_to(self._optional_dir))
+            rel_path = parent.relative_to(self._optional_dir).as_posix()
 
             results.append(SkillMeta(
                 name=name,
@@ -3191,7 +3193,9 @@ class OptionalSkillSource(SkillSource):
                 source="official",
                 identifier=f"official/{rel_path}",
                 trust_level="builtin",
-                path=rel_path,
+                repo=self.OFFICIAL_REPO,
+                # The centralized skills index consumes repo-root-relative paths.
+                path=f"optional-skills/{rel_path}",
                 tags=tags if isinstance(tags, list) else [],
             ))
 

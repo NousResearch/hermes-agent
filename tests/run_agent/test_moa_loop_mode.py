@@ -177,11 +177,14 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     """Codex slots must not become custom chat-completions endpoints.
 
-    _resolve_task_provider_model treats any explicit base_url as provider=custom.
-    For openai-codex that bypasses the Codex auxiliary branch, losing the
-    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    _slot_runtime forwards the resolved base_url/api_key/api_mode; the single
+    chokepoint that must NOT collapse openai-codex to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, the Codex auxiliary branch — Cloudflare headers + Responses
+    adapter for chatgpt.com/backend-api/codex — would be bypassed.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -196,8 +199,20 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     )
 
     rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
 
-    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+    # The chokepoint preserves openai-codex identity despite the explicit
+    # base_url (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "openai-codex"
+    assert base_url == "https://chatgpt.com/backend-api/codex"
 
 
 @pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
@@ -395,7 +410,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text = _run_reference(
+    label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -551,9 +566,12 @@ def test_references_run_in_parallel(monkeypatch):
     elapsed = time.monotonic() - start
 
     # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    assert elapsed < 0.9, f"references did not run in parallel (took {elapsed:.2f}s)"
+    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
+    # thread-pool startup jitter while still failing hard if the two calls
+    # ran serially (which would be ≥1.0s).
+    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
-    assert [label for label, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
+    assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
@@ -686,17 +704,17 @@ def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
 
 
 def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch):
-    """Native anthropic slots must NOT forward base_url/api_key.
+    """Native anthropic slots must keep their provider identity, not collapse to custom.
 
     anthropic OAuth setup-tokens (sk-ant-oat*) require Bearer auth + the
-    ``anthropic-beta: oauth-*`` header, which only the provider branch of
-    call_llm adds. If _slot_runtime forwarded base_url/api_key, call_llm would
-    treat the slot as a plain custom endpoint and send the token as x-api-key,
-    which Anthropic rejects with a bare 429. So a whitelisted provider
-    (anthropic) returns only provider/model, while a non-whitelisted provider
-    (openrouter) forwards the resolved base_url/api_key.
+    ``anthropic-beta: oauth-*`` header, which only the anthropic provider branch
+    of call_llm adds. _slot_runtime forwards the resolved base_url/api_key for
+    every provider now; the single chokepoint that must NOT collapse anthropic
+    to provider=custom (which would send the token as x-api-key → bare 429) is
+    _resolve_task_provider_model via _preserve_provider_with_base_url.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -709,15 +727,25 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
         "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
     )
 
-    # Whitelisted: anthropic must skip base_url/api_key forwarding.
+    # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
     anthropic_rt = moa_loop._slot_runtime(
         {"provider": "anthropic", "model": "claude-opus-4-8"}
     )
-    assert anthropic_rt == {"provider": "anthropic", "model": "claude-opus-4-8"}
-    assert "base_url" not in anthropic_rt
-    assert "api_key" not in anthropic_rt
+    assert anthropic_rt["provider"] == "anthropic"
+    assert anthropic_rt["base_url"] == "https://resolved.example/v1"
 
-    # Non-whitelisted: openrouter still forwards the resolved endpoint.
+    # The chokepoint preserves anthropic identity despite the explicit base_url,
+    # so call_llm routes through the anthropic provider branch (not custom).
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        provider="anthropic",
+        model="claude-opus-4-8",
+        base_url="https://resolved.example/v1",
+        api_key="resolved-key",
+    )
+    assert resolved_provider == "anthropic"
+
+    # A generic provider (openrouter) is likewise forwarded and preserved.
     other_rt = moa_loop._slot_runtime(
         {"provider": "openrouter", "model": "some-model"}
     )
@@ -725,3 +753,309 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
     assert other_rt["model"] == "some-model"
     assert other_rt["base_url"] == "https://resolved.example/v1"
     assert other_rt["api_key"] == "resolved-key"
+
+
+def _response_with_usage(content="advice", *, prompt=100, completion=50, cached=0):
+    """A fake response carrying OpenAI-style usage so normalize_usage works."""
+    details = SimpleNamespace(cached_tokens=cached, cache_write_tokens=0)
+    usage = SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=details,
+        output_tokens_details=None,
+    )
+    message = SimpleNamespace(content=content, tool_calls=[])
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=usage, model="fake-model")
+
+
+def test_run_reference_captures_usage_and_cost(monkeypatch):
+    """A reference call returns per-advisor CanonicalUsage + priced cost.
+
+    Before this, _run_reference discarded response.usage entirely, so the
+    advisor fan-out was invisible to cost tracking.
+    """
+    from agent.moa_loop import _RefAccounting, _run_reference
+    from agent.usage_pricing import CanonicalUsage
+
+    monkeypatch.setattr(
+        "agent.moa_loop.call_llm",
+        lambda **kw: _response_with_usage(prompt=1000, completion=200, cached=400),
+    )
+    # Keep runtime resolution + pricing deterministic.
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
+    )
+
+    label, text, acct = _run_reference(
+        {"provider": "openrouter", "model": "vendor/adv-model"},
+        [{"role": "user", "content": "state?"}],
+    )
+
+    assert text == "advice"
+    assert isinstance(acct, _RefAccounting)
+    assert isinstance(acct.usage, CanonicalUsage)
+    # prompt_tokens=1000 with 400 cached → 600 fresh input + 400 cache_read.
+    assert acct.usage.input_tokens == 600
+    assert acct.usage.cache_read_tokens == 400
+    assert acct.usage.output_tokens == 200
+    assert acct.cost_usd == 0.0123
+
+
+def test_references_parallel_sum_and_consume(monkeypatch, tmp_path):
+    """create() sums advisor usage + cost once per turn; consume clears it.
+
+    Repeat tool-iterations within a turn reuse the cache and contribute ZERO
+    additional advisor spend (otherwise advisor cost multiplies by iteration
+    count).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+        - provider: openrouter
+          model: adv-b
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response_with_usage(prompt=1000, completion=100, cached=0)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.01, status="estimated", source="table"),
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+
+    usage, cost = facade.consume_reference_usage()
+    # Two advisors × (1000 input, 100 output) = 2000 input, 200 output.
+    assert usage.input_tokens == 2000
+    assert usage.output_tokens == 200
+    # Two advisors × $0.01 each = $0.02.
+    assert cost == pytest.approx(0.02)
+
+    # consume clears — a second consume with no new create() is zeroed.
+    usage2, cost2 = facade.consume_reference_usage()
+    assert usage2.input_tokens == 0
+    assert cost2 is None
+
+    # A repeat create() with the SAME advisory view is a cache HIT: advisors
+    # do not re-run, so pending advisor spend is zero (no double-charge).
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+    usage3, cost3 = facade.consume_reference_usage()
+    assert usage3.input_tokens == 0
+    assert cost3 is None
+
+
+def test_canonical_usage_add():
+    """CanonicalUsage sums per bucket (used to fold advisor tokens in)."""
+    from agent.usage_pricing import CanonicalUsage
+
+    a = CanonicalUsage(input_tokens=100, output_tokens=20, cache_read_tokens=5)
+    b = CanonicalUsage(input_tokens=50, output_tokens=10, cache_write_tokens=3)
+    total = a + b
+    assert total.input_tokens == 150
+    assert total.output_tokens == 30
+    assert total.cache_read_tokens == 5
+    assert total.cache_write_tokens == 3
+    assert total.request_count == 2
+
+
+def test_moa_full_trace_written_when_enabled(monkeypatch, tmp_path):
+    """With moa.save_traces on, a full MoA turn is written to JSONL.
+
+    Asserts the record captures each reference's FULL input messages + output
+    and the aggregator's FULL input (incl. injected reference guidance) +
+    output — the true full turn, auditable offline.
+    """
+    import json
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  save_traces: true
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+        - provider: openrouter
+          model: adv-b
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            # Echo the model so we can prove per-reference output is captured.
+            model = kwargs.get("model", "?")
+            return _response_with_usage(content=f"advice from {model}", prompt=500, completion=80)
+        return _response("AGGREGATOR FINAL ANSWER")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.001, status="estimated", source="table"),
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    # Non-streaming create() → aggregator output captured inline.
+    facade.create(messages=[{"role": "user", "content": "please review the plan"}], tools=[])
+    facade.consume_and_save_trace(session_id="sess-xyz")
+
+    trace_file = home / "moa-traces" / "sess-xyz.jsonl"
+    assert trace_file.exists(), "trace file not written"
+    lines = trace_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+
+    # Turn framing.
+    assert rec["session_id"] == "sess-xyz"
+    assert rec["preset"] == "review"
+
+    # Both references captured, each with FULL input messages + output.
+    assert len(rec["references"]) == 2
+    for ref in rec["references"]:
+        assert ref["model"] in ("adv-a", "adv-b")
+        assert ref["provider"] == "openrouter"
+        # Full input messages present (system advisory prompt + advisory view).
+        assert isinstance(ref["input_messages"], list) and len(ref["input_messages"]) >= 2
+        assert ref["input_messages"][0]["role"] == "system"
+        # Full output present and model-specific.
+        assert ref["output"] == f"advice from {ref['model']}"
+        assert ref["usage"]["input_tokens"] == 500
+        assert ref["cost_usd"] == 0.001
+
+    # Aggregator: full input (with injected reference guidance) + inline output.
+    agg = rec["aggregator"]
+    assert agg["model"] == "anthropic/claude-opus-4.8"
+    assert agg["streamed"] is False
+    assert agg["output"] == "AGGREGATOR FINAL ANSWER"
+    agg_text = json.dumps(agg["input_messages"])
+    assert "Mixture of Agents reference context" in agg_text
+    assert "advice from adv-a" in agg_text and "advice from adv-b" in agg_text
+
+
+def test_moa_trace_not_written_when_disabled(monkeypatch, tmp_path):
+    """Default (save_traces off) writes nothing."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response_with_usage(content="advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "hi"}], tools=[])
+    facade.consume_and_save_trace(session_id="sess-off")
+
+    assert not (home / "moa-traces").exists()
+
+
+def test_reference_guidance_appended_at_end_in_tool_loop():
+    """In an agentic loop the reference block must land at the END of the prompt.
+
+    The most recent user turn is the original task near the top of the context;
+    merging the per-turn (volatile) reference block into it would diverge the
+    prompt prefix early and defeat the server's KV-cache reuse, forcing a full
+    re-prefill of the whole conversation on every tool-loop step.
+    """
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "ORIGINAL TASK"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "tool result", "tool_call_id": "1"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # The original (top-of-context) user turn is untouched, so the prefix stays
+    # cache-reusable across steps.
+    assert messages[1]["content"] == "ORIGINAL TASK"
+    # The reference block is appended as a new trailing turn, not merged upstream.
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "REFERENCE BLOCK"
+    assert len(messages) == 5
+
+
+def test_reference_guidance_merges_into_trailing_user_in_plain_chat():
+    """Plain chat ends on the user turn, so the block merges there (still at end)."""
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "hello"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # No extra message; the block joins the trailing user turn (which is the end).
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "hello\n\nREFERENCE BLOCK"

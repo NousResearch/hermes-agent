@@ -14,6 +14,7 @@ import functools
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -378,10 +379,11 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    for command_variant in _command_detection_variants(command):
+        normalized = command_variant.lower()
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(normalized):
+                return (True, description)
     return (False, None)
 
 
@@ -760,17 +762,391 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return _fold_home_prefixes(command, candidates, "~/.hermes")
 
 
+_PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
+_PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
+_SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_COMMAND_WRAPPER_WORDS = {
+    "sudo",
+    "env",
+    "exec",
+    "nohup",
+    "setsid",
+    "time",
+    "command",
+    "builtin",
+}
+_SUDO_OPTIONS_WITH_ARG = {
+    "-c", "--close-from",
+    "-g", "--group",
+    "-h", "--host",
+    "-p", "--prompt",
+    "-u", "--user",
+}
+
+
+def _skip_shell_whitespace(command: str, pos: int) -> int:
+    while pos < len(command) and command[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _scan_dollar_paren_end(command: str, start: int) -> int | None:
+    """Return the offset after a balanced ``$(...)`` command substitution."""
+    depth = 1
+    quote: str | None = None
+    i = start + 2
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            depth += 1
+            i += 2
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return None
+
+
+def _scan_backtick_end(command: str, start: int) -> int | None:
+    i = start + 1
+    while i < len(command):
+        if command[i] == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command[i] == "`":
+            return i + 1
+        i += 1
+    return None
+
+
+def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
+    """Read one shell word without executing expansions."""
+    start = _skip_shell_whitespace(command, pos)
+    i = start
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            if end is None:
+                i += 2
+            else:
+                i = end
+            continue
+        if command.startswith("${", i):
+            end = command.find("}", i + 2)
+            if end == -1:
+                i += 2
+            else:
+                i = end + 1
+            continue
+        if ch == "`":
+            end = _scan_backtick_end(command, i)
+            if end is None:
+                i += 1
+            else:
+                i = end
+            continue
+        if ch.isspace() or ch in ";&|":
+            break
+        i += 1
+    return (start, i, command[start:i])
+
+
+def _strip_optional_shell_quotes(word: str) -> str:
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in ("'", '"'):
+        return word[1:-1]
+    return word
+
+
+def _is_simple_shell_literal(value: str) -> bool:
+    return bool(value and _SIMPLE_SHELL_LITERAL_RE.fullmatch(value))
+
+
+def _literal_command_substitution_output(script: str) -> str | None:
+    """Resolve tiny literal command substitutions without executing a shell."""
+    try:
+        tokens = shlex.split(script, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    command = tokens[0].lower()
+    args = tokens[1:]
+    if command == "echo":
+        while args and re.fullmatch(r"-[nEe]+", args[0]):
+            args = args[1:]
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        return None
+
+    if command == "printf":
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        if (
+            len(args) == 2
+            and args[0] == "%s"
+            and _is_simple_shell_literal(args[1])
+        ):
+            return args[1]
+    return None
+
+
+def _replace_simple_command_substitutions(word: str) -> str:
+    chars: list[str] = []
+    i = 0
+    while i < len(word):
+        if word.startswith("$(", i):
+            end = _scan_dollar_paren_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 2:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        if word[i] == "`":
+            end = _scan_backtick_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 1:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        chars.append(word[i])
+        i += 1
+    return "".join(chars)
+
+
+def _replace_simple_shell_expansions(word: str) -> str:
+    word = _replace_simple_command_substitutions(word)
+    word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
+    return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+
+
+def _strip_shell_word_syntax(word: str) -> str:
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(word):
+        ch = word[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(word):
+                chars.append(word[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+                i += 1
+                continue
+            chars.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(word):
+            chars.append(word[i + 1])
+            i += 2
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars)
+
+
+def _deobfuscate_shell_word_for_detection(word: str) -> str:
+    """Approximate how shell syntax can spell a command word.
+
+    This is intentionally narrow and non-executing: it only collapses shell
+    quoting/escaping plus simple literal command substitutions that appear in
+    the command word itself.
+    """
+    deobfuscated = word
+    for _ in range(2):
+        previous = deobfuscated
+        deobfuscated = _replace_simple_shell_expansions(deobfuscated)
+        deobfuscated = _strip_shell_word_syntax(deobfuscated)
+        if deobfuscated == previous:
+            break
+    return deobfuscated
+
+
+def _iter_shell_command_starts(command: str):
+    starts = [0]
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if command.startswith("$(", i):
+                starts.append(i + 2)
+                i += 2
+                continue
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            starts.append(i + 2)
+            i += 2
+            continue
+        if ch == ";":
+            starts.append(i + 1)
+            i += 1
+            continue
+        if ch == "&":
+            if i + 1 < len(command) and command[i + 1] == "&":
+                starts.append(i + 2)
+                i += 2
+            else:
+                starts.append(i + 1)
+                i += 1
+            continue
+        if ch == "|":
+            if i + 1 < len(command) and command[i + 1] == "|":
+                starts.append(i + 2)
+                i += 2
+            else:
+                starts.append(i + 1)
+                i += 1
+            continue
+        if ch == "\n":
+            starts.append(i + 1)
+        i += 1
+
+    seen: set[int] = set()
+    for start in starts:
+        start = _skip_shell_whitespace(command, start)
+        if start < len(command) and start not in seen:
+            seen.add(start)
+            yield start
+
+
+def _iter_shell_command_word_spans(command: str):
+    """Yield command-position words that may be executable names."""
+    for command_start in _iter_shell_command_starts(command):
+        pos = command_start
+        prefix_words = 0
+        skip_wrapper_options = False
+        skip_next_wrapper_arg = False
+        while prefix_words < 12:
+            word_start, word_end, word = _read_shell_word(command, pos)
+            if word_start == word_end:
+                break
+            deobfuscated = _deobfuscate_shell_word_for_detection(word)
+            lower_word = deobfuscated.lower()
+            if skip_next_wrapper_arg:
+                skip_next_wrapper_arg = False
+                pos = word_end
+                prefix_words += 1
+                continue
+            if skip_wrapper_options and lower_word.startswith("-"):
+                option_name = lower_word.split("=", 1)[0]
+                skip_next_wrapper_arg = (
+                    "=" not in lower_word
+                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                )
+                pos = word_end
+                prefix_words += 1
+                continue
+
+            yield (word_start, word_end, word)
+            prefix_words += 1
+
+            if lower_word in _COMMAND_WRAPPER_WORDS:
+                skip_wrapper_options = lower_word in {"sudo", "env"}
+                pos = word_end
+                continue
+            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                skip_wrapper_options = False
+                pos = word_end
+                continue
+            break
+
+
+def _command_detection_variants(command: str):
+    normalized = _normalize_command_for_detection(command)
+    seen = {normalized}
+    yield normalized
+    # Shell quoting/escaping can spell a dangerous executable name in pieces
+    # (for example r\m or r''m). Keep that deobfuscation scoped to command
+    # words so similarly shaped arguments do not become false positives.
+    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
+        deobfuscated = _deobfuscate_shell_word_for_detection(word)
+        if not deobfuscated or deobfuscated == word:
+            continue
+        variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
+        if variant in seen:
+            continue
+        seen.add(variant)
+        yield variant
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                pattern_key = description
+                return (True, pattern_key, description)
     return (False, None, None)
 
 

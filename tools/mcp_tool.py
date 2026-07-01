@@ -101,6 +101,28 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+
+def _truncate_mcp_tool_result(result: str) -> str:
+    """Bound MCP tool output before it enters conversation context."""
+    try:
+        from tools.tool_output_limits import get_max_bytes
+        max_chars = get_max_bytes()
+    except Exception:
+        max_chars = 50_000
+
+    if len(result) <= max_chars:
+        return result
+
+    head_chars = int(max_chars * 0.4)
+    tail_chars = max_chars - head_chars
+    omitted = len(result) - head_chars - tail_chars
+    truncated = (
+        result[:head_chars]
+        + f"\n\n... [MCP TOOL RESULT TRUNCATED - {omitted} chars omitted out of {len(result)} total] ...\n\n"
+        + result[-tail_chars:]
+    )
+    return json.dumps({"result": truncated}, ensure_ascii=False)
+
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
 # check makes a blocking urllib HTTPS call whose own timeout can fail to
 # interrupt a stalled SSL handshake, which froze the asyncio event loop and
@@ -3385,7 +3407,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
-            result = _call_once()
+            result = _truncate_mcp_tool_result(_call_once())
             # Check if the MCP tool itself returned an error
             try:
                 parsed = json.loads(result)

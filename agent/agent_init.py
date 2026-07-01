@@ -974,6 +974,21 @@ def init_agent(
         # this mutation is reflected in the client built just below.
         agent._apply_user_default_headers()
 
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config,
+            )
+
+            apply_custom_provider_tls_to_client_kwargs(
+                client_kwargs,
+                str(client_kwargs.get("base_url") or agent.base_url or ""),
+                get_compatible_custom_providers(load_config()),
+            )
+        except Exception:
+            pass
+
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
         try:

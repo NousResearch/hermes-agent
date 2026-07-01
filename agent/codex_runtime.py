@@ -244,7 +244,10 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    from agent.transports.codex_app_server_session import (
+        CodexAppServerSession,
+        _ServerRequestRouting,
+    )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
@@ -261,6 +264,37 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        # Gateway / cron contexts have no UI to surface codex's approval
+        # requests through, so codex app-server exec / apply_patch requests
+        # fail closed (silently decline) by default. When the user has
+        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
+        # in config, the /yolo session toggle, or HERMES_YOLO_MODE=1 — honor
+        # that and let codex's own sandbox permission profile
+        # (~/.codex/config.toml) be the policy gate instead of double-gating
+        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
+        # current fail-closed behavior — this is a no-op for those users.
+        auto_approve_requests = False
+        try:
+            from tools.approval import (
+                _get_approval_mode,
+                is_current_session_yolo_enabled,
+            )
+
+            auto_approve_requests = (
+                _get_approval_mode() == "off"
+                or is_current_session_yolo_enabled()
+            )
+        except Exception:
+            logger.debug(
+                "codex app-server: approval-mode lookup failed; "
+                "keeping fail-closed default",
+                exc_info=True,
+            )
+        if not auto_approve_requests:
+            auto_approve_requests = os.getenv(
+                "HERMES_YOLO_MODE", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
 
         def _on_codex_event(note: dict) -> None:
             # Bridge Codex app-server item/started notifications to Hermes
@@ -281,6 +315,10 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            request_routing=_ServerRequestRouting(
+                auto_approve_exec=auto_approve_requests,
+                auto_approve_apply_patch=auto_approve_requests,
+            ),
             on_event=_on_codex_event,
         )
 

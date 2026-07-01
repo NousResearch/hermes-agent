@@ -2211,6 +2211,17 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if normalized in agent.valid_tool_names:
         return normalized
 
+    # Some inference servers drop the leading "tool" token of the Tool Search bridge
+    # names (tool_search / tool_describe / tool_call) when streaming, because those
+    # names collide with the server's <tool_call> markup detection — so `tool_search`
+    # arrives as `_search`. Restore it deterministically BEFORE the fuzzy match, which
+    # otherwise mis-scores `_search` -> `web_search` (difflib 0.82) over `tool_search`
+    # (0.78). Unambiguous: no legitimate tool is named `_x`.
+    if tool_name.startswith("_"):
+        restored = "tool" + tool_name
+        if restored in agent.valid_tool_names:
+            return restored
+
     # Build the full candidate set for class-like emissions.
     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
     # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.

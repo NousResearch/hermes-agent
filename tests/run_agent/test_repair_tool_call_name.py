@@ -186,3 +186,30 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+# ── Tool Search bridge: leading-"tool" token dropped when streaming ──────────
+# Some inference servers emit the bridge tool names one token short
+# (tool_search -> _search) because they collide with <tool_call> markup
+# detection. Repair must restore them before the fuzzy fallback, which would
+# otherwise mis-score `_search` to `web_search` over `tool_search`.
+_BRIDGE_VALID = {"tool_search", "tool_describe", "tool_call", "web_search", "session_search"}
+
+
+def _bridge_repair():
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=_BRIDGE_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+@pytest.mark.parametrize(
+    "emitted,expected",
+    [("_search", "tool_search"), ("_describe", "tool_describe"), ("_call", "tool_call")],
+)
+def test_bridge_leading_underscore_restore(emitted, expected):
+    assert _bridge_repair()(emitted) == expected
+
+
+def test_bridge_underscore_fragment_without_tool_form_is_not_invented():
+    # `_nope` has no `tool_nope` — must not be force-mapped to a bridge tool.
+    assert _bridge_repair()("_nope") != "tool_search"

@@ -65,10 +65,30 @@ def _config_with_camofox(**camofox_config):
 def _mock_response(status=200, json_data=None):
     resp = MagicMock()
     resp.status_code = status
-    resp.json.return_value = json_data or {}
+    payload = json.dumps(json_data or {}).encode("utf-8")
+    resp.iter_content.return_value = [payload]
+    resp.encoding = "utf-8"
+    resp.json.side_effect = AssertionError(
+        "Camofox JSON must be read through the bounded stream reader"
+    )
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
+    resp.close = MagicMock()
     return resp
+
+
+def test_camofox_json_reader_rejects_oversized_response():
+    from tools import browser_camofox as mod
+
+    resp = MagicMock()
+    resp.encoding = "utf-8"
+    resp.iter_content.return_value = [b"x" * (mod._CAMOFOX_JSON_MAX_BYTES + 1)]
+
+    try:
+        mod._read_camofox_json(resp)
+        assert False, "expected oversized Camofox JSON to fail"
+    except mod.CamofoxJSONResponseTooLarge as exc:
+        assert "exceeded" in str(exc)
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ body.  A previous version sent ``sessionKey`` which caused a 400 Bad Request
 on every ``browser_navigate`` call.  See issue #37960.
 """
 
+import json
 from unittest.mock import patch, MagicMock
 
 
@@ -22,8 +23,15 @@ def test_ensure_tab_sends_list_item_id():
     }
 
     mock_response = MagicMock()
-    mock_response.json.return_value = {"tabId": "tab-42"}
+    mock_response.iter_content.return_value = [
+        json.dumps({"tabId": "tab-42"}).encode("utf-8")
+    ]
+    mock_response.encoding = "utf-8"
+    mock_response.json.side_effect = AssertionError(
+        "Camofox JSON must be read through the bounded stream reader"
+    )
     mock_response.raise_for_status = MagicMock()
+    mock_response.close = MagicMock()
 
     with patch.object(mod, "_get_session", return_value=fake_session), \
          patch.object(mod, "get_camofox_url", return_value="http://localhost:9377"), \
@@ -41,6 +49,7 @@ def test_ensure_tab_sends_list_item_id():
     assert body["listItemId"] == "task_my-session"
     assert body["userId"] == "hermes_test123"
     assert body["url"] == "https://example.com"
+    assert call_kwargs.kwargs.get("stream") is True
 
     # Verify tab_id was set from response
     assert result["tab_id"] == "tab-42"

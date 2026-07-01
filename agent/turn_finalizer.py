@@ -420,7 +420,13 @@ def finalize_turn(
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,
-        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
+        # -1 is the compressor's "awaiting real usage" sentinel right after a
+        # compression (agent/conversation_compression.py) and is truthy, so
+        # `or 0` alone doesn't clamp it. Persisting -1 here durably survives
+        # into session_entry.last_prompt_tokens (see gateway/run.py's
+        # session_store.update_session call), where /status would otherwise
+        # display it verbatim as a nonsensical negative token count.
+        "last_prompt_tokens": max(0, getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0),
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,

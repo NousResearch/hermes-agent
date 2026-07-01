@@ -544,13 +544,23 @@ class GatewaySlashCommandsMixin:
             base_url = _clean_str(getattr(status_agent, "base_url", ""))
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
-                context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
+                # last_prompt_tokens is -1 immediately after a compression
+                # ("awaiting real usage" sentinel, see
+                # conversation_compression.py) and -1 is truthy, so an
+                # unclamped value here would both display as a nonsensical
+                # negative token count AND short-circuit the session_entry
+                # fallback below via `context_used or ...`. Clamp to 0,
+                # matching the same guard already used for /usage above.
+                _ctx_lpt = _int_value(getattr(ctx, "last_prompt_tokens", 0))
+                context_used = _ctx_lpt if _ctx_lpt > 0 else 0
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
         model_name = model_name or _clean_str(session_row.get("model"))
         provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
         base_url = base_url or _clean_str(session_row.get("billing_base_url"))
-        context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+        if not context_used:
+            _entry_lpt = _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+            context_used = _entry_lpt if _entry_lpt > 0 else 0
 
         user_config: dict[str, Any] = {}
         if not model_name or not provider_name or not context_total:

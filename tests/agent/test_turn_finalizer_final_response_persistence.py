@@ -110,3 +110,34 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_negative_last_prompt_tokens_sentinel_is_clamped(monkeypatch):
+    """context_compressor.last_prompt_tokens == -1 is the compressor's
+    "awaiting real usage" sentinel right after a compression
+    (agent/conversation_compression.py). -1 is truthy, so a bare `or 0`
+    doesn't clamp it, and gateway/run.py persists this field verbatim into
+    session_entry.last_prompt_tokens, where /status would otherwise display
+    it as a nonsensical negative token count.
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent.context_compressor = SimpleNamespace(last_prompt_tokens=-1)
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Done."}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="hi",
+        original_user_message="hi",
+        _should_review_memory=False,
+        _turn_exit_reason="fallback_prior_turn_content",
+    )
+
+    assert result["last_prompt_tokens"] == 0

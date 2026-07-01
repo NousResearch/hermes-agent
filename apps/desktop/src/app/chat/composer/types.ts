@@ -54,7 +54,12 @@ export interface ChatBarProps {
   onSteer?: (text: string) => Promise<boolean> | boolean
   onSubmit: (
     value: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+    options?: {
+      attachments?: ComposerAttachment[]
+      fromQueue?: boolean
+      sessionId?: string | null
+      storedSessionId?: string | null
+    }
   ) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }

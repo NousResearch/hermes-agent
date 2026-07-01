@@ -193,11 +193,19 @@ export function useComposerQueue({
         return false
       }
 
+      const drainQueueSessionKey = activeQueueSessionKey
+      const drainRuntimeSessionId = sessionId ?? null
+
       drainingQueueRef.current = true
 
       try {
         const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
+          onSubmit(entry.text, {
+            attachments: entry.attachments,
+            fromQueue: true,
+            sessionId: drainRuntimeSessionId,
+            storedSessionId: drainQueueSessionKey
+          })
         )
 
         if (accepted === false) {
@@ -205,8 +213,8 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
-        resetBrowseState(sessionId)
+        removeQueuedPrompt(drainQueueSessionKey, entry.id)
+        resetBrowseState(drainRuntimeSessionId)
 
         return true
       } finally {

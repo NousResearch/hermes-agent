@@ -47,7 +47,15 @@ interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
+  submitText: (
+    text: string,
+    options?: {
+      attachments?: ComposerAttachment[]
+      fromQueue?: boolean
+      sessionId?: string | null
+      storedSessionId?: string | null
+    }
+  ) => Promise<boolean>
 }
 
 function Harness({
@@ -400,6 +408,31 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
+      },
+      1_800_000
+    )
+  })
+
+  it('a fromQueue drain sends to the queued session even after the active session changes', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const accepted = await handle!.submitText('queued for another session', {
+      fromQueue: true,
+      sessionId: 'rt-session-a',
+      storedSessionId: 'stored-session-a'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-session-a',
+        text: 'queued for another session'
       },
       1_800_000
     )

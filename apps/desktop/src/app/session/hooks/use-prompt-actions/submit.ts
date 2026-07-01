@@ -112,9 +112,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
+      const targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+      let sessionId: null | string = options?.sessionId ?? activeSessionId
+
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
-      const submitLockKey = selectedStoredSessionIdRef.current || activeSessionId || '__pending_new__'
+      const submitLockKey = targetStoredSessionId || sessionId || '__pending_new__'
 
       if (_submitInFlight.has(submitLockKey)) {
         return false
@@ -165,7 +168,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          selectedStoredSessionIdRef.current
+          targetStoredSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -177,7 +180,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          selectedStoredSessionIdRef.current
+          targetStoredSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -196,7 +199,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          selectedStoredSessionIdRef.current
+          targetStoredSessionId
         )
       }
 
@@ -204,8 +207,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setBusy(true)
       setAwaitingResponse(true)
       clearNotifications()
-
-      let sessionId: null | string = activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -257,16 +258,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
+          if (isSessionNotFoundError(firstErr) && targetStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
+              session_id: targetStoredSessionId
             })
 
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
+              if (targetStoredSessionId === selectedStoredSessionIdRef.current) {
+                activeSessionIdRef.current = recoveredId
+              }
               await withSessionBusyRetry(() =>
                 requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
@@ -303,23 +306,27 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 
-        updateSessionState(sessionId, state => ({
-          ...state,
-          messages: [
-            ...state.messages,
-            {
-              id: `assistant-error-${Date.now()}`,
-              role: 'assistant',
-              parts: [],
-              error: message || copy.promptFailed,
-              branchGroupId: state.pendingBranchGroup ?? undefined
-            }
-          ],
-          busy: false,
-          awaitingResponse: false,
-          pendingBranchGroup: null,
-          sawAssistantPayload: true
-        }))
+        updateSessionState(
+          sessionId,
+          state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `assistant-error-${Date.now()}`,
+                role: 'assistant',
+                parts: [],
+                error: message || copy.promptFailed,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ],
+            busy: false,
+            awaitingResponse: false,
+            pendingBranchGroup: null,
+            sawAssistantPayload: true
+          }),
+          targetStoredSessionId
+        )
 
         if (isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)

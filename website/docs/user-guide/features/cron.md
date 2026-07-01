@@ -370,6 +370,24 @@ to the `thread` surface (their continuation primitives differ); the choice is
 per-platform, set under each platform's config. It's a gateway-side config flag
 — a `/restart` picks it up; no Slack app reinstall is needed.
 
+:::note 1:1 DMs
+`cron_continuable_surface` is a **channel** setting — a 1:1 DM has no
+thread-vs-timeline split to choose between (the DM is already flat), so the key
+has no effect there. What governs whether a DM cron delivery is continuable is
+the separate, pre-existing knob **`slack.dm_top_level_threads_as_sessions`**:
+
+- **`false`** — all top-level DMs share one rolling DM session, so a continuable
+  cron brief and your reply land in the **same** session and the job continues in
+  context. This is what you want for continuable cron in a DM.
+- **`true`** (default) — each top-level DM message is its own session, so a reply
+  to a delivered brief starts a *fresh* session that has no record of the brief.
+  Continuation does not work in this mode (for cron or any other flat delivery).
+
+So for a continuable cron job delivered to a 1:1 DM, set
+`slack.dm_top_level_threads_as_sessions: false`. `cron_continuable_surface` is
+not required (and is ignored) for DMs.
+:::
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

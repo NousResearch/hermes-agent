@@ -362,6 +362,7 @@ Prompt caching is automatically enabled when:
 ```yaml
 # config.yaml — TTL is configurable (must be "5m" or "1h")
 prompt_caching:
+  enabled: true    # set false to stop sending cache_control markers (strict-proxy escape hatch)
   cache_ttl: "5m"
 ```
 

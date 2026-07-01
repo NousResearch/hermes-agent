@@ -115,7 +115,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Dedicated REST session for send() calls
             self._rest_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=aiohttp.ClientTimeout(total=30),
+                trust_env=True,
             )
 
             # Warn if no event filters are configured
@@ -143,7 +144,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = f"{ws_url}/api/websocket"
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=True,
         )
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
 
@@ -419,7 +421,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         body = await resp.text()
                         return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
             else:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(trust_env=True) as session:
                     async with session.post(
                         url,
                         headers=headers,
@@ -504,7 +506,8 @@ async def _standalone_send(
 
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=True,
         ) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:

@@ -16,6 +16,7 @@ from gateway.config import (
 )
 from plugins.platforms.homeassistant.adapter import (
     HomeAssistantAdapter,
+    _standalone_send,
     check_ha_requirements,
 )
 
@@ -517,6 +518,8 @@ class TestSendViaRestApi:
         assert call_args[1]["json"]["title"] == "Hermes Agent"
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
+        # Session must be proxy-env-aware so Agent Vault credential injection works
+        assert mock_aiohttp.ClientSession.call_args.kwargs.get("trust_env") is True
 
     @pytest.mark.asyncio
     async def test_send_http_error(self):
@@ -587,3 +590,89 @@ class TestWsUrlConstruction:
         adapter = HomeAssistantAdapter(config)
         ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         assert ws_url == "wss://ha.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Proxy environment support (Agent Vault credential injection)
+# ---------------------------------------------------------------------------
+
+
+class TestTrustEnv:
+    """All Home Assistant aiohttp sessions must opt in to proxy env handling.
+
+    Without trust_env=True, aiohttp ignores HTTPS_PROXY/HTTP_PROXY, so
+    traffic bypasses an env-based credential-injection proxy (e.g. Agent
+    Vault) that curl/requests/httpx would honor by default.
+    """
+
+    @staticmethod
+    def _mock_ws_session():
+        """Mock session whose ws_connect() completes the HA auth handshake."""
+        mock_ws = MagicMock()
+        mock_ws.send_json = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=[
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+            {"success": True},
+        ])
+
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+        return mock_session
+
+    @pytest.mark.asyncio
+    async def test_ws_connect_uses_trust_env(self):
+        adapter = _make_adapter()
+        mock_session = self._mock_ws_session()
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            success = await adapter._ws_connect()
+
+        assert success is True
+        assert mock_aiohttp.ClientSession.call_args.kwargs.get("trust_env") is True
+
+    @pytest.mark.asyncio
+    async def test_connect_rest_session_uses_trust_env(self):
+        adapter = _make_adapter()
+        mock_session = self._mock_ws_session()
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            success = await adapter.connect()
+
+        assert success is True
+        # Called twice: once for the WS session, once for the dedicated REST session
+        for call in mock_aiohttp.ClientSession.call_args_list:
+            assert call.kwargs.get("trust_env") is True
+
+        adapter._listen_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_trust_env(self):
+        pconfig = MagicMock()
+        pconfig.token = "tok"
+        pconfig.extra = {"url": "http://ha.local:8123"}
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            result = await _standalone_send(pconfig, "ha_events", "Test notification")
+
+        assert result.get("success") is True
+        assert mock_aiohttp.ClientSession.call_args.kwargs.get("trust_env") is True

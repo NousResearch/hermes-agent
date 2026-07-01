@@ -4802,6 +4802,85 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
+def _wait_for_active_compression(
+    session: dict,
+    sid: str,
+    *,
+    timeout_seconds: float = 120.0,
+    poll_interval_seconds: float = 0.1,
+) -> None:
+    """Wait until any in-flight compression on this session completes.
+
+    When ``busy_input_mode`` is ``interrupt``, the live turn is interrupted
+    so it winds down — but compression (once started) is non-interruptible
+    (``aux_interrupt_protection``).  The compression holds its DB lock keyed
+    on the *old* ``session_id``.  If we enqueue a new message before the
+    lock is released, the next turn starts with a stale ``session_key``
+    that points to the (soon-to-be-ended) parent session.  When compression
+    finishes and rotates the id, the enqueued message's turn runs on the
+    wrong session — producing orphaned sibling forks (see #56391).
+
+    This function polls ``get_compression_lock_holder`` on the session's
+    DB until the lock clears (or the timeout expires), so the caller can
+    safely enqueue the message *after* the ``session_key`` has rotated.
+
+    Args:
+        session: The gateway session dict.
+        sid: Session id (used for diagnostics).
+        timeout_seconds: Max time to wait for the lock to clear.
+            Defaults to 120s (2× the default compression lock TTL of 60s
+            to survive one lease-refresh cycle).
+        poll_interval_seconds: How often to check.  Defaults to 100ms.
+    """
+    session_key = session.get("session_key", "")
+    if not session_key:
+        return
+
+    db = None
+    # Try to get the SessionDB for this session
+    agent = session.get("agent")
+    if agent is not None:
+        db = getattr(agent, "_session_db", None)
+    if db is None:
+        # Fallback: open via the gateway's _session_db context manager
+        try:
+            # Import inside to avoid circular imports
+            from hermes_state import SessionDB as _SessionDB
+            from pathlib import Path
+
+            profile_home = session.get("profile_home")
+            if profile_home:
+                db = _SessionDB(db_path=Path(profile_home) / "state.db")
+            else:
+                db = _get_db()
+        except Exception:
+            # No DB available — nothing to wait for
+            return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            holder = db.get_compression_lock_holder(session_key)
+        except Exception:
+            # DB method unavailable (e.g. version skew) — can't detect
+            # compression, proceed without waiting
+            return
+        if holder is None:
+            # No active compression lock — safe to proceed
+            return
+        # Lock is held — compression is in flight. Wait and re-check.
+        time.sleep(poll_interval_seconds)
+
+    # Timeout — log a warning but proceed anyway.  The worst case is the
+    # pre-rotation race that existed before this fix.
+    logger.warning(
+        "Timed out waiting for compression lock on session %s "
+        "(key=%s) after %.0fs — proceeding with enqueue. "
+        "This may result in a stale session_key (#56391).",
+        sid, session_key, timeout_seconds,
+    )
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -4831,6 +4910,13 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
             agent.interrupt()
         except Exception:
             pass
+        # Fix for #56391: wait for any in-flight compression to finish
+        # before enqueuing the message.  Compression is non-interruptible
+        # (aux_interrupt_protection), and once it completes the session_id
+        # rotates — so the next turn must use the new session_key.  Without
+        # this wait, the enqueued message starts a turn on the stale
+        # (pre-rotation) session_id, producing orphaned sibling forks.
+        _wait_for_active_compression(session, sid)
     _enqueue_prompt(session, text, transport)
     session["last_active"] = time.time()
     return _ok(rid, {"status": "queued"})

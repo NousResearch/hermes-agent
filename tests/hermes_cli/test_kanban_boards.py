@@ -311,6 +311,77 @@ class TestBoardCRUD:
 
 
 # ---------------------------------------------------------------------------
+# Archive/connect race — ghost board resurrection
+# ---------------------------------------------------------------------------
+
+class TestArchiveConnectRaceGhosts:
+    """Regressions for the archive/dispatcher race.
+
+    ``remove_board(archive=True)`` renames ``boards/<slug>/`` away while
+    gateway pollers, holding a board list from the top of their tick,
+    still call ``connect(board=slug)`` — which used to ``mkdir`` +
+    create an empty ``kanban.db``, resurrecting the board as a ghost
+    (kanban.db, no board.json, 0 tasks) that ``list_boards()`` then
+    surfaced forever.
+    """
+
+    def test_list_boards_skips_empty_shell(self, fresh_home):
+        # Real board with a task: listed.
+        kb.create_board("real")
+        with kb.connect(board="real") as conn:
+            kb.create_task(conn, title="t", assignee="dev")
+
+        # board.json-only board (fresh create, no tasks yet): listed.
+        kb.create_board("fresh")
+        db = kb.board_dir("fresh") / "kanban.db"
+        if db.exists():
+            db.unlink()
+
+        # Ghost shell: kanban.db with an empty schema, no board.json —
+        # exactly what a racing connect() used to leave behind.
+        ghost_dir = kb.boards_root() / "ghost"
+        kb.connect(db_path=ghost_dir / "kanban.db").close()
+        assert (ghost_dir / "kanban.db").exists()
+        assert not (ghost_dir / "board.json").exists()
+
+        slugs = [b["slug"] for b in kb.list_boards()]
+        assert "real" in slugs
+        assert "fresh" in slugs
+        assert "ghost" not in slugs
+
+    def test_list_boards_keeps_shell_with_metadata(self, fresh_home):
+        # An empty board WITH board.json is a legitimate new board.
+        kb.create_board("brand-new")
+        assert "brand-new" in [b["slug"] for b in kb.list_boards()]
+
+    def test_connect_create_false_raises_and_does_not_create(self, fresh_home):
+        d = kb.board_dir("nosuch")
+        with pytest.raises(ValueError, match="does not exist"):
+            kb.connect(board="nosuch", create=False)
+        assert not d.exists()
+        assert not kb.board_exists("nosuch")
+
+    def test_connect_create_false_after_archive(self, fresh_home):
+        kb.create_board("archived-race")
+        conn = kb.connect(board="archived-race", create=False)  # exists: OK
+        conn.close()
+        kb.remove_board("archived-race", archive=True)
+        with pytest.raises(ValueError, match="does not exist"):
+            kb.connect(board="archived-race", create=False)
+        # The ghost must not have been resurrected.
+        assert not kb.board_dir("archived-race").exists()
+        assert "archived-race" not in [b["slug"] for b in kb.list_boards()]
+
+    def test_connect_create_false_still_creates_default(self, fresh_home):
+        # `default` is exempt: it is always creatable lazily.
+        conn = kb.connect(board="default", create=False)
+        try:
+            assert kb.list_tasks(conn) == []
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Connection isolation
 # ---------------------------------------------------------------------------
 

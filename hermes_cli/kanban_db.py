@@ -740,6 +740,30 @@ def create_board(
     return meta
 
 
+def _board_is_empty_shell(db_path: Path) -> bool:
+    """Return True when ``db_path`` looks like a ghost shell: a kanban.db
+    holding zero tasks (or one that can't even be read).
+
+    Ghost shells are the residue of the archive/connect race (see
+    :func:`list_boards`): ``connect()`` used to unconditionally
+    ``mkdir`` + open the DB, so a dispatcher tick that raced
+    ``remove_board()`` recreated ``boards/<slug>/kanban.db`` with an
+    empty schema and no ``board.json``. Opened read-only so the probe
+    itself can never create or touch the file; any failure (missing
+    ``tasks`` table, lock timeout, unreadable file) is treated as
+    "empty shell" — a real, in-use board answers this query trivially.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()
+        finally:
+            conn.close()
+        return not row or int(row[0]) == 0
+    except Exception:
+        return True
+
+
 def list_boards(*, include_archived: bool = True) -> list[dict]:
     """Enumerate all boards that exist on disk.
 
@@ -747,6 +771,19 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     metadata dir doesn't exist, because its DB is at the legacy path).
     Other boards are discovered by scanning ``boards/`` for subdirectories
     that either contain a ``kanban.db`` or a ``board.json``.
+
+    Ghost-shell guard: a directory holding a ``kanban.db`` but **no**
+    ``board.json`` and **zero** tasks is skipped. Such shells are
+    produced by a race between ``remove_board(archive=True)`` and the
+    gateway dispatch loop — the dispatcher enumerates boards each tick
+    and then ``connect(board=slug)``s each one, and a tick still holding
+    a just-archived slug used to recreate ``boards/<slug>/kanban.db``
+    via ``mkdir(exist_ok=True)``. Without this filter the resurrected
+    shell is listed forever (it has a ``kanban.db``) and every
+    subsequent tick re-touches it, so the archived board "reappears"
+    as an empty ghost. Boards with a ``board.json`` are always listed,
+    even when empty — a freshly ``create_board``-ed board has no tasks
+    yet and must still show up.
 
     Returns a list of metadata dicts, sorted with ``default`` first and
     the rest alphabetically.
@@ -775,6 +812,10 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
             has_db = (child / "kanban.db").exists()
             has_meta = (child / "board.json").exists()
             if not (has_db or has_meta):
+                continue
+            if has_db and not has_meta and _board_is_empty_shell(child / "kanban.db"):
+                # Ghost shell resurrected by the archive/connect race —
+                # see the docstring. Not a real board; don't surface it.
                 continue
             meta = read_board_metadata(normed)
             if meta.get("archived") and not include_archived:
@@ -1682,6 +1723,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1692,6 +1734,19 @@ def connect(
     fresh installs and test harnesses that construct `connect()`
     directly don't have to remember a separate init step. Subsequent
     connections skip the schema check via a module-level path cache.
+
+    ``create=False`` refuses to materialize a missing **non-default**
+    board: when the board's ``kanban.db`` does not exist on disk, a
+    :class:`ValueError` (``board '<slug>' does not exist``) is raised
+    instead of ``mkdir`` + creating an empty DB. Long-lived pollers
+    (the gateway dispatcher / notifier, which enumerate boards every
+    tick and then connect to each) must pass ``create=False``:
+    otherwise a tick that races ``remove_board(archive=True)`` — the
+    rename happening between the tick's ``list_boards()`` and its
+    ``connect(board=slug)`` — silently resurrects the just-archived
+    board as an empty ghost directory. The ``default`` board is exempt
+    (it is always creatable lazily; there is no configuration where
+    kanban is usable and ``default`` legitimately "does not exist").
 
     Path resolution:
 
@@ -1705,6 +1760,10 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    if not create:
+        requested = _normalize_board_slug(board)
+        if requested and requested != DEFAULT_BOARD and not path.exists():
+            raise ValueError(f"board {requested!r} does not exist")
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, the expensive

@@ -231,7 +231,12 @@ class GatewayKanbanWatchersMixin:
                             continue
                         seen_db_paths.add(resolved_db_path)
                         try:
-                            conn = _kb.connect(board=slug)
+                            # create=False: this tick's board list can be
+                            # stale — if the board was archived/removed
+                            # between list_boards() and here, a default
+                            # connect() would resurrect it as an empty
+                            # ghost directory. Skip it instead.
+                            conn = _kb.connect(board=slug, create=False)
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
@@ -1006,7 +1011,19 @@ class GatewayKanbanWatchersMixin:
                     )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                try:
+                    # create=False: the slug came from list_boards() at the
+                    # top of this tick; if the board was archived/removed in
+                    # the meantime, a default connect() would recreate its
+                    # directory + an empty kanban.db (ghost board). Skip.
+                    conn = _kb.connect(board=slug, create=False)
+                except ValueError as exc:
+                    logger.debug(
+                        "kanban dispatcher: board %s vanished before tick "
+                        "(archived/removed?); skipping: %s",
+                        slug, exc,
+                    )
+                    return None
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -1097,7 +1114,9 @@ class GatewayKanbanWatchersMixin:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
                 try:
-                    conn = _kb.connect(board=slug)
+                    # create=False so a probe racing remove_board() cannot
+                    # resurrect a just-archived board (ghost recreation).
+                    conn = _kb.connect(board=slug, create=False)
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):

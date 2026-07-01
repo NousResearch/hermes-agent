@@ -367,8 +367,22 @@ def _is_blocked_device_path(path: str) -> bool:
     # memory layout (ASLR bypass) from the host process (issue #4427).
     # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
     # though it requires address knowledge to exploit usefully.
+    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
+    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
+    # virtual->physical translation. Both are blocked alongside the maps family.
+    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
     if normalized.startswith("/proc/") and normalized.endswith(
-        ("/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps", "/mem")
+        (
+            "/environ",
+            "/cmdline",
+            "/maps",
+            "/smaps",
+            "/smaps_rollup",
+            "/numa_maps",
+            "/mem",
+            "/auxv",
+            "/pagemap",
+        )
     ):
         return True
     return False

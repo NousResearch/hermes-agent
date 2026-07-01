@@ -564,8 +564,20 @@ async def _ssrf_redirect_guard(response):
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
+# Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
+# re-resolve per call so the active profile override is honored.
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
+
+
+def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
+    """Resolve fresh via get_hermes_dir (active profile), unless a test has
+    monkeypatched the constant away from its import-time default."""
+    fresh = get_hermes_dir(new_subpath, old_name)
+    current = globals().get(constant_name)
+    default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
+    if current is not None and default is not None and current != default:
+        return Path(current)
+    return fresh
 
 # ---------------------------------------------------------------------------
 # Inbound media size cap (#13145)
@@ -660,8 +672,9 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
-    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return IMAGE_CACHE_DIR
+    d = _resolve_cache_dir("IMAGE_CACHE_DIR", "cache/images", "image_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _looks_like_image(data: bytes) -> bool:
@@ -806,8 +819,9 @@ AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 def get_audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if it doesn't exist."""
-    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return AUDIO_CACHE_DIR
+    d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
@@ -912,8 +926,9 @@ SUPPORTED_VIDEO_TYPES = {
 
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""
-    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return VIDEO_CACHE_DIR
+    d = _resolve_cache_dir("VIDEO_CACHE_DIR", "cache/videos", "video_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
@@ -935,6 +950,17 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+# Import-time defaults; _resolve_cache_dir compares against these to tell a
+# test monkeypatch from an unmodified constant.
+_CACHE_DIR_IMPORT_DEFAULTS = {
+    "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
+    "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
+    "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR,
+    "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
+    "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR,
+}
+
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -1442,11 +1468,58 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Extension-less absolute paths (e.g. Caddyfile, Dockerfile, Makefile) are
+# intentionally excluded from MEDIA_TAG_CLEANUP_RE — they are validated and
+# delivered via MEDIA_EXTENSIONLESS_TAG_RE so prompt-injection paths that do
+# not exist on disk are left visible instead of silently dropped. Paths with
+# an unknown but present extension (e.g. .weirdext) stay on the #34517
+# bare-path fallback and are not handled here.
+MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
+    r'''[`"']?MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+)'''
+    r'''[`"']?\s*''',
+    re.IGNORECASE,
+)
+
+
+def _normalize_media_tag_path(raw: str) -> str:
+    path = str(raw or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+        path = path[1:-1].strip()
+    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+
+
+def _path_lacks_deliverable_extension(path: str) -> bool:
+    """True only when the basename has no extension (Caddyfile, Makefile, …)."""
+    return not Path(path).suffix
+
+
+def _strip_media_tag_directives(text: str) -> str:
+    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
+    if (
+        "MEDIA:" not in text
+        and "[[audio_as_voice]]" not in text
+        and "[[as_document]]" not in text
+    ):
+        return text
+    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+
+    def _strip_extensionless(match: re.Match) -> str:
+        path = _normalize_media_tag_path(match.group("path"))
+        if not path or not _path_lacks_deliverable_extension(path):
+            return match.group(0)
+        return "" if validate_media_delivery_path(path) else match.group(0)
+
+    cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
+    return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
+
 
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
-    DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return DOCUMENT_CACHE_DIR
+    d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -1690,6 +1763,13 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Free-form per-event metadata.  Adapters may set platform-specific
+    # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
+    # the bridge is configured to forward owner-typed messages).  Plugins
+    # consume via ``event.metadata.get(...)`` and must not rely on any
+    # particular key existing.
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -2111,13 +2191,13 @@ def _strip_media_directives(text: str) -> str:
     Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
     ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
     extension are removed; an unknown-extension tag is intentionally left so the
-    bare-path detector downstream can still pick it up, per #34517). [[...]] is
-    exact.
+    bare-path detector downstream can still pick it up, per #34517). Validated
+    extension-less tags (e.g. ``MEDIA:/output/Caddyfile``) are also removed.
+    [[...]] is exact.
     """
     if not text:
         return text
-    text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return MEDIA_TAG_CLEANUP_RE.sub("", text)
+    return _strip_media_tag_directives(text)
 
 
 class BasePlatformAdapter(ABC):
@@ -2229,6 +2309,12 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional authorization check, registered by GatewayRunner. Used by
+        # adapters that fetch external context (e.g. Slack thread history) to
+        # mark senders not on the allowlist as unverified in LLM context,
+        # mitigating indirect prompt injection from third parties in a shared
+        # thread/channel.
+        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2660,6 +2746,44 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_authorization_check(
+        self,
+        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
+    ) -> None:
+        """Register a platform-bound authorization check.
+
+        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
+        It is used by adapters that pull external context (e.g. Slack thread
+        replies via ``conversations.replies``) to flag messages from senders
+        that are not on the configured allowlist, so the LLM can treat them
+        as unverified background reference rather than authoritative input.
+        """
+        self._authorization_check = callback
+
+    def _is_sender_authorized(
+        self,
+        user_id: Optional[str],
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return whether ``user_id`` is on the allowlist, if a check is configured.
+
+        Returns ``True``/``False`` when an authorization check has been
+        registered via :meth:`set_authorization_check`. Returns ``None``
+        when no check is registered (caller should treat as "trust unknown"
+        and preserve legacy behaviour).
+        """
+        if not user_id or self._authorization_check is None:
+            return None
+        try:
+            return bool(self._authorization_check(user_id, chat_type, chat_id))
+        except Exception:
+            logger.warning(
+                "[%s] Authorization check raised for user %s; treating as unknown",
+                self.name, user_id, exc_info=True,
+            )
+            return None
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3148,12 +3272,20 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
-        
+
         Override in subclasses to send audio as voice bubbles (Telegram)
-        or file attachments (Discord). Default falls back to sending the
-        file path as text.
+        or file attachments (Discord). Default falls back to a friendly
+        notice — never echo the local audio_path into chat, since it is a
+        host filesystem path that would leak the Hermes home layout.
         """
-        text = f"🔊 Audio: {audio_path}"
+        # audio_path is intentionally NOT included in the chat text — it is a
+        # host-local path that leaks filesystem layout. The path is logged for
+        # operator diagnostics instead.
+        logger.warning(
+            "[%s] send_voice fallback: native audio send unavailable for %s",
+            self.name, audio_path,
+        )
+        text = "⚠️ Couldn't deliver the audio attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3192,9 +3324,16 @@ class BasePlatformAdapter(ABC):
         Send a video natively via the platform API.
 
         Override in subclasses to send videos as inline playable media.
-        Default falls back to sending the file path as text.
+        Default falls back to a friendly notice — never echo the local
+        video_path into chat, since it is a host filesystem path that
+        would leak the Hermes home layout.
         """
-        text = f"🎬 Video: {video_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_video fallback: native video send unavailable for %s",
+            self.name, video_path,
+        )
+        text = "⚠️ Couldn't deliver the video attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3213,9 +3352,22 @@ class BasePlatformAdapter(ABC):
         Send a document/file natively via the platform API.
 
         Override in subclasses to send files as downloadable attachments.
-        Default falls back to sending the file path as text.
+        Default falls back to a friendly notice — never echo the local
+        file_path into chat, since it is a host filesystem path that
+        would leak the Hermes home layout.
         """
-        text = f"📎 File: {file_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_document fallback: native file send unavailable for %s",
+            self.name, file_path,
+        )
+        # file_name is supplied by callers and represents the user-facing
+        # filename (already non-sensitive — it is what the agent named the
+        # output). Only show it when the caller passed one explicitly.
+        if file_name:
+            text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
+        else:
+            text = "⚠️ Couldn't deliver the file attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3233,10 +3385,17 @@ class BasePlatformAdapter(ABC):
         Send a local image file natively via the platform API.
 
         Unlike send_image() which takes a URL, this takes a local file path.
-        Override in subclasses for native photo attachments.
-        Default falls back to sending the file path as text.
+        Override in subclasses for native photo attachments. Default falls
+        back to a friendly notice — never echo the local image_path into
+        chat, since it is a host filesystem path that would leak the
+        Hermes home layout.
         """
-        text = f"🖼️ Image: {image_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_image_file fallback: native image send unavailable for %s",
+            self.name, image_path,
+        )
+        text = "⚠️ Couldn't deliver the image attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3405,10 +3564,7 @@ class BasePlatformAdapter(ABC):
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = _normalize_media_tag_path(match.group("path"))
             if path:
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
@@ -3416,6 +3572,16 @@ class BasePlatformAdapter(ABC):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
+
+        seen_paths = {p for p, _ in media}
+        for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path or not _path_lacks_deliverable_extension(path):
+                continue
+            safe = validate_media_delivery_path(path)
+            if safe and safe not in seen_paths:
+                media.append((safe, has_voice_tag))
+                seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
@@ -3429,6 +3595,12 @@ class BasePlatformAdapter(ABC):
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked_cleaned):
+                path = _normalize_media_tag_path(match.group("path"))
+                if not path or not _path_lacks_deliverable_extension(path):
+                    continue
+                if validate_media_delivery_path(path):
+                    spans.append(match.span())
             if spans:
                 chars = list(cleaned)
                 for start, end in sorted(spans, reverse=True):
@@ -3437,6 +3609,25 @@ class BasePlatformAdapter(ABC):
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
+
+    @staticmethod
+    def strip_media_directives_for_display(text: str) -> str:
+        """Strip MEDIA: directives from streamed/display text.
+
+        Known-extension tags are removed unconditionally (same as
+        ``MEDIA_TAG_CLEANUP_RE``). Extension-less tags are removed only when
+        ``validate_media_delivery_path`` accepts the path so undeliverable
+        paths stay visible for debugging.
+        """
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "[[as_document]]" not in text
+        ):
+            return text
+        cleaned = _strip_media_tag_directives(text)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.rstrip()
 
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:

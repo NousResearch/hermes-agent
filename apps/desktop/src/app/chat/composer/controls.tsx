@@ -4,7 +4,7 @@ import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
+import { AudioLines, iconSize, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
@@ -103,7 +103,7 @@ export function ComposerControls({
             type="button"
             variant="ghost"
           >
-            <SteeringWheel size={14} />
+            <SteeringWheel className={iconSize.sm} />
           </Button>
         </Tip>
       ) : (
@@ -123,7 +123,7 @@ export function ComposerControls({
             size="icon"
             type="button"
           >
-            <AudioLines size={15} />
+            <AudioLines className={iconSize.sm} />
           </Button>
         </Tip>
       ) : (
@@ -136,7 +136,7 @@ export function ComposerControls({
           >
             {busy ? (
               busyAction === 'queue' ? (
-                <Layers3 size={14} />
+                <Layers3 className={iconSize.sm} />
               ) : (
                 <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
               )
@@ -207,7 +207,7 @@ function ConversationPill({
           type="button"
           variant="ghost"
         >
-          <Square className="fill-current" size={11} />
+          <Square className={cn('fill-current', iconSize.xs)} />
           <span>{c.stopShort}</span>
         </Button>
       )}
@@ -242,7 +242,7 @@ function ConversationIndicator({
   speaking: boolean
 }) {
   if (speaking) {
-    return <Loader2 className="animate-spin" size={12} />
+    return <Loader2 className={cn('animate-spin', iconSize.xs)} />
   }
 
   const bars = [0.55, 0.85, 1, 0.85, 0.55]
@@ -262,15 +262,7 @@ function ConversationIndicator({
 // Pure-TTS toggle: type normally, but have every assistant reply read aloud —
 // no dictation, no full conversation loop. Filled/accent when on, mirroring the
 // muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
-function AutoSpeakButton({
-  active,
-  disabled,
-  onToggle
-}: {
-  active: boolean
-  disabled: boolean
-  onToggle: () => void
-}) {
+function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
   const { t } = useI18n()
   const c = t.composer
   const label = active ? c.stopSpeakingReplies : c.speakReplies
@@ -294,7 +286,7 @@ function AutoSpeakButton({
         type="button"
         variant="ghost"
       >
-        {active ? <Volume2 size={14} /> : <VolumeX size={14} />}
+        {active ? <Volume2 className={iconSize.sm} /> : <VolumeX className={iconSize.sm} />}
       </Button>
     </Tip>
   )
@@ -341,9 +333,9 @@ function DictationButton({
         variant="ghost"
       >
         {status === 'recording' ? (
-          <Square className="fill-current" size={11} />
+          <Square className={cn('fill-current', iconSize.xs)} />
         ) : status === 'transcribing' ? (
-          <Loader2 className="animate-spin" size={14} />
+          <Loader2 className={cn('animate-spin', iconSize.sm)} />
         ) : (
           <Codicon name="mic" size="0.875rem" />
         )}

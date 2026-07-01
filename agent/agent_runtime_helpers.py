@@ -368,6 +368,18 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     host code) can feed in already-broken histories.
 
     Repairs applied:
+      0. Consecutive ``assistant`` messages with no intervening
+         ``tool``/``user`` turn — merged into a single assistant turn
+         (union of ``tool_calls``, concatenated ``content``). Strict
+         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
+         a history where an ``assistant`` message carrying ``tool_calls``
+         is immediately followed by another ``assistant`` message instead
+         of its ``tool`` results — HTTP 400 "An assistant message with
+         'tool_calls' must be followed by tool messages…". The split
+         shape is produced by recovery/continuation paths that append an
+         interim assistant turn (thinking-prefill, codex
+         incomplete-continuation) or by host-fed / legacy-persisted /
+         resumed histories. Refs #29148, #49147.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
@@ -387,12 +399,74 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     repairs = 0
 
+    # Pass 0: merge consecutive assistant messages. Runs BEFORE Pass 1 so
+    # the merged turn's union of tool_call ids is known when Pass 1
+    # validates which tool-result messages are orphans. Two assistant
+    # messages are only adjacent here when nothing (no tool result, no
+    # user turn) separates them — an intervening ``tool`` message means
+    # two distinct, valid tool-call rounds that must NOT be merged.
+    #
+    # Codex Responses interim turns are exempt: the codex_responses
+    # api_mode legitimately keeps multiple consecutive incomplete
+    # assistant turns in history, each carrying its own encrypted
+    # continuation state (codex_reasoning_items / codex_message_items)
+    # that must be replayed verbatim. Collapsing them corrupts the
+    # Responses replay chain (the duplicate-detection logic at
+    # conversation_loop.py already de-dups identical codex interims).
+    def _is_codex_interim(m: Dict) -> bool:
+        return bool(
+            m.get("codex_reasoning_items")
+            or m.get("codex_message_items")
+            or m.get("finish_reason") == "incomplete"
+        )
+
+    collapsed: List[Dict] = []
+    for msg in messages:
+        if (
+            collapsed
+            and isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(collapsed[-1], dict)
+            and collapsed[-1].get("role") == "assistant"
+            and not _is_codex_interim(msg)
+            and not _is_codex_interim(collapsed[-1])
+        ):
+            prev = collapsed[-1]
+            # Union tool_calls (preserve order, both may carry them).
+            prev_calls = list(prev.get("tool_calls") or [])
+            new_calls = list(msg.get("tool_calls") or [])
+            if new_calls:
+                prev["tool_calls"] = prev_calls + new_calls
+            elif prev_calls:
+                prev["tool_calls"] = prev_calls
+            # Concatenate plain-text content; leave multimodal (list)
+            # content on either side alone to avoid mangling attachment
+            # blocks — fall back to keeping the existing content.
+            prev_content = prev.get("content")
+            new_content = msg.get("content")
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                joined = "\n".join(
+                    p for p in (prev_content.strip(), new_content.strip()) if p
+                )
+                prev["content"] = joined
+            elif not prev_content and new_content is not None:
+                prev["content"] = new_content
+            # Carry reasoning_content from the later turn only if the
+            # earlier turn lacks it (strict thinking providers require a
+            # reasoning_content on the merged tool-call turn; the first
+            # non-empty one suffices).
+            if not prev.get("reasoning_content") and msg.get("reasoning_content"):
+                prev["reasoning_content"] = msg["reasoning_content"]
+            repairs += 1
+            continue
+        collapsed.append(msg)
+
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
     known_tool_ids: set = set()
     filtered: List[Dict] = []
-    for msg in messages:
+    for msg in collapsed:
         if not isinstance(msg, dict):
             filtered.append(msg)
             continue
@@ -662,6 +736,25 @@ def recover_with_credential_pool(
             effective_reason = FailoverReason.rate_limit
         elif status_code in {401, 403}:
             effective_reason = FailoverReason.auth
+
+    if effective_reason == FailoverReason.upstream_rate_limit:
+        # An upstream provider (e.g. DeepSeek behind OpenRouter) is
+        # rate-limiting the aggregator's traffic — the user's credential is
+        # healthy. Do NOT rotate or mark exhausted; let the caller's fallback
+        # path switch to a different model entirely.
+        upstream = (error_context or {}).get("upstream_provider") if error_context else None
+        if upstream:
+            _ra().logger.info(
+                "Upstream provider %s rate-limited via aggregator — skipping "
+                "credential rotation, deferring to fallback chain",
+                upstream,
+            )
+        else:
+            _ra().logger.info(
+                "Upstream aggregator 429 (provider unknown) — skipping "
+                "credential rotation, deferring to fallback chain"
+            )
+        return False, has_retried_429
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
@@ -1625,6 +1718,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if (new_provider or "").strip().lower() == "moa":
             from agent.moa_loop import MoAClient
 
+            # The MoA virtual provider speaks only chat.completions via the
+            # MoAClient facade — the aggregator's real transport
+            # (codex_responses / anthropic_messages) is resolved and applied
+            # *inside* the reference/aggregator fan-out, never on the outer
+            # primary call. determine_api_mode("moa", ...) above may have left
+            # api_mode set to the aggregator's transport; if the conversation
+            # loop sees that, it dispatches client.responses.create (which the
+            # facade has no .responses for) and the call falls through to the
+            # moa://local placeholder → HTTP 404 → fallback to a reference
+            # model. Pin chat_completions here so the primary call always goes
+            # through MoAClient.chat.completions, matching agent_init.py.
+            agent.api_mode = "chat_completions"
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
@@ -2152,6 +2257,54 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Repair tool_calls whose function.name is empty/missing ---
+    # Some providers (and partially-streamed responses) emit a tool_call with
+    # id="call_xxx" but function.name="". Downstream Responses-API adapters
+    # silently DROP such function_call items while still emitting the matching
+    # function_call_output, producing the gateway's HTTP 400
+    # "No tool call found for function call output with call_id ...".
+    #
+    # We do NOT drop the call: hermes' own dispatch loop intentionally keeps an
+    # empty-name call paired with a synthesized anti-priming tool result
+    # ("tool name was empty", see #47967) so weak models self-correct instead of
+    # being fed the full tool catalog. Dropping the call here would (a) orphan
+    # that result and strip the anti-priming signal, and (b) still leave any
+    # provider-side orphan. Instead, rename the blank name to a non-empty
+    # sentinel so the call and its result stay PAIRED — the adapter no longer
+    # drops the function_call, so there is no orphaned output and no 400, while
+    # the result content the model needs is preserved.
+    _EMPTY_NAME_SENTINEL = "invalid_tool_call"
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls") or []
+        if not tcs:
+            continue
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn else None
+            if isinstance(name, str) and name.strip():
+                continue
+            _ra().logger.warning(
+                "Pre-call sanitizer: repairing tool_call with empty "
+                "function.name -> %r (id=%s)",
+                _EMPTY_NAME_SENTINEL,
+                _ra().AIAgent._get_tool_call_id_static(tc),
+            )
+            if isinstance(fn, dict):
+                fn["name"] = _EMPTY_NAME_SENTINEL
+            elif fn is not None and hasattr(fn, "name"):
+                try:
+                    fn.name = _EMPTY_NAME_SENTINEL
+                except Exception:
+                    pass
+            elif isinstance(tc, dict):
+                tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":
@@ -2163,7 +2316,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     result_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "tool":
-            cid = msg.get("tool_call_id")
+            cid = (msg.get("tool_call_id") or "").strip()
             if cid:
                 result_call_ids.add(cid)
 
@@ -2172,7 +2325,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     if orphaned_results:
         messages = [
             m for m in messages
-            if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+            if not (m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
         ]
         _ra().logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
@@ -2206,7 +2359,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 def looks_like_codex_intermediate_ack(
     agent,
-    user_message: str,
+    user_message: Any,
     assistant_content: str,
     messages: List[Dict[str, Any]],
     require_workspace: bool = True,
@@ -2286,7 +2439,14 @@ def looks_like_codex_intermediate_ack(
     if not require_workspace:
         return True
 
-    user_text = (user_message or "").strip().lower()
+    # ``user_message`` is typed ``str`` but can arrive as an OpenAI-style
+    # multi-part content list (``[{type:"text",...}, {type:"image_url",...}]``)
+    # for vision requests routed through the OpenAI-compat API server. A
+    # truthy list survives ``(user_message or "")`` and then ``.strip()``
+    # raises ``AttributeError`` — flatten to text first.
+    from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+    user_text = _summarize_user_message_for_log(user_message).strip().lower()
     user_targets_workspace = (
         any(marker in user_text for marker in workspace_markers)
         or "~/" in user_text

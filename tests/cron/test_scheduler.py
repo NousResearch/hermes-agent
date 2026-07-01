@@ -2517,6 +2517,20 @@ class TestBuildJobPromptSilentHint:
         assert "<TODAY>" not in result
         assert shell_token not in result
 
+    def test_date_token_expansion_failure_preserves_prompt(self, monkeypatch):
+        from cron import date_tokens
+
+        original = "Write <TODAY> without losing this prompt"
+        monkeypatch.setattr(
+            date_tokens,
+            "expand_cron_date_tokens",
+            lambda text: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        result = _build_job_prompt({"prompt": original})
+
+        assert original in result
+
 
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""

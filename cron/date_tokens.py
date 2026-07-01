@@ -42,7 +42,12 @@ def expand_cron_date_tokens(text: str, now: datetime | None = None) -> str:
     if not text:
         return text
     # Cheap guard: skip the regex work when no placeholder marker is present.
-    if "$(date" not in text and "YYYY" not in text and "TODAY" not in text:
+    if (
+        "$(date" not in text
+        and "YYYY" not in text
+        and "TODAY" not in text
+        and "WEEK_ENDING_SUNDAY" not in text
+    ):
         return text
 
     n = now or _now_pt()

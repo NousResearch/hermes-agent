@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import tempfile
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -575,6 +576,35 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "sensitive system path" in result["error"]
 
+    def test_nested_temp_path_allowed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import _check_sensitive_path
+        nested = tmp_path / "nested" / "output.txt"
+        assert _check_sensitive_path(str(nested)) is None
+
+    def test_temp_symlink_escape_still_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import _check_sensitive_path
+        link = tmp_path / "escaped-passwd"
+        link.symlink_to("/etc/passwd")
+        error = _check_sensitive_path(str(link))
+        assert error is not None
+        assert "sensitive system path" in error
+
+    def test_exact_sensitive_path_precedes_temp_exemption(self, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: "/var/run")
+
+        from tools.file_tools import _check_sensitive_path
+        error = _check_sensitive_path("/var/run/docker.sock")
+        assert error is not None
+        assert "sensitive system path" in error
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
@@ -625,6 +655,27 @@ class TestLastKnownCwd:
 
     Regression guard for issue #26211.
     """
+
+    @patch("tools.terminal_tool._resolve_container_task_id", return_value="container-task")
+    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
+    def test_live_cwd_prefers_task_cache_over_container_cache(
+        self, mock_cache, mock_resolve
+    ):
+        from tools.file_tools import _get_live_tracking_cwd, _last_known_cwd
+
+        task_entry = MagicMock()
+        task_entry.env.cwd = "/task/cwd"
+        task_entry.env.cwd_owner = "task-1"
+        container_entry = MagicMock()
+        container_entry.env.cwd = "/container/cwd"
+        container_entry.env.cwd_owner = "task-1"
+        mock_cache["task-1"] = task_entry
+        mock_cache["container-task"] = container_entry
+
+        try:
+            assert _get_live_tracking_cwd("task-1") == "/task/cwd"
+        finally:
+            _last_known_cwd.pop("container-task", None)
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)

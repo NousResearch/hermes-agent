@@ -1295,6 +1295,18 @@ class TestAdversarialEdgeCases:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.billing
 
+    def test_anthropic_400_credit_exhaustion_rotates_and_falls_back(self):
+        e = MockAPIError(
+            "invalid_request_error",
+            status_code=400,
+            body={"error": {"message": "Your credit balance is too low"}},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""
         class WeirdSuccess(Exception):

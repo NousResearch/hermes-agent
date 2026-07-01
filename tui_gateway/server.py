@@ -297,7 +297,7 @@ class _SlashWorker:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             # slash_worker runs the Hermes agent → needs provider credentials.

@@ -470,7 +470,7 @@ class AIAgent:
         event_callback: Optional[Callable[[str, dict], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
-        service_tier: str = None,
+        service_tier: Optional[str] = None,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,

@@ -2622,14 +2622,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        _agent_raw = _cfg.get("agent", {}) if isinstance(_cfg, dict) else {}
+        agent_cfg = _agent_raw if isinstance(_agent_raw, dict) else {}
+        effort = str(agent_cfg.get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
+
+        # Priority/fast mode from config.yaml.  Gateway and CLI sessions already
+        # honor agent.service_tier; cron constructs its own AIAgent here, so it
+        # must pass the parsed tier explicitly instead of silently dropping it.
+        service_tier: Optional[str] = None
+        raw_service_tier_value = agent_cfg.get("service_tier", "")
+        if isinstance(raw_service_tier_value, bool):
+            # PyYAML's YAML 1.1 resolver parses unquoted `on`/`off` as bools.
+            raw_service_tier = "on" if raw_service_tier_value else "off"
+        else:
+            raw_service_tier = str(raw_service_tier_value or "").strip()
+        service_tier_value = raw_service_tier.lower()
+        if service_tier_value in {"fast", "priority", "on"}:
+            service_tier = "priority"
+        elif service_tier_value and service_tier_value not in {"normal", "default", "standard", "off", "none"}:
+            logger.warning("Job '%s': unknown agent.service_tier '%s', ignoring", job_id, raw_service_tier)
+
+        request_overrides = {}
+        if service_tier:
+            try:
+                from hermes_cli.models import resolve_fast_mode_overrides
+                request_overrides = resolve_fast_mode_overrides(model) or {}
+            except Exception as e:
+                logger.warning("Job '%s': failed to resolve fast-mode overrides: %s", job_id, e)
+                request_overrides = {}
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
         # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
         prefill_file = (
             os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
             or _cfg.get("prefill_messages_file", "")
@@ -2807,6 +2833,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,

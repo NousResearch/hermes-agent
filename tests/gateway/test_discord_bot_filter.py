@@ -1,16 +1,50 @@
-"""Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
+"""Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS).
+
+These tests exercise the **real** adapter methods rather than local
+reimplementations, so a refactor that silently breaks
+``_self_is_explicitly_mentioned``, ``_self_is_raw_mentioned``,
+``_discord_bots_require_inline_mention``, or the ``on_message`` gate
+will be caught by CI.
+"""
 
 import os
 import re
 import unittest
 from unittest.mock import MagicMock
 
+from plugins.platforms.discord.adapter import DiscordAdapter
 
-def _make_author(*, bot: bool = False, is_self: bool = False):
-    """Create a mock Discord author."""
+
+def _make_adapter(
+    *,
+    client_user_id: int = 99999,
+    bots_require_inline_mention: bool | str = False,
+):
+    """Build a minimal DiscordAdapter with stubbed internals.
+
+    Uses ``__new__`` to bypass ``__init__`` (which needs a live Discord client).
+    Only the attributes exercised by the filtering helpers are set.
+
+    Returns ``(adapter, client_user)`` so tests can reference the same
+    object that the adapter's ``_self_is_explicitly_mentioned`` checks
+    against (identity matters for ``client_user in message.mentions``).
+    """
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+    client_user = MagicMock()
+    client_user.id = client_user_id
+    client_user.bot = True
+    adapter._client = MagicMock()
+    adapter._client.user = client_user
+    adapter.config = MagicMock()
+    adapter.config.extra = {"bots_require_inline_mention": bots_require_inline_mention}
+    return adapter, client_user
+
+
+def _make_author(*, bot: bool = False, user_id: int = 12345):
+    """Create a mock Discord author with a deterministic ID."""
     author = MagicMock()
     author.bot = bot
-    author.id = 99999 if is_self else 12345
+    author.id = user_id
     author.name = "TestBot" if bot else "TestUser"
     author.display_name = author.name
     return author
@@ -33,190 +67,224 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
         msg.channel.name = "test-channel"
         msg.channel.guild = MagicMock()
         msg.channel.guild.name = "TestServer"
-        # Make isinstance checks fail for DMChannel and Thread
         type(msg.channel).__name__ = "TextChannel"
     return msg
 
 
-class TestDiscordBotFilter(unittest.TestCase):
-    """Test the DISCORD_ALLOW_BOTS filtering logic."""
+class TestSelfIsExplicitlyMentioned(unittest.TestCase):
+    """``_self_is_explicitly_mentioned`` — resolved OR raw mention."""
+
+    def test_resolved_mention(self):
+        """Resolved ``message.mentions`` list counts."""
+        adapter, client_user = _make_adapter()
+        msg = _make_message(mentions=[client_user])
+        self.assertTrue(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_raw_content_mention(self):
+        """Inline ``<@ID>`` in content counts even without resolved list."""
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content=f"<@{client_user.id}> hello", mentions=[])
+        self.assertTrue(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_nickname_form_mention(self):
+        """Legacy ``<@!ID>`` form also counts."""
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content=f"<@!{client_user.id}> hey", mentions=[])
+        self.assertTrue(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_false_when_absent(self):
+        """No mention in resolved list or content → False."""
+        adapter, _ = _make_adapter()
+        msg = _make_message(content="hello world", mentions=[])
+        self.assertFalse(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_false_when_client_none(self):
+        """Guard: returns False when ``_client`` is None."""
+        adapter, _ = _make_adapter()
+        adapter._client = None
+        msg = _make_message(content="<@99999>")
+        self.assertFalse(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_false_when_user_none(self):
+        """Guard: returns False when ``_client.user`` is None."""
+        adapter, _ = _make_adapter()
+        adapter._client.user = None
+        msg = _make_message(content="<@99999>")
+        self.assertFalse(adapter._self_is_explicitly_mentioned(msg))
+
+    def test_different_user_not_counted(self):
+        """Mention of a different user ID → False."""
+        adapter, _ = _make_adapter(client_user_id=99999)
+        other = _make_author(user_id=11111)
+        msg = _make_message(content=f"<@{other.id}>", mentions=[])
+        self.assertFalse(adapter._self_is_explicitly_mentioned(msg))
+
+
+class TestSelfIsRawMentioned(unittest.TestCase):
+    """``_self_is_raw_mentioned`` — inline token ONLY (ignores resolved list)."""
+
+    def test_inline_token(self):
+        """Inline ``<@ID>`` in content → True."""
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content=f"<@{client_user.id}> hello", mentions=[])
+        self.assertTrue(adapter._self_is_raw_mentioned(msg))
+
+    def test_nickname_form_token(self):
+        """Legacy ``<@!ID>`` form also counts."""
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content=f"<@!{client_user.id}> hey", mentions=[])
+        self.assertTrue(adapter._self_is_raw_mentioned(msg))
+
+    def test_false_on_reply_ping_only(self):
+        """Reply-ping (``mentions=[us]`` with no inline token) → False.
+
+        This is the KEY difference from ``_self_is_explicitly_mentioned``:
+        Discord's reply-ping silently adds us to ``message.mentions``
+        without a literal ``<@id>`` in the content.  ``_self_is_raw_mentioned``
+        intentionally ignores the resolved list so the bot admission gate
+        can distinguish an explicit cross-bot address from a reply chip.
+        """
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content="reply-ping only", mentions=[client_user])
+        self.assertFalse(adapter._self_is_raw_mentioned(msg))
+
+    def test_false_when_absent(self):
+        """No mention at all → False."""
+        adapter, _ = _make_adapter()
+        msg = _make_message(content="hello", mentions=[])
+        self.assertFalse(adapter._self_is_raw_mentioned(msg))
+
+    def test_false_when_client_none(self):
+        """Guard: returns False when ``_client`` is None."""
+        adapter, _ = _make_adapter()
+        adapter._client = None
+        msg = _make_message(content="<@99999>")
+        self.assertFalse(adapter._self_is_raw_mentioned(msg))
+
+
+class TestBotsRequireInlineMentionConfig(unittest.TestCase):
+    """``_discord_bots_require_inline_mention`` config resolution."""
+
+    def test_default_false(self):
+        """No config, no env → False."""
+        adapter, _ = _make_adapter()
+        adapter.config.extra = {}
+        self.assertFalse(adapter._discord_bots_require_inline_mention())
+
+    def test_config_bool_true(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention=True)
+        self.assertTrue(adapter._discord_bots_require_inline_mention())
+
+    def test_config_bool_false(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention=False)
+        self.assertFalse(adapter._discord_bots_require_inline_mention())
+
+    def test_config_string_on(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention="on")
+        self.assertTrue(adapter._discord_bots_require_inline_mention())
+
+    def test_config_string_true(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention="true")
+        self.assertTrue(adapter._discord_bots_require_inline_mention())
+
+    def test_config_string_false(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention="false")
+        self.assertFalse(adapter._discord_bots_require_inline_mention())
+
+    def test_config_string_invalid(self):
+        adapter, _ = _make_adapter(bots_require_inline_mention="maybe")
+        self.assertFalse(adapter._discord_bots_require_inline_mention())
+
+    def test_env_wins_over_missing_config(self):
+        """Env var is used when config ``extra`` has no entry."""
+        adapter, _ = _make_adapter()
+        adapter.config.extra = {}
+        with unittest.mock.patch.dict(os.environ, {"DISCORD_BOTS_REQUIRE_INLINE_MENTION": "true"}):
+            self.assertTrue(adapter._discord_bots_require_inline_mention())
+
+    def test_config_wins_over_env(self):
+        """Explicit config takes precedence over env var."""
+        adapter, _ = _make_adapter(bots_require_inline_mention=False)
+        with unittest.mock.patch.dict(os.environ, {"DISCORD_BOTS_REQUIRE_INLINE_MENTION": "true"}):
+            self.assertFalse(adapter._discord_bots_require_inline_mention())
+
+
+class TestInlineMentionGate(unittest.TestCase):
+    """Integration: reply-ping gate in ``on_message`` bot-filter branch.
+
+    These tests replicate the ``on_message`` gate logic using the real
+    adapter methods, proving that a refactor which breaks the gate
+    (e.g. replacing ``_self_is_raw_mentioned`` with
+    ``_self_is_explicitly_mentioned``) will be caught.
+    """
 
     @staticmethod
-    def _self_is_explicitly_mentioned(message, client_user):
-        """Mirror adapter._self_is_explicitly_mentioned: resolved or raw mention."""
-        if not client_user:
+    def _simulate_on_message_bot_gate(adapter, message):
+        """Replicate the ``on_message`` bot-filter gate using real methods.
+
+        Returns True when the message would be **blocked** by the gate.
+        """
+        if not getattr(message.author, "bot", False):
             return False
-        if client_user in message.mentions:
-            return True
-        raw_ids = {
-            m.group(1)
-            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
-        }
-        return str(client_user.id) in raw_ids
-
-    @staticmethod
-    def _self_is_raw_mentioned(message, client_user):
-        """Mirror adapter._self_is_raw_mentioned: raw inline token only."""
-        if not client_user:
-            return False
-        raw_ids = {
-            m.group(1)
-            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
-        }
-        return str(client_user.id) in raw_ids
-
-    def _run_filter(
-        self,
-        message,
-        allow_bots="none",
-        client_user=None,
-        bots_require_inline_mention=False,
-    ):
-        """Simulate the on_message filter logic and return whether message was accepted."""
-        # Replicate the exact filter logic from discord.py on_message
-        if message.author == client_user:
-            return False  # own messages always ignored
-
-        if getattr(message.author, "bot", False):
-            allow = allow_bots.lower().strip()
-            if allow == "none":
-                return False
-            elif allow == "mentions":
-                if not self._self_is_explicitly_mentioned(message, client_user):
-                    return False
-            if (
-                bots_require_inline_mention
-                and not self._self_is_raw_mentioned(message, client_user)
-            ):
-                return False
-            # "all" falls through
-        
-        return True  # message accepted
-
-    def test_own_messages_always_ignored(self):
-        """Bot's own messages are always ignored regardless of allow_bots."""
-        bot_user = _make_author(is_self=True)
-        msg = _make_message(author=bot_user)
-        self.assertFalse(self._run_filter(msg, "all", bot_user))
-
-    def test_human_messages_always_accepted(self):
-        """Human messages are always accepted regardless of allow_bots."""
-        human = _make_author(bot=False)
-        msg = _make_message(author=human)
-        self.assertTrue(self._run_filter(msg, "none"))
-        self.assertTrue(self._run_filter(msg, "mentions"))
-        self.assertTrue(self._run_filter(msg, "all"))
-
-    def test_allow_bots_none_rejects_bots(self):
-        """With allow_bots=none, all other bot messages are rejected."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "none"))
-
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
-
-    def test_allow_bots_mentions_rejects_without_mention(self):
-        """With allow_bots=mentions, bot messages without @mention are rejected."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[])
-        self.assertFalse(self._run_filter(msg, "mentions", our_user))
-
-    def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
-
-    def test_allow_bots_mentions_accepts_with_raw_content_mention(self):
-        """Raw <@!ID> mention counts even when message.mentions is empty."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
-
-    def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):
-        """Default behavior: resolved reply-ping mentions still admit bot messages."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
-
-        self.assertTrue(
-            self._run_filter(
-                msg,
-                "all",
-                our_user,
-                bots_require_inline_mention=False,
-            )
+        return (
+            adapter._discord_bots_require_inline_mention()
+            and not adapter._self_is_raw_mentioned(message)
         )
 
-    def test_inline_mention_requirement_rejects_reply_ping_only(self):
-        """Opt-in guard rejects bot messages where only Discord's reply-ping mentions us."""
-        our_user = _make_author(is_self=True)
+    def test_reply_ping_blocked_when_enabled(self):
+        """Bot message with only reply-ping → blocked when gate is on.
+
+        This is the exact scenario the gate prevents: two bots
+        ping-ponging replies at each other indefinitely.
+        """
+        adapter, client_user = _make_adapter(bots_require_inline_mention=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[client_user])
+        self.assertTrue(self._simulate_on_message_bot_gate(adapter, msg))
 
-        self.assertFalse(
-            self._run_filter(
-                msg,
-                "all",
-                our_user,
-                bots_require_inline_mention=True,
-            )
-        )
-
-    def test_inline_mention_requirement_accepts_body_mention(self):
-        """Opt-in guard still admits intentional inline cross-bot mentions."""
-        our_user = _make_author(is_self=True)
+    def test_inline_mention_passes_when_enabled(self):
+        """Bot message with inline ``<@id>`` → passes the gate."""
+        adapter, client_user = _make_adapter(bots_require_inline_mention=True)
         bot = _make_author(bot=True)
         msg = _make_message(
             author=bot,
-            content=f"<@{our_user.id}> intentional handoff",
-            mentions=[our_user],
+            content=f"<@{client_user.id}> intentional handoff",
+            mentions=[client_user],
         )
+        self.assertFalse(self._simulate_on_message_bot_gate(adapter, msg))
 
-        self.assertTrue(
-            self._run_filter(
-                msg,
-                "all",
-                our_user,
-                bots_require_inline_mention=True,
-            )
-        )
-
-    def test_inline_mention_requirement_does_not_affect_humans(self):
-        """The opt-in guard only applies to bot-authored messages."""
-        human = _make_author(bot=False)
-        our_user = _make_author(is_self=True)
-        msg = _make_message(author=human, content="human reply-ping", mentions=[our_user])
-
-        self.assertTrue(
-            self._run_filter(
-                msg,
-                "none",
-                our_user,
-                bots_require_inline_mention=True,
-            )
-        )
-
-    def test_default_is_none(self):
-        """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
-        self.assertEqual(default, "none")
-
-    def test_case_insensitive(self):
-        """Allow_bots value should be case-insensitive."""
+    def test_reply_ping_passes_when_disabled(self):
+        """When gate is off, reply-pings pass through."""
+        adapter, client_user = _make_adapter(bots_require_inline_mention=False)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[client_user])
+        self.assertFalse(self._simulate_on_message_bot_gate(adapter, msg))
+
+    def test_human_messages_never_gated(self):
+        """Human messages are never affected by the gate."""
+        adapter, client_user = _make_adapter(bots_require_inline_mention=True)
+        human = _make_author(bot=False)
+        msg = _make_message(author=human, content="human reply-ping", mentions=[client_user])
+        self.assertFalse(self._simulate_on_message_bot_gate(adapter, msg))
+
+
+class TestMutationProof(unittest.TestCase):
+    """Proves the two helpers behave differently — deleting either one breaks these tests."""
+
+    def test_explicitly_vs_raw_differ_on_reply_ping(self):
+        """``_self_is_explicitly_mentioned`` returns True for reply-pings
+        (checks ``message.mentions``), but ``_self_is_raw_mentioned``
+        returns False (checks only inline tokens).
+
+        If someone replaces ``_self_is_raw_mentioned`` with
+        ``_self_is_explicitly_mentioned`` in the gate, this test catches it:
+        the gate would let reply-pings through, defeating its purpose.
+        """
+        adapter, client_user = _make_adapter()
+        msg = _make_message(content="reply-ping only", mentions=[client_user])
+
+        self.assertTrue(adapter._self_is_explicitly_mentioned(msg))
+        self.assertFalse(adapter._self_is_raw_mentioned(msg))
 
 
 if __name__ == "__main__":

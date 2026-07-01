@@ -7,15 +7,17 @@ on:
       - synchronize
 
 concurrency:
-  group: auto-fix-${{ github.event.pull_request.number }}
+  group: auto-fix-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: false
 
 jobs:
   auto-fix-issues:
     name: Auto-Fix Linting & Formatting Issues
     runs-on: ubuntu-latest
-    # Only run on PRs from the same repository (not forks)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Only run on PRs from the same repository (not forks). Also guards
+    # against non-pull_request events (e.g. push) reaching this job, since
+    # github.event.pull_request is null outside PR context.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: write
       pull-requests: write

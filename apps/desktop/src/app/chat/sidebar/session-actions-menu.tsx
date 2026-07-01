@@ -93,7 +93,16 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onBranch, onArchive, onDelete }: SessionActions) {
+function useSessionActions({
+  sessionId,
+  title,
+  pinned = false,
+  profile,
+  onPin,
+  onBranch,
+  onArchive,
+  onDelete
+}: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)

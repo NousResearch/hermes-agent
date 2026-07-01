@@ -224,6 +224,7 @@ export interface HermesConfig {
   }
   voice?: {
     max_recording_seconds?: number
+    auto_tts?: boolean
   }
 }
 
@@ -426,6 +427,63 @@ export interface UsageStats {
   input: number
   output: number
   total: number
+}
+
+/** One graph node in the star map (learned skill or memory chunk). */
+export interface StarmapNode {
+  id: string
+  label: string
+  kind: 'memory' | 'skill'
+  memorySource?: 'memory' | 'profile'
+  timestamp?: null | number
+  category: string
+  useCount: number
+  state: string
+  createdBy: null | string
+  pinned: boolean
+}
+
+/** A declared `related_skills` link; both endpoints are guaranteed to be nodes. */
+export interface StarmapEdge {
+  source: string
+  target: string
+}
+
+export interface StarmapCluster {
+  category: string
+  count: number
+}
+
+/** Freeform memory rendered as a card — never a graph node. */
+export interface StarmapMemoryCard {
+  source: 'memory' | 'profile'
+  timestamp?: null | number
+  title: string
+  body: string
+}
+
+export interface StarmapGraph {
+  nodes: StarmapNode[]
+  edges: StarmapEdge[]
+  clusters: StarmapCluster[]
+  memory: StarmapMemoryCard[]
+  stats: Record<string, unknown>
+}
+
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_used: number
+  estimated_total: number
+  model?: string
 }
 
 export interface AnalyticsDailyEntry {
@@ -774,14 +832,17 @@ export interface MoaModelSlot {
 export interface MoaConfigResponse {
   default_preset: string
   active_preset: string
-  presets: Record<string, {
-    aggregator: MoaModelSlot
-    aggregator_temperature: number
-    enabled: boolean
-    max_tokens: number
-    reference_models: MoaModelSlot[]
-    reference_temperature: number
-  }>
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      enabled: boolean
+      max_tokens: number
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+    }
+  >
   aggregator: MoaModelSlot
   aggregator_temperature: number
   enabled: boolean

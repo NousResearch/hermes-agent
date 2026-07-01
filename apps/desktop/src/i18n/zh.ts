@@ -176,6 +176,7 @@ export const zh: Translations = {
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
+    openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键'
   },
 
@@ -369,6 +370,13 @@ export const zh: Translations = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      embedsTitle: '内嵌预览',
+      embedsDesc:
+        '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
+      embedsAsk: '询问',
+      embedsAlways: '总是',
+      embedsOff: '关闭',
+      embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
@@ -392,6 +400,8 @@ export const zh: Translations = {
         restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
+        roamTitle: '漫游',
+        roamDesc: '空闲时让宠物自己在窗口内四处走动。',
         on: '开启',
         off: '关闭',
         chooseTitle: '选择宠物',
@@ -927,6 +937,33 @@ export const zh: Translations = {
     failedToUpdate: name => `更新 ${name} 失败`
   },
 
+  starmap: {
+    title: '记忆图谱',
+    subtitle: (nodes, clusters) => `${clusters} 个类别中的 ${nodes} 个技能`,
+    close: '关闭记忆图谱',
+    refresh: '刷新',
+    memory: '记忆',
+    filterAll: '全部',
+    filterUsed: '已使用',
+    filterLearned: '已学习',
+    viewGraph: '图谱',
+    loadFailed: '无法加载记忆图谱',
+    loading: '加载中…',
+    emptyTitle: '尚无学习内容',
+    emptyDesc: '当 Hermes 为你的工作构建技能和记忆时，会显示在这里。',
+    share: '分享图谱',
+    shareHint: '复制代码以分享此图谱，或粘贴代码以载入。仅包含布局，不含你的记忆或技能内容。',
+    shareTitle: '导入 / 导出图谱',
+    sharePlaceholder: '粘贴图谱代码…',
+    copy: '复制图谱代码',
+    copied: '已复制！',
+    importMap: '导入图谱',
+    importBtn: '加载',
+    importEmpty: '粘贴图谱代码以加载。',
+    importSuccess: nodes => `已加载包含 ${nodes} 个节点的图谱。`,
+    importedBadge: '导入的图谱',
+    resetToMine: '返回我的图谱'
+  },
   agents: {
     close: '关闭代理',
     title: '派生树',
@@ -1227,6 +1264,7 @@ export const zh: Translations = {
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
     title: '配置档案',
     count: count => `${count} 个配置档案`,
+    search: '搜索配置档案…',
     loading: '正在加载配置档案…',
     newProfile: '新建配置档案',
     allProfiles: '全部配置档案',
@@ -1299,6 +1337,8 @@ export const zh: Translations = {
 
   cron: {
     close: '关闭定时任务',
+    title: '定时任务',
+    count: count => `${count} 个任务`,
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
     states: {
@@ -1498,6 +1538,8 @@ export const zh: Translations = {
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
       createFailed: '无法创建项目',
+      staleBackend:
+        '请更新 Hermes 后端以创建项目——当前后端比桌面应用旧（设置 → 更新 → 后端）。',
       deleteConfirm: '这会从 Hermes 中移除已保存的项目。文件、git 仓库和工作树保持不变。',
       startWork: '新建工作树',
       newWorktreeTitle: '新建工作树',
@@ -1516,7 +1558,8 @@ export const zh: Translations = {
       noBranches: '未找到分支',
       removeWorktree: '移除工作树',
       removeWorktreeFailed: '无法移除工作树（存在未提交更改？）',
-      removeWorktreeConfirm: '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
+      removeWorktreeConfirm:
+        '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
       removeWorktreeDirty: '此工作树有未提交的更改。强制移除（丢弃这些更改），或仅隐藏泳道并保留在磁盘上。',
       forceRemove: '强制移除',
       enter: label => `打开 ${label}`,
@@ -1600,6 +1643,8 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceDictation: '语音听写',
+    speakReplies: '朗读回复',
+    stopSpeakingReplies: '停止朗读回复',
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupTry: '试试',
@@ -2001,9 +2046,29 @@ export const zh: Translations = {
       running: count => `${count} 个运行中`,
       cron: '排程',
       openCron: '打开排程任务',
+      starmap: '记忆图谱',
+      openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
       currentTurnElapsed: '当前回合已用时间',
       contextUsage: '上下文用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '对话',
+          mcp: 'MCP',
+          memory: '记忆',
+          rules: '规则',
+          skills: '技能',
+          subagent_definitions: '子代理定义',
+          system_prompt: '系统提示词',
+          tool_definitions: '工具定义'
+        },
+        empty: '暂无上下文数据',
+        loading: '正在加载明细…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '打开上下文用量明细',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
       yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
@@ -2047,6 +2112,10 @@ export const zh: Translations = {
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
     terminalHide: '隐藏终端',
+    terminalsAria: '终端',
+    terminalNew: '新建终端',
+    terminalCloseOthers: '关闭其他',
+    terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
 
@@ -2077,6 +2146,14 @@ export const zh: Translations = {
     truncated: '显示前 512 KB。',
     noInlineTitle: '没有内联预览',
     noInlineBody: mimeType => `${mimeType || '此文件类型'} 仍可作为上下文附件。`,
+    edit: '编辑',
+    editing: '编辑中',
+    unsavedChanges: '未保存的更改',
+    saveFailed: message => `无法保存：${message}`,
+    diskChangedTitle: '文件已在磁盘上更改',
+    diskChangedBody: '此文件自打开以来已更改。用你的版本覆盖，还是放弃你的编辑并重新加载？',
+    overwrite: '覆盖',
+    discardReload: '放弃并重新加载',
     console: {
       deselect: '取消选择条目',
       select: '选择条目',
@@ -2139,6 +2216,8 @@ export const zh: Translations = {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
+      resumeWhenBackgroundDone: count =>
+        count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
@@ -2152,6 +2231,7 @@ export const zh: Translations = {
       stopReading: '停止朗读',
       readAloud: '朗读',
       editMessage: '编辑消息',
+      expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',
       stop: '停止',
       restorePrevious: '恢复上一个检查点',
@@ -2187,10 +2267,8 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcutSuffix: ' 发送',
-      back: '返回',
       skip: '跳过',
-      send: '发送'
+      continueLabel: '继续'
     },
     tool: {
       code: '代码',
@@ -2220,6 +2298,7 @@ export const zh: Translations = {
         reading: '正在读取',
         opened: '已打开',
         opening: '正在打开',
+        failedToOpen: '打开失败',
         searched: '已搜索',
         searching: '正在搜索',
         ran: '已运行',

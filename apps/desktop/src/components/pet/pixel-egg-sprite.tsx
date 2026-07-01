@@ -42,6 +42,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 // the cutoff it's the flat outline; above, a SHADOW→HIGHLIGHT ramp.
 const CREME_LUT = (() => {
   const lut = new Uint8ClampedArray(256 * 3)
+
   for (let g = 0; g < 256; g++) {
     const dark = g < OUTLINE_CUTOFF
     const t = dark ? 0 : (g - OUTLINE_CUTOFF) / (255 - OUTLINE_CUTOFF)
@@ -49,6 +50,7 @@ const CREME_LUT = (() => {
     const to = dark ? OUTLINE : HIGHLIGHT
     lut.set([lerp(from[0], to[0], t), lerp(from[1], to[1], t), lerp(from[2], to[2], t)], g * 3)
   }
+
   return lut
 })()
 
@@ -59,17 +61,21 @@ function loadSheet(): Promise<HTMLImageElement> {
   if (_sheet?.complete) {
     return Promise.resolve(_sheet)
   }
+
   if (!_sheetLoading) {
     _sheetLoading = new Promise((resolve, reject) => {
       const img = new Image()
+
       img.onload = () => {
         _sheet = img
         resolve(img)
       }
+
       img.onerror = reject
       img.src = eggSheetUrl
     })
   }
+
   return _sheetLoading
 }
 
@@ -97,6 +103,7 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
   useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
+
     if (!canvas || !ctx) {
       return
     }
@@ -129,20 +136,24 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
       if (!sheet || !offCtx) {
         return
       }
+
       offCtx.clearRect(0, 0, FRAME, FRAME)
       offCtx.imageSmoothingEnabled = false
       offCtx.drawImage(sheet, 0, frame * FRAME, FRAME, FRAME, 0, 0, FRAME, FRAME)
       const img = offCtx.getImageData(0, 0, FRAME, FRAME)
       const d = img.data
+
       for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) {
           continue
         }
+
         const g = d[i] * 3
         d[i] = CREME_LUT[g]
         d[i + 1] = CREME_LUT[g + 1]
         d[i + 2] = CREME_LUT[g + 2]
       }
+
       offCtx.putImageData(img, 0, 0)
 
       ctx.clearRect(0, 0, dim, dim)
@@ -161,6 +172,7 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
 
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick)
+
       if (!sheet) {
         return
       }
@@ -169,22 +181,29 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
         if (!lastHatch) {
           lastHatch = now
           render(HATCH_START)
+
           return
         }
+
         if (now - lastHatch < frameMs) {
           return
         }
+
         lastHatch = now
         const frame = Math.min(HATCH_START + step, lastFrame)
         render(frame)
+
         if (frame >= lastFrame) {
           if (!finished) {
             finished = true
             onDoneRef.current?.()
           }
+
           return // hold the cracked-open last frame
         }
+
         step += 1
+
         return
       }
 
@@ -192,8 +211,10 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
       if (!nextAt) {
         render(0)
         nextAt = now + firstDelay // staggered first bounce, per slot
+
         return
       }
+
       if (now < nextAt) {
         return
       }
@@ -203,16 +224,20 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
         step = 0
         render(0)
         nextAt = now + frameMs
+
         return
       }
 
       step += 1
+
       if (step >= BOUNCE_FRAMES) {
         resting = true
         render(0)
         nextAt = now + restMs()
+
         return
       }
+
       render(step)
       nextAt = now + frameMs
     }

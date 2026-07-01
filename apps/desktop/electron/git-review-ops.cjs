@@ -10,22 +10,39 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-// Load `simple-git` lazily/defensively. A GUI (Finder/Dock) launch on macOS does
-// not expose the packaged app's `Resources/node_modules` to module resolution
-// inside app.asar, so an eager top-level require crashed the main process before
-// the window opened. Try the normal resolution first, then fall back to the
-// packaged path when it exists, and leave null so git-review degrades instead of
-// taking down startup.
+// `simple-git` is a pure-JS runtime dep that workspace dedup hoists into the
+// repo-root node_modules.  Packaged builds set `files:` in package.json, which
+// excludes node_modules from the asar, so the normal require() fails at launch
+// (issue #52735: "Cannot find module 'simple-git'").  We ship the dep's
+// closure under resources/native-deps/vendor/node_modules/ via extraResources
+// + scripts/stage-native-deps.cjs, and resolve from there when the hoisted
+// require() isn't reachable.  The `vendor/` nesting matters: electron-builder
+// drops a node_modules dir at the root of an extraResources copy but keeps a
+// nested one.  Dev mode never hits the fallback -- Node's normal lookup finds
+// the hoisted copy.
+//
+// Resolution must NEVER take down startup: a GUI (Finder/Dock) launch that
+// can't resolve simple-git from inside app.asar must still open the window
+// (issue #52735 crashed the main process before any window). So each attempt is
+// guarded and, if none resolve, simpleGit stays null — gitFor() then throws a
+// contained error only when a git-review op is actually used.
 let simpleGit = null
 try {
   simpleGit = require('simple-git')
 } catch {
-  try {
-    if (process.resourcesPath) {
-      simpleGit = require(path.join(process.resourcesPath, 'node_modules', 'simple-git'))
+  const resourcesPath = process.resourcesPath
+  if (resourcesPath) {
+    // Primary packaged location (extraResources + stage-native-deps.cjs).
+    try {
+      simpleGit = require(path.join(resourcesPath, 'native-deps', 'vendor', 'node_modules', 'simple-git'))
+    } catch {
+      // Fallback: a plain node_modules copy under Resources.
+      try {
+        simpleGit = require(path.join(resourcesPath, 'node_modules', 'simple-git'))
+      } catch {
+        simpleGit = null
+      }
     }
-  } catch {
-    simpleGit = null
   }
 }
 
@@ -209,7 +226,12 @@ async function defaultBranchName(git) {
 
   // Prefer a local trunk, then a remote-only one (returns the clean name either
   // way) so "branch off main" works even before main is checked out locally.
-  for (const ref of ['refs/heads/main', 'refs/heads/master', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+  for (const ref of [
+    'refs/heads/main',
+    'refs/heads/master',
+    'refs/remotes/origin/main',
+    'refs/remotes/origin/master'
+  ]) {
     try {
       await git.raw(['rev-parse', '--verify', '--quiet', ref])
 

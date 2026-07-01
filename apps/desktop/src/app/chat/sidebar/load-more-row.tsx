@@ -23,7 +23,11 @@ export function SidebarLoadMoreRow({ step, onClick, loading = false }: SidebarLo
       onClick={onClick}
       type="button"
     >
-      {loading ? <GlyphSpinner ariaLabel={label} className="text-[0.75rem]" /> : <Codicon name="ellipsis" size="0.75rem" />}
+      {loading ? (
+        <GlyphSpinner ariaLabel={label} className="text-[0.75rem]" />
+      ) : (
+        <Codicon name="ellipsis" size="0.75rem" />
+      )}
     </button>
   )
 }

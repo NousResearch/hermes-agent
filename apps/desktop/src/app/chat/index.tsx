@@ -45,7 +45,7 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
-import { isSecondaryWindow } from '@/store/windows'
+import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
@@ -75,7 +75,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage: () => void
+  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
@@ -88,10 +88,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
-  onRestoreToMessage?: (
-    messageId: string,
-    target?: { text?: string; userOrdinal?: number | null }
-  ) => Promise<void>
+  onRestoreToMessage?: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   onDismissError?: (messageId: string) => void
@@ -320,7 +317,12 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
-    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+    !isSecondaryWindow() &&
+    freshDraftReady &&
+    !isRoutedSessionView &&
+    !selectedSessionId &&
+    !activeSessionId &&
+    messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
@@ -340,8 +342,9 @@ export function ChatView({
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime
-  // to send to until a retry rebinds one.
-  const showChatBar = !loadingSession && !resumeExhausted
+  // to send to until a retry rebinds one. Watch windows are pure spectators of a
+  // subagent run driven elsewhere — no composer, transcript is read-only.
+  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({

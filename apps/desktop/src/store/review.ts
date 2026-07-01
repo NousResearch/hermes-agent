@@ -4,6 +4,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -94,7 +95,7 @@ let shipInfoLastCheckedAt = 0
 // either is missing (no session, remote backend), so callers bail in one line.
 function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
   const cwd = repoCwd()
-  const review = window.hermesDesktop?.git?.review
+  const review = desktopGit()?.review
 
   return cwd && review ? { cwd, review } : null
 }
@@ -108,6 +109,7 @@ export async function refreshReview(): Promise<void> {
   if (!$reviewOpen.get() || !ctx) {
     $reviewFiles.set([])
     $reviewIsRepo.set(Boolean(ctx))
+
     // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
     // true (optimistically) before a refresh is scheduled, so skipping it here
     // strands the pane on a forever-skeleton for a fresh, detached chat.
@@ -293,17 +295,17 @@ async function afterMutation(): Promise<void> {
 }
 
 export async function stageReviewFile(path: null | string): Promise<void> {
-  await window.hermesDesktop?.git?.review?.stage(repoCwd() ?? '', path)
+  await desktopGit()?.review?.stage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function unstageReviewFile(path: null | string): Promise<void> {
-  await window.hermesDesktop?.git?.review?.unstage(repoCwd() ?? '', path)
+  await desktopGit()?.review?.unstage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
 export async function revertReviewFile(path: null | string): Promise<void> {
-  await window.hermesDesktop?.git?.review?.revert(repoCwd() ?? '', path)
+  await desktopGit()?.review?.revert(repoCwd() ?? '', path)
   await afterMutation()
 }
 

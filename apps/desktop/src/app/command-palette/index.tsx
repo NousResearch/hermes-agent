@@ -36,6 +36,7 @@ import {
   RefreshCw,
   Settings,
   Settings2,
+  Starmap,
   Sun,
   Terminal,
   Users,
@@ -44,7 +45,12 @@ import {
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $repoWorktrees } from '@/store/coding-status'
-import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import {
+  $commandPaletteOpen,
+  $commandPalettePage,
+  closeCommandPalette,
+  setCommandPaletteOpen
+} from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
@@ -63,7 +69,8 @@ import {
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SKILLS_ROUTE,
+  STARMAP_ROUTE
 } from '../routes'
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
@@ -206,7 +213,8 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
     return true
   }
 
-  const background = target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
+  const background =
+    target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
 
   return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
 }
@@ -377,7 +385,14 @@ export function CommandPalette() {
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
+          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
+          {
+            icon: Starmap,
+            id: 'nav-starmap',
+            keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
+            label: t.starmap.title,
+            run: go(STARMAP_ROUTE)
+          }
         ]
       },
       ...branchGroup,
@@ -703,7 +718,13 @@ export function CommandPalette() {
             <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
               {/* Server-driven pages render their own list; the rest show groups. */}
               {page === 'pets' ? (
-                <PetPalettePage onGenerate={() => { closeCommandPalette(); openPetGenerate() }} search={search} />
+                <PetPalettePage
+                  onGenerate={() => {
+                    closeCommandPalette()
+                    openPetGenerate()
+                  }}
+                  search={search}
+                />
               ) : page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (

@@ -17,17 +17,20 @@ from tools.tirith_security import check_command_security, ensure_installed
 @pytest.fixture(autouse=True)
 def _reset_resolved_path():
     """Pre-set cached path to skip auto-install in scan tests.
-
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
     """
     _tirith_mod._resolved_path = "tirith"
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    _tirith_mod._crash_count = 0
+    _tirith_mod._circuit_open = False
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    _tirith_mod._crash_count = 0
+    _tirith_mod._circuit_open = False
 
 
 # ---------------------------------------------------------------------------
@@ -1216,12 +1219,17 @@ class TestSpawnWarningDedup:
         _tirith_mod._reset_spawn_warning_state()
 
         with caplog.at_level("WARNING", logger="tools.tirith_security"):
-            for _ in range(15):
+            for i in range(15):
                 result = check_command_security("echo hi")
                 # Behavior must remain the same on every call —
                 # fail-open allow, with the exception captured in summary.
                 assert result["action"] == "allow"
-                assert "unavailable" in result["summary"]
+                if i < _tirith_mod._CRASH_LIMIT:
+                    # Before circuit breaker opens, summary has the exception
+                    assert "unavailable" in result["summary"]
+                else:
+                    # After circuit breaker opens, summary is generic
+                    assert "circuit breaker" in result["summary"]
 
         spawn_warnings = [
             rec for rec in caplog.records
@@ -1237,7 +1245,11 @@ class TestSpawnWarningDedup:
     def test_distinct_exception_types_each_log_once(self, mock_cfg, mock_run, caplog):
         """``FileNotFoundError`` and ``PermissionError`` are distinct
         failure modes and each deserves its own first-occurrence log
-        line; the dedupe key includes the exception class."""
+        line; the dedupe key includes the exception class.
+        
+        After _CRASH_LIMIT consecutive failures the circuit breaker opens
+        and subsequent calls short-circuit without spawning, so we only
+        see the warnings from the first batch."""
         mock_cfg.return_value = {
             "tirith_enabled": True, "tirith_path": "tirith",
             "tirith_timeout": 5, "tirith_fail_open": True,
@@ -1248,6 +1260,9 @@ class TestSpawnWarningDedup:
             mock_run.side_effect = FileNotFoundError("[WinError 2]")
             for _ in range(3):
                 check_command_security("a")
+            # Circuit breaker is now open — switching to PermissionError
+            # won't generate a new warning because the function returns
+            # before reaching subprocess.run.
             mock_run.side_effect = PermissionError("denied")
             for _ in range(3):
                 check_command_security("b")
@@ -1256,8 +1271,8 @@ class TestSpawnWarningDedup:
             rec for rec in caplog.records
             if "tirith spawn failed" in rec.message
         ]
-        assert len(spawn_warnings) == 2, (
-            f"expected 2 distinct first-occurrence warnings, "
+        assert len(spawn_warnings) == 1, (
+            f"expected 1 warning before circuit breaker opens, "
             f"got {len(spawn_warnings)}"
         )
 

@@ -20,6 +20,7 @@ from hermes_cli.auth import (
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
+    _nous_inference_env_override,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
@@ -92,6 +93,13 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 
     - Direct api.openai.com endpoints need the Responses API for GPT-5.x
       tool calls with reasoning (chat/completions returns 400).
+    - Direct api.anthropic.com endpoints must use the native Messages
+      API (``/v1/messages``).  Anthropic also exposes an OpenAI-compat
+      ``/chat/completions`` shim on the same host, but Pro/Max OAuth
+      subscriptions are only billed against the native Messages route;
+      hitting the shim accounts against a separate "extra usage" pool
+      that is empty by default and surfaces as HTTP 400 "You're out of
+      extra usage."  See issue #32243.
     - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
       LiteLLM proxies, etc.) conventionally expose the native Anthropic
       protocol under a ``/anthropic`` suffix — treat those as
@@ -107,12 +115,40 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
+    # Direct native Anthropic host: realign with providers.determine_api_mode,
+    # which already maps this host to anthropic_messages. The exact-hostname
+    # match rejects lookalike subdomains (api.anthropic.com.attacker.test) and
+    # path-segment spoofing (proxy.test/api.anthropic.com/v1). (#32243)
+    if hostname == "api.anthropic.com":
+        return "anthropic_messages"
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
+
+
+def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
+
+    Custom endpoints should stay conservative by default. Only direct OpenAI/xAI
+    URLs imply Responses API automatically; named custom providers can opt in via
+    their own ``api_mode`` field. This also prevents a stale persisted
+    ``model.api_mode: codex_responses`` from forcing generic relays onto the
+    Responses path after upgrades or /reset.
+    """
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    detected_mode = _detect_api_mode_for_url(base_url)
+
+    if configured_mode == "codex_responses" and detected_mode != "codex_responses":
+        logger.info(
+            "Ignoring persisted custom api_mode=codex_responses for non-OpenAI endpoint %s",
+            base_url or "(unknown)",
+        )
+        configured_mode = None
+
+    return configured_mode or detected_mode or "chat_completions"
 
 
 def _host_derived_api_key(base_url: str) -> str:
@@ -170,6 +206,43 @@ def _host_derived_api_key(base_url: str) -> str:
         return ""
     env_name = f"{sanitized}_API_KEY"
     return (_getenv(env_name, "") or "").strip()
+
+
+def _anthropic_base_url_override_ok(base_url: str) -> bool:
+    """Decide whether a configured ``model.base_url`` may back native Anthropic.
+
+    Native ``provider: anthropic`` resolution honors ``model.base_url`` so users
+    can point at Anthropic-compatible endpoints (official Anthropic/Claude hosts,
+    Azure Foundry, MiniMax/Zhipu/LiteLLM-style ``/anthropic`` proxies, Kimi's
+    ``/coding`` route). But a config can carry a *stale* non-Anthropic URL — e.g.
+    ``provider: anthropic`` left with ``base_url: https://openrouter.ai/api/v1``
+    after a provider switch — which would route Anthropic OAuth/setup-token
+    traffic to an OpenAI-compatible aggregator and 404. Ignore those.
+
+    Returns True only when the URL plausibly speaks the Anthropic Messages
+    protocol; otherwise the caller falls back to ``https://api.anthropic.com``.
+    """
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return False
+
+    hostname = (base_url_hostname(candidate) or "").lower()
+    if not hostname:
+        return False
+
+    # Official Anthropic / Claude hosts.
+    if hostname == "api.anthropic.com" or hostname.endswith(".anthropic.com") or hostname.endswith(".claude.com"):
+        return True
+    # Azure Foundry Anthropic endpoints (handled specially downstream).
+    if hostname.endswith(".azure.com"):
+        return True
+    # Anthropic-compatible proxies conventionally expose the native Messages
+    # protocol under a ``/anthropic`` suffix, and Kimi under ``/coding`` — same
+    # signal _detect_api_mode_for_url() uses to pick anthropic_messages.
+    if _detect_api_mode_for_url(candidate) == "anthropic_messages":
+        return True
+    # Bare api.kimi.com without the /coding path is not an Anthropic endpoint.
+    return False
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -275,6 +348,17 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _nous_inference_base_url_override() -> str:
+    """Return the trusted Nous runtime base URL override, if configured.
+
+    Delegates to ``auth._nous_inference_env_override`` so every
+    ``NOUS_INFERENCE_BASE_URL`` read shares one normalization path
+    (trailing-slash stripping, blank → empty). The env source is trusted
+    and intentionally bypasses the network host allowlist there.
+    """
+    return _nous_inference_env_override() or ""
+
+
 def _maybe_apply_codex_app_server_runtime(
     *,
     provider: str,
@@ -344,6 +428,8 @@ def _resolve_runtime_from_pool_entry(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
@@ -351,6 +437,7 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
+        base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
@@ -423,6 +510,9 @@ def _resolve_runtime_from_pool_entry(
     api_mode = _maybe_apply_codex_app_server_runtime(
         provider=provider, api_mode=api_mode, model_cfg=model_cfg
     )
+
+    if provider == "lmstudio":
+        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
 
     return {
         "provider": provider,
@@ -1051,7 +1141,9 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+        "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
+        if effective_provider == "custom"
+        else _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,
@@ -1247,6 +1339,8 @@ def _resolve_explicit_runtime(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
@@ -1291,6 +1385,7 @@ def _resolve_explicit_runtime(
         state = auth_mod.get_provider_auth_state("nous") or {}
         base_url = (
             explicit_base_url
+            or _nous_inference_base_url_override()
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
         # Only use the agent_key compatibility field for inference when it
@@ -1404,7 +1499,7 @@ def resolve_runtime_provider(
         return {
             "provider": "moa",
             "api_mode": "chat_completions",
-            "base_url": "http://127.0.0.1/v1",
+            "base_url": "moa://local",
             "api_key": "moa-virtual-provider",
             "source": "moa-virtual-provider",
             "requested_provider": requested_provider,
@@ -1445,6 +1540,39 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # Vertex AI: OAuth2-token provider (Gemini via the OpenAI-compatible
+    # endpoint). Resolve BEFORE the custom-runtime / credential-pool / generic
+    # paths. The credential *path* (GOOGLE_APPLICATION_CREDENTIALS /
+    # VERTEX_CREDENTIALS_PATH) must never reach the credential pool or the
+    # generic api_key resolver — those would treat the file path as a static
+    # API key. Instead we mint a short-lived OAuth2 access token here and hand
+    # it to the standard OpenAI client as api_key, with base_url computed from
+    # the project ID + region. The token is re-minted per call (5-min refresh
+    # margin) by get_vertex_config(); mid-session expiry is additionally
+    # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
+    if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        from agent.vertex_adapter import get_vertex_config
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            raise AuthError(
+                "Vertex AI credentials could not be resolved. Vertex uses "
+                "OAuth2 (not a static API key): provide a service-account JSON "
+                "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
+                "in ~/.hermes/.env, or run 'gcloud auth application-default "
+                "login' for ADC. Set the GCP project/region under vertex: in "
+                "config.yaml if they aren't embedded in the credentials. "
+                "Install the extra with: pip install 'hermes-agent[vertex]'."
+            )
+        return {
+            "provider": "vertex",
+            "api_mode": "chat_completions",
+            "base_url": base_url.rstrip("/"),
+            "api_key": token,
+            "source": "vertex-oauth",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -1453,6 +1581,43 @@ def resolve_runtime_provider(
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
+
+    # If provider is "auto" (or unset) but config.yaml has an explicit base_url
+    # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
+    # route through the OpenAI-compatible resolver instead of letting
+    # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
+    # the environment and send the request to a cloud API. Fixes #3846.
+    if not explicit_base_url and not explicit_api_key:
+        model_cfg = _get_model_config()
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+        if cfg_base_url and cfg_provider in ("auto", ""):
+            # Check that base_url isn't one of the well-known cloud API roots
+            # (OpenRouter, Anthropic, OpenAI). If it's something else (Ollama,
+            # LM Studio, vLLM, …) we honour it directly. The full detection
+            # logic lives in _resolve_openrouter_runtime; we just skip the
+            # resolve_provider() call so env-var credentials don't shadow it.
+            # Match on HOST, not substring, so a look-alike base_url
+            # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
+            # path merely contains "openai.com") cannot evade the bypass and
+            # leak a cloud credential. Mirrors the host-gating used for
+            # API-key selection in _resolve_openrouter_runtime.
+            _known_cloud_hosts = (
+                "openrouter.ai",
+                "anthropic.com",
+                "openai.com",
+            )
+            if not any(
+                base_url_host_matches(cfg_base_url, host)
+                for host in _known_cloud_hosts
+            ):
+                runtime = _resolve_openrouter_runtime(
+                    requested_provider=requested_provider,
+                    explicit_api_key=explicit_api_key,
+                    explicit_base_url=explicit_base_url,
+                )
+                runtime["requested_provider"] = requested_provider
+                return runtime
 
     provider = resolve_provider(
         requested_provider,
@@ -1660,6 +1825,8 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or "https://api.anthropic.com"
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
@@ -1834,6 +2001,8 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)
+        if provider == "lmstudio":
+            base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         return {
             "provider": provider,
             "api_mode": api_mode,

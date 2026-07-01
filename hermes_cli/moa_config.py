@@ -21,12 +21,40 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
 }
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
     if not provider or not model:
+        return None
+    # MoA is a virtual provider whose presets are themselves MoA runs. Allowing
+    # one as a reference or aggregator slot would create a recursive MoA tree
+    # (the runtime guards in moa_loop.py skip references / raise on aggregators,
+    # but that surfaces only mid-turn). Reject it here so it can never be saved:
+    # an invalid slot is dropped, falling back to the preset's defaults.
+    if provider.lower() == "moa":
         return None
     return {"provider": provider, "model": model}
 
@@ -46,7 +74,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    refs = [_clean_slot(item) for item in raw.get("reference_models") or []]
+    raw_refs = raw.get("reference_models")
+    if not isinstance(raw_refs, list):
+        # A hand-edited scalar / single mapping (or a bad type) must degrade to
+        # defaults instead of crashing the iteration, mirroring the tolerance
+        # for the scalar fields below (reference_temperature / max_tokens).
+        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
+    refs = [_clean_slot(item) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
@@ -57,9 +91,9 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
-        "reference_temperature": float(raw.get("reference_temperature", 0.6) or 0.6),
-        "aggregator_temperature": float(raw.get("aggregator_temperature", 0.4) or 0.4),
-        "max_tokens": int(raw.get("max_tokens", 4096) or 4096),
+        "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
+        "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
+        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
     }
 
 
@@ -124,11 +158,26 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
@@ -171,4 +220,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa [preset-name | prompt]  (bare /moa toggles the default preset)"
+    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"

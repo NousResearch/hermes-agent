@@ -46,8 +46,8 @@ import {
   IconPhoto as ImageIcon,
   IconInfoCircle as Info,
   IconKey as KeyRound,
-  IconLayoutDashboard as LayoutDashboard,
   IconLayersIntersect2 as Layers3,
+  IconLayoutDashboard as LayoutDashboard,
   IconLink as Link,
   IconLink as Link2,
   IconLink as LinkIcon,
@@ -56,7 +56,9 @@ import {
   IconLock as Lock,
   IconLogin as LogIn,
   IconMail as Mail,
+  IconMaximize as Maximize,
   IconMessageCircle as MessageCircle,
+  IconMessageQuestion as MessageQuestion,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
   IconMicrophoneOff as MicOff,
@@ -89,8 +91,9 @@ import {
   IconSettings2 as Settings2,
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSquare as Square,
-  IconPlayerStopFilled as StopFilled,
+  IconChartDots3 as Starmap,
   IconSteeringWheel as SteeringWheel,
+  IconPlayerStopFilled as StopFilled,
   IconSun as Sun,
   IconTerminal2 as Terminal,
   IconTrash as Trash2,
@@ -104,7 +107,9 @@ import {
   IconX as X,
   IconX as XIcon,
   IconBolt as Zap,
-  IconBoltFilled as ZapFilled
+  IconBoltFilled as ZapFilled,
+  IconZoomIn as ZoomIn,
+  IconZoomOut as ZoomOut
 } from '@tabler/icons-react'
 
 export {
@@ -155,8 +160,8 @@ export {
   ImageIcon,
   Info,
   KeyRound,
-  LayoutDashboard,
   Layers3,
+  LayoutDashboard,
   Link,
   Link2,
   LinkIcon,
@@ -165,7 +170,9 @@ export {
   Lock,
   LogIn,
   Mail,
+  Maximize,
   MessageCircle,
+  MessageQuestion,
   MessageSquareText,
   Mic,
   MicOff,
@@ -198,8 +205,9 @@ export {
   Settings2,
   SlidersHorizontal,
   Square,
-  StopFilled,
+  Starmap,
   SteeringWheel,
+  StopFilled,
   Sun,
   Terminal,
   Trash2,
@@ -213,7 +221,25 @@ export {
   X,
   XIcon,
   Zap,
-  ZapFilled
+  ZapFilled,
+  ZoomIn,
+  ZoomOut
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'
+
+/**
+ * Named icon-size scale — the single source of truth for SVG icon dimensions,
+ * replacing ad-hoc `h-N w-N` / `size={N}`. Use `<Icon className={iconSize.sm} />`
+ * (Tailwind `size-*` sets w+h and beats the icon's default 24px); compose with
+ * `cn()` for colour/animation classes.
+ */
+export const iconSize = {
+  xs: 'size-3', // 12px
+  sm: 'size-3.5', // 14px
+  md: 'size-4', // 16px
+  lg: 'size-5', // 20px
+  xl: 'size-6' // 24px
+} as const
+
+export type IconSize = keyof typeof iconSize

@@ -167,5 +167,5 @@ module.exports = {
   readDashboardReadyFile,
   resolvePortAnnounceTimeoutMs,
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
-  MIN_PORT_ANNOUNCE_TIMEOUT_MS,
+  MIN_PORT_ANNOUNCE_TIMEOUT_MS
 }

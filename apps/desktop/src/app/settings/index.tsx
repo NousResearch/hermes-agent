@@ -1,10 +1,10 @@
 import { useRef } from 'react'
 
+import { codiconIcon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { codiconIcon } from '@/components/ui/codicon'
 import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
@@ -213,7 +213,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)/2+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (

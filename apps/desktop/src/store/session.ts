@@ -161,10 +161,12 @@ export function mergeSessionPage(
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
   const prevById = new Map(previous.map(session => [session.id, session]))
+
   const merged = incoming.map(session => {
     if (session.title?.trim()) {
       return session
     }
+
     const carried = prevById.get(session.id)?.title?.trim()
 
     return carried ? { ...session, title: carried } : session
@@ -175,13 +177,12 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(merged.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(
-    merged.map(session => session._lineage_root_id ?? session.id)
-  )
+  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
 
   const survivors = previous.filter(
     session =>

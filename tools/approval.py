@@ -10,9 +10,11 @@ This module is the single source of truth for the dangerous command system:
 
 import contextvars
 import fnmatch
+import functools
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -46,6 +48,47 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
 )
+
+# Interactive-CLI flag. Concurrent ACP sessions run on a shared
+# ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
+# os.environ["HERMES_INTERACTIVE"] races: one session's restore in `finally`
+# can clobber another session's set mid-run, dropping it onto the
+# non-interactive auto-approve path so a dangerous command executes without
+# the approval callback firing (GHSA-96vc-wcxf-jjff). A contextvar is
+# thread/task-local, so each executor worker (or asyncio task) sees only its
+# own value. None = unset → fall back to the env var for legacy
+# single-threaded CLI callers that still export HERMES_INTERACTIVE.
+_hermes_interactive_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "hermes_interactive",
+    default=None,
+)
+
+
+def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
+    """Bind interactive mode for the current context (thread or asyncio task).
+
+    Use this instead of mutating ``os.environ["HERMES_INTERACTIVE"]`` from
+    concurrent executor threads. When unset (default), interactive detection
+    falls back to the ``HERMES_INTERACTIVE`` env var for legacy callers.
+    """
+    return _hermes_interactive_ctx.set("1" if interactive else "")
+
+
+def reset_hermes_interactive_context(token: contextvars.Token) -> None:
+    """Restore the prior value from :func:`set_hermes_interactive_context`."""
+    _hermes_interactive_ctx.reset(token)
+
+
+def _is_interactive_cli() -> bool:
+    """True when running an interactive CLI/ACP session.
+
+    Prefers the context-local flag (set by concurrent ACP sessions) and falls
+    back to the ``HERMES_INTERACTIVE`` env var for single-threaded callers.
+    """
+    ctx_val = _hermes_interactive_ctx.get()
+    if ctx_val is not None:
+        return is_truthy_value(ctx_val)
+    return env_var_enabled("HERMES_INTERACTIVE")
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -216,7 +259,27 @@ _USER_SENSITIVE_WRITE_TARGET = (
     rf'{_CREDENTIAL_FILES})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
+# Anchor for the cp/mv/install rule, where the sensitive path is only a write
+# target when it is the LAST argument (the destination). Requiring end-of-line
+# (or a command separator) keeps `cp config.yaml backup.yaml` — config.yaml as
+# the SOURCE — out of the deny.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+# Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
+# sensitive path is ALWAYS a write target no matter what follows it. We only
+# need the path token to END at a shell word boundary — whitespace, a quote, a
+# command separator, a redirection operator, or end-of-line.
+# Using _COMMAND_TAIL here was too strict: it required the rest of the line to
+# be empty or a command separator, so `echo x > .env extra` (extra arg to echo)
+# and `echo x > .env # note` (trailing comment) slipped past the deny even
+# though the shell still overwrites `.env`. Mirrors the looser system-path
+# redirection rule, which never had this restriction.
+#
+# `#` is deliberately NOT a boundary char: a real trailing comment always has
+# whitespace before the `#` (already covered by `\s`), whereas a `#` glued to
+# the path is part of the filename. `echo x > .env#backup` writes to the
+# distinct file `.env#backup`, not `.env`, so it must stay OUT of the deny —
+# the same reasoning that keeps `config.yaml.bak` safe.
+_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # =========================================================================
 # Hardline (unconditional) blocklist
@@ -259,11 +322,65 @@ _CMDPOS = (
     r'\s*'
 )
 
+# Destructive-path argument matcher for the rm hardline rules.
+#
+# The path token in `rm -rf /` is almost always written quoted in real
+# shells — `rm -rf "/"`, `rm -rf "$HOME"` — and `${HOME}` is the universal
+# brace form. A bare-token anchor (`(/...)(\s|$)`) silently misses all of
+# these: the surrounding quote breaks both the leading position (the flag
+# group can't consume `"`) and the trailing `(\s|$)` terminator, letting
+# `rm -rf "/"` slip past the unconditional floor entirely.
+#
+# Accept the path either fully wrapped in a matching quote pair OR bare with
+# a terminator. The matching-quote branch catches `rm -rf "/"` (path quoted
+# on its own). The bare branch's terminator accepts whitespace, end-of-string
+# OR a shell metacharacter (`) ` ; | &`) so a real root wipe inside a command
+# substitution — `$(rm -rf /)`, `` `rm -rf /` `` — whose `/` is terminated by
+# `)`/backtick is still caught.
+def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
+    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+
+
+# Protected system roots whose recursive deletion has no recovery path.
+_HARDLINE_SYSTEM_DIRS = (
+    r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
+    r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*'
+)
+
+# `rm` plus its flag group, shared by the three rm hardline rules. Kept as a
+# plain concatenation (not an f-string) so the regex backslashes never live
+# inside an f-string replacement field — unsupported on the Python 3.11 floor.
+#
+# Anchored to _CMDPOS (start of line, after a command separator ; && || |,
+# after a subshell opener $(/backtick, or after sudo/env/exec wrappers) so the
+# rule fires only when `rm` is an actual command word — not when the literal
+# string "rm -rf /" appears as DATA inside another command's argument, e.g.
+# `gh pr create --title "block rm -rf / spellings"` or `git commit -m "…rm -rf
+# /…"`. Those tripped the unconditional floor and could not run at all before
+# the anchor. A real wipe at any command position (bare, chained, in $()/`…`,
+# under sudo) still matches; the quoted-path branch in _hardline_rm_path keeps
+# catching `rm -rf "/"`.
+_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+
 HARDLINE_PATTERNS = [
-    # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # rm recursive targeting the root filesystem or protected roots.
+    # `${HOME}` brace form and quoted paths (`rm -rf "/"`, `rm -rf "$HOME"`)
+    # are handled via _hardline_rm_path so the floor cannot be bypassed with
+    # the ordinary quoting/brace shell idioms.
+    #
+    # The path token matches any root-anchored path whose components collapse
+    # back to "/" in the shell: a bare "/", repeated slashes ("//"), and
+    # "."/".." current/parent segments ("/.", "/./", "/..") all resolve to
+    # root, optionally followed by a trailing glob ("/*", "//*"). The earlier
+    # "/|/\*|/ \*" form only caught the literal "/" / "/*" spellings, so
+    # `rm -rf //`, `rm -rf /.`, `rm -rf /./`, `rm -rf /..` and `rm -rf //*`
+    # silently slipped the hardline floor and executed under --yolo /
+    # approvals.mode=off / cron approve-mode. A trailing real segment
+    # (e.g. "/tmp", "/home", "/.ssh") still fails to match here and stays
+    # with the softer DANGEROUS_PATTERNS / system-directory rules.
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/[/.]*\**'), "recursive delete of root filesystem"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -336,10 +453,11 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    for command_variant in _command_detection_variants(command):
+        normalized = command_variant.lower()
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(normalized):
+                return (True, description)
     return (False, None)
 
 
@@ -381,10 +499,22 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    # Windows shell front-ends have destructive built-ins that do not look like
+    # Unix `rm`. Gate only when they are executed through cmd/powershell so
+    # ordinary prose or filenames containing "del"/"rd" do not trip the guard.
+    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
+    # PowerShell/pwsh: the destructive verb runs as the default positional
+    # argument, so `powershell Remove-Item ...` needs NO explicit -Command.
+    # Anchor the verb to the command position (right after the shell name,
+    # after any leading `-Flag` switches, and optionally after -Command/-c)
+    # so bare invocations are caught while a benign path arg containing
+    # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
+    (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
     (r'\bdd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
@@ -410,10 +540,29 @@ DANGEROUS_PATTERNS = [
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    # Remote content executed via command substitution: eval/source/. $(curl ...)
+    # or `wget ...`. Equivalent to piping remote content to a shell.
+    (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Decode-and-execute: encoded/transformed content piped to a shell. Without
+    # these, `echo <base64> | base64 -d | bash` silently runs `rm -rf /` or any
+    # other command because the raw text carries no dangerous keywords.
+    (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe decoded content to shell (possible command obfuscation)"),
+    # xxd reverse hex dump to shell (xxd uses -r for decode, not -d).
+    (r'\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe xxd-decoded content to shell (possible command obfuscation)"),
+    # Character transformation via tr piped to shell:
+    # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
+    (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe tr-transformed output to shell (possible command obfuscation)"),
+    # openssl decode piped to shell:
+    # `echo <base64> | openssl base64 -d | bash` decodes arbitrary commands.
+    (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
-    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
-    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via redirection"),
+    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
+    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # find -exec rm / -execdir rm — the -execdir variant (same semantics,
     # runs in the directory of each match) was previously missed. Claude
@@ -423,8 +572,10 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    # terminates all running agents mid-work.  Allow global flags between
+    # `hermes` and `gateway` (e.g. `hermes -p ade gateway restart`) so a
+    # profile flag can't slip the agent past the guard.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
@@ -442,8 +593,15 @@ DANGEROUS_PATTERNS = [
     # The name-based pattern above catches `pkill hermes` but not
     # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
     # to regex at detection time. Catch the structural pattern instead.
-    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
-    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # `pidof` is the BSD/Linux alternative to `pgrep` and is equally
+    # opaque, so include it in the same alternation.
+    (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
+    (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
+    # launchctl-driven gateway stop/restart on macOS. The agent can bypass
+    # the `hermes gateway stop|restart` pattern above by driving launchd
+    # directly against the service label (commonly `ai.hermes.gateway`).
+    # Catch the operations that stop, restart, or unload it.
+    (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
@@ -489,13 +647,35 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
+    # shell commands without triggering the `bash -c` pattern above. The
+    # inner commands may not individually match any dangerous pattern (e.g.
+    # data-exfiltration pipelines using curl/cat) yet are still executed in
+    # a full shell context.
+    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
-    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    # `git reset --hard` accepts any unambiguous long-flag prefix (--h,
+    # --ha, --har, --hard) because git's own option parser resolves
+    # abbreviated long flags -- `--hard` is the only `git reset` mode
+    # starting with "h" (siblings are --soft/--mixed/--merge/--keep), so
+    # this cannot collide with another reset mode. It also does not match
+    # `--help`, which git special-cases before mode resolution.
+    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # `-D` is shorthand for `-d --force`; the long-flag spellings
+    # (`--delete`, `--force`) are different tokens entirely, so they slip
+    # past the `-D\b` pattern above even though `git branch -d --force`
+    # and `git branch --delete --force` delete an unmerged branch exactly
+    # like `-D` does. Match delete+force in either order, bounded to the
+    # same command segment (not spanning `;`/`|`/`&`/newline) the same
+    # way the sudo patterns below do, to avoid contaminating an unrelated
+    # later command in the same script.
+    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
@@ -513,7 +693,14 @@ DANGEROUS_PATTERNS = [
     # are gated below. Lazy `[^;|&\n]*?` allows flag arguments (e.g.
     # `sudo -u root -S whoami`) without spanning command separators. See
     # #17873 category 4.
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--stdin\b|-a\b|--askpass\b)',
+    # sudo's own option parser (like git's) resolves unambiguous
+    # long-flag prefixes, so `sudo --stdi` runs identically to
+    # `sudo --stdin` and `sudo --ask` to `sudo --askpass` -- confirmed
+    # against a live sudo binary. `--st[a-z]*` and `--a[a-z]*` are safe
+    # to match broadly: per `man sudo`, `--stdin` is the only long option
+    # starting with "st" (siblings are --shell/--set-home) and
+    # `--askpass` is the only one starting with "a" at all.
+    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)',
      "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form: -nS, -ns, -sa, -las — sudo flags packed
     # into a single -X token. Catches the same threat class.
@@ -571,87 +758,580 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Collapse shell line continuations (backslash-newline). The shell removes
+    # BOTH characters and joins the tokens, so `rm -rf \<newline>/` executes as
+    # `rm -rf /`. This must run BEFORE the generic backslash-escape strip below,
+    # whose [^\n] class deliberately skips newlines and would otherwise leave
+    # the dangling backslash wedged between tokens — defeating the structured
+    # rm/mkfs/dd patterns (notably the HARDLINE root-delete floor, which cannot
+    # be bypassed even with yolo). Handles both \n and \r\n line endings. Line
+    # continuations carry no path separator, so this is a no-op on the Windows
+    # home-prefix folds below (which match C:\Users\alice\... — no newline).
+    command = re.sub(r'\\\r?\n', '', command)
+    # Fold absolute home / active-profile-home prefixes into their canonical
+    # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
+    # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch
+    # ~/.bashrc. Resolve at detection time (not via an import-time snapshot) so
+    # it tracks HOME / HERMES_HOME even when those are set after this module is
+    # imported — as the hermetic test conftest and profile/session launchers do.
+    #
+    # This MUST run before the backslash-escape strip below: on Windows the home
+    # prefix is separated by backslashes (C:\Users\alice\...), which that strip
+    # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
+    # The fold matches either separator, so POSIX paths are unaffected by order.
+    #
+    # Fold the (more specific) Hermes home first: on Windows it nests under the
+    # user home (C:\Users\alice\AppData\...\hermes), so folding the user home
+    # first would eat the prefix the Hermes-home fold needs.
+    command = _rewrite_resolved_hermes_home(command)
+    command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
-    # Fold the current user's resolved absolute home path into ~/ at detection
-    # time so static user-sensitive patterns catch /home/alice/.bashrc the same
-    # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
-    # profile/session launchers can set HOME after this module is imported.
-    command = _rewrite_resolved_user_home(command)
-    # Fold the resolved absolute active-profile home path into the canonical
-    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
-    # gateway deployments the agent often references the resolved absolute path
-    # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
-    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
-    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
-    # after this module is imported — as the hermetic test conftest does.
-    command = _rewrite_resolved_hermes_home(command)
+    # Collapse $IFS / ${IFS} word-separator expansions to a literal space.
+    # In any POSIX shell the IFS variable defaults to <space><tab><newline>,
+    # so `rm${IFS}-rf${IFS}/` is executed as `rm -rf /`. Because the dangerous
+    # and hardline patterns anchor on literal whitespace (\s) between a command
+    # and its arguments, leaving the unexpanded `${IFS}` token in place lets an
+    # attacker slip past EVERY pattern — including the unconditional hardline
+    # floor (rm -rf /, mkfs, dd to raw device, shutdown/reboot). Substituting a
+    # space here mirrors the shell's own expansion so the patterns fire. The
+    # brace form also covers bash substring expansions like `${IFS:0:1}` (a
+    # single space). Same de-obfuscation class as the backslash/empty-quote
+    # handling above.
+    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    return command
+
+
+# Shell metacharacters, quotes, and whitespace that terminate a filesystem
+# path token on a command line. Used to bound the path tail we normalize.
+_PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
+# One path segment (no separators, no terminators) preceded by a separator.
+_PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+
+
+@functools.lru_cache(maxsize=64)
+def _home_prefix_fold_regex(path: str):
+    """Compile a regex matching *path* used as an absolute directory prefix.
+
+    The home components are matched with either separator (``/`` or ``\\``)
+    between them, followed by the rest of the path token (the ``tail`` group),
+    so a Windows native path (``C:\\Users\\alice\\.ssh\\authorized_keys``), its
+    forward-slash form, and mixed-separator forms all fold — and the tail's
+    backslashes get normalized to ``/`` by the caller so multi-segment static
+    patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
+    required (``+``), so a bare home with no path under it is not folded.
+
+    Returns ``None`` for an unset or degenerate path — one with fewer than two
+    components below the root — so a stray HOME / HERMES_HOME such as ``/``,
+    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
+    because the resolved home is stable across calls on this hot path.
+    """
+    if not path:
+        return None
+    components = [c for c in re.split(r"[/\\]+", path) if c]
+    # Require at least two non-empty components below the root. For POSIX this
+    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
+    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
+    # while accepting a real home (``C:\\Users\\alice``).
+    if len(components) < 2:
+        return None
+    body = r"[/\\]+".join(re.escape(c) for c in components)
+    # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
+    # drive letter is captured as the first component.
+    return re.compile(r"[/\\]*" + body + _PATH_TAIL)
+
+
+def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
+    """Fold each resolved home *path* prefix in *command* to *replacement*.
+
+    *replacement* has no trailing separator (``~`` / ``~/.hermes``); the matched
+    path tail (with its backslashes normalized to ``/``) supplies it. Longest
+    candidate first so a deeper home (e.g. an explicit HOME under USERPROFILE)
+    folds before a shorter overlapping one that would otherwise clobber it.
+    """
+    seen: set[str] = set()
+    for path in sorted((p for p in paths if p), key=len, reverse=True):
+        if path in seen:
+            continue
+        seen.add(path)
+        pattern = _home_prefix_fold_regex(path)
+        if pattern is not None:
+            command = pattern.sub(
+                lambda m: replacement + m.group("tail").replace("\\", "/"),
+                command,
+            )
     return command
 
 
 def _rewrite_resolved_user_home(command: str) -> str:
     """Rewrite the current user's absolute home prefix to ``~/``.
 
-    Resolves HOME at detection time, including its symlink-resolved form, so
-    terminal commands targeting absolute home paths are checked by the same
-    static patterns as tilde and $HOME forms. No-op when HOME is unset or
-    degenerate.
+    Resolves the home at detection time — its expanduser form, symlink-resolved
+    form, and an explicitly set ``HOME`` — so absolute home paths are checked by
+    the same static patterns as tilde and ``$HOME`` forms. ``HOME`` is consulted
+    directly because Windows' ``os.path.expanduser`` resolves ``~`` from
+    ``USERPROFILE`` and ignores ``HOME``, unlike POSIX. Matches both POSIX
+    (``/home/alice``) and Windows (``C:\\Users\\alice`` or ``C:/Users/alice``)
+    separators. No-op when the home is unset or degenerate.
     """
     try:
         home = os.path.expanduser("~")
         candidates = [
-            home.rstrip("/"),
-            os.path.realpath(home).rstrip("/"),
+            home,
+            os.path.realpath(home),
+            os.environ.get("HOME", ""),
         ]
     except Exception:
         return command
-    seen: set[str] = set()
-    for path in candidates:
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        # Require an absolute path below root so a bad HOME cannot rewrite the
-        # whole filesystem namespace.
-        normalized = path.rstrip("/")
-        if not normalized.startswith("/") or normalized.count("/") < 2:
-            continue
-        command = command.replace(normalized + "/", "~/")
-    return command
+    return _fold_home_prefixes(command, candidates, "~")
 
 
 def _rewrite_resolved_hermes_home(command: str) -> str:
     """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
 
     Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
-    form) and replaces an occurrence of ``<home>/`` in *command* with
+    form) and folds an occurrence of ``<home>/`` in *command* into
     ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
-    patterns match. No-op when the path can't be resolved or doesn't appear.
+    patterns match. In Docker and gateway deployments the agent often references
+    the resolved absolute path directly (e.g. ``sed -i ...
+    /home/hermes/.hermes/config.yaml``) rather than ``~``, ``$HOME``, or
+    ``$HERMES_HOME``. Matches both POSIX and Windows separators. No-op when the
+    path can't be resolved or doesn't appear.
     """
     try:
         from hermes_constants import get_hermes_home
         home = get_hermes_home().expanduser()
         candidates = [
-            str(home).rstrip("/"),
-            str(home.resolve(strict=False)).rstrip("/"),
+            str(home),
+            str(home.resolve(strict=False)),
         ]
     except Exception:
         return command
-    seen: set[str] = set()
-    for path in candidates:
-        if not path or path in seen:
+    return _fold_home_prefixes(command, candidates, "~/.hermes")
+
+
+_PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
+_PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
+_SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_COMMAND_WRAPPER_WORDS = {
+    "sudo",
+    "env",
+    "exec",
+    "nohup",
+    "setsid",
+    "time",
+    "command",
+    "builtin",
+}
+_SUDO_OPTIONS_WITH_ARG = {
+    "-c", "--close-from",
+    "-g", "--group",
+    "-h", "--host",
+    "-p", "--prompt",
+    "-u", "--user",
+}
+
+
+def _skip_shell_whitespace(command: str, pos: int) -> int:
+    while pos < len(command) and command[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _scan_dollar_paren_end(command: str, start: int) -> int | None:
+    """Return the offset after a balanced ``$(...)`` command substitution."""
+    depth = 1
+    quote: str | None = None
+    i = start + 2
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
             continue
-        seen.add(path)
-        # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
-        # unrelated paths: require an absolute path with at least one non-root
-        # component. The active profile home is always a real directory like
-        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
-        normalized = path.rstrip("/")
-        if not normalized.startswith("/") or normalized.count("/") < 2:
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
             continue
-        command = command.replace(normalized + "/", "~/.hermes/")
-    return command
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            depth += 1
+            i += 2
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return None
+
+
+def _scan_backtick_end(command: str, start: int) -> int | None:
+    i = start + 1
+    while i < len(command):
+        if command[i] == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command[i] == "`":
+            return i + 1
+        i += 1
+    return None
+
+
+def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
+    """Read one shell word without executing expansions."""
+    start = _skip_shell_whitespace(command, pos)
+    i = start
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            if end is None:
+                i += 2
+            else:
+                i = end
+            continue
+        if command.startswith("${", i):
+            end = command.find("}", i + 2)
+            if end == -1:
+                i += 2
+            else:
+                i = end + 1
+            continue
+        if ch == "`":
+            end = _scan_backtick_end(command, i)
+            if end is None:
+                i += 1
+            else:
+                i = end
+            continue
+        if ch.isspace() or ch in ";&|":
+            break
+        i += 1
+    return (start, i, command[start:i])
+
+
+def _strip_optional_shell_quotes(word: str) -> str:
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in ("'", '"'):
+        return word[1:-1]
+    return word
+
+
+def _is_simple_shell_literal(value: str) -> bool:
+    return bool(value and _SIMPLE_SHELL_LITERAL_RE.fullmatch(value))
+
+
+def _literal_command_substitution_output(script: str) -> str | None:
+    """Resolve tiny literal command substitutions without executing a shell."""
+    try:
+        tokens = shlex.split(script, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    command = tokens[0].lower()
+    args = tokens[1:]
+    if command == "echo":
+        while args and re.fullmatch(r"-[nEe]+", args[0]):
+            args = args[1:]
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        return None
+
+    if command == "printf":
+        if len(args) == 1 and _is_simple_shell_literal(args[0]):
+            return args[0]
+        if (
+            len(args) == 2
+            and args[0] == "%s"
+            and _is_simple_shell_literal(args[1])
+        ):
+            return args[1]
+    return None
+
+
+def _replace_simple_command_substitutions(word: str) -> str:
+    chars: list[str] = []
+    i = 0
+    while i < len(word):
+        if word.startswith("$(", i):
+            end = _scan_dollar_paren_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 2:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        if word[i] == "`":
+            end = _scan_backtick_end(word, i)
+            if end is not None:
+                replacement = _literal_command_substitution_output(word[i + 1:end - 1])
+                if replacement is not None:
+                    chars.append(replacement)
+                    i = end
+                    continue
+        chars.append(word[i])
+        i += 1
+    return "".join(chars)
+
+
+def _replace_simple_shell_expansions(word: str) -> str:
+    word = _replace_simple_command_substitutions(word)
+    word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
+    return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+
+
+def _strip_shell_word_syntax(word: str) -> str:
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(word):
+        ch = word[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(word):
+                chars.append(word[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+                i += 1
+                continue
+            chars.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(word):
+            chars.append(word[i + 1])
+            i += 2
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars)
+
+
+def _deobfuscate_shell_word_for_detection(word: str) -> str:
+    """Approximate how shell syntax can spell a command word.
+
+    This is intentionally narrow and non-executing: it only collapses shell
+    quoting/escaping plus simple literal command substitutions that appear in
+    the command word itself.
+    """
+    deobfuscated = word
+    for _ in range(2):
+        previous = deobfuscated
+        deobfuscated = _replace_simple_shell_expansions(deobfuscated)
+        deobfuscated = _strip_shell_word_syntax(deobfuscated)
+        if deobfuscated == previous:
+            break
+    return deobfuscated
+
+
+def _iter_shell_command_starts(command: str):
+    starts = [0]
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if command.startswith("$(", i):
+                starts.append(i + 2)
+                i += 2
+                continue
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            starts.append(i + 2)
+            i += 2
+            continue
+        # Bare subshell `(cmd)` and brace group `{ cmd; }` openers begin a new
+        # command context, just like `;` or `$(`. We only reach this branch
+        # OUTSIDE any quote (the quote arms above `continue` first), so a `(`
+        # or `{` sitting inside a quoted argument — `--title "block (reboot)"`,
+        # `echo "{ reboot; }"` — never registers a command start. That is the
+        # whole reason this lives in the quote-aware tokenizer instead of the
+        # flat `_CMDPOS` regex, which cannot tell quoted text from real syntax.
+        if ch in ("(", "{"):
+            starts.append(i + 1)
+            i += 1
+            continue
+        if ch == ";":
+            starts.append(i + 1)
+            i += 1
+            continue
+        if ch == "&":
+            if i + 1 < len(command) and command[i + 1] == "&":
+                starts.append(i + 2)
+                i += 2
+            else:
+                starts.append(i + 1)
+                i += 1
+            continue
+        if ch == "|":
+            if i + 1 < len(command) and command[i + 1] == "|":
+                starts.append(i + 2)
+                i += 2
+            else:
+                starts.append(i + 1)
+                i += 1
+            continue
+        if ch == "\n":
+            starts.append(i + 1)
+        i += 1
+
+    seen: set[int] = set()
+    for start in starts:
+        start = _skip_shell_whitespace(command, start)
+        if start < len(command) and start not in seen:
+            seen.add(start)
+            yield start
+
+
+def _mark_command_starts(command: str) -> str:
+    """Insert a newline before each real (quote-aware) command start.
+
+    ``\\n`` is already a ``_CMDPOS`` separator, so this rewrites subshell
+    ``(cmd)`` and brace-group ``{ cmd; }`` openers — which the flat pattern
+    class deliberately omits — into a form the anchored hardline/dangerous
+    patterns recognize, WITHOUT the quoted-prose false positives that adding
+    ``(`` / ``{`` to ``_CMDPOS`` would cause. Starts inside quotes are never
+    produced by ``_iter_shell_command_starts``, so quoted arguments such as
+    ``--title "block (reboot)"`` are left exactly as-is.
+    """
+    # Collect the (whitespace-skipped) start offsets, drop 0 (already anchored
+    # by ``^``), and splice a newline in front of each — right-to-left so the
+    # earlier offsets stay valid as we mutate.
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    if not offsets:
+        return command
+    out = command
+    for offset in reversed(offsets):
+        out = out[:offset] + "\n" + out[offset:]
+    return out
+
+
+def _iter_shell_command_word_spans(command: str):
+    """Yield command-position words that may be executable names."""
+    for command_start in _iter_shell_command_starts(command):
+        pos = command_start
+        prefix_words = 0
+        skip_wrapper_options = False
+        skip_next_wrapper_arg = False
+        while prefix_words < 12:
+            word_start, word_end, word = _read_shell_word(command, pos)
+            if word_start == word_end:
+                break
+            deobfuscated = _deobfuscate_shell_word_for_detection(word)
+            lower_word = deobfuscated.lower()
+            if skip_next_wrapper_arg:
+                skip_next_wrapper_arg = False
+                pos = word_end
+                prefix_words += 1
+                continue
+            if skip_wrapper_options and lower_word.startswith("-"):
+                option_name = lower_word.split("=", 1)[0]
+                skip_next_wrapper_arg = (
+                    "=" not in lower_word
+                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                )
+                pos = word_end
+                prefix_words += 1
+                continue
+
+            yield (word_start, word_end, word)
+            prefix_words += 1
+
+            if lower_word in _COMMAND_WRAPPER_WORDS:
+                skip_wrapper_options = lower_word in {"sudo", "env"}
+                pos = word_end
+                continue
+            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                skip_wrapper_options = False
+                pos = word_end
+                continue
+            break
+
+
+def _command_detection_variants(command: str):
+    normalized = _normalize_command_for_detection(command)
+    seen = {normalized}
+    yield normalized
+    # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
+    # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
+    # their start-position class deliberately omits `(`/`{` because a bare
+    # regex cannot tell `(reboot)` (real subshell) from `--title "(reboot)"`
+    # (quoted prose) — adding them there regresses ordinary quoted arguments.
+    # Instead, reconstruct the command with a newline (already a `_CMDPOS`
+    # separator) inserted at each command start the QUOTE-AWARE tokenizer
+    # found. Openers inside quotes never yield a start, so quoted prose is
+    # untouched, while `(reboot)` / `{ shutdown -h now; }` now anchor. This
+    # covers every `_CMDPOS` rule (shutdown/reboot/init/systemctl/telinit and
+    # the rm root/home/system floor) in one place.
+    marked = _mark_command_starts(normalized)
+    if marked != normalized and marked not in seen:
+        seen.add(marked)
+        yield marked
+    # Shell quoting/escaping can spell a dangerous executable name in pieces
+    # (for example r\m or r''m). Keep that deobfuscation scoped to command
+    # words so similarly shaped arguments do not become false positives.
+    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
+        deobfuscated = _deobfuscate_shell_word_for_detection(word)
+        if not deobfuscated or deobfuscated == word:
+            continue
+        variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
+        if variant in seen:
+            continue
+        seen.add(variant)
+        yield variant
 
 
 def detect_dangerous_command(command: str) -> tuple:
@@ -660,11 +1340,12 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                pattern_key = description
+                return (True, pattern_key, description)
     return (False, None, None)
 
 
@@ -938,9 +1619,17 @@ def prompt_dangerous_approval(command: str, description: str,
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    # Redact secrets before any user-visible rendering. The original
+    # `command` is still what executes after approval; only the displayed
+    # copy is scrubbed. Reuses the same redaction module used for memory
+    # and log sanitization so tokens mask consistently across surfaces.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_description = redact_sensitive_text(description)
+
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
+            return approval_callback(display_command, display_description,
                                      allow_permanent=allow_permanent)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -980,8 +1669,8 @@ def prompt_dangerous_approval(command: str, description: str,
         from agent.i18n import t
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=description)}")
-            print(f"      {command}")
+            print(f"  {t('approval.dangerous_header', description=display_description)}")
+            print(f"      {display_command}")
             print()
             if allow_permanent:
                 print(t("approval.choose_long"))
@@ -1040,12 +1729,27 @@ def _normalize_approval_mode(mode) -> str:
     YAML 1.1 treats bare words like `off` as booleans, so a config entry like
     `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
+
+    Unknown string values (e.g. 'auto') are rejected with a warning rather than
+    being silently accepted and falling through every mode check downstream.
+    Always returns one of 'manual', 'smart', or 'off'.
     """
+    _VALID_MODES = ("manual", "smart", "off")
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
         normalized = mode.strip().lower()
-        return normalized or "manual"
+        if not normalized:
+            return "manual"
+        if normalized in _VALID_MODES:
+            return normalized
+        logger.warning(
+            "Unknown approvals.mode %r — defaulting to 'manual'. "
+            "Valid values: %s",
+            mode,
+            ", ".join(_VALID_MODES),
+        )
+        return "manual"
     return "manual"
 
 
@@ -1064,6 +1768,27 @@ def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
+
+
+def is_approval_bypass_active() -> bool:
+    """Return True when the user has opted out of Hermes approval prompts.
+
+    Collapses the canonical three-source bypass check used across the codebase
+    into one place:
+      - process-scoped ``--yolo`` / ``HERMES_YOLO_MODE`` (frozen at import time
+        so a mid-process skill can't flip it — a prompt-injection escalation
+        path; see ``_YOLO_MODE_FROZEN`` above),
+      - the session-scoped gateway ``/yolo`` toggle,
+      - ``approvals.mode: off`` in config.
+
+    This is the pure-bypass sub-expression only. Callers that also honor a
+    hardline blocklist / permanent allowlist must check those separately.
+    """
+    return (
+        _YOLO_MODE_FROZEN
+        or is_current_session_yolo_enabled()
+        or _get_approval_mode() == "off"
+    )
 
 
 def _get_approval_timeout() -> int:
@@ -1211,8 +1936,23 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
+    """Return True when the backend is isolated enough to skip dangerous-command prompts.
+
+    Isolated container backends sandbox the agent away from the host, so their
+    commands can't damage real files/services and we skip the approval layer.
+    Docker is the exception once host paths are bind-mounted into the container:
+    at that point a command like ``rm -rf /workspace`` reaches host files, so it
+    must go through the normal approval flow.
+    """
+    if env_type == "docker":
+        return not has_host_access
+    return env_type in ("singularity", "modal", "daytona")
+
+
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            has_host_access: bool = False) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -1222,11 +1962,13 @@ def check_dangerous_command(command: str, env_type: str,
         command: The shell command to check.
         env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
+        has_host_access: True when a Docker sandbox bind-mounts host paths,
+            so its commands can reach the host and must not skip approval.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -1255,7 +1997,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1468,16 +2210,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
+    such a session is no longer isolated, so it goes through the normal flow
+    instead of the container fast-path.
     """
-    # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    # Skip isolated container backends for both checks. Docker stops skipping
+    # once host paths are bind-mounted into the sandbox.
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1509,7 +2257,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
@@ -1532,6 +2280,53 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
+                # Also run tirith check in cron-deny mode so content-level
+                # threats (homograph URLs, pipe-to-interpreter, terminal
+                # injection, etc.) are caught even when they do not match
+                # the pattern-based detection above.
+                try:
+                    from tools.tirith_security import check_command_security
+                    _cron_tirith = check_command_security(command)
+                    if _cron_tirith.get("action") in ("block", "warn"):
+                        _cron_desc = _format_tirith_description(_cron_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_cron_desc} "
+                                "but cron jobs run without a user present to approve it. "
+                                "Find an alternative approach that avoids this command. "
+                                "To allow dangerous commands in cron jobs, set "
+                                "approvals.cron_mode: approve in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    # Tirith not installed. Honour security.tirith_fail_open:
+                    # the default (True) allows as before, but when an operator
+                    # has explicitly opted into fail-closed the command cannot
+                    # be silently allowed — and a cron session has no user to
+                    # approve it, so fail-closed means block (mirrors the
+                    # fail-closed synthesis in the main flow below; see #20733).
+                    _cron_fail_open = True  # safe default if config is unreadable
+                    try:
+                        from hermes_cli.config import load_config as _load_cfg
+                        _sec = (_load_cfg() or {}).get("security", {}) or {}
+                        if _sec.get("tirith_enabled", True):
+                            _cron_fail_open = _sec.get("tirith_fail_open", True)
+                    except Exception:
+                        pass
+                    if not _cron_fail_open:
+                        return {
+                            "approved": False,
+                            "message": (
+                                "BLOCKED: the Tirith security scanner could not be "
+                                "imported and security.tirith_fail_open is false, "
+                                "so this command cannot be silently allowed — and "
+                                "cron jobs run without a user present to approve it. "
+                                "Find an alternative approach, install tirith, or set "
+                                "approvals.cron_mode: approve in config.yaml."
+                            ),
+                        }
+                    # else: tirith_fail_open is True — allow as before
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -1543,7 +2338,40 @@ def check_all_command_guards(command: str, env_type: str,
         from tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
-        pass  # tirith module not installed — allow
+        # Tirith module not installed.  When tirith_fail_open is True (the
+        # default) we silently allow, matching the pre-existing behaviour.
+        # When tirith_fail_open is False the operator has explicitly opted into
+        # fail-closed; an import failure must not silently grant access, so we
+        # synthesize a warn result that will be surfaced to the user through the
+        # normal approval flow.  Fixes #20733.
+        _tirith_fail_open = True  # safe default if config is unreadable
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _sec = (_load_cfg() or {}).get("security", {}) or {}
+            _tirith_enabled = _sec.get("tirith_enabled", True)
+            if _tirith_enabled:
+                _tirith_fail_open = _sec.get("tirith_fail_open", True)
+        except Exception:
+            pass
+        if not _tirith_fail_open:
+            tirith_result = {
+                "action": "warn",
+                "findings": [
+                    {
+                        "rule_id": "tirith-import-error",
+                        "severity": "HIGH",
+                        "title": "Tirith security module unavailable",
+                        "description": (
+                            "The Tirith security scanner could not be imported. "
+                            "Because security.tirith_fail_open is false, this "
+                            "command cannot be silently allowed. Approve only if "
+                            "you have verified the command is safe."
+                        ),
+                    }
+                ],
+                "summary": "Tirith unavailable (fail-closed)",
+            }
+        # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -1623,11 +2451,19 @@ def check_all_command_guards(command: str, env_type: str,
             # Block the agent thread until the user responds; the notify +
             # heartbeat wait loop is shared with check_execute_code_guard via
             # _await_gateway_decision().
+            #
+            # Redact secrets in the notified payload: the gateway renders this
+            # dict directly to Discord/Slack/etc. and those messages are
+            # screenshottable. The raw `command` still executes after approval
+            # via the closure below, so redaction is display-only. Approval
+            # persistence keys off pattern_key (not the command text), so the
+            # allowlist is unaffected.
+            from agent.redact import redact_sensitive_text
             approval_data = {
-                "command": command,
+                "command": redact_sensitive_text(command),
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
-                "description": combined_desc,
+                "description": redact_sensitive_text(combined_desc),
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
@@ -1691,22 +2527,27 @@ def check_all_command_guards(command: str, env_type: str,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
-        # Return approval_required for backward compat.
+        # Return approval_required for backward compat. Redact secrets in the
+        # user-facing copy — the raw `command` is preserved for execution and
+        # the allowlist keys off pattern_key, so redaction is display-only.
+        from agent.redact import redact_sensitive_text
+        _disp_command = redact_sensitive_text(command)
+        _disp_combined_desc = redact_sensitive_text(combined_desc)
         submit_pending(session_key, {
-            "command": command,
+            "command": _disp_command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
-            "description": combined_desc,
+            "description": _disp_combined_desc,
         })
         return {
             "approved": False,
             "pattern_key": primary_key,
             "status": "pending_approval",
             "approval_pending": True,
-            "command": command,
-            "description": combined_desc,
+            "command": _disp_command,
+            "description": _disp_combined_desc,
             "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
             ),
         }
 
@@ -1767,7 +2608,8 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
-def check_execute_code_guard(code: str, env_type: str) -> dict:
+def check_execute_code_guard(code: str, env_type: str,
+                             has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -1793,8 +2635,12 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     )
 
     # Isolated backends already sandbox the child — matches the container skip
-    # in check_all_command_guards / check_dangerous_command.
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    # in check_all_command_guards / check_dangerous_command. Docker stops
+    # skipping once host paths are bind-mounted into the sandbox; vercel_sandbox
+    # has no host-bind concept so it stays always-skipped.
+    if env_type == "vercel_sandbox":
+        return {"approved": True, "message": None}
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
@@ -1838,6 +2684,17 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
+    # Redacted copies for user-visible rendering only. An execute_code script
+    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
+    # this payload directly to Discord/Slack — those messages are
+    # screenshottable. The raw `command`/`code` are still what get assessed by
+    # smart approval and executed; redaction is display-only. Approval
+    # persistence keys off pattern_key, so the allowlist is unaffected.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_code = redact_sensitive_text(code)
+    display_description = redact_sensitive_text(description)
+
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
@@ -1876,29 +2733,29 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
         submit_pending(session_key, {
-            "command": command,
+            "command": display_command,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
-            "description": description,
+            "description": display_description,
         })
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "pending_approval",
             "approval_pending": True,
-            "command": command,
-            "description": description,
+            "command": display_command,
+            "description": display_description,
             "message": (
-                f"⚠️ {description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{code}\n```"
+                f"⚠️ {display_description}. Asking the user for approval.\n\n"
+                f"**Code:**\n```python\n{display_code}\n```"
             ),
         }
 
     approval_data = {
-        "command": command,
+        "command": display_command,
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
-        "description": description,
+        "description": display_description,
     }
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"

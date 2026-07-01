@@ -177,6 +177,17 @@ DELETE_SCHEMA = {
         "required": ["memory_id"],
     },
 }
+GET_SCHEMA = {
+    "name": "mem0_get",
+    "description": "Get a single memory by its ID.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Memory UUID to retrieve."},
+        },
+        "required": ["memory_id"],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +361,8 @@ class Mem0MemoryProvider(MemoryProvider):
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
             "Use mem0_search to find memories, mem0_add to store facts, "
-            f"mem0_list for a full overview, mem0_update and mem0_delete to manage by ID.{rerank_note}"
+            f"mem0_list for a full overview, mem0_get to read a single memory by ID, "
+            f"mem0_update and mem0_delete to manage by ID.{rerank_note}"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -424,7 +436,7 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [LIST_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        return [LIST_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA, GET_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:
@@ -539,6 +551,19 @@ class Mem0MemoryProvider(MemoryProvider):
                     return tool_error(f"Memory not found: {memory_id}")
                 self._record_failure()
                 return tool_error(self._format_error("Delete failed", e))
+
+        elif tool_name == "mem0_get":
+            memory_id = args.get("memory_id", "")
+            if not memory_id:
+                return tool_error("Missing required parameter: memory_id")
+            try:
+                result = self._backend.get(memory_id)
+                return json.dumps(result)
+            except Exception as e:
+                if _is_client_error(e):
+                    return tool_error(f"Memory not found: {memory_id}")
+                self._record_failure()
+                return tool_error(self._format_error("Get failed", e))
 
         return tool_error(f"Unknown tool: {tool_name}")
 

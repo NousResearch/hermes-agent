@@ -37,6 +37,10 @@ class Mem0Backend(ABC):
     def delete(self, memory_id: str) -> dict:
         ...
 
+    @abstractmethod
+    def get(self, memory_id: str) -> dict:
+        ...
+
     def close(self) -> None:
         pass
 
@@ -88,6 +92,9 @@ class PlatformBackend(Mem0Backend):
     def delete(self, memory_id: str) -> dict:
         self._client.delete(memory_id=memory_id)
         return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def get(self, memory_id: str) -> dict:
+        return self._client.get(memory_id)
 
 
 class OSSBackend(Mem0Backend):
@@ -222,6 +229,9 @@ class OSSBackend(Mem0Backend):
     def delete(self, memory_id: str) -> dict:
         self._memory.delete(memory_id)
         return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def get(self, memory_id: str) -> dict:
+        return self._memory.get(memory_id)
 
     def close(self):
         try:

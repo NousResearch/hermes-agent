@@ -6189,6 +6189,33 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         return chat_type in {"group", "supergroup"}
 
+    @classmethod
+    def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
+        """Return the routable thread id for a Telegram message.
+
+        Forum supergroup messages posted in the General topic arrive with
+        ``message_thread_id=None`` while Telegram itself addresses that topic
+        as thread id ``1``.  Ordinary replies are the opposite footgun:
+        Telegram populates ``message_thread_id`` with a reply-UI anchor id on
+        plain group/DM replies, but those ids are not topic/session routing
+        ids and must not be treated as such.  Gating, skill binding, and
+        outbound routing must all agree on the same normalized value.
+        """
+        chat = getattr(message, "chat", None)
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower() if chat else ""
+        raw = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = chat_type in ("group", "supergroup") and getattr(chat, "is_forum", False) is True
+        if raw is not None:
+            if is_forum_group or (chat_type in ("group", "supergroup") and is_topic_message):
+                return str(raw)
+            if chat_type == "private" and is_topic_message:
+                return str(raw)
+            return None
+        if is_forum_group:
+            return cls._GENERAL_TOPIC_THREAD_ID
+        return None
+
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
@@ -6718,7 +6745,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
 
-        thread_id = getattr(message, "message_thread_id", None)
+        thread_id = self._effective_message_thread_id(message)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
             topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
@@ -7654,29 +7681,14 @@ class TelegramAdapter(BasePlatformAdapter):
         elif telegram_chat_type == "channel":
             chat_type = "channel"
 
-        # Resolve Telegram topic name and skill binding.
-        # Only preserve message_thread_id when Telegram marks the message as
-        # a real topic/forum message. Telegram can also populate
-        # message_thread_id for ordinary reply UI anchors; treating those as
-        # durable session threads fragments workflows such as CAPTCHA/login
-        # handoffs where the user later replies "done" in the same group.
-        # Private chats have the same pitfall: only real DM topic messages
-        # (is_topic_message=True) should keep the thread id, otherwise sends
-        # can hit Telegram's 'Message thread not found' error (#3206).
-        thread_id_raw = message.message_thread_id
-        is_topic_message = bool(getattr(message, "is_topic_message", False))
-        is_forum_group = getattr(chat, "is_forum", False) is True
-        thread_id_str = None
-        if thread_id_raw is not None:
-            if chat_type == "group" and (is_topic_message or is_forum_group):
-                thread_id_str = str(thread_id_raw)
-            elif chat_type == "dm" and is_topic_message:
-                thread_id_str = str(thread_id_raw)
-        # For forum groups without an explicit topic, default to the
-        # General-topic id so the gateway routes back to the General topic
-        # rather than dropping into the bot's main channel (#22423).
-        if chat_type == "group" and thread_id_str is None and is_forum_group:
-            thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+        # Resolve routable thread id for DM topics and forum group topics via
+        # the shared normalizer, so gating and session routing agree on one
+        # value. Only real topic/forum messages keep a thread id; ordinary
+        # reply-UI anchors are dropped (they are not durable session threads
+        # and sends against them hit 'Message thread not found', #3206), while
+        # forum General-topic messages (message_thread_id=None) normalize to
+        # the General-topic id so replies route back to General (#22423).
+        thread_id_str = self._effective_message_thread_id(message)
         chat_topic = None
         topic_skill = None
 

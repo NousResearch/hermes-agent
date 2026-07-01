@@ -160,6 +160,14 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="/RESET@TigerNanoBot")
         assert event.get_command() == "reset"
 
+    def test_compact_reasoning_level_command(self):
+        event = MessageEvent(text="/reasoningmedium")
+        assert event.get_command() == "reasoning"
+
+    def test_compact_reasoning_level_command_with_at_botname(self):
+        event = MessageEvent(text="/reasoninghigh@TigerNanoBot")
+        assert event.get_command() == "reasoning"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
@@ -173,6 +181,14 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+    def test_compact_reasoning_level_command(self):
+        event = MessageEvent(text="/reasoningmedium")
+        assert event.get_command_args() == "medium"
+
+    def test_compact_reasoning_level_command_preserves_extra_args(self):
+        event = MessageEvent(text="/reasoningxhigh@TigerNanoBot --global")
+        assert event.get_command_args() == "xhigh --global"
 
 
 # ---------------------------------------------------------------------------

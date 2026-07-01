@@ -22,6 +22,7 @@ import pytest
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     AuthError,
+    _MINIMAX_OAUTH_ERROR_BODY_LIMIT,
     MINIMAX_OAUTH_CLIENT_ID,
     MINIMAX_OAUTH_GLOBAL_BASE,
     MINIMAX_OAUTH_GLOBAL_INFERENCE,
@@ -45,12 +46,23 @@ def _make_httpx_response(status_code: int, body: dict | None = None, text: str =
     """Return a minimal mock that quacks like httpx.Response."""
     resp = MagicMock()
     resp.status_code = status_code
+    body_text = json.dumps(body) if body is not None else text
     if body is not None:
         resp.json.return_value = body
-        resp.text = json.dumps(body)
     else:
         resp.json.side_effect = Exception("No body")
-        resp.text = text
+    resp.text = body_text
+    resp.content = body_text.encode("utf-8")
+    resp.encoding = "utf-8"
+    resp.is_stream_consumed = status_code == 200
+    resp.iter_bytes.return_value = [resp.content]
+
+    def _read():
+        resp.is_stream_consumed = True
+        return resp.content
+
+    resp.read.side_effect = _read
+    resp.close.return_value = None
     resp.reason_phrase = "OK" if status_code == 200 else "Error"
     return resp
 
@@ -127,7 +139,7 @@ def test_request_user_code_happy_path():
     })
 
     client = MagicMock()
-    client.post.return_value = mock_response
+    client.send.return_value = mock_response
 
     result = _minimax_request_user_code(
         client,
@@ -142,10 +154,13 @@ def test_request_user_code_happy_path():
     assert result["state"] == state
 
     # Verify correct endpoint was called
-    call_args = client.post.call_args
-    assert "/oauth/code" in call_args[0][0]
+    call_args = client.build_request.call_args
+    assert call_args[0][0] == "POST"
+    assert "/oauth/code" in call_args[0][1]
     headers = call_args[1].get("headers", {})
     assert "x-request-id" in headers
+    client.send.assert_called_once_with(client.build_request.return_value, stream=True)
+    mock_response.read.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +176,7 @@ def test_request_user_code_state_mismatch_raises():
     })
 
     client = MagicMock()
-    client.post.return_value = mock_response
+    client.send.return_value = mock_response
 
     with pytest.raises(AuthError) as exc_info:
         _minimax_request_user_code(
@@ -186,7 +201,7 @@ def test_request_user_code_non_200_raises():
     mock_response.text = "Bad Request"
 
     client = MagicMock()
-    client.post.return_value = mock_response
+    client.send.return_value = mock_response
 
     with pytest.raises(AuthError) as exc_info:
         _minimax_request_user_code(
@@ -198,6 +213,35 @@ def test_request_user_code_non_200_raises():
         )
 
     assert exc_info.value.code == "authorization_failed"
+    client.send.assert_called_once_with(client.build_request.return_value, stream=True)
+    mock_response.iter_bytes.assert_called_once()
+    mock_response.close.assert_called_once()
+
+
+def test_request_user_code_non_200_bounds_error_body():
+    large_body = "x" * (_MINIMAX_OAUTH_ERROR_BODY_LIMIT + 1024)
+    mock_response = _make_httpx_response(503, text=large_body)
+
+    client = MagicMock()
+    client.send.return_value = mock_response
+
+    with pytest.raises(AuthError) as exc_info:
+        _minimax_request_user_code(
+            client,
+            portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+            client_id=MINIMAX_OAUTH_CLIENT_ID,
+            code_challenge="challenge",
+            state="state",
+        )
+
+    message = str(exc_info.value)
+    assert exc_info.value.code == "authorization_failed"
+    assert "...[truncated]" in message
+    assert large_body not in message
+    assert len(message) < _MINIMAX_OAUTH_ERROR_BODY_LIMIT + 256
+    client.send.assert_called_once_with(client.build_request.return_value, stream=True)
+    mock_response.iter_bytes.assert_called_once()
+    mock_response.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +265,7 @@ def test_poll_token_pending_then_success():
     success_resp = _make_httpx_response(200, success_body)
 
     client = MagicMock()
-    client.post.side_effect = [pending_resp, pending_resp, success_resp]
+    client.send.side_effect = [pending_resp, pending_resp, success_resp]
 
     with patch("time.sleep"):  # don't actually sleep
         result = _minimax_poll_token(
@@ -237,7 +281,8 @@ def test_poll_token_pending_then_success():
     assert result["status"] == "success"
     assert result["access_token"] == "access-abc"
     assert result["refresh_token"] == "refresh-xyz"
-    assert client.post.call_count == 3
+    assert client.send.call_count == 3
+    assert all(call.kwargs.get("stream") is True for call in client.send.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +295,7 @@ def test_poll_token_error_raises():
     error_resp = _make_httpx_response(200, error_body)
 
     client = MagicMock()
-    client.post.return_value = error_resp
+    client.send.return_value = error_resp
 
     with pytest.raises(AuthError) as exc_info:
         _minimax_poll_token(
@@ -290,7 +335,7 @@ def test_poll_token_timeout_raises():
 
     client = MagicMock()
     pending_resp = _make_httpx_response(200, {"status": "pending"})
-    client.post.return_value = pending_resp
+    client.send.return_value = pending_resp
 
     import hermes_cli.auth as auth_module
     with patch.object(auth_module, "time") as mock_time_mod:
@@ -365,7 +410,7 @@ def test_refresh_updates_access_token():
         mock_client_instance = MagicMock()
         mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
         mock_client_instance.__exit__ = MagicMock(return_value=False)
-        mock_client_instance.post.return_value = mock_resp
+        mock_client_instance.send.return_value = mock_resp
         mock_client_class.return_value = mock_client_instance
 
         # Patch _minimax_save_auth_state to avoid touching the auth store
@@ -404,7 +449,7 @@ def test_refresh_updates_access_token_absolute_ms_expired_in():
         mock_client_instance = MagicMock()
         mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
         mock_client_instance.__exit__ = MagicMock(return_value=False)
-        mock_client_instance.post.return_value = mock_resp
+        mock_client_instance.send.return_value = mock_resp
         mock_client_class.return_value = mock_client_instance
 
         with patch("hermes_cli.auth._minimax_save_auth_state"):
@@ -441,7 +486,7 @@ def test_refresh_reuse_triggers_relogin_required():
         mock_client_instance = MagicMock()
         mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
         mock_client_instance.__exit__ = MagicMock(return_value=False)
-        mock_client_instance.post.return_value = bad_resp
+        mock_client_instance.send.return_value = bad_resp
         mock_client_class.return_value = mock_client_instance
 
         with pytest.raises(AuthError) as exc_info:
@@ -701,7 +746,7 @@ def test_token_provider_refreshes_when_near_expiry():
         mock_instance = MagicMock()
         mock_instance.__enter__ = MagicMock(return_value=mock_instance)
         mock_instance.__exit__ = MagicMock(return_value=False)
-        mock_instance.post.return_value = mock_resp
+        mock_instance.send.return_value = mock_resp
         mock_client_class.return_value = mock_instance
 
         token = provider()
@@ -786,7 +831,7 @@ def test_token_provider_quarantines_state_on_terminal_refresh():
         mock_instance = MagicMock()
         mock_instance.__enter__ = MagicMock(return_value=mock_instance)
         mock_instance.__exit__ = MagicMock(return_value=False)
-        mock_instance.post.return_value = bad_resp
+        mock_instance.send.return_value = bad_resp
         mock_client_class.return_value = mock_instance
 
         with pytest.raises(AuthError) as exc_info:

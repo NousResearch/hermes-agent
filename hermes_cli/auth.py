@@ -7623,6 +7623,68 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
 # ==================== MiniMax Portal OAuth ====================
 
+_MINIMAX_OAUTH_ERROR_BODY_LIMIT = 16 * 1024
+
+
+def _minimax_response_error_text(
+    response: httpx.Response,
+    *,
+    limit: int = _MINIMAX_OAUTH_ERROR_BODY_LIMIT,
+) -> str:
+    """Return a bounded error body from a streamed MiniMax OAuth response."""
+    limit = max(0, int(limit))
+    chunks: list[bytes] = []
+    total = 0
+    truncated = False
+    try:
+        if getattr(response, "is_stream_consumed", False):
+            text = response.text
+            return text[:limit] + ("...[truncated]" if len(text) > limit else "")
+
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            remaining = limit + 1 - total
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) > remaining:
+                chunks.append(chunk[:remaining])
+                total += remaining
+                truncated = True
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > limit:
+            raw = raw[:limit]
+            truncated = True
+        encoding = response.encoding or "utf-8"
+        text = raw.decode(encoding, errors="replace")
+        return text + ("...[truncated]" if truncated else "")
+    finally:
+        response.close()
+
+
+def _minimax_post_form(
+    client: httpx.Client,
+    url: str,
+    *,
+    data: Dict[str, Any],
+    headers: Dict[str, str],
+) -> httpx.Response:
+    """POST a MiniMax OAuth form without eagerly reading error bodies."""
+    request = client.build_request(
+        "POST",
+        url,
+        data=data,
+        headers=headers,
+    )
+    response = client.send(request, stream=True)
+    if response.status_code == 200:
+        response.read()
+    return response
+
 def _minimax_pkce_pair() -> tuple:
     """Generate (code_verifier, code_challenge_S256, state) for MiniMax OAuth."""
     import secrets
@@ -7638,7 +7700,8 @@ def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
 ) -> Dict[str, Any]:
-    response = client.post(
+    response = _minimax_post_form(
+        client,
         f"{portal_base_url}/oauth/code",
         data={
             "response_type": "code",
@@ -7655,8 +7718,9 @@ def _minimax_request_user_code(
         },
     )
     if response.status_code != 200:
+        body = _minimax_response_error_text(response)
         raise AuthError(
-            f"MiniMax OAuth authorization failed: {response.text or response.reason_phrase}",
+            f"MiniMax OAuth authorization failed: {body or response.reason_phrase}",
             provider="minimax-oauth", code="authorization_failed",
         )
     payload = response.json()
@@ -7704,7 +7768,8 @@ def _minimax_poll_token(
     interval = max(2.0, (interval_ms or 2000) / 1000.0)
 
     while _time.time() < deadline:
-        response = client.post(
+        response = _minimax_post_form(
+            client,
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
@@ -7717,17 +7782,22 @@ def _minimax_poll_token(
                 "Accept": "application/json",
             },
         )
-        try:
-            payload = response.json() if response.text else {}
-        except Exception:
-            payload = {}
-
+        error_text = ""
         if response.status_code != 200:
-            msg = (payload.get("base_resp", {}) or {}).get("status_msg") or response.text
+            error_text = _minimax_response_error_text(response)
+            try:
+                payload = json.loads(error_text) if error_text else {}
+            except Exception:
+                payload = {}
+            msg = (payload.get("base_resp", {}) or {}).get("status_msg") or error_text
             raise AuthError(
                 f"MiniMax OAuth error: {msg or 'unknown'}",
                 provider="minimax-oauth", code="token_exchange_failed",
             )
+        try:
+            payload = response.json() if response.text else {}
+        except Exception:
+            payload = {}
 
         status = payload.get("status")
         if status == "error":
@@ -7863,7 +7933,8 @@ def _refresh_minimax_oauth_state(
     portal_base_url = state["portal_base_url"]
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
                       follow_redirects=True) as client:
-        response = client.post(
+        response = _minimax_post_form(
+            client,
             f"{portal_base_url}/oauth/token",
             data={
                 "grant_type": "refresh_token",
@@ -7876,11 +7947,12 @@ def _refresh_minimax_oauth_state(
             },
         )
     if response.status_code != 200:
-        body = response.text.lower()
-        relogin = any(m in body for m in
+        body = _minimax_response_error_text(response)
+        body_lower = body.lower()
+        relogin = any(m in body_lower for m in
                       ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
         raise AuthError(
-            f"MiniMax OAuth refresh failed: {response.text or response.reason_phrase}",
+            f"MiniMax OAuth refresh failed: {body or response.reason_phrase}",
             provider="minimax-oauth", code="refresh_failed",
             relogin_required=relogin,
         )

@@ -55,6 +55,46 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_run_conversation_dict_returns_include_final_response():
+    """Structurally enforce final_response on dict returns from run_conversation().
+
+    This parses source, including nested helpers, so it requires the .py file
+    to be available. It guards key presence and literal None values; runtime
+    tests still cover branch-specific values.
+    """
+    from agent import conversation_loop
+
+    try:
+        source = inspect.getsource(conversation_loop.run_conversation)
+    except OSError as exc:
+        pytest.skip(f"run_conversation source is unavailable: {exc}")
+    tree = ast.parse(source)
+    missing = []
+    literal_none = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Dict):
+            continue
+        keys = [
+            key.value if isinstance(key, ast.Constant) else None
+            for key in node.value.keys
+        ]
+        if "final_response" not in keys:
+            missing.append(node.lineno)
+            continue
+        value = node.value.values[keys.index("final_response")]
+        if isinstance(value, ast.Constant) and value.value is None:
+            literal_none.append(node.lineno)
+
+    assert missing == [], (
+        "run_conversation() dict returns must preserve the final_response "
+        f"contract; missing at source-local lines {missing}"
+    )
+    assert literal_none == [], (
+        "run_conversation() dict returns must expose actionable final_response "
+        f"text instead of literal None; literal None at source-local lines {literal_none}"
+    )
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -2683,6 +2723,9 @@ class TestConcurrentToolExecution:
             def submit(self, *args, **kwargs):
                 raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 
+            def shutdown(self, *args, **kwargs):
+                pass
+
         tc1 = _mock_tool_call(name="web_search", arguments='{"q": "alpha"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"q": "beta"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2695,6 +2738,86 @@ class TestConcurrentToolExecution:
         assert messages[0]["tool_call_id"] == "c1"
         assert messages[1]["tool_call_id"] == "c2"
         assert all("Python interpreter is shutting down" in m["content"] for m in messages)
+
+    def test_concurrent_timeout_returns_finished_tools_without_hanging(self, agent, monkeypatch):
+        """A wedged worker must not freeze the whole concurrent tool batch."""
+        import threading
+        import time as _time
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        blocker = threading.Event()
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "fast"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "slow"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        flushed = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            if args.get("q") == "slow":
+                blocker.wait(5)
+                return "late"
+            return "fast-result"
+
+        def record_flush(flush_messages, conversation_history=None):
+            flushed.append([m.copy() for m in flush_messages if m.get("role") == "tool"])
+
+        agent._flush_messages_to_session_db = MagicMock(side_effect=record_flush)
+
+        start = _time.monotonic()
+        try:
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+        finally:
+            blocker.set()
+
+        assert _time.monotonic() - start < 1.0
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert "fast-result" in messages[0]["content"]
+        assert messages[1]["tool_call_id"] == "c2"
+        assert "timed out after" in messages[1]["content"]
+        assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
+        assert "fast-result" in flushed[0][-1]["content"]
+        assert "timed out after" in flushed[1][-1]["content"]
+
+    def test_concurrent_timeout_prefers_late_real_result_over_timeout_message(self, agent, monkeypatch):
+        """A worker that finishes in the window between the deadline snapshot
+        and the result loop must keep its real result, not be overwritten with
+        a fabricated 'timed out' message (late-completion race)."""
+        import concurrent.futures as _cf
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "a"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "b"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        # Both tools return instantly, so results[*] are populated almost
+        # immediately. We still force the deadline path by making the FIRST
+        # wait() report everything as not-done (after crossing the deadline),
+        # so the loop snapshots both as timed-out even though the workers have
+        # in fact already written their results. The fix must surface the real
+        # results, not the timeout message.
+        real_wait = _cf.wait
+        calls = {"n": 0}
+
+        def fake_wait(fs, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                import time as _t
+                _t.sleep(0.15)  # ensure monotonic() >= deadline
+                return set(), set(fs)
+            return real_wait(fs, timeout=timeout)
+
+        with patch("agent.tool_executor.concurrent.futures.wait", side_effect=fake_wait), \
+             patch("run_agent.handle_function_call", side_effect=lambda name, args, task_id, **k: f"real-{args.get('q')}"):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        joined = " ".join(m["content"] for m in messages)
+        assert "timed out after" not in joined, "late-completing real results must not be discarded"
+        assert "real-a" in messages[0]["content"]
+        assert "real-b" in messages[1]["content"]
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
@@ -5296,6 +5419,7 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "Invalid API response" in result["error"]
+        assert result.get("final_response") == result["error"]
 
     def test_content_filter_refusal_surfaced_not_retried(self, agent):
         """A model refusal must be surfaced immediately, NOT laundered into

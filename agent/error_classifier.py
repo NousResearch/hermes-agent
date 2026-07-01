@@ -110,6 +110,7 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of extra usage",  # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400)
     "out of funds",
     "run out of funds",
     "balance_depleted",

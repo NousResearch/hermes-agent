@@ -186,6 +186,9 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_DELIVERY_KEY",
     })
     return frozenset(blocked)
 
@@ -203,6 +206,51 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # Hermes venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+
+
+def _is_hermes_internal_secret(key: str) -> bool:
+    """Return True for Hermes-internal secrets injected under *dynamic* names.
+
+    ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
+    provider/tool registries, but the gateway and CLI also inject secrets into
+    ``os.environ`` at runtime under names no static registry knows about:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
+      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
+      compression, and any plugin-registered auxiliary task). These are
+      separate, often higher-spend API keys plus base URLs that may point at
+      private endpoints; a model-authored shell command must never see them.
+    - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /
+      ``GATEWAY_RELAY_*_TOKEN`` — relay-auth material provisioned by the
+      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+      These are Tier-1 gateway secrets, like the messaging bot tokens in
+      ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
+      (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
+      and remain visible.
+
+    ``code_execution_tool.py`` already catches these via substring matching on
+    ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
+    blocklist did not, which is the leak this predicate closes.
+
+    This is the single source of truth for "Hermes-internal dynamic secret"
+    across every spawn path — the terminal ``_make_run_env`` /
+    ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
+    non-terminal :func:`hermes_subprocess_env` helper all call it, so the
+    dynamic patterns are stripped **unconditionally** regardless of
+    ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
+    a model-driving CLI legitimately needs matches these patterns.
+    """
+    upper = key.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    if upper.startswith("GATEWAY_RELAY_") and (
+        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
+    ):
+        return True
+    return False
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -229,13 +277,19 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if _is_hermes_internal_secret(key):
+            continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             sanitized[real_key] = value
+        elif _is_hermes_internal_secret(key):
+            continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
@@ -273,6 +327,16 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "SLACK_SIGNING_SECRET",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
+    # Gateway relay auth — the ID/secret/delivery-key triplet the gateway
+    # provisions and persists to the 0600 .env. Stripped unconditionally on
+    # EVERY spawn surface (terminal + model-driving CLIs) so it can't drift
+    # between paths: _SECRET / _DELIVERY_KEY are also matched by
+    # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
+    # enumerated here to stay stripped on the inherit_credentials=True path
+    # (codex / copilot), which skips the Tier-2 blocklist.
+    "GATEWAY_RELAY_ID",
+    "GATEWAY_RELAY_SECRET",
+    "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN",
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
@@ -320,9 +384,15 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
         env.pop(key, None)
-    # Internal routing hints must never reach a child.
+    # Internal routing hints and Hermes-internal dynamic secrets
+    # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
+    # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
+    # regardless of ``inherit_credentials`` — a model-driving CLI has no
+    # legitimate use for them. See :func:`_is_hermes_internal_secret`.
     for key in list(env):
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:
@@ -610,7 +680,11 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
             run_env[real_key] = v
+        elif _is_hermes_internal_secret(k):
+            continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)

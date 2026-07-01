@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -2000,6 +2002,60 @@ def test_notification_event_routing_by_session_key(monkeypatch):
     assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
     # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
     assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+
+
+def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
+    """A negative truncate_before_user_ordinal must be rejected, not honoured.
+
+    The handler validates the upper bound (`ordinal >= len(user_indices)`) but a
+    negative ordinal would otherwise slip through and hit Python negative
+    indexing: `user_indices[-1]` selects the LAST user turn, truncating history
+    to everything before it and persisting that loss via replace_messages — an
+    unrecoverable overwrite of the session DB. Reject it on the safe 4018 path
+    and leave the in-memory history and the DB untouched.
+    """
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "done"},
+    ]
+    server._sessions["trunc-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    # If the guard ever lets a negative ordinal through, these would run and the
+    # session would be marked busy; failing here makes that regression loud.
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "trunc-sid",
+                    "text": "next",
+                    "truncate_before_user_ordinal": -1,
+                },
+            }
+        )
+        assert resp["error"]["code"] == 4018
+        # History and the DB are left exactly as they were — no silent loss.
+        assert server._sessions["trunc-sid"]["history"] == history
+        assert server._sessions["trunc-sid"]["running"] is False
+        assert replaced == []
+    finally:
+        server._sessions.pop("trunc-sid", None)
 
 
 def test_session_create_does_not_persist_empty_row(monkeypatch):

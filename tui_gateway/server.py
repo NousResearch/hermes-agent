@@ -8012,7 +8012,12 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
+            # Reject out-of-range ordinals on BOTH ends. A negative value would
+            # otherwise sail past the upper-bound check and hit Python's negative
+            # indexing below (user_indices[-1] -> the LAST user turn), silently
+            # truncating history to everything before it and persisting that loss
+            # via replace_messages — an unrecoverable overwrite of the session DB.
+            if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated

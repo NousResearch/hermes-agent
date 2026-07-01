@@ -1891,6 +1891,18 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _apply_assistant_cache_control_to_last_cacheable_block(
+    blocks: List[Dict[str, Any]],
+    cache_control: Any,
+) -> None:
+    if not isinstance(cache_control, dict):
+        return
+    for block in reversed(blocks):
+        if isinstance(block, dict) and block.get("type") in {"text", "tool_use"}:
+            block.setdefault("cache_control", dict(cache_control))
+            break
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
@@ -1945,6 +1957,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                     clean["input"] = redacted
             replayed.append(clean)
         if replayed:
+            _apply_assistant_cache_control_to_last_cacheable_block(
+                replayed, m.get("cache_control")
+            )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
@@ -1970,6 +1985,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        blocks, m.get("cache_control")
+    )
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi

@@ -3654,6 +3654,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         If the error is retryable (e.g. network blip, DNS failure), queue the
         platform for background reconnection instead of giving up permanently.
         """
+        # Snapshot the current owner of this platform slot before doing
+        # anything else. If it's neither this adapter nor empty, a different
+        # adapter has already taken over (e.g. this is a delayed notification
+        # from a background retry chain that raced with, and lost to, a
+        # reconnect that already succeeded). Acting on a stale notification
+        # would overwrite an already-healthy platform's runtime status and
+        # incorrectly re-queue it for reconnection, so bail out before any of
+        # that happens.
+        existing = self.adapters.get(adapter.platform)
+        if existing is not None and existing is not adapter:
+            logger.debug(
+                "Ignoring stale fatal error from a superseded %s adapter instance: %s",
+                adapter.platform.value,
+                adapter.fatal_error_code or "unknown",
+            )
+            return
+
         logger.error(
             "Fatal %s adapter error (%s): %s",
             adapter.platform.value,
@@ -3677,13 +3694,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             error_message=adapter.fatal_error_message,
         )
 
-        existing = self.adapters.get(adapter.platform)
         if existing is adapter:
-            try:
-                await adapter.disconnect()
-            finally:
-                self.adapters.pop(adapter.platform, None)
-                self.delivery_router.adapters = self.adapters
+            # Claim this adapter for teardown before awaiting disconnect() —
+            # a second fatal-error notification for the same adapter (e.g.
+            # from a concurrent recovery path) would otherwise still see
+            # itself as "existing" during the await below and disconnect()
+            # the same object twice.
+            self.adapters.pop(adapter.platform, None)
+            self.delivery_router.adapters = self.adapters
+            await adapter.disconnect()
 
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
@@ -9743,7 +9762,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async
-                from agent.model_metadata import get_model_context_length
+                from agent.model_metadata import get_model_context_length_async
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
@@ -9757,7 +9776,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _msg_config_ctx = int(_msg_raw_ctx)
                 except Exception:
                     pass
-                _msg_ctx_len = get_model_context_length(
+                _msg_ctx_len = await get_model_context_length_async(
                     self._model,
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
@@ -10095,7 +10114,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if history and len(history) >= 4:
             from agent.model_metadata import (
                 estimate_messages_tokens_rough,
-                get_model_context_length,
+                get_model_context_length_async,
             )
 
             # Read model + compression config from config.yaml.
@@ -10196,7 +10215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
             if _hyg_compression_enabled:
-                _hyg_context_length = get_model_context_length(
+                _hyg_context_length = await get_model_context_length_async(
                     _hyg_model,
                     base_url=_hyg_base_url or "",
                     api_key=_hyg_api_key or "",
@@ -10660,19 +10679,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _response_time, _api_calls, _resp_len,
             )
 
-            # Re-baseline the cached agent's message_count snapshot now that
-            # this turn has completed and the agent has flushed its rows to
-            # the SessionDB.  The cross-process coherence guard (#45966)
-            # snapshots the count at agent-BUILD time (before this turn's own
-            # writes) and never refreshes it on reuse — so without this, this
-            # process's own turn would grow the count and the next turn would
-            # see a mismatch and rebuild the agent every turn, destroying
-            # prompt caching.  Refreshing here makes the guard fire only on a
-            # DIFFERENT process's writes.  Uses the (possibly compaction-
-            # updated) live session_id.  Fail-safe inside the helper.
-            await self._refresh_agent_cache_message_count(
-                session_key, session_entry.session_id
-            )
+            # NOTE: the cross-process cache-coherence re-baseline
+            # (_refresh_agent_cache_message_count) is intentionally deferred
+            # until AFTER this turn's transcript persistence block below — it
+            # must include the first-turn `session_meta` marker row and the
+            # compression session_id swap, both of which happen later.  See
+            # the call site after the `update_session(...)` write.
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -11056,6 +11068,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            )
+
+            # Re-baseline the cached agent's message_count snapshot now that
+            # ALL of this turn's transcript writes are done — the agent's
+            # flushed user/assistant/tool rows AND the first-turn `session_meta`
+            # marker appended above.  The cross-process coherence guard (#45966)
+            # snapshots the count at agent-BUILD time (before this turn's own
+            # writes) and never refreshes it on reuse, so without this the
+            # process's own turn grows message_count and the next turn sees a
+            # mismatch and rebuilds the agent — destroying prompt caching.
+            #
+            # This MUST run after the `session_meta` append: that row also
+            # increments message_count, so re-baselining before it (the old
+            # position) left the snapshot one short and the guard mis-fired on
+            # turn 2 of EVERY fresh gateway conversation, rebuilding the cached
+            # agent and busting the prompt cache.  Running here also uses the
+            # compaction-updated session_id (the agent_result session_id swap
+            # above), matching this function's documented contract.  Refreshing
+            # here makes the guard fire only on a DIFFERENT process's writes.
+            # Fail-safe inside the helper.
+            await self._refresh_agent_cache_message_count(
+                session_key, session_entry.session_id
             )
 
             # Intentional silence is a delivery decision, not a transcript
@@ -14883,6 +14917,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         only when the same agent is still cached (no rebuild/eviction raced
         in between).  Fail-safe: any DB error leaves the snapshot as-is, which
         at worst costs one unnecessary rebuild on the next turn.
+
+        When the cache entry records a ``session_id`` (4-tuple form, #54947)
+        that differs from the current ``session_id`` — meaning the cache
+        was built for a DIFFERENT conversation under the same ``session_key``
+        — the snapshot is intentionally left untouched.  Overwriting it with
+        the current session's count would corrupt the original conversation's
+        baseline and cause the next switch back to fire the cross-process
+        guard spuriously.  Fail-safe: the legacy 3-tuple shape (no
+        ``session_id``) is still re-baselined as before.
         """
         if self._session_db is None or not session_id:
             return
@@ -14907,8 +14950,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and len(cached) > 2
                 and cached[0] is not _AGENT_PENDING_SENTINEL
             ):
+                # If the snapshot was taken for a different session_id
+                # (same session_key, different conversation), leave the
+                # snapshot alone — the current session_id's count belongs
+                # to a different DB row (#54947).
+                _snapshot_sid = cached[3] if len(cached) > 3 else None
+                if _snapshot_sid is not None and _snapshot_sid != session_id:
+                    return
                 if cached[2] != _live:
-                    _cache[session_key] = (cached[0], cached[1], _live)
+                    if _snapshot_sid is None:
+                        # Legacy 3-tuple: preserve the original 3-element
+                        # shape so existing entries stay compatible with
+                        # callers that index ``cached[2]`` directly.
+                        _cache[session_key] = (cached[0], cached[1], _live)
+                    else:
+                        _cache[session_key] = (
+                            cached[0], cached[1], _live, _snapshot_sid,
+                        )
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
@@ -16615,9 +16673,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if cached and cached[1] == _sig:
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
+                        # cached[3] (when present) is the session_id the
+                        # snapshot was taken for — used to skip the guard
+                        # when the active session_id differs (#54947).
                         _cached_mc = cached[2] if len(cached) > 2 else None
+                        _cached_sid = cached[3] if len(cached) > 3 else None
+                        # If the snapshot belongs to a different session_id
+                        # (same session_key, different conversation), the
+                        # message_count comparison is meaningless — the
+                        # counts track DIFFERENT DB rows.  REUSE the cached
+                        # agent rather than rebuild and bust the prompt cache
+                        # on every session switch (#54947).
+                        _session_id_mismatch = (
+                            _cached_sid is not None
+                            and session_id is not None
+                            and _cached_sid != session_id
+                        )
                         if (
-                            _cached_mc is not None
+                            not _session_id_mismatch
+                            and _cached_mc is not None
                             and _current_msg_count is not None
                             and _current_msg_count != _cached_mc
                         ):
@@ -16648,7 +16722,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _xproc_evicted_agent = _ev_agent
                         else:
                             agent = cached[0]
-                            reused_cached_agent = True
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.
                             if hasattr(_cache, "move_to_end"):
@@ -16661,6 +16734,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
                             logger.debug("Reusing cached agent for session %s", session_key)
+                            reused_cached_agent = True
 
             # Lock released — now schedule cleanup of any cross-process-evicted
             # agent on a daemon thread so memory-provider shutdown / socket
@@ -16718,7 +16792,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        _cache[session_key] = (agent, _sig, _current_msg_count)
+                        # Record the session_id the snapshot was taken for
+                        # alongside the message_count, so the cross-process
+                        # guard can skip the (meaningless) count comparison
+                        # when the active session_id later switches under
+                        # the same session_key (#54947).
+                        _cache[session_key] = (
+                            agent, _sig, _current_msg_count, session_id,
+                        )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
@@ -18186,6 +18267,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     except Exception:
                         pass
+
+                # Re-baseline the cached agent's message_count snapshot before
+                # recursing into the in-band queued (/queue) follow-up turn.
+                # The first turn has completed and flushed its own user +
+                # assistant rows to the SessionDB, so the cross-process
+                # coherence guard (#45966) — which this recursive _run_agent
+                # call re-enters — would otherwise see the grown on-disk count
+                # against the stale build-time snapshot and rebuild the agent
+                # on THIS process's OWN writes, destroying the prompt-cache
+                # prefix #46237 was merged to preserve.  The existing
+                # re-baseline in _handle_message_with_agent only runs after the
+                # whole _run_agent chain unwinds — too late for the in-band
+                # follow-up.  Use the same (session_key, session_id) the
+                # recursive call runs under so the snapshot matches exactly
+                # what the follow-up's guard will consult.  Fail-safe in helper.
+                await self._refresh_agent_cache_message_count(session_key, session_id)
 
                 followup_result = await self._run_agent(
                     message=next_message,

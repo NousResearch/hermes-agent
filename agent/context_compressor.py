@@ -2092,8 +2092,16 @@ This compaction should PRIORITISE preserving all information related to the focu
            The API rejects this because every tool_call must be followed by
            a tool result with the matching call_id.
 
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        This method removes orphaned results and strips orphaned tool_calls
+        from assistant messages so the message list is always well-formed.
+
+        Previous approach inserted stub ``role="tool"`` results for orphaned
+        tool_calls.  That caused a secondary failure: the pre-API
+        ``repair_message_sequence()`` uses ``tc.get("id")`` to track known
+        call IDs while this sanitizer uses ``call_id || id``.  When the two
+        disagree (Codex Responses API format: ``id != call_id``), stubs get
+        silently dropped by the repair pass, re-exposing the original orphans.
+        Stripping at the source avoids this entire class of mismatch.
         """
         surviving_call_ids: set = set()
         for msg in messages:
@@ -2120,24 +2128,34 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
+        # 2. Strip orphaned tool_calls from assistant messages whose results
+        #    were dropped.  Stripping is preferred over inserting stub results
+        #    because stubs can be dropped by downstream repair_message_sequence
+        #    when call_id != id (Codex Responses API format), re-exposing orphans.
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
-            patched: List[Dict[str, Any]] = []
             for msg in messages:
-                patched.append(msg)
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        cid = self._get_tool_call_id(tc)
-                        if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "content": "[Result from earlier conversation — see context summary above]",
-                                "tool_call_id": cid,
-                            })
-            messages = patched
+                if msg.get("role") != "assistant":
+                    continue
+                tcs = msg.get("tool_calls")
+                if not tcs:
+                    continue
+                kept = [tc for tc in tcs if self._get_tool_call_id(tc) not in missing_results]
+                if len(kept) != len(tcs):
+                    if kept:
+                        msg["tool_calls"] = kept
+                    else:
+                        msg.pop("tool_calls", None)
+                        # Ensure the assistant message still has visible
+                        # content so the API does not reject an empty turn.
+                        content = msg.get("content")
+                        if not content or (isinstance(content, str) and not content.strip()):
+                            msg["content"] = "(tool call removed)"
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
+                logger.info(
+                    "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
+                    len(missing_results),
+                )
 
         return messages
 
@@ -2595,8 +2613,16 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
-        self._last_summary_auth_failure = False
-        self._last_summary_network_failure = False
+        # NOTE: do NOT reset _last_summary_auth_failure or
+        # _last_summary_network_failure here.  These flags are set by
+        # _generate_summary() on a terminal failure and are already cleared on
+        # a successful summary.  Resetting them eagerly defeats the cooldown
+        # protection: _generate_summary() returns None from the cooldown
+        # early-return without re-asserting these flags, so the abort guard
+        # below would see False and fall through to the destructive
+        # static-fallback — the exact data-loss #29559 describes.  Letting them
+        # persist across compress() calls is safe because a successful summary
+        # always clears both.
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2792,9 +2818,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+        # When the only protected head message is the system prompt, the
+        # summary becomes the first *visible* message in the API request
+        # (most adapters — Anthropic, Bedrock — send the system prompt as
+        # a separate ``system`` parameter, not inside ``messages[]``).
+        # Anthropic unconditionally rejects requests whose first message
+        # is not role=user, so we must pin the summary to "user" and
+        # prevent the flip logic below from reverting it (#52160).
+        _force_user_leading = last_head_role == "system"
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
+        if last_head_role in {"assistant", "tool"} or _force_user_leading:
             summary_role = "user"
         else:
             summary_role = "assistant"
@@ -2802,7 +2836,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # collide with the head, flip it.
         if summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
+            if flipped != last_head_role and not _force_user_leading:
                 summary_role = flipped
             else:
                 # Both roles would create consecutive same-role messages

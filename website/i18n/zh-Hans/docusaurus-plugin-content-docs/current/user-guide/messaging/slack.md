@@ -298,6 +298,14 @@ platforms:
       # （Slack 的"同时发送到频道"功能）。
       # 仅广播第一条回复的第一个分块。
       reply_broadcast: false
+
+      # 将 Agent 消息渲染为 Slack Block Kit 区块（默认：false）。
+      # 为 true 时，最终的 Agent 消息会以结构化区块发送——包括
+      # 章节标题、分隔线、真正的嵌套列表（通过 rich_text）以及
+      # 原生 Block Kit 表格——而非扁平的 mrkdwn 文本。同时始终附带
+      # 纯文本回退内容，用于通知和无障碍访问。超出 Slack 限制
+      # （100 行 / 20 列 / 1 万字符）的表格会优雅地回退为对齐的等宽文本。
+      rich_blocks: false
 ```
 
 | 键 | 默认值 | 描述 |
@@ -305,6 +313,7 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | 多部分消息的话题模式：`"off"`、`"first"` 或 `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | 为 `false` 时，频道消息直接回复而非话题。已在话题中的消息仍在话题中回复。 |
 | `platforms.slack.extra.reply_broadcast` | `false` | 为 `true` 时，话题回复也会发布到主频道。仅广播第一个分块。 |
+| `platforms.slack.extra.rich_blocks` | `false` | 为 `true` 时，Agent 消息会渲染为 [Block Kit](https://docs.slack.dev/block-kit/) 区块（标题、分隔线、真正的嵌套列表以及原生表格）。始终附带纯文本回退。超出 Slack 限制的表格会回退为对齐的等宽文本。无需重新安装应用——这仅是发送端的改动。 |
 
 ### 会话隔离
 

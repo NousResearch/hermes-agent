@@ -207,6 +207,39 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_self_overlapping_pattern_non_overlapping_matches(self):
+        """Self-overlapping patterns must produce non-overlapping spans.
+
+        Regression: _strategy_exact advanced the scan cursor by 1 instead of
+        len(pattern), so "aa" in "aaaa" matched at offsets 0, 1, 2 (overlapping)
+        instead of 0, 2. _apply_replacements works in reverse order, so the
+        stale offsets corrupted the file. Fix aligns with str.replace().
+        """
+        # replace_all: 2 non-overlapping matches, not 3 overlapping ones.
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "bb"
+
+        # single-char pattern still counts every occurrence
+        new, count, _, err = fuzzy_find_and_replace("aaa", "a", "b", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "bbb"
+
+        # embedded in surrounding content — non-matched parts preserved
+        new, count, _, err = fuzzy_find_and_replace(
+            "prefix aaaa suffix", "aa", "b", replace_all=True
+        )
+        assert err is None
+        assert count == 2
+        assert new == "prefix bb suffix"
+
+        # without the flag, the non-overlapping count is reported (2, not 3)
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=False)
+        assert count == 0
+        assert "2 matches" in err
+
 
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""

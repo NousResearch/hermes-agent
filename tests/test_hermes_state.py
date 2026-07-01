@@ -1403,6 +1403,33 @@ class TestFTS5Search:
         assert '"sp_new"' in result
         assert '血管瘤' in result
 
+    def test_sanitize_fts5_query_runtime_is_bounded(self):
+        """Adversarial quote/special-char runs should sanitize quickly."""
+        from hermes_state import MAX_FTS5_QUERY_CHARS, SessionDB
+
+        s = SessionDB._sanitize_fts5_query
+        query = ('"' * 100_000) + ("a." * 100_000) + ("*" * 100_000)
+
+        start = time.perf_counter()
+        result = s(query)
+        elapsed = time.perf_counter() - start
+
+        assert isinstance(result, str)
+        assert len(result) <= MAX_FTS5_QUERY_CHARS * 2
+        assert elapsed < 0.5
+
+    def test_long_search_query_is_capped_and_does_not_crash(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="bounded sanitizer target")
+
+        query = ('"' * 50_000) + (" bounded" * 10_000)
+        start = time.perf_counter()
+        results = db.search_messages(query)
+        elapsed = time.perf_counter() - start
+
+        assert isinstance(results, list)
+        assert elapsed < 1.0
+
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
@@ -3810,6 +3837,40 @@ class TestOptimizeFts:
         assert db.optimize_fts() == 2
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
+
+    def test_write_path_optimizes_fts_on_cadence(self, db, monkeypatch):
+        """Writes periodically merge FTS segments so they never accumulate
+        into the tens-of-thousands that lengthen the write-lock hold and
+        starve competing writers ("database is locked")."""
+        db._OPTIMIZE_EVERY_N_WRITES = 5
+        calls = {"n": 0}
+        real_optimize = db.optimize_fts
+
+        def _counting_optimize():
+            calls["n"] += 1
+            return real_optimize()
+
+        monkeypatch.setattr(db, "optimize_fts", _counting_optimize)
+        # create_session is write #1; appends are #2.. -> #5 and #10 trigger.
+        db.create_session(session_id="s1", source="cli")
+        for i in range(9):
+            db.append_message(session_id="s1", role="user", content=f"needle {i}")
+        assert calls["n"] == 2
+        # The auto-merge is layout-only: search is unaffected.
+        assert len(db.search_messages("needle")) == 9
+
+    def test_write_path_optimize_failure_never_breaks_write(self, db, monkeypatch):
+        """A failing periodic optimize must not fail the surrounding write."""
+        db._OPTIMIZE_EVERY_N_WRITES = 2
+
+        def _boom():
+            raise sqlite3.OperationalError("simulated optimize failure")
+
+        monkeypatch.setattr(db, "optimize_fts", _boom)
+        db.create_session(session_id="s1", source="cli")  # write #1
+        # write #2 trips the cadence; the swallowed failure must not propagate.
+        db.append_message(session_id="s1", role="user", content="still persists")
+        assert len(db.get_messages("s1")) == 1
 
 
 class TestAutoMaintenance:

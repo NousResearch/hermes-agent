@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
+from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1245,13 +1246,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 DeliveryRouter,
                 DeliveryTarget,
                 _looks_like_int,
-                _looks_like_telegram_private_chat_id,
+                looks_like_telegram_private_chat_id,
             )
 
             is_private_dm_topic = (
                 platform == Platform.TELEGRAM
                 and thread_id is not None
-                and _looks_like_telegram_private_chat_id(str(chat_id))
+                and looks_like_telegram_private_chat_id(str(chat_id))
                 and _looks_like_int(str(thread_id))
             )
             if is_private_dm_topic:
@@ -1968,6 +1969,52 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+def _guard_job_credential_exfil(job: dict) -> None:
+    """Fail closed if a job's stored provider/base_url pair would exfiltrate a
+    credential (F8 runtime backstop; CWE-200/CWE-522).
+
+    The model-callable cron tool validates this on create/update, but a job
+    persisted before that guard — or written directly to the jobs store —
+    reaches the scheduler's provider-resolution sink unchecked. Re-validate the
+    EFFECTIVE stored pair with the same guard the tool uses, so a named
+    provider's stored key is never paired with an off-host base_url at fire
+    time. Raises ``RuntimeError`` (caught by the run_job failure path → the run
+    is aborted and reported) when the pair is unsafe; returns ``None`` otherwise.
+
+    Fallback providers come from operator config, not the model-callable job, so
+    they are trusted and validated by the caller, not here.
+    """
+    try:
+        from tools.cronjob_tools import _validate_cron_base_url
+        err = _validate_cron_base_url(job.get("provider"), job.get("base_url"))
+    except Exception as exc:
+        # Fail CLOSED: this is the last guard before provider resolution, so an
+        # unexpected validator/import error must not silently allow an unvetted
+        # pair through. A job that carries no base_url override cannot exfiltrate
+        # a stored credential via this path (there is nothing to validate, and
+        # the validator would return None), so it still runs — that keeps the
+        # overwhelmingly-common no-override jobs from wedging on an unrelated
+        # error. But any job that DID set a base_url is refused until the
+        # validator can actually vet the pair. Operator fallback providers come
+        # from config, not the job, so they are unaffected.
+        if job.get("base_url"):
+            err = (
+                f"could not validate provider/base_url pair "
+                f"({exc.__class__.__name__}: {exc}); refusing to run a job with "
+                "an unverified base_url override"
+            )
+        else:
+            err = None
+    if err:
+        job_id = job.get("id")
+        logger.error(
+            "Job '%s': refusing to run — unsafe provider/base_url pair could "
+            "exfiltrate a stored credential: %s",
+            job_id, err,
+        )
+        raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2225,12 +2272,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        # changes take effect without a gateway restart. Route through
+        # load_hermes_dotenv (not a bare load_dotenv) and reset the secret-
+        # source cache first: startup already applied external secrets and
+        # recorded this HERMES_HOME in _APPLIED_HOMES, so a naive reload would
+        # re-apply only the .env placeholder and never re-resolve a Bitwarden/
+        # BSM-backed secret — leaving cron jobs 401'ing on the placeholder
+        # (#33465). Clearing the cache forces the re-pull; the resolved secret
+        # overrides the placeholder only when secrets.bitwarden.override_existing
+        # is set (mirrors startup), and the Bitwarden value-cache keeps the
+        # forced re-pull off the network. load_hermes_dotenv also handles the
+        # utf-8/latin-1 encoding fallback internally.
+        from hermes_cli.env_loader import (
+            load_hermes_dotenv,
+            reset_secret_source_cache,
+        )
+        reset_secret_source_cache()
+        load_hermes_dotenv(hermes_home=_get_hermes_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -2344,6 +2402,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
+
+        # F8 runtime backstop: never resolve a stored provider/base_url pair that
+        # would ship a named provider's stored credential to an off-host endpoint
+        # (CWE-200/CWE-522). The cron tool validates this on create/update, but a
+        # job persisted before that guard — or written directly to the jobs store
+        # — reaches this sink unchecked. Fail closed before resolution so no
+        # off-host call is ever made with a stored key.
+        _guard_job_credential_exfil(job)
+
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -2359,12 +2426,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
-                if not isinstance(entry, dict):
-                    continue
                 try:
                     fb_kwargs = {"requested": entry.get("provider")}
                     if entry.get("base_url"):
@@ -2436,7 +2500,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"(or pin the original values to keep them). See #44585."
             )
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        fallback_model = get_fallback_chain(_cfg) or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -2770,6 +2834,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
+        # Pre-run dispatch claim (issue #38758): atomically commit a finite
+        # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
+        # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
+        # re-fire the job forever on restart. No-op for recurring jobs (they
+        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
+        # the shared body so BOTH the built-in ticker and the external provider
+        # (Chronos fire_due) get at-most-times semantics.
+        if not claim_dispatch(job["id"]):
+            logger.info(
+                "Job '%s': one-shot dispatch limit reached — skipping",
+                job.get("name", job["id"]),
+            )
+            return True  # not an error — already handled/removed
+
         success, output, final_response, error = run_job(job)
 
         output_file = save_job_output(job["id"], output)

@@ -1773,16 +1773,24 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         await asyncio.sleep(delay)
 
+        # Capture a stable local reference: self._app can be reassigned to None
+        # by a concurrent disconnect() while we're suspended across the awaits
+        # below, and re-reading self._app after that point would silently swap
+        # in None mid-sequence instead of failing fast in one place.
+        app = self._app
+
         try:
-            if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
+            if app and app.updater and app.updater.running:
+                await app.updater.stop()
         except Exception:
             pass
 
         await self._drain_polling_connections()
 
         try:
-            await self._app.updater.start_polling(
+            if not app:
+                raise RuntimeError("Telegram application was torn down during reconnect")
+            await app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
@@ -1824,6 +1832,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+                # This chained retry IS the in-flight recovery attempt — it
+                # must replace the reentrancy guard, otherwise the heartbeat
+                # loop, the pending-updates probe, and the PTB error callback
+                # all see _polling_error_task as "done" and can each start a
+                # second, concurrent recovery for the same outage.
+                self._polling_error_task = task
 
     async def _polling_heartbeat_loop(self) -> None:
         """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.
@@ -2151,8 +2165,17 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
 
+            # Capture a stable local reference: self._app can be reassigned to
+            # None by a concurrent disconnect() while we're suspended across
+            # the awaits above (same race #55992 fixed on the network path).
+            # Re-reading self._app after that point would raise
+            # AttributeError deep inside start_polling instead of failing fast
+            # here, where the except below reschedules or escalates to fatal.
+            app = self._app
             try:
-                await self._app.updater.start_polling(
+                if not app:
+                    raise RuntimeError("Telegram application was torn down during conflict reconnect")
+                await app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
@@ -6189,6 +6212,33 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         return chat_type in {"group", "supergroup"}
 
+    @classmethod
+    def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
+        """Return the routable thread id for a Telegram message.
+
+        Forum supergroup messages posted in the General topic arrive with
+        ``message_thread_id=None`` while Telegram itself addresses that topic
+        as thread id ``1``.  Ordinary replies are the opposite footgun:
+        Telegram populates ``message_thread_id`` with a reply-UI anchor id on
+        plain group/DM replies, but those ids are not topic/session routing
+        ids and must not be treated as such.  Gating, skill binding, and
+        outbound routing must all agree on the same normalized value.
+        """
+        chat = getattr(message, "chat", None)
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower() if chat else ""
+        raw = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = chat_type in ("group", "supergroup") and getattr(chat, "is_forum", False) is True
+        if raw is not None:
+            if is_forum_group or (chat_type in ("group", "supergroup") and is_topic_message):
+                return str(raw)
+            if chat_type == "private" and is_topic_message:
+                return str(raw)
+            return None
+        if is_forum_group:
+            return cls._GENERAL_TOPIC_THREAD_ID
+        return None
+
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
@@ -6718,7 +6768,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
 
-        thread_id = getattr(message, "message_thread_id", None)
+        thread_id = self._effective_message_thread_id(message)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
             topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
@@ -7654,29 +7704,14 @@ class TelegramAdapter(BasePlatformAdapter):
         elif telegram_chat_type == "channel":
             chat_type = "channel"
 
-        # Resolve Telegram topic name and skill binding.
-        # Only preserve message_thread_id when Telegram marks the message as
-        # a real topic/forum message. Telegram can also populate
-        # message_thread_id for ordinary reply UI anchors; treating those as
-        # durable session threads fragments workflows such as CAPTCHA/login
-        # handoffs where the user later replies "done" in the same group.
-        # Private chats have the same pitfall: only real DM topic messages
-        # (is_topic_message=True) should keep the thread id, otherwise sends
-        # can hit Telegram's 'Message thread not found' error (#3206).
-        thread_id_raw = message.message_thread_id
-        is_topic_message = bool(getattr(message, "is_topic_message", False))
-        is_forum_group = getattr(chat, "is_forum", False) is True
-        thread_id_str = None
-        if thread_id_raw is not None:
-            if chat_type == "group" and (is_topic_message or is_forum_group):
-                thread_id_str = str(thread_id_raw)
-            elif chat_type == "dm" and is_topic_message:
-                thread_id_str = str(thread_id_raw)
-        # For forum groups without an explicit topic, default to the
-        # General-topic id so the gateway routes back to the General topic
-        # rather than dropping into the bot's main channel (#22423).
-        if chat_type == "group" and thread_id_str is None and is_forum_group:
-            thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+        # Resolve routable thread id for DM topics and forum group topics via
+        # the shared normalizer, so gating and session routing agree on one
+        # value. Only real topic/forum messages keep a thread id; ordinary
+        # reply-UI anchors are dropped (they are not durable session threads
+        # and sends against them hit 'Message thread not found', #3206), while
+        # forum General-topic messages (message_thread_id=None) normalize to
+        # the General-topic id so replies route back to General (#22423).
+        thread_id_str = self._effective_message_thread_id(message)
         chat_topic = None
         topic_skill = None
 
@@ -7695,11 +7730,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
-            group_topics_config: list = self.config.extra.get("group_topics", [])
-            for chat_entry in group_topics_config:
+            # Group/supergroup forum topic skill binding via config.extra['group_topics'].
+            # Accept both supported shapes:
+            #   [{"chat_id": "-100...", "topics": [...]}]
+            # and legacy/operator-edited mapping shape:
+            #   {"-100...": [{"thread_id": 12, ...}]}
+            group_topics_config = self.config.extra.get("group_topics", [])
+            if isinstance(group_topics_config, dict):
+                group_topics_iter = [
+                    {"chat_id": cfg_chat_id, "topics": topics}
+                    for cfg_chat_id, topics in group_topics_config.items()
+                ]
+            elif isinstance(group_topics_config, list):
+                group_topics_iter = [
+                    entry for entry in group_topics_config if isinstance(entry, dict)
+                ]
+            else:
+                group_topics_iter = []
+            for chat_entry in group_topics_iter:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
-                    for topic in chat_entry.get("topics", []):
+                    topics = chat_entry.get("topics", [])
+                    if not isinstance(topics, list):
+                        topics = []
+                    for topic in topics:
+                        if not isinstance(topic, dict):
+                            continue
                         tid = topic.get("thread_id")
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")

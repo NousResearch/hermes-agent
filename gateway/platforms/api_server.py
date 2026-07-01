@@ -1108,6 +1108,18 @@ class APIServerAdapter(BasePlatformAdapter):
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
+        # When the primary provider's auth fails (expired token / 429 quota
+        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
+        # provider chain, whose runtime dict carries its own ``model`` key.
+        # Pop it and let it override the config model, mirroring the native
+        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
+        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
+        # spread → "got multiple values for keyword argument 'model'", 500ing
+        # every /v1/chat/completions request while a fallback is active.
+        runtime_model = runtime_kwargs.pop("model", None)
+        if runtime_model:
+            model = runtime_model
+
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
@@ -3982,7 +3994,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        # Approval queues gate host-side tool execution and must be isolated
+        # per API run.  Client-provided session IDs and memory session keys are
+        # conversation/memory scopes, not authorization namespaces: multiple
+        # concurrent runs can intentionally share them, and resolving an
+        # approval for one run must not unblock another run's dangerous command.
+        approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()

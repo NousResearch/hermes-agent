@@ -884,3 +884,175 @@ def test_canonical_usage_add():
     assert total.cache_read_tokens == 5
     assert total.cache_write_tokens == 3
     assert total.request_count == 2
+
+
+def test_moa_full_trace_written_when_enabled(monkeypatch, tmp_path):
+    """With moa.save_traces on, a full MoA turn is written to JSONL.
+
+    Asserts the record captures each reference's FULL input messages + output
+    and the aggregator's FULL input (incl. injected reference guidance) +
+    output — the true full turn, auditable offline.
+    """
+    import json
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  save_traces: true
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+        - provider: openrouter
+          model: adv-b
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            # Echo the model so we can prove per-reference output is captured.
+            model = kwargs.get("model", "?")
+            return _response_with_usage(content=f"advice from {model}", prompt=500, completion=80)
+        return _response("AGGREGATOR FINAL ANSWER")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.001, status="estimated", source="table"),
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    # Non-streaming create() → aggregator output captured inline.
+    facade.create(messages=[{"role": "user", "content": "please review the plan"}], tools=[])
+    facade.consume_and_save_trace(session_id="sess-xyz")
+
+    trace_file = home / "moa-traces" / "sess-xyz.jsonl"
+    assert trace_file.exists(), "trace file not written"
+    lines = trace_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+
+    # Turn framing.
+    assert rec["session_id"] == "sess-xyz"
+    assert rec["preset"] == "review"
+
+    # Both references captured, each with FULL input messages + output.
+    assert len(rec["references"]) == 2
+    for ref in rec["references"]:
+        assert ref["model"] in ("adv-a", "adv-b")
+        assert ref["provider"] == "openrouter"
+        # Full input messages present (system advisory prompt + advisory view).
+        assert isinstance(ref["input_messages"], list) and len(ref["input_messages"]) >= 2
+        assert ref["input_messages"][0]["role"] == "system"
+        # Full output present and model-specific.
+        assert ref["output"] == f"advice from {ref['model']}"
+        assert ref["usage"]["input_tokens"] == 500
+        assert ref["cost_usd"] == 0.001
+
+    # Aggregator: full input (with injected reference guidance) + inline output.
+    agg = rec["aggregator"]
+    assert agg["model"] == "anthropic/claude-opus-4.8"
+    assert agg["streamed"] is False
+    assert agg["output"] == "AGGREGATOR FINAL ANSWER"
+    agg_text = json.dumps(agg["input_messages"])
+    assert "Mixture of Agents reference context" in agg_text
+    assert "advice from adv-a" in agg_text and "advice from adv-b" in agg_text
+
+
+def test_moa_trace_not_written_when_disabled(monkeypatch, tmp_path):
+    """Default (save_traces off) writes nothing."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response_with_usage(content="advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "hi"}], tools=[])
+    facade.consume_and_save_trace(session_id="sess-off")
+
+    assert not (home / "moa-traces").exists()
+
+
+def test_reference_guidance_appended_at_end_in_tool_loop():
+    """In an agentic loop the reference block must land at the END of the prompt.
+
+    The most recent user turn is the original task near the top of the context;
+    merging the per-turn (volatile) reference block into it would diverge the
+    prompt prefix early and defeat the server's KV-cache reuse, forcing a full
+    re-prefill of the whole conversation on every tool-loop step.
+    """
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "ORIGINAL TASK"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "tool result", "tool_call_id": "1"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # The original (top-of-context) user turn is untouched, so the prefix stays
+    # cache-reusable across steps.
+    assert messages[1]["content"] == "ORIGINAL TASK"
+    # The reference block is appended as a new trailing turn, not merged upstream.
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "REFERENCE BLOCK"
+    assert len(messages) == 5
+
+
+def test_reference_guidance_merges_into_trailing_user_in_plain_chat():
+    """Plain chat ends on the user turn, so the block merges there (still at end)."""
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "hello"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # No extra message; the block joins the trailing user turn (which is the end).
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "hello\n\nREFERENCE BLOCK"

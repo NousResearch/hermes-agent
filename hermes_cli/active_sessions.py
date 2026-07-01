@@ -200,6 +200,14 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
         return False
     if not exists:
         return False
+    # Zombie processes (state Z) hold /proc/<pid> entries but will never
+    # release session leases. Check the process state explicitly.
+    try:
+        state = _process_state(pid_int)
+        if state in ("Z", "X", "x"):
+            return False
+    except Exception:
+        pass
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
@@ -207,6 +215,29 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     if current_start is None:
         return True
     return abs(current_start - expected_start) < 0.001
+
+
+def _process_state(pid: int) -> Optional[str]:
+    """Return the process state character from ``/proc/<pid>/stat``.
+
+    Values: R (running), S (sleeping), D (disk wait), T (stopped),
+    Z (zombie), X/x (dead), I (idle), etc.
+
+    Returns None if the process cannot be read.
+    """
+    try:
+        stat_path = Path(f"/proc/{pid}/stat")
+        if not stat_path.exists():
+            return None
+        content = stat_path.read_text(encoding="utf-8", errors="replace")
+        # The comm field (in parens) may contain spaces; find the last ')'
+        # to locate the state field that follows it.
+        rparen = content.rfind(")")
+        if rparen < 0 or rparen + 2 >= len(content):
+            return None
+        return content[rparen + 2]
+    except Exception:
+        return None
 
 
 def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:

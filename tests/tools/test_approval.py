@@ -82,6 +82,56 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
 
+class TestWindowsShellDestructiveCommands:
+    def test_cmd_del_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"cmd /c del /f /q C:\tmp\hermes-victim\file.txt"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows cmd destructive delete"
+
+    def test_cmd_rmdir_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"cmd.exe /k rmdir /s /q C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows cmd destructive delete"
+
+    def test_powershell_remove_item_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"powershell -NoProfile -Command Remove-Item -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "Windows PowerShell destructive delete"
+
+    def test_pwsh_rm_alias_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            r"pwsh -c rm -Recurse -Force C:\tmp\hermes-victim"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_powershell_encoded_command_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -EncodedCommand SQBFAFgA"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert desc == "PowerShell encoded command execution"
+
+    def test_plain_text_does_not_trigger_windows_delete(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "echo remember to del old notes"
+        )
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")

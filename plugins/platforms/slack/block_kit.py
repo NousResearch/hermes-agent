@@ -71,8 +71,26 @@ def _indent_level(spaces: str) -> int:
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
-_ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
+# Italic is split by marker because the two markers have different intra-word
+# rules. Per CommonMark, ``*`` emphasis may open/close intra-word ("a*b*c" is
+# emphasis), but ``_`` emphasis may NOT — an underscore inside a word is
+# literal, so snake_case identifiers like ``max_tokens`` must never open an
+# italic span. A single combined pattern applied the permissive ``*`` boundary
+# rules to ``_`` too, italicizing across intra-word underscores.
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?![\*\s])(.+?)(?<![\*\s])\*(?!\*)")
+# ``_`` requires a non-word boundary on both sides (left: not preceded by a
+# word char or another ``_``; right: not followed by a word char or ``_``).
+_ITALIC_UNDERSCORE_RE = re.compile(r"(?<![\w_])_(?![_\s])(.+?)(?<![_\s])_(?![\w_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
+
+
+def _search_italic(s: str) -> Optional["re.Match[str]"]:
+    """Earliest italic match across the ``*``-intra-word and ``_``-boundary rules."""
+    star = _ITALIC_STAR_RE.search(s)
+    under = _ITALIC_UNDERSCORE_RE.search(s)
+    if star and under:
+        return star if star.start() <= under.start() else under
+    return star or under
 
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
@@ -121,8 +139,15 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         if not s:
             return
         # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
-            m = rx.search(s)
+        # Italic uses ``_search_italic`` so the ``*``-intra-word and
+        # ``_``-boundary rules are considered together (earliest match wins),
+        # preserving the bold > strike > italic precedence.
+        for search, key in (
+            (_BOLD_RE.search, "bold"),
+            (_STRIKE_RE.search, "strike"),
+            (_search_italic, "italic"),
+        ):
+            m = search(s)
             if m:
                 _walk_emphasis(s[:m.start()], style)
                 inner_style = dict(style)

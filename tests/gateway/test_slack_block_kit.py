@@ -90,6 +90,27 @@ class TestInlineFormatting:
         ]
         assert styled, "expected a bold-styled text element in the list item"
 
+    def test_intraword_underscore_not_italic(self):
+        # CommonMark forbids ``_`` emphasis at intra-word positions, so
+        # snake_case identifiers must never open an italic span. Previously the
+        # italic regex ran from the ``_`` in ``max_tokens`` to the ``_`` in
+        # ``top_p``, italicizing ``tokens and top``.
+        blocks = render_blocks("- set max_tokens and top_p")
+        blob = str(blocks)
+        assert "'italic': True" not in blob and '"italic": true' not in blob
+
+    def test_boundary_underscore_still_italic(self):
+        # ``_`` at word boundaries is legitimate emphasis and must still render.
+        blocks = render_blocks("- a _real italic_ here")
+        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        section = rich["elements"][0]["elements"][0]
+        styled = [
+            el for el in section["elements"]
+            if el.get("style", {}).get("italic")
+        ]
+        assert styled, "expected an italic-styled element for boundary underscores"
+        assert any("real italic" in el.get("text", "") for el in styled)
+
 
 class TestTables:
     def test_pipe_table_renders_native_table_block(self):

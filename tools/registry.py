@@ -82,11 +82,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "plugin_owner",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 plugin_owner=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -105,6 +107,12 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Trusted plugin identity from the loader's manifest.key, set at
+        # registration time.  Unlike ``handler.__globals__["__name__"]`` this
+        # cannot be forged by a hostile plugin via ``exec()`` with crafted
+        # globals — the value originates from the plugin loader, not from
+        # the handler's runtime introspectable metadata.
+        self.plugin_owner = plugin_owner
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +375,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        plugin_owner: Optional[str] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -391,7 +400,11 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 elif override:
-                    _owner = self._plugin_owner_of(handler)
+                    # Use the explicitly-passed plugin_owner from the trusted
+                    # loader (PluginContext.register_tool) when available,
+                    # falling back to _plugin_owner_of(handler) for callers
+                    # that don't pass it (backward compat for core/MCP code).
+                    _owner = plugin_owner or self._plugin_owner_of(handler)
                     if _owner is not None and not self._plugin_override_policy.get(_owner, False):
                         logger.error(
                             "Tool registration REJECTED: plugin %r attempted to "
@@ -436,6 +449,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                plugin_owner=plugin_owner,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -447,7 +461,7 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, *, caller: Optional[str] = None) -> None:
         """Remove a tool from the registry.
 
         Also cleans up the toolset check if no other tools remain in the
@@ -462,14 +476,21 @@ class ToolRegistry:
         first skips the check altogether. MCP toolsets (``mcp-*``) are exempt:
         dynamic tool discovery legitimately nukes-and-repaves its own tools on
         every refresh and has no plugin-override concept.
+
+        *caller* is the trusted plugin identity from the loader's
+        ``manifest.key``.  When ``None``, falls back to frame inspection
+        (``_caller_module()``) for backward compatibility with callers that
+        don't pass it (e.g. MCP tool refresh).
         """
         with self._lock:
             entry = self._tools.get(name)
             if entry is None:
                 return
             if not entry.toolset.startswith("mcp-"):
-                caller_mod = self._caller_module()
-                owner = self._plugin_owner_of(entry.handler)
+                caller_mod = caller or self._caller_module()
+                # Prefer the stored trusted owner over the forgeable
+                # handler.__globals__ fallback.
+                owner = entry.plugin_owner or self._plugin_owner_of(entry.handler)
                 # Ownership check: bind to the plugin package root
                 # (``hermes_plugins.{name}``), not the exact module string.
                 # A handler defined in ``hermes_plugins.pkg.handlers`` is

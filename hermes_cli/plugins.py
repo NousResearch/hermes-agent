@@ -425,6 +425,7 @@ class PluginContext:
 
         from tools.registry import registry
 
+        plugin_id = self.manifest.key or self.manifest.name
         registry.register(
             name=name,
             toolset=toolset,
@@ -436,6 +437,7 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
+            plugin_owner=plugin_id,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(

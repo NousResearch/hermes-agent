@@ -640,6 +640,60 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_persisted_fallback_fails_closed_on_user_id_alt(self, tmp_path):
+        """egilewski/CodeRabbit probe: Signal/Feishu key the session participant
+        on ``user_id_alt or user_id`` (build_session_key), but the sessions table
+        stores only user_id. So a persisted per-user row that a caller shares the
+        user_id of — but NOT the user_id_alt — maps to a DIFFERENT live session
+        key; the persisted fallback must NOT match it on user_id alone (IDOR).
+
+        The live-origin guard already compares user_id_alt correctly; here the
+        target is persisted-only, so the fallback fails closed whenever the
+        caller keys on user_id_alt and the row can't prove that participant."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        # Persisted rows carry only user_id (no user_id_alt column).
+        db.create_session("victim_alt_group", "signal", user_id="+15550001111",
+                          chat_id="signal-group", chat_type="group")
+        db.create_session("victim_alt_dm", "signal", user_id="+15550001111")  # no chat_id
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+
+        # Per-user group: attacker shares user_id but has a different user_id_alt
+        # → different session key → must fail closed (was: allowed via user_id).
+        attacker = SessionSource(platform=Platform.SIGNAL, chat_id="signal-group",
+                                 chat_type="group", user_id="+15550001111",
+                                 user_id_alt="attacker-uuid")
+        assert await runner._resume_target_allowed(attacker, "victim_alt_group",
+                                                   allow_override=False) is False
+        # No-chat_id DM keyed purely on the participant: same block.
+        dm_attacker = SessionSource(platform=Platform.SIGNAL, chat_id=None,
+                                    chat_type="dm", user_id="+15550001111",
+                                    user_id_alt="attacker-uuid")
+        assert await runner._resume_target_allowed(dm_attacker, "victim_alt_dm",
+                                                   allow_override=False) is False
+
+        # Regression: a caller WITHOUT user_id_alt (Telegram-style, keyed on
+        # user_id) still resumes its own persisted per-user group row.
+        tg_db = SessionDB(db_path=tmp_path / "state_tg.db")
+        tg_db.create_session("own_group", "telegram", user_id="12345",
+                             chat_id="chat-a", chat_type="group")
+        tg_runner = _make_runner(session_db=tg_db)
+        tg_runner._gateway_session_origin_for_id = lambda sid: None
+        tg_caller = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a",
+                                  chat_type="group", user_id="12345")
+        assert await tg_runner._resume_target_allowed(tg_caller, "own_group",
+                                                      allow_override=False) is True
+
+        # Regression: an EXPLICITLY-shared group is unaffected — participant
+        # scoping doesn't apply, so an alt-keyed co-member still resumes.
+        runner.config.group_sessions_per_user = False
+        assert await runner._resume_target_allowed(attacker, "victim_alt_group",
+                                                   allow_override=False) is True
+        db.close()
+        tg_db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")

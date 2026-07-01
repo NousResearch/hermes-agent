@@ -810,6 +810,20 @@ class GatewaySlashCommandsMixin:
         row_thread = str(row.get("thread_id") or "")
         chat_type = (getattr(source, "chat_type", "") or "").lower()
         caller_is_dm = chat_type in {"dm", "direct", "private", ""}
+        # build_session_key keys the participant on ``user_id_alt or user_id``
+        # (Signal/Feishu carry the canonical participant in user_id_alt), but the
+        # sessions table only ever stored user_id — it has no user_id_alt column.
+        # So when the caller carries a user_id_alt, the row CANNOT prove the
+        # canonical participant that the live session key is built from: two
+        # members sharing one user_id but different user_id_alt map to DIFFERENT
+        # session keys, yet the persisted row's user_id would match both. The
+        # live-origin guard (_same_origin_chat) compares user_id_alt correctly;
+        # the persisted fallback cannot, so any per-user comparison that would
+        # otherwise rely on row_uid == caller_uid must fail closed here to stay
+        # in lock-step with the key boundary (CWE-639). Shared group/thread
+        # sessions are unaffected (they don't scope by participant at all), and
+        # an admin --all override still bypasses this above.
+        caller_keys_on_alt = bool(str(getattr(source, "user_id_alt", "") or ""))
         if caller_uid:
             # Identity-bearing caller: allow only when the row PROVES the same
             # owner AND the same platform/origin AND the same chat/thread. A row
@@ -840,6 +854,15 @@ class GatewaySlashCommandsMixin:
                 # legitimately absent on both sides for a no-chat_id DM (scoped
                 # by user_id), but a mismatching chat_id (when present) is still
                 # rejected.
+                #
+                # A no-chat_id DM is keyed PURELY on the participant
+                # (``user_id_alt or user_id``). If the caller keys on user_id_alt
+                # the persisted row (user_id only) cannot prove that participant,
+                # so fail closed. When chat_id is present on both sides it is the
+                # DM key and equal chat_id is sufficient, so the alt gap doesn't
+                # apply there.
+                if caller_keys_on_alt and not (bool(row_chat) and bool(caller_chat)):
+                    return False
                 return (
                     bool(row_uid) and row_uid == caller_uid
                     and row_chat == caller_chat
@@ -865,6 +888,12 @@ class GatewaySlashCommandsMixin:
             )
             if shared:
                 return True
+            # Per-user non-DM: the session key includes the participant
+            # (``user_id_alt or user_id``). If the caller keys on user_id_alt,
+            # the persisted row (user_id only) cannot prove the canonical
+            # participant, so fail closed rather than matching on user_id alone.
+            if caller_keys_on_alt:
+                return False
             return bool(row_uid) and row_uid == caller_uid
         # No caller identity: the persisted row carries only source + user_id
         # (the sessions table has no chat_id), so a same-platform row can belong

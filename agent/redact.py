@@ -400,6 +400,30 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
+def redact_cdp_url(value: object) -> str:
+    """Mask secrets in a CDP/browser endpoint URL before it is logged.
+
+    The global ``redact_sensitive_text`` deliberately passes web-URL query
+    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
+    magic-link / pre-signed URLs the agent is meant to follow -- see the
+    web-URL note above). CDP discovery endpoints are NOT such a workflow:
+    their query-string tokens and userinfo passwords are pure credentials
+    that must never reach the logs. So for CDP URLs we opt INTO the two URL
+    redactors that the global pass leaves off.
+
+    This is the single source of truth for CDP-URL log redaction. Every site
+    that emits a resolved CDP URL to a log or exception message -- the browser
+    tool's session/discovery logs and the supervisor's attach-timeout error --
+    routes through here so the policy can never drift between call sites.
+    """
+    text = redact_sensitive_text("" if value is None else str(value))
+    if not text:
+        return text
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    return text
+
+
 def _redact_http_request_target_query_params(text: str) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""
     def _sub(m: re.Match) -> str:

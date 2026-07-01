@@ -285,6 +285,15 @@ def test_unrelated_cron_text_does_not_use_fast_path(monkeypatch):
     assert render_known_ops_task("feishu", "今天帮我检查 OpenClaw 状态") is None
 
 
+def test_vague_token_usage_request_asks_for_time_window():
+    result = render_known_ops_task("telegram", "查token")
+
+    assert result is not None
+    assert result.task.name == "token_usage_clarification"
+    assert "请指定 token 统计时间范围" in result.text
+    assert "查昨天 token 使用情况" in result.text
+
+
 def test_known_ops_task_render_uses_registered_handler(monkeypatch):
     captured = {}
 

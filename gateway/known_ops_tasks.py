@@ -51,7 +51,7 @@ def _normalize_text(text: str) -> str:
 
 
 def _looks_like_token_usage_request(text: str) -> bool:
-    """Detect Feishu token-report requests before dispatching to the agent."""
+    """Detect token-report requests before dispatching to the agent."""
     normalized = _normalize_text(text)
     if not normalized:
         return False
@@ -79,6 +79,21 @@ def _looks_like_token_usage_request(text: str) -> bool:
         re.search(r"\d{4}-\d{2}-\d{2}", text or "")
     )
     return bool(has_token and has_usage and has_time_window)
+
+
+def _looks_like_token_usage_clarification_request(text: str) -> bool:
+    """Catch vague token usage asks so they do not enter broad agent exploration."""
+    normalized = _normalize_text(text)
+    if not normalized or "token" not in normalized:
+        return False
+    if _looks_like_token_usage_request(text):
+        return False
+    if any(marker in normalized for marker in ("什么是token", "token是什么", "解释token")):
+        return False
+    return any(
+        marker in normalized
+        for marker in ("查", "看", "查询", "检查", "统计", "用量", "使用", "消耗")
+    )
 
 
 def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
@@ -642,6 +657,15 @@ def _render_token_usage_report(text: str) -> str:
     )
 
 
+def _render_token_usage_clarification(text: str) -> str:
+    return (
+        "请指定 token 统计时间范围，例如：\n"
+        "- 查今天 token 使用情况\n"
+        "- 查昨天 token 使用情况\n"
+        "- 统计最近 3 天 Token 消耗"
+    )
+
+
 KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
     KnownOpsTask(
         name="cron_schedule_status",
@@ -721,6 +745,21 @@ KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
             "parser instead of adding one-off scripts."
         ),
         description="Render Hermes input/output token usage and top sessions for common time windows.",
+    ),
+    KnownOpsTask(
+        name="token_usage_clarification",
+        platforms=frozenset({"feishu", "telegram"}),
+        detector=_looks_like_token_usage_clarification_request,
+        handler=_render_token_usage_clarification,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: ask Telegram '查token' and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Vague token usage asks should request a bounded time window instead of "
+            "starting an exploratory agent turn."
+        ),
+        description="Clarify vague token usage requests without starting an agent turn.",
     ),
 )
 

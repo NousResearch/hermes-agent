@@ -1634,6 +1634,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     except Exception as e:
         logger.warning(f"Failed to get summary response: {e}")
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        # Append the error response as an assistant message to preserve
+        # role alternation. Without this, the synthetic user message at
+        # line 1420 is left orphaned — two consecutive user messages
+        # violate the alternation invariant and strict providers
+        # (Gemini, Claude) reject the session on resume.
+        messages.append({"role": "assistant", "content": final_response})
 
     return final_response
 

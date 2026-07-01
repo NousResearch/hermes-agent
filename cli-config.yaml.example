@@ -1207,17 +1207,18 @@ updates:
 # =============================================================================
 # Managed external coding-agent session layer.  Hermes can spawn claude-code
 # and omp sessions in tmux, drive them on your behalf, watch for state changes,
-# and surface everything in a single unified Discord feed.
+# and surface action items in a single edited Discord checklist digest.
 #
 # All behaviour is gated behind `enabled: true`.  With enabled: false (the
 # default), nothing changes — no watcher cron runs, no ingest route processes,
-# no /so-* commands surface in the gateway.
+# and no session-orchestration gateway commands surface.
 #
 # session_orchestration:
 #   enabled: false
 #
-#   # Discord channel id for the unified session feed.
-#   # All state transitions and watchdog alerts are posted here.
+#   # Discord channel id for the session action feed.
+#   # Hosts a single edited checklist digest for unresolved attention items.
+#   # Thread-local notices are optional/best-effort when a task has a thread.
 #   # feed_channel_id: "1234567890123456789"
 #
 #   # Discord channel id for runs adopted from external sources
@@ -1225,13 +1226,14 @@ updates:
 #   # Defaults to feed_channel_id routing when empty.
 #   # external_runs_channel_id: "9876543210987654321"
 #
-#   # Static stale threshold (seconds).  A RUNNING session whose pane
-#   # output hasn't changed for hang_idle_ticks ticks AND whose
-#   # last_output_ts is older than this is declared hung.
+#   # Deterministic stale/frozen guard threshold (seconds).  A RUNNING
+#   # session opens stale/frozen attention only when last_output_ts is older
+#   # than this, the pane hash is unchanged for hang_idle_ticks ticks, and
+#   # the current pane does not match the adapter's active-work regex.
 #   # hang_stale_seconds: 300
 #
-#   # Number of consecutive pane-hash-unchanged ticks before a RUNNING
-#   # session is declared hung.  Each tick is roughly 1-2 minutes.
+#   # Number of consecutive unchanged pane-hash ticks required by the
+#   # stale/frozen guard.  Each watcher tick is roughly 1-2 minutes.
 #   # hang_idle_ticks: 3
 #
 #   # When true (default), the watcher proactively marks a session terminal

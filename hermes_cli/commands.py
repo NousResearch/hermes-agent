@@ -218,7 +218,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",)),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
-    CommandDef("control-status", "List all active session-orchestration tasks (state, age, oldest WAITING_USER)",
+    CommandDef("control-status", "Show session-orchestration tasks and attention checklist items",
                "Info", gateway_only=True, aliases=("cs",),
                gateway_config_gate="session_orchestration.enabled"),
     CommandDef("so-spawn", "Spawn a managed coding-agent session (@hermes spawn)",

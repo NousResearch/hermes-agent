@@ -954,13 +954,86 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _get_builtin_scripts_dir() -> Path:
+    """Return the installed hermes-agent built-in scripts directory."""
+    return (Path(__file__).parent.parent / "scripts").resolve()
+
+
+def _trusted_script_roots(allow_builtin_scripts: bool = False) -> list[tuple[Path, str]]:
+    """Trusted roots for cron script execution, in resolution order."""
+    roots = [
+        ((_get_hermes_home() / "scripts").resolve(), "scripts directory"),
+    ]
+    if allow_builtin_scripts:
+        roots.append((_get_builtin_scripts_dir(), "Hermes built-in scripts directory"))
+    return roots
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_job_script_path(script_path: str, *, allow_builtin_scripts: bool = False) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve a cron script path against the allowed script roots.
+
+    User scripts under HERMES_HOME/scripts keep precedence.  When
+    ``allow_builtin_scripts`` is enabled for no-agent jobs, Hermes-owned
+    built-ins under the installed hermes-agent ``scripts/`` directory are a
+    second trusted root.  Relative built-in references accept either
+    ``session-orchestration-watch.sh`` or ``scripts/session-orchestration-watch.sh``
+    so existing registration records and CLI examples both resolve safely.
+    """
+    roots = _trusted_script_roots(allow_builtin_scripts)
+    user_scripts_dir = roots[0][0]
+    raw = Path(script_path).expanduser()
+
+    if raw.is_absolute():
+        path = raw.resolve()
+        for root, _label in roots:
+            if _is_relative_to(path, root):
+                return path, None
+        root_list = ", ".join(str(root) for root, _label in roots)
+        return None, (
+            f"Blocked: script path resolves outside the trusted script directories "
+            f"({root_list}): {script_path!r}"
+        )
+
+    user_path = (user_scripts_dir / raw).resolve()
+    if not _is_relative_to(user_path, user_scripts_dir):
+        return None, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({user_scripts_dir}): {script_path!r}"
+        )
+    if user_path.exists() or not allow_builtin_scripts:
+        return user_path, None
+
+    built_in_scripts_dir = roots[1][0]
+    built_in_candidates: list[Path] = []
+    raw_parts = raw.parts
+    if raw_parts and raw_parts[0] == "scripts" and len(raw_parts) > 1:
+        built_in_candidates.append((built_in_scripts_dir / Path(*raw_parts[1:])).resolve())
+    built_in_candidates.append((built_in_scripts_dir / raw).resolve())
+
+    for candidate in built_in_candidates:
+        if _is_relative_to(candidate, built_in_scripts_dir) and candidate.exists():
+            return candidate, None
+
+    return user_path, None
+
+
+def _run_job_script(script_path: str, *, allow_builtin_scripts: bool = False) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    User scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    absolute paths are resolved and validated against trusted roots to prevent
+    arbitrary script execution via path traversal or absolute path injection.
+    For no-agent jobs only, callers may set ``allow_builtin_scripts=True`` to
+    also allow Hermes-owned built-in scripts under the installed hermes-agent
+    ``scripts/`` directory.
 
     Supported interpreters (chosen by file extension):
 
@@ -974,8 +1047,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against HERMES_HOME/scripts/.  No-agent callers may also resolve
+            Hermes built-ins as ``scripts/name.sh`` or ``name.sh``.
+        allow_builtin_scripts: Permit the installed hermes-agent ``scripts/``
+            directory as a second trusted root.  This is intended only for
+            no-agent built-in cron jobs.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -983,23 +1059,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
-
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+    path, error = _resolve_job_script_path(
+        script_path,
+        allow_builtin_scripts=allow_builtin_scripts,
+    )
+    if error is not None:
+        return False, error
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -1396,7 +1462,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, allow_builtin_scripts=True)
         finally:
             if _prior_cwd is not None:
                 try:

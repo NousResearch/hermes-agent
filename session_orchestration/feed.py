@@ -1,11 +1,11 @@
 """
-session_orchestration/feed.py — unified feed channel pusher (T007/T008).
+session_orchestration/feed.py — Discord feed projections (T007/T008).
 
 Responsibilities
 ----------------
-Push ONE Discord message per state transition (turn-change) to:
-  1. The unified feed channel (``feed_channel_id`` from config or passed in).
-  2. The task's Discord thread (``row["discord_thread_id"]``).
+Maintain the channel-level action digest and post optional task-thread
+notices.  Attention state must have exactly one ``feed_channel_id`` projection:
+the digest managed by ``reconcile_attention_digest``.
 
 Heartbeat edit (T008)
 ---------------------
@@ -16,9 +16,10 @@ notification.
 Debounce
 --------
 A module-level ``_last_notified`` dict (``task_id → state_value``) prevents
-double-posting if somehow the same transition fires twice.  The primary
-debounce is already enforced by the watcher call-site (``_on_turn_change``
-is only called when ``new_state != old_state``); this is belt-and-suspenders.
+double-posting optional thread notices if somehow the same transition fires
+twice.  The primary debounce is already enforced by the watcher call-site
+(``_on_turn_change`` is only called when ``new_state != old_state``); this is
+belt-and-suspenders.
 
 Transport
 ---------
@@ -29,19 +30,25 @@ to the Discord REST API using the bot token from the environment.
 
 Called by
 ---------
-``session_orchestration.watcher._on_turn_change`` — T007 only.
-``session_orchestration.watcher._on_heartbeat_tick`` — T008.
-T009 (hang notify) will add its own feed primitive here; leave the public API
-open for extension.
+``session_orchestration.watcher._on_turn_change`` — digest + thread notice.
+``session_orchestration.watcher._on_heartbeat_tick`` — status heartbeat.
+``session_orchestration.watcher._on_hang`` — stale/frozen digest + thread notice.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
-from typing import Any, Callable, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+_ATTENTION_DIGEST_PROJECTION_NAME = "attention_digest"
+_EDIT_OK = "edited"
+_EDIT_MISSING = "missing"
+_EDIT_FAILED = "failed"
 
 # ---------------------------------------------------------------------------
 # Module-level debounce state
@@ -61,13 +68,24 @@ _last_notified: Dict[str, str] = {}
 def _get_feed_channel_id() -> Optional[str]:
     """Return the configured feed channel id, or None if absent."""
     try:
+        from session_orchestration.config import load_session_orchestration_config
+
+        cfg = load_session_orchestration_config()
+        if cfg.feed_channel_id:
+            return cfg.feed_channel_id
+    except Exception as exc:
+        logger.debug("feed: could not read typed config for feed_channel_id: %s", exc)
+
+    try:
         from hermes_cli.config import load_config, cfg_get  # type: ignore[import]
 
         cfg = load_config()
         so_cfg = cfg_get(cfg, "session_orchestration", default={}) or {}
-        return so_cfg.get("feed_channel_id") or None
+        if so_cfg.get("feed_channel_id"):
+            return so_cfg.get("feed_channel_id")
     except Exception as exc:
-        logger.debug("feed: could not read config for feed_channel_id: %s", exc)
+        logger.debug("feed: could not read legacy config for feed_channel_id: %s", exc)
+
     # Fall back to environment (useful in tests and manual runs)
     return os.getenv("HERMES_FEED_CHANNEL_ID") or None
 
@@ -115,42 +133,35 @@ def _post_discord_message(
         logger.warning("feed: failed to post to channel=%s: %s", channel_id, exc)
         return None
 
-
-# ---------------------------------------------------------------------------
-# Feed-board edit / delete helpers (T-FEED-003)
-# ---------------------------------------------------------------------------
-
-
 def _edit_discord_message(
     channel_id: str,
     message_id: str,
     content: str,
     *,
     token: Optional[str] = None,
-) -> bool:
-    """PATCH an existing Discord message in-place.  Returns True on success.
-
-    Best-effort: logs on failure and returns False rather than raising.
-    Mirrors ``edit_status_message`` but used exclusively for the feed-board
-    in-place update path.
-    """
+) -> str:
+    """PATCH a Discord message and distinguish missing-message recovery."""
     if not channel_id or not message_id:
-        return False
+        return _EDIT_FAILED
 
     try:
-        from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
+        from tools.discord_tool import (  # type: ignore[import]
+            DiscordAPIError,
+            _discord_request,
+            _get_bot_token,
+        )
     except ImportError as exc:
         logger.warning("feed: cannot import discord helpers: %s", exc)
-        return False
+        return _EDIT_FAILED
 
     resolved_token = token or _get_bot_token()
     if not resolved_token:
         logger.warning(
-            "feed: DISCORD_BOT_TOKEN not set; skipping PATCH of message=%s channel=%s",
+            "feed: DISCORD_BOT_TOKEN not set; skipping edit of message=%s channel=%s",
             message_id,
             channel_id,
         )
-        return False
+        return _EDIT_FAILED
 
     try:
         _discord_request(
@@ -159,69 +170,291 @@ def _edit_discord_message(
             resolved_token,
             body={"content": content},
         )
-        return True
-    except Exception as exc:
+        return _EDIT_OK
+    except DiscordAPIError as exc:
+        if exc.status == 404:
+            logger.info(
+                "feed: digest message missing; will recreate message=%s channel=%s",
+                message_id,
+                channel_id,
+            )
+            return _EDIT_MISSING
         logger.warning(
-            "feed: failed to PATCH message=%s channel=%s: %s",
+            "feed: failed to edit message=%s channel=%s: %s",
             message_id,
             channel_id,
             exc,
         )
-        return False
+        return _EDIT_FAILED
+    except Exception as exc:
+        logger.warning(
+            "feed: failed to edit message=%s channel=%s: %s",
+            message_id,
+            channel_id,
+            exc,
+        )
+        return _EDIT_FAILED
 
 
-def _delete_discord_message(
-    channel_id: str,
-    message_id: str,
+def _coerce_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            try:
+                dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except ValueError:
+                return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_age(value: Any, now: datetime) -> str:
+    dt = _coerce_datetime(value)
+    if dt is None:
+        return "unknown"
+    seconds = max(0, int((now - dt).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h"
+    days = hours // 24
+    return f"{days}d"
+
+
+def _sort_attention_item(item: Mapping[str, Any]) -> tuple:
+    return (
+        -int(item.get("priority") or 0),
+        str(item.get("opened_at") or ""),
+        str(item.get("task_id") or ""),
+        str(item.get("reason") or ""),
+        int(item.get("id") or 0),
+    )
+
+
+def _session_identity(task_id: str, session: Mapping[str, Any]) -> str:
+    tmux_session = session.get("tmux_session")
+    if tmux_session:
+        return f"tmux `{tmux_session}`"
+    hermes_session_key = session.get("hermes_session_key")
+    if hermes_session_key:
+        return f"session `{hermes_session_key}`"
+    run_id = session.get("run_id")
+    repo = session.get("repo")
+    if run_id and repo:
+        return f"run `{run_id}` repo `{repo}`"
+    return f"task `{task_id}`"
+
+
+def _priority_label(item: Mapping[str, Any]) -> str:
+    priority = int(item.get("priority") or 0)
+    reason = str(item.get("reason") or "").lower()
+    detail = str(item.get("detail") or "").lower()
+    staleness = ""
+    if "frozen" in reason or "frozen" in detail:
+        staleness = "frozen/stuck"
+    elif (
+        "stale" in reason
+        or "stuck" in reason
+        or "hung" in reason
+        or "idle" in reason
+        or "stale" in detail
+        or "stuck" in detail
+        or "hung" in detail
+    ):
+        staleness = "stale/stuck"
+    return f"P{priority}/{staleness}" if staleness else f"P{priority}"
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def render_attention_digest(
+    attention_items: Sequence[Mapping[str, Any]],
+    sessions_by_task_id: Optional[Mapping[str, Mapping[str, Any]]] = None,
     *,
+    now: Any = None,
+) -> str:
+    """Render unresolved attention items as a deterministic Discord checklist."""
+    render_now = _coerce_datetime(now) or datetime.now(timezone.utc)
+    sessions = sessions_by_task_id or {}
+    ordered_items = sorted(attention_items, key=_sort_attention_item)
+
+    if not ordered_items:
+        return "**Hermes action feed**\nNo unresolved attention items."
+
+    lines = [
+        "**Hermes action feed**",
+        f"{len(ordered_items)} unresolved attention item(s):",
+    ]
+    for item in ordered_items:
+        task_id = str(item.get("task_id") or "unknown-task")
+        session = sessions.get(task_id, {})
+        reason = str(item.get("reason") or "attention")
+        agent = session.get("agent") or item.get("agent")
+        project = (
+            session.get("project")
+            or session.get("repo")
+            or item.get("project")
+            or item.get("repo")
+        )
+        owner_parts: List[str] = []
+        if agent:
+            owner_parts.append(str(agent))
+        if project:
+            owner_parts.append(str(project))
+        owner = f" · {'/'.join(owner_parts)}" if owner_parts else ""
+        opened_age = _format_age(item.get("opened_at"), render_now)
+        last_output_age = _format_age(
+            session.get("last_output_ts") or item.get("last_output_ts"),
+            render_now,
+        )
+        opened_part = (
+            f"opened {opened_age} ago" if opened_age != "unknown" else "opened unknown"
+        )
+        last_output_part = (
+            f"last output {last_output_age} ago"
+            if last_output_age != "unknown"
+            else "last output unknown"
+        )
+        idle_ticks = int(session.get("idle_ticks") or item.get("idle_ticks") or 0)
+        nudge_count = int(session.get("nudge_count") or item.get("nudge_count") or 0)
+        thread_id = session.get("discord_thread_id") or item.get("discord_thread_id")
+        detail = item.get("detail")
+        detail_part = f" · {detail}" if detail else ""
+        if thread_id:
+            # Clickable Discord thread link using native channel mention syntax
+            lines.append(
+                "- [ ] "
+                f"<#{thread_id}> "
+                f"({_session_identity(task_id, session)})"
+                f"{owner} · reason `{reason}`{detail_part} · {_priority_label(item)}"
+                f" · {opened_part} · {last_output_part}"
+                f" · idle {idle_ticks} tick(s), nudges {nudge_count}"
+            )
+        else:
+            lines.append(
+                "- [ ] "
+                f"**{task_id}** ({_session_identity(task_id, session)})"
+                f"{owner} · reason `{reason}`{detail_part} · {_priority_label(item)}"
+                f" · {opened_part} · {last_output_part}"
+                f" · idle {idle_ticks} tick(s), nudges {nudge_count}"
+            )
+    return "\n".join(lines)
+
+
+def reconcile_attention_digest(
+    registry: Any,
+    *,
+    feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
-) -> bool:
-    """DELETE an existing Discord message.  Returns True on success.
+    now: Any = None,
+) -> Dict[str, Any]:
+    """Reconcile the feed-channel digest projection without changing attention truth."""
+    channel_id = feed_channel_id or _get_feed_channel_id()
+    if not channel_id:
+        return {"status": "no_channel", "posted": False, "edited": False}
 
-    Best-effort: logs on failure and returns False rather than raising.
-    Used to reap the feed-board entry when a session terminates.
-    """
-    if not channel_id or not message_id:
-        return False
+    attention_items = registry.list_unresolved_attention_items()
+    task_ids = sorted(
+        {str(item.get("task_id")) for item in attention_items if item.get("task_id")}
+    )
+    sessions_by_task_id = {
+        task_id: (registry.get(task_id) or {})
+        for task_id in task_ids
+    }
+    content = render_attention_digest(attention_items, sessions_by_task_id, now=now)
+    digest_hash = _content_hash(content)
+    payload = {
+        "item_count": len(attention_items),
+        "task_ids": task_ids,
+    }
 
-    try:
-        from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
-    except ImportError as exc:
-        logger.warning("feed: cannot import discord helpers: %s", exc)
-        return False
+    projection = registry.get_projection(channel_id, _ATTENTION_DIGEST_PROJECTION_NAME)
+    message_id = (projection or {}).get("message_id")
+    if projection and projection.get("content_hash") == digest_hash and message_id:
+        return {
+            "status": "unchanged",
+            "message_id": message_id,
+            "content_hash": digest_hash,
+            "posted": False,
+            "edited": False,
+        }
 
-    resolved_token = token or _get_bot_token()
-    if not resolved_token:
-        logger.warning(
-            "feed: DISCORD_BOT_TOKEN not set; skipping DELETE of message=%s channel=%s",
-            message_id,
-            channel_id,
-        )
-        return False
+    if message_id:
+        edit_status = _edit_discord_message(channel_id, message_id, content, token=token)
+        if edit_status == _EDIT_OK:
+            registry.upsert_projection(
+                channel_id,
+                _ATTENTION_DIGEST_PROJECTION_NAME,
+                message_id=message_id,
+                content_hash=digest_hash,
+                payload=payload,
+            )
+            return {
+                "status": "edited",
+                "message_id": message_id,
+                "content_hash": digest_hash,
+                "posted": False,
+                "edited": True,
+            }
+        if edit_status != _EDIT_MISSING:
+            return {
+                "status": "discord_failed",
+                "message_id": message_id,
+                "content_hash": digest_hash,
+                "posted": False,
+                "edited": False,
+            }
 
-    try:
-        _discord_request(
-            "DELETE",
-            f"/channels/{channel_id}/messages/{message_id}",
-            resolved_token,
-        )
-        return True
-    except Exception as exc:
-        logger.warning(
-            "feed: failed to DELETE message=%s channel=%s: %s",
-            message_id,
-            channel_id,
-            exc,
-        )
-        return False
+    new_message_id = _post_discord_message(channel_id, content, token=token)
+    if not new_message_id:
+        return {
+            "status": "discord_failed",
+            "message_id": message_id,
+            "content_hash": digest_hash,
+            "posted": False,
+            "edited": False,
+        }
+
+    registry.upsert_projection(
+        channel_id,
+        _ATTENTION_DIGEST_PROJECTION_NAME,
+        message_id=new_message_id,
+        content_hash=digest_hash,
+        payload=payload,
+    )
+    return {
+        "status": "posted" if not message_id else "recreated",
+        "message_id": new_message_id,
+        "content_hash": digest_hash,
+        "posted": True,
+        "edited": False,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Public API consumed by watcher._on_turn_change
 # ---------------------------------------------------------------------------
-
-
-_TERMINAL_STATES = frozenset({"DONE", "ERROR"})
 
 
 def push_turn_change(
@@ -232,60 +465,16 @@ def push_turn_change(
     *,
     feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
-    summarize_fn: Optional[Callable[[str], str]] = None,
-) -> Optional[str]:
-    """Push a turn-change notification to the feed channel + task thread.
+) -> bool:
+    """Post an optional task-thread notice for a user-attention transition.
 
-    Called exactly once per state transition (the watcher call-site already
-    gates on ``new_state != old_state``).  Belt-and-suspenders debounce via
-    ``_last_notified`` ensures idempotence inside a single cron run.
+    Channel-level attention state is projected exclusively by
+    ``reconcile_attention_digest``.  This helper intentionally does not post
+    to ``feed_channel_id``; that argument is retained only so callers can
+    avoid echoing the same one-off notice into the digest channel when a task
+    thread id aliases the feed channel.
 
-    Feed-board single-message discipline (T-FEED-003)
-    --------------------------------------------------
-    The feed channel is kept as a live "needs action" board — one edited-in-
-    place message per active session, deleted when the session terminates:
-
-    - Non-terminal transition, no existing board entry: POST a new message
-      and return its id.
-    - Non-terminal transition, existing board entry: PATCH the existing
-      message in-place and return the same id (no new notification).
-    - Terminal transition (DONE/ERROR): DELETE the existing message (if any)
-      and return None (reaped from the board).
-
-    The per-session thread and DM paths are unchanged: the thread always
-    receives a new POST on every transition (append-only conversation log),
-    and DM behaviour is unmodified.
-
-    Parameters
-    ----------
-    task_id:
-        Registry key for the session.
-    row:
-        Full registry row at the time of the transition.
-    new_state:
-        The new ``SessionLifecycle`` value (string, e.g. ``"WAITING_USER"``).
-    old_state:
-        The previous state value.
-    feed_channel_id:
-        Override the configured feed channel id (used in tests).
-    token:
-        Override the Discord bot token (used in tests).
-    summarize_fn:
-        Optional callable ``(question: str) -> str``.  When ``new_state``
-        is ``"WAITING_USER"`` and ``row["last_question"]`` is non-empty,
-        this function is called with the raw question string and its return
-        value is embedded in the message.  When ``None`` (the default), the
-        raw question is formatted as a readable blockquote inline note.
-        Never called for non-WAITING_USER transitions or when last_question
-        is absent/empty.
-
-    Returns
-    -------
-    Optional[str]
-        The resulting feed-board message id:
-        - New id on first POST (non-terminal, no prior entry).
-        - Same id after a PATCH (non-terminal, prior entry retained).
-        - None after a DELETE (terminal) or when no feed channel is configured.
+    Returns True if a task-thread notice was posted, False otherwise.
     """
     # Belt-and-suspenders: skip if we already notified this state for this task.
     if _last_notified.get(task_id) == new_state:
@@ -294,13 +483,11 @@ def push_turn_change(
             task_id,
             new_state,
         )
-        return None
+        return False
 
-    # Resolve feed channel
     resolved_feed_channel = feed_channel_id or _get_feed_channel_id()
     thread_id: Optional[str] = row.get("discord_thread_id") or None
 
-    # Build the message text
     task_label = task_id
     agent = row.get("agent", "unknown")
     project = row.get("project") or row.get("repo") or ""
@@ -309,96 +496,17 @@ def push_turn_change(
     if new_state == "WAITING_USER":
         icon = "🔔"
         verb = "needs your input"
-    elif new_state == "PAUSED_HANDOFF":
+    else:
+        # PAUSED_HANDOFF
         icon = "⏸️"
         verb = "paused — handoff detected"
-    elif new_state == "DONE":
-        icon = "✅"
-        verb = "completed"
-    elif new_state == "RUNNING":
-        icon = "▶"
-        verb = "running"
-    else:
-        icon = "ℹ️"
-        verb = f"state: {new_state}"
 
     message = (
         f"{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
         f"State: `{old_state}` → `{new_state}`"
     )
-    if thread_id:
-        message += f" | <#{thread_id}>"
 
-    # Append the needs_input question when transitioning to WAITING_USER
-    if new_state == "WAITING_USER":
-        question = row.get("last_question") or ""
-        if question:
-            question_text = (
-                summarize_fn(question) if summarize_fn is not None else f"Question: {question}"
-            )
-            message += f"\n> {question_text}"
-
-    # 1. Feed-board: POST / PATCH / DELETE based on terminal state + existing entry
-    feed_msg_id: Optional[str] = None
-    existing_feed_id: Optional[str] = row.get("feed_message_id") or None
-
-    if resolved_feed_channel:
-        if new_state in _TERMINAL_STATES:
-            # Reap the board entry: DELETE if one exists, result is None
-            if existing_feed_id:
-                ok = _delete_discord_message(
-                    resolved_feed_channel, existing_feed_id, token=token
-                )
-                logger.info(
-                    "feed.push_turn_change: deleted feed message=%s channel=%s "
-                    "task_id=%s state=%s ok=%s",
-                    existing_feed_id,
-                    resolved_feed_channel,
-                    task_id,
-                    new_state,
-                    ok,
-                )
-            # feed_msg_id stays None (reaped)
-        elif existing_feed_id:
-            # Non-terminal + existing entry: PATCH in place, retain same id
-            ok = _edit_discord_message(
-                resolved_feed_channel, existing_feed_id, message, token=token
-            )
-            if ok:
-                feed_msg_id = existing_feed_id
-                logger.info(
-                    "feed.push_turn_change: patched feed message=%s channel=%s "
-                    "task_id=%s state=%s",
-                    feed_msg_id,
-                    resolved_feed_channel,
-                    task_id,
-                    new_state,
-                )
-            else:
-                logger.warning(
-                    "feed.push_turn_change: PATCH failed for message=%s channel=%s "
-                    "task_id=%s — no id retained",
-                    existing_feed_id,
-                    resolved_feed_channel,
-                    task_id,
-                )
-        else:
-            # Non-terminal + no existing entry: POST new message
-            new_id = _post_discord_message(resolved_feed_channel, message, token=token)
-            if new_id:
-                feed_msg_id = new_id
-                logger.info(
-                    "feed.push_turn_change: posted to feed channel=%s msg_id=%s "
-                    "task_id=%s state=%s",
-                    resolved_feed_channel,
-                    feed_msg_id,
-                    task_id,
-                    new_state,
-                )
-    else:
-        logger.debug("feed.push_turn_change: no feed_channel_id; skipping feed post")
-
-    # 2. Push to the task's own Discord thread (append-only — always POST)
+    posted = False
     if thread_id and thread_id != resolved_feed_channel:
         thread_msg_id = _post_discord_message(thread_id, message, token=token)
         if thread_msg_id:
@@ -408,29 +516,18 @@ def push_turn_change(
                 thread_msg_id,
                 task_id,
             )
-    elif not thread_id:
+            posted = True
+    elif thread_id:
+        logger.debug(
+            "feed.push_turn_change: thread_id matches feed_channel_id; digest owns channel projection"
+        )
+    else:
         logger.debug("feed.push_turn_change: no discord_thread_id; skipping thread post")
-
-    # 3. DM the user when transitioning to WAITING_USER (T013)
-    if new_state == "WAITING_USER":
-        user_id = row.get("discord_user_id")
-        if user_id:
-            try:
-                from tools.discord_tool import _get_bot_token  # type: ignore[import]
-                from session_orchestration.dm_transport import send_dm
-
-                tok = token or _get_bot_token()
-                if tok:
-                    send_dm(user_id, message, tok)
-            except Exception as exc:
-                logger.error(
-                    "feed.push_turn_change: DM failed task_id=%s: %s", task_id, exc
-                )
 
     # Record the notified state (debounce marker)
     _last_notified[task_id] = new_state
 
-    return feed_msg_id
+    return posted
 
 
 def push_hang_notification(
@@ -441,27 +538,14 @@ def push_hang_notification(
     feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """Push a hang (or hang-escalation) notification to the feed channel.
+    """Post an optional task-thread stale/frozen notice.
 
-    Called by ``watcher._on_hang`` when a session is confirmed hung.
-    This is a SEPARATE function from ``push_turn_change`` — it never
-    modifies ``_last_notified`` and does not touch the turn-change debounce.
+    Channel-level stale/frozen attention is projected exclusively by
+    ``reconcile_attention_digest``.  This helper intentionally does not post
+    to ``feed_channel_id``; that argument is retained only to avoid echoing a
+    thread-local notice into the digest channel if ids alias.
 
-    Parameters
-    ----------
-    task_id:
-        Registry key for the session.
-    row:
-        Full registry row at the time of the hang detection.
-    escalate:
-        If True, this is an escalation (nudge already sent, session still
-        hung); message content reflects the escalation state.
-    feed_channel_id:
-        Override the configured feed channel id (used in tests).
-    token:
-        Override the Discord bot token (used in tests).
-
-    Returns True if at least one message was posted, False otherwise.
+    Returns True if a task-thread notice was posted, False otherwise.
     """
     resolved_feed_channel = feed_channel_id or _get_feed_channel_id()
     thread_id: Optional[str] = row.get("discord_thread_id") or None
@@ -478,30 +562,7 @@ def push_hang_notification(
         icon = "⚠️"
         verb = f"appears hung ({idle_ticks} idle ticks) — sending auto-nudge"
 
-    message = (
-        f"{icon} **[{agent}] {task_id}** {verb}{project_part}"
-    )
-    if thread_id:
-        message += f" | <#{thread_id}>"
-
-    posted = False
-
-    if resolved_feed_channel:
-        msg_id = _post_discord_message(resolved_feed_channel, message, token=token)
-        if msg_id:
-            logger.info(
-                "feed.push_hang_notification: posted to feed channel=%s msg_id=%s "
-                "task_id=%s escalate=%s",
-                resolved_feed_channel,
-                msg_id,
-                task_id,
-                escalate,
-            )
-            posted = True
-    else:
-        logger.debug(
-            "feed.push_hang_notification: no feed_channel_id; skipping feed post"
-        )
+    message = f"{icon} **[{agent}] {task_id}** {verb}{project_part}"
 
     if thread_id and thread_id != resolved_feed_channel:
         thread_msg_id = _post_discord_message(thread_id, message, token=token)
@@ -512,30 +573,17 @@ def push_hang_notification(
                 thread_msg_id,
                 task_id,
             )
-            posted = True
-    elif not thread_id:
+            return True
+    elif thread_id:
+        logger.debug(
+            "feed.push_hang_notification: thread_id matches feed_channel_id; digest owns channel projection"
+        )
+    else:
         logger.debug(
             "feed.push_hang_notification: no discord_thread_id; skipping thread post"
         )
 
-    # DM the user on the first stale rung (escalate=False) only.
-    # When escalate=True, the escalation DM is sent by watcher._on_hang (T010) — no double-DM.
-    if not escalate:
-        user_id = row.get("discord_user_id")
-        if user_id:
-            try:
-                from tools.discord_tool import _get_bot_token  # type: ignore[import]
-                from session_orchestration.dm_transport import send_dm
-
-                tok = token or _get_bot_token()
-                if tok:
-                    send_dm(user_id, message, tok)
-            except Exception as exc:
-                logger.error(
-                    "feed.push_hang_notification: stale DM failed: %s", exc
-                )
-
-    return posted
+    return False
 
 
 def clear_last_notified(task_id: str) -> None:
@@ -579,37 +627,9 @@ def edit_status_message(
     token:
         Override the Discord bot token (used in tests).
     """
-    if not channel_id or not message_id:
-        return False
-
-    try:
-        from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
-    except ImportError as exc:
-        logger.warning("feed: cannot import discord helpers: %s", exc)
-        return False
-
-    resolved_token = token or _get_bot_token()
-    if not resolved_token:
-        logger.warning(
-            "feed: DISCORD_BOT_TOKEN not set; skipping edit of message=%s channel=%s",
-            message_id,
-            channel_id,
-        )
-        return False
-
-    try:
-        _discord_request(
-            "PATCH",
-            f"/channels/{channel_id}/messages/{message_id}",
-            resolved_token,
-            body={"content": content},
-        )
-        return True
-    except Exception as exc:
-        logger.warning(
-            "feed: failed to edit message=%s channel=%s: %s",
-            message_id,
-            channel_id,
-            exc,
-        )
-        return False
+    return _edit_discord_message(
+        channel_id,
+        message_id,
+        content,
+        token=token,
+    ) == _EDIT_OK

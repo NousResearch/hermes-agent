@@ -2,7 +2,7 @@
 Tests for session_orchestration/registry.py.
 
 Covers:
-- Schema creation (idempotent)
+- Schema creation (idempotent), including attention/projection tables
 - upsert / get / list basic CRUD
 - UNIQUE(run_id, repo) constraint — duplicate adopt/spawn rejected
 - enqueue_intent / drain_intents round-trip
@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -82,7 +83,6 @@ class TestCanonicalRepoId:
 
 class TestSchemaCreation:
     def test_tables_created_on_init(self, db_path):
-        import sqlite3
         SessionOrchestrationRegistry(db_path=db_path)
         conn = sqlite3.connect(str(db_path))
         tables = {
@@ -94,24 +94,456 @@ class TestSchemaCreation:
         conn.close()
         assert "session_orchestration" in tables
         assert "session_orchestration_queue" in tables
+        assert "session_orchestration_attention_items" in tables
+        assert "session_orchestration_projection" in tables
 
     def test_init_is_idempotent(self, db_path):
         """Creating the registry twice does not raise."""
         SessionOrchestrationRegistry(db_path=db_path)
         SessionOrchestrationRegistry(db_path=db_path)  # must not raise
 
-    def test_unique_run_id_repo_index_exists(self, db_path):
-        import sqlite3
+    def test_registry_indexes_exist(self, db_path):
         SessionOrchestrationRegistry(db_path=db_path)
         conn = sqlite3.connect(str(db_path))
-        indexes = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            ).fetchall()
-        }
-        conn.close()
+        try:
+            indexes = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+            lookup_columns = [
+                (r[2], r[3])
+                for r in conn.execute(
+                    "PRAGMA index_xinfo('idx_soai_unresolved_lookup')"
+                ).fetchall()
+                if r[5]
+            ]
+        finally:
+            conn.close()
         assert "idx_so_run_repo" in indexes
+        assert "idx_soai_unresolved_task_reason" in indexes
+        assert "idx_soai_unresolved_lookup" in indexes
+        assert "idx_sop_channel_projection" not in indexes
+        assert lookup_columns == [("state", 0), ("priority", 1), ("opened_at", 0)]
+
+    def test_attention_projection_schema_init_is_idempotent(self, db_path):
+        SessionOrchestrationRegistry(db_path=db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                """
+                INSERT INTO session_orchestration (
+                    task_id, agent, run_id, repo
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("task-schema-idempotent", "omp", "run-schema", "repo-schema"),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_attention_items (
+                    task_id, reason, state, priority
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("task-schema-idempotent", "WAITING_USER", "unresolved", 10),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_projection (
+                    channel_id, projection_name, message_id, content_hash
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("channel-1", "attention-digest", "message-1", "hash-1"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        SessionOrchestrationRegistry(db_path=db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            attention_count = conn.execute(
+                "SELECT COUNT(*) FROM session_orchestration_attention_items"
+            ).fetchone()[0]
+            projection_count = conn.execute(
+                "SELECT COUNT(*) FROM session_orchestration_projection"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert attention_count == 1
+        assert projection_count == 1
+
+    def test_duplicate_unresolved_attention_item_rejected_but_history_retained(
+        self, db_path
+    ):
+        SessionOrchestrationRegistry(db_path=db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            task_id = "task-attention-unique"
+            reason = "WAITING_USER"
+            conn.execute(
+                "INSERT INTO session_orchestration (task_id, agent) VALUES (?, ?)",
+                (task_id, "omp"),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_attention_items (
+                    task_id, reason, state, priority
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (task_id, reason, "unresolved", 50),
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    INSERT INTO session_orchestration_attention_items (
+                        task_id, reason, state, priority
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (task_id, reason, "unresolved", 40),
+                )
+
+            conn.execute(
+                """
+                UPDATE session_orchestration_attention_items
+                   SET state = 'resolved',
+                       resolved_at = datetime('now'),
+                       resolution_reason = 'left_attention_state'
+                 WHERE task_id = ? AND reason = ? AND resolved_at IS NULL
+                """,
+                (task_id, reason),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_attention_items (
+                    task_id, reason, state, priority
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (task_id, reason, "unresolved", 30),
+            )
+            rows = conn.execute(
+                """
+                SELECT resolved_at
+                  FROM session_orchestration_attention_items
+                 WHERE task_id = ? AND reason = ?
+                 ORDER BY id
+                """,
+                (task_id, reason),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 2
+        assert rows[0][0] is not None
+        assert rows[1][0] is None
+
+    def test_attention_item_state_resolution_check_rejects_drift(self, db_path):
+        SessionOrchestrationRegistry(db_path=db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            task_id = "task-attention-check"
+            conn.execute(
+                "INSERT INTO session_orchestration (task_id, agent) VALUES (?, ?)",
+                (task_id, "omp"),
+            )
+
+            invalid_rows = [
+                ("unresolved", "2026-01-01 00:00:00", None),
+                ("unresolved", None, "has_reason_without_timestamp"),
+                ("resolved", None, "resolved_without_timestamp"),
+                ("resolved", "2026-01-01 00:00:00", None),
+            ]
+            for idx, (state, resolved_at, resolution_reason) in enumerate(invalid_rows):
+                with pytest.raises(sqlite3.IntegrityError):
+                    conn.execute(
+                        """
+                        INSERT INTO session_orchestration_attention_items (
+                            task_id, reason, state, resolved_at, resolution_reason
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            f"DRIFT_{idx}",
+                            state,
+                            resolved_at,
+                            resolution_reason,
+                        ),
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_attention_items (
+                    task_id, reason, state
+                ) VALUES (?, ?, ?)
+                """,
+                (task_id, "UPDATE_DRIFT", "unresolved"),
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    UPDATE session_orchestration_attention_items
+                       SET state = 'resolved'
+                     WHERE task_id = ? AND reason = ?
+                    """,
+                    (task_id, "UPDATE_DRIFT"),
+                )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    UPDATE session_orchestration_attention_items
+                       SET resolved_at = '2026-01-01 00:00:00'
+                     WHERE task_id = ? AND reason = ?
+                    """,
+                    (task_id, "UPDATE_DRIFT"),
+                )
+        finally:
+            conn.close()
+
+    def test_projection_uniqueness_rejects_duplicate_channel_projection(
+        self, db_path
+    ):
+        SessionOrchestrationRegistry(db_path=db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_projection (
+                    channel_id, projection_name, message_id, content_hash
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("channel-1", "attention-digest", "message-1", "hash-1"),
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    """
+                    INSERT INTO session_orchestration_projection (
+                        channel_id, projection_name, message_id, content_hash
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    ("channel-1", "attention-digest", "message-2", "hash-2"),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_projection (
+                    channel_id, projection_name, message_id, content_hash
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("channel-1", "status-summary", "message-3", "hash-3"),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_orchestration_projection (
+                    channel_id, projection_name, message_id, content_hash
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("channel-2", "attention-digest", "message-4", "hash-4"),
+            )
+            projection_count = conn.execute(
+                "SELECT COUNT(*) FROM session_orchestration_projection"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert projection_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Attention item / projection APIs
+# ---------------------------------------------------------------------------
+
+
+class TestAttentionItemApis:
+    def test_open_existing_unresolved_reason_refreshes_without_duplicate(
+        self, registry
+    ):
+        tid = str(uuid.uuid4())
+        registry.upsert(tid, agent="omp")
+
+        first = registry.open_attention_item(
+            tid,
+            "WAITING_USER",
+            priority=10,
+            detail="initial prompt",
+        )
+        refreshed = registry.open_attention_item(
+            tid,
+            "WAITING_USER",
+            priority=30,
+            detail="new prompt",
+        )
+
+        rows = registry.list_unresolved_attention_items()
+        assert first["id"] == refreshed["id"]
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == tid
+        assert rows[0]["reason"] == "WAITING_USER"
+        assert rows[0]["priority"] == 30
+        assert rows[0]["detail"] == "new prompt"
+
+    def test_update_and_list_unresolved_attention_items_are_deterministic(
+        self, registry
+    ):
+        low = str(uuid.uuid4())
+        middle = str(uuid.uuid4())
+        high = str(uuid.uuid4())
+        for task_id in (low, middle, high):
+            registry.upsert(task_id, agent="omp")
+
+        registry.open_attention_item(low, "WAITING_USER", priority=1)
+        registry.open_attention_item(middle, "PAUSED_HANDOFF", priority=5)
+        registry.open_attention_item(high, "STALE_FROZEN", priority=10)
+
+        updated = registry.update_attention_item(
+            middle,
+            "PAUSED_HANDOFF",
+            priority=20,
+            detail="operator review",
+        )
+        rows = registry.list_unresolved_attention_items()
+
+        assert updated is not None
+        assert updated["detail"] == "operator review"
+        assert [(row["task_id"], row["reason"]) for row in rows] == [
+            (middle, "PAUSED_HANDOFF"),
+            (high, "STALE_FROZEN"),
+            (low, "WAITING_USER"),
+        ]
+
+    def test_resolve_attention_item_is_reason_specific(self, registry):
+        tid = str(uuid.uuid4())
+        registry.upsert(tid, agent="omp")
+        registry.open_attention_item(tid, "WAITING_USER", priority=20)
+        registry.open_attention_item(tid, "STALE_FROZEN", priority=10)
+
+        resolved = registry.resolve_attention_item(
+            tid,
+            "WAITING_USER",
+            resolution_reason="left_attention_state",
+        )
+        unresolved_rows = registry.list_unresolved_attention_items()
+
+        conn = sqlite3.connect(str(registry._db_path))
+        try:
+            resolved_row = conn.execute(
+                """
+                SELECT state, resolved_at, resolution_reason
+                  FROM session_orchestration_attention_items
+                 WHERE task_id = ?
+                   AND reason = ?
+                """,
+                (tid, "WAITING_USER"),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert resolved is True
+        assert [(row["task_id"], row["reason"]) for row in unresolved_rows] == [
+            (tid, "STALE_FROZEN")
+        ]
+        assert resolved_row[0] == "resolved"
+        assert resolved_row[1] is not None
+        assert resolved_row[2] == "left_attention_state"
+
+    def test_reopen_after_resolve_preserves_resolved_history(self, registry):
+        tid = str(uuid.uuid4())
+        registry.upsert(tid, agent="omp")
+        original = registry.open_attention_item(tid, "WAITING_USER", priority=20)
+        assert registry.resolve_attention_item(
+            tid,
+            "WAITING_USER",
+            resolution_reason="left_attention_state",
+        )
+
+        reopened = registry.open_attention_item(tid, "WAITING_USER", priority=5)
+
+        conn = sqlite3.connect(str(registry._db_path))
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, state, resolved_at
+                  FROM session_orchestration_attention_items
+                 WHERE task_id = ?
+                   AND reason = ?
+                 ORDER BY id
+                """,
+                (tid, "WAITING_USER"),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert original["id"] != reopened["id"]
+        assert len(rows) == 2
+        assert rows[0][1] == "resolved"
+        assert rows[0][2] is not None
+        assert rows[1][0] == reopened["id"]
+        assert rows[1][1] == "unresolved"
+        assert rows[1][2] is None
+
+
+class TestProjectionApis:
+    def test_projection_upsert_and_get_by_channel_and_name(self, registry):
+        created = registry.upsert_projection(
+            "channel-1",
+            "attention-digest",
+            message_id="message-1",
+            content_hash="hash-1",
+            payload={"rows": 1},
+        )
+        updated = registry.upsert_projection(
+            "channel-1",
+            "attention-digest",
+            message_id="message-2",
+            content_hash="hash-2",
+            payload={"rows": 2},
+        )
+        registry.upsert_projection(
+            "channel-1",
+            "status-summary",
+            message_id="message-3",
+            content_hash="hash-3",
+        )
+        registry.upsert_projection(
+            "channel-2",
+            "attention-digest",
+            message_id="message-4",
+            content_hash="hash-4",
+        )
+
+        fetched = registry.get_projection("channel-1", "attention-digest")
+
+        assert created["id"] == updated["id"]
+        assert fetched["message_id"] == "message-2"
+        assert fetched["content_hash"] == "hash-2"
+        assert fetched["payload"] == {"rows": 2}
+        assert registry.get_projection("channel-missing", "attention-digest") is None
+        assert (
+            registry.get_projection("channel-1", "status-summary")["message_id"]
+            == "message-3"
+        )
+        assert (
+            registry.get_projection("channel-2", "attention-digest")["message_id"]
+            == "message-4"
+        )
+
+    def test_projection_partial_update_preserves_omitted_fields(self, registry):
+        created = registry.upsert_projection(
+            "channel-1",
+            "attention-digest",
+            message_id="message-1",
+            content_hash="hash-1",
+            payload={"rows": 1, "status": "ready"},
+        )
+
+        updated = registry.upsert_projection(
+            "channel-1",
+            "attention-digest",
+            content_hash="hash-2",
+        )
+
+        assert updated["id"] == created["id"]
+        assert updated["message_id"] == "message-1"
+        assert updated["content_hash"] == "hash-2"
+        assert updated["payload"] == {"rows": 1, "status": "ready"}
 
     def test_migrate_schema_discord_user_id_idempotent(self, db_path):
         """discord_user_id ALTER TABLE migration must be idempotent.

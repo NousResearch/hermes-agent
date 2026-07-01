@@ -227,6 +227,15 @@ def test_negative_hang_idle_ticks_falls_back_to_default() -> None:
     assert cfg.hang_idle_ticks == 3
 
 
+def test_hang_thresholds_reused_for_stale_guard_config() -> None:
+    """Existing hang thresholds express the stale/frozen guard without new keys."""
+    cfg = SessionOrchestrationConfig.from_dict(
+        {"hang_stale_seconds": "900", "hang_idle_ticks": "4"}
+    )
+    assert cfg.hang_stale_seconds == 900
+    assert cfg.hang_idle_ticks == 4
+
+
 def test_unknown_keys_ignored() -> None:
     """Extra keys in the section are silently ignored."""
     cfg = SessionOrchestrationConfig.from_dict(

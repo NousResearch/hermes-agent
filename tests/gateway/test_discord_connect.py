@@ -249,6 +249,7 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
 async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
+    monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "90")
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
     released = []
     monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
@@ -267,6 +268,7 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     )
 
     async def fake_wait_for(awaitable, timeout):
+        assert timeout == 90.0
         awaitable.close()
         raise asyncio.TimeoutError()
 

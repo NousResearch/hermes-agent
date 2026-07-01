@@ -11,9 +11,9 @@ Critical behaviors tested (all 4 from the audit-blocker list):
    exceeded) must NOT suppress hang detection.  Hang is derived from
    static pane-staleness signals only (idle_ticks + last_output_ts).
 
-3. Exactly one auto-nudge, then escalate.
+3. Exactly one auto-nudge/action per stale episode.
    First tick over threshold → notify + nudge + nudge_count incremented.
-   Second tick still hung → escalation notification fired, NOT a second nudge.
+   Second tick still hung → no notification and no second nudge.
 
 4. Simulated long build (pane static under active-tool indicator) → no hang.
    An adapter that declares an ``idle_indicator_regex`` matching the static
@@ -135,6 +135,9 @@ def _make_watcher(
         registry=registry,
         adapters={adapter_name: adapter},
         tmux_capture=capture,
+        # Fake tmux sessions are always "alive" so the dead-tmux reap does not
+        # spuriously mark them ERROR before the hang hook can run.
+        tmux_liveness_fn=lambda _s: True,
     )
     probe_runner = FakeProbeRunner()
     probe_specs = {type(adapter).__name__: _fake_probe_spec(adapter)}
@@ -182,6 +185,15 @@ class _SmallThresholdConfig:
 def _low_threshold_config():
     """Patch target that returns a config with low hang thresholds."""
     return _SmallThresholdConfig()
+
+
+def _stale_guard_kwargs(pane_text: str = "stale unchanged pane") -> Dict[str, Any]:
+    pane_hash = _pane_hash(pane_text)
+    return {
+        "pane_text": pane_text,
+        "previous_pane_hash": pane_hash,
+        "current_pane_hash": pane_hash,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +351,7 @@ class TestStaleAccelerantCannotMaskHang:
                 or registry.__class__.increment_counter(registry, tid, col, **kw),
             ),
         ):
-            _on_hang(task_id, row, registry=registry)
+            _on_hang(task_id, row, registry=registry, **_stale_guard_kwargs())
 
         assert hang_notifications, (
             "push_hang_notification must be called when thresholds are exceeded "
@@ -387,14 +399,12 @@ class TestStaleAccelerantCannotMaskHang:
 
 
 # ---------------------------------------------------------------------------
-# Behavior 3: Exactly one auto-nudge, then escalate
+# Behavior 3: Exactly one auto-nudge/action per stale episode
 # ---------------------------------------------------------------------------
 
 
-class TestExactlyOneNudgeThenEscalate:
-    """First confirmed hang → notify + one nudge + nudge_count++.
-    Second tick still hung → escalation notification, NOT a second nudge.
-    """
+class TestExactlyOneNudgePerEpisode:
+    """First confirmed hang acts once; later unchanged-pane ticks do nothing."""
 
     def test_first_hang_sends_nudge(self, registry, db_path):
         """nudge_count==0 → push_hang_notification(escalate=False) + relay nudge."""
@@ -431,7 +441,7 @@ class TestExactlyOneNudgeThenEscalate:
                 side_effect=lambda tid, r, **kw: nudge_relay_calls.append(tid),
             ),
         ):
-            _on_hang(task_id, row, registry=registry, adapter=adapter)
+            _on_hang(task_id, row, registry=registry, adapter=adapter, **_stale_guard_kwargs())
 
         assert len(notifications) == 1, "Exactly one notification for first hang"
         assert notifications[0]["escalate"] is False, (
@@ -447,8 +457,8 @@ class TestExactlyOneNudgeThenEscalate:
             "nudge_count must be incremented to 1 after the auto-nudge"
         )
 
-    def test_second_hang_escalates_no_renudge(self, registry, db_path):
-        """nudge_count>=1 → push_hang_notification(escalate=True) + NO relay nudge."""
+    def test_second_hang_does_not_act_again(self, registry, db_path):
+        """nudge_count>=1 → no notification and no relay nudge."""
         task_id = "t-hang-nudge-002"
         old_ts = time.time() - 9999
         _seed_row(
@@ -482,18 +492,17 @@ class TestExactlyOneNudgeThenEscalate:
                 side_effect=lambda tid, r, **kw: nudge_relay_calls.append(tid),
             ),
         ):
-            _on_hang(task_id, row, registry=registry, adapter=adapter)
+            _on_hang(task_id, row, registry=registry, adapter=adapter, **_stale_guard_kwargs())
 
-        assert len(notifications) == 1, "Exactly one notification for escalation tick"
-        assert notifications[0]["escalate"] is True, (
-            "Second hang must fire escalation=True"
+        assert notifications == [], (
+            "Second hang in the same stale episode must not fire another notification"
         )
         assert nudge_relay_calls == [], (
             "_send_auto_nudge must NOT be called on second hang (already nudged)"
         )
 
-    def test_nudge_count_not_incremented_on_escalation(self, registry, db_path):
-        """nudge_count must stay at 1 (not become 2) when escalating."""
+    def test_nudge_count_not_incremented_after_episode_action(self, registry, db_path):
+        """nudge_count must stay at 1 after the episode action has fired."""
         task_id = "t-hang-nudge-003"
         old_ts = time.time() - 9999
         _seed_row(
@@ -515,11 +524,11 @@ class TestExactlyOneNudgeThenEscalate:
             patch("session_orchestration.feed.push_hang_notification"),
             patch("session_orchestration.watcher._send_auto_nudge"),
         ):
-            _on_hang(task_id, row, registry=registry, adapter=adapter)
+            _on_hang(task_id, row, registry=registry, adapter=adapter, **_stale_guard_kwargs())
 
         fresh = registry.get(task_id)
         assert fresh["nudge_count"] == 1, (
-            "nudge_count must not be incremented again on escalation tick"
+            "nudge_count must not be incremented again in the same stale episode"
         )
 
 
@@ -580,7 +589,7 @@ class TestActiveBuildIndicatorSuppressesHang:
                 row,
                 registry=registry,
                 adapter=adapter,
-                pane_text=build_pane_text,
+                **_stale_guard_kwargs(build_pane_text),
             )
 
         assert hang_notifications == [], (
@@ -631,7 +640,7 @@ class TestActiveBuildIndicatorSuppressesHang:
                 row,
                 registry=registry,
                 adapter=adapter,
-                pane_text=static_pane_text,
+                **_stale_guard_kwargs(static_pane_text),
             )
 
         assert hang_notifications, (
@@ -680,7 +689,7 @@ class TestActiveBuildIndicatorSuppressesHang:
                 row,
                 registry=registry,
                 adapter=adapter,
-                pane_text=idle_pane_text,
+                **_stale_guard_kwargs(idle_pane_text),
             )
 
         assert hang_notifications, (
@@ -724,7 +733,7 @@ class TestStaticThresholds:
                 side_effect=lambda *a, **kw: hang_notifications.append(a),
             ),
         ):
-            _on_hang(task_id, row, registry=registry, adapter=adapter)
+            _on_hang(task_id, row, registry=registry, adapter=adapter, **_stale_guard_kwargs())
 
         assert hang_notifications == [], (
             "No hang when idle_ticks < hang_idle_ticks threshold"
@@ -756,7 +765,7 @@ class TestStaticThresholds:
                 side_effect=lambda *a, **kw: hang_notifications.append(a),
             ),
         ):
-            _on_hang(task_id, row, registry=registry, adapter=adapter)
+            _on_hang(task_id, row, registry=registry, adapter=adapter, **_stale_guard_kwargs())
 
         assert hang_notifications == [], (
             "No hang when last_output_ts is within stale_seconds threshold"
@@ -781,7 +790,7 @@ class TestHangEndToEnd:
             registry,
             task_id=task_id,
             state="RUNNING",
-            idle_ticks=0,
+            idle_ticks=2,  # one static tick keeps this above the patched threshold
             last_output_ts=old_ts,
             last_pane_hash=_pane_hash(static_text),
         )
@@ -792,9 +801,15 @@ class TestHangEndToEnd:
 
         hang_called = []
 
-        with patch(
-            "session_orchestration.watcher._on_hang",
-            side_effect=lambda tid, row, **kw: hang_called.append(tid),
+        with (
+            patch(
+                "session_orchestration.config.load_session_orchestration_config",
+                return_value=_low_threshold_config(),
+            ),
+            patch(
+                "session_orchestration.watcher._on_hang",
+                side_effect=lambda tid, row, **kw: hang_called.append(tid),
+            ),
         ):
             watcher.tick()
 

@@ -12,6 +12,7 @@ flip pending → running, and finishes with ``complete_handoff`` or
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
 import pytest
@@ -44,6 +45,76 @@ class TestHandoffStateDB:
             "SELECT handoff_state, handoff_platform, handoff_error "
             "FROM sessions LIMIT 0"
         )
+
+    def test_pending_handoff_polling_index_exists(self, db):
+        index_names = {
+            row[1] for row in db._conn.execute("PRAGMA index_list('sessions')")
+        }
+        assert "idx_sessions_handoff_pending" in index_names
+
+        columns = [
+            row[2]
+            for row in db._conn.execute(
+                "PRAGMA index_info('idx_sessions_handoff_pending')"
+            )
+        ]
+        assert columns == ["handoff_state", "started_at"]
+
+    def test_pending_handoff_index_is_safe_for_existing_dbs(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        db_path = home / "state.db"
+
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    parent_session_id TEXT,
+                    started_at REAL NOT NULL
+                );
+                """
+            )
+        finally:
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+
+        db._conn.execute(
+            "SELECT handoff_state, handoff_platform, handoff_error "
+            "FROM sessions LIMIT 0"
+        )
+        columns = [
+            row[2]
+            for row in db._conn.execute(
+                "PRAGMA index_info('idx_sessions_handoff_pending')"
+            )
+        ]
+        assert columns == ["handoff_state", "started_at"]
+
+    def test_handoff_reads_use_session_db_lock(self, db):
+        sid = "sess-locked-read"
+        self._make_session(db, sid)
+        assert db.request_handoff(sid, "telegram") is True
+
+        class TrackingLock:
+            entered = 0
+
+            def __enter__(self):
+                self.entered += 1
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        lock = TrackingLock()
+        db._lock = lock
+
+        assert db.get_handoff_state(sid)["state"] == "pending"
+        assert [row["id"] for row in db.list_pending_handoffs()] == [sid]
+        assert lock.entered == 2
 
     def test_request_handoff_marks_pending(self, db):
         sid = "sess-1"

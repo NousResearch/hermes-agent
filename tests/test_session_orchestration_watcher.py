@@ -1,21 +1,18 @@
 """
-Unit tests for session_orchestration/watcher.py (T006).
+Unit tests for session_orchestration/watcher.py session-orchestration flow.
 
 Coverage
 --------
-1. A tick iterating seeded rows writes state without spurious notifications —
-   state updates reach the registry; no Discord/network calls.
-2. A tick whose target session is locked by the relay skips capture — the
-   tmux_capture callable is NOT called when the lock is held.
-3. Intent-queue drain is applied: an intent enqueued before the tick is
-   processed and the row is updated.
-4. Unavailable-adapter rows are skipped: a row whose agent name is absent
-   from the verified adapters set is never processed.
-5. Lock is acquired BEFORE capture and released AFTER — the lock holder is
-   cleared from the registry before _process_row returns.
-6. startup_verify is idempotent — calling it twice does not re-probe adapters.
-7. Config-gate: _is_session_orchestration_enabled returns False when config
-   key is absent.
+1. Core tick mechanics: state updates, lock handling, intent drain,
+   unavailable-adapter skips, startup verification, and config gate.
+2. Attention lifecycle: WAITING_USER / PAUSED_HANDOFF open, refresh, resolve,
+   and direct user-attention transitions close the prior reason.
+3. Stale/frozen lifecycle: deterministic eligibility, empty-capture safety,
+   ambiguous RUNNING persistence, drive/progress resolution, and one nudge per
+   stale episode.
+4. Watcher-to-feed projection: digest reconciliation on attention entry,
+   resolution, stale/frozen escalation, already-nudged stale episodes, and
+   missing digest message recovery.
 
 All tests use:
 - An in-memory SQLite DB (via tmp_path fixture).
@@ -26,28 +23,26 @@ All tests use:
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-import os
-from typing import Dict, List, Optional
-from unittest.mock import MagicMock
+from typing import Dict, List
+from unittest.mock import MagicMock, patch
 
 import pytest
-
-import json
-from datetime import timedelta
+import session_orchestration.feed as feed_mod
 
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import AdapterProbeSpec
-from session_orchestration.markers import append_marker
 from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 from session_orchestration.watcher import (
     SessionWatcher,
+    _is_omp_nudge_checkin_eligible,
+    _is_stale_frozen_eligible,
     _on_hang,
-    _parse_marker_ts,
     _pane_hash,
     run_tick,
 )
@@ -61,12 +56,17 @@ from session_orchestration.watcher import (
 class FakeAdapter(AgentAdapter):
     """Adapter that returns a fixed lifecycle value and records detect() calls."""
 
-    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
+    def __init__(
+        self,
+        lifecycle: SessionLifecycle = SessionLifecycle.RUNNING,
+        idle_indicator_regex: re.Pattern[str] | None = None,
+    ):
         self._lifecycle = lifecycle
+        self._idle_indicator_regex = idle_indicator_regex
         self.detect_calls: List[SessionHandle] = []
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(idle_indicator_regex=self._idle_indicator_regex)
 
     def launch(self, workdir: str, prompt: str) -> SessionHandle:
         raise NotImplementedError
@@ -78,11 +78,12 @@ class FakeAdapter(AgentAdapter):
         self.detect_calls.append(handle)
         return self._lifecycle
 
-    def terminate(self, handle: SessionHandle) -> None:
-        raise NotImplementedError
-
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         raise NotImplementedError
+
+    def terminate(self, handle: SessionHandle) -> None:
+        self.terminate_calls = getattr(self, "terminate_calls", [])
+        self.terminate_calls.append(handle)
 
 
 class FakeProbeRunner:
@@ -136,20 +137,15 @@ def _make_watcher(
     capture: FakeCapture,
     *,
     adapter_name: str = "fake",
-    tmux_liveness_fn=None,
 ) -> SessionWatcher:
-    """Build a SessionWatcher with injected fakes.
-
-    ``tmux_liveness_fn`` defaults to a stub that returns True (pane alive) so
-    that existing tests that don't exercise dead-tmux reaping are not affected.
-    Tests that want to exercise reap must pass an explicit ``tmux_liveness_fn``
-    (see ``_make_watcher_with_liveness`` below and ``TestDeadTmuxReap``).
-    """
+    """Build a SessionWatcher with injected fakes."""
     watcher = SessionWatcher(
         registry=registry,
         adapters={adapter_name: adapter},
         tmux_capture=capture,
-        tmux_liveness_fn=tmux_liveness_fn if tmux_liveness_fn is not None else (lambda _s: True),
+        # Fake tmux sessions are always "alive" so the dead-tmux reap (which
+        # checks real tmux liveness) does not spuriously mark them ERROR.
+        tmux_liveness_fn=lambda _s: True,
     )
     # Inject probe fakes so no real binaries are touched
     probe_runner = FakeProbeRunner()
@@ -196,7 +192,14 @@ class TestTickWritesState:
         capture = FakeCapture("❯ ")
         watcher = _make_watcher(registry, adapter, capture)
 
-        processed = watcher.tick()
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "posted"},
+            ),
+            patch("session_orchestration.feed.push_turn_change", return_value=False),
+        ):
+            processed = watcher.tick()
 
         assert processed == 1, "expected exactly one row processed"
         row = registry.get(task_id)
@@ -233,6 +236,553 @@ class TestTickWritesState:
         # capture was never called for terminal rows
         assert capture.calls == []
 
+
+
+class TestAttentionLifecycle:
+    """Watcher-owned attention items mirror lifecycle without new states."""
+
+    def test_waiting_user_attention_open_refresh_resolve(self, registry, db_path):
+        task_id = "t-attn-waiting"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("❯ "))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_turn_change", return_value=True) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            reconcile_digest.assert_called_once_with(registry)
+            thread_notice.assert_called_once()
+            first_items = registry.list_unresolved_attention_items()
+            waiting_items = [
+                item for item in first_items if item["reason"] == "WAITING_USER"
+            ]
+            assert len(waiting_items) == 1
+            first_id = waiting_items[0]["id"]
+
+            watcher.tick()
+            assert reconcile_digest.call_count == 1
+            refreshed_items = registry.list_unresolved_attention_items()
+            waiting_items = [
+                item for item in refreshed_items if item["reason"] == "WAITING_USER"
+            ]
+            assert [item["id"] for item in waiting_items] == [first_id]
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher.tick()
+            assert reconcile_digest.call_count == 2
+            heartbeat_tick.assert_not_called()
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "WAITING_USER"
+        ]
+
+    def test_paused_handoff_attention_open_refresh_resolve(self, registry, db_path):
+        task_id = "t-attn-handoff"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        adapter = FakeAdapter(SessionLifecycle.PAUSED_HANDOFF)
+        watcher = _make_watcher(registry, adapter, FakeCapture("HERMES_HANDOFF\n❯ "))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_turn_change", return_value=True) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            reconcile_digest.assert_called_once_with(registry)
+            thread_notice.assert_called_once()
+            first_items = registry.list_unresolved_attention_items()
+            handoff_items = [
+                item for item in first_items if item["reason"] == "PAUSED_HANDOFF"
+            ]
+            assert len(handoff_items) == 1
+            first_id = handoff_items[0]["id"]
+
+            watcher.tick()
+            assert reconcile_digest.call_count == 1
+            refreshed_items = registry.list_unresolved_attention_items()
+            handoff_items = [
+                item for item in refreshed_items if item["reason"] == "PAUSED_HANDOFF"
+            ]
+            assert [item["id"] for item in handoff_items] == [first_id]
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher.tick()
+            assert reconcile_digest.call_count == 2
+            heartbeat_tick.assert_not_called()
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "PAUSED_HANDOFF"
+        ]
+
+    def test_leaving_user_attention_state_rearms_turn_change_debounce(
+        self, registry, db_path
+    ):
+        import session_orchestration.feed as feed_mod
+
+        task_id = "t-attn-debounce"
+        _seed_row(registry, task_id=task_id, state="WAITING_USER")
+        feed_mod._last_notified[task_id] = "WAITING_USER"
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture("working"))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ) as reconcile_digest:
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert task_id not in feed_mod._last_notified
+
+    def test_stale_frozen_attention_opens_on_running_row(self, registry, db_path):
+        task_id = "t-attn-stale-open"
+        pane_text = "unchanged frozen pane"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "RUNNING"
+        assert [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_escalation_reconciles_attention_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-digest"
+        pane_text = "unchanged frozen pane for digest"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=0,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_hang_notification", return_value=False) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+            patch("session_orchestration.watcher._send_auto_nudge") as auto_nudge,
+        ):
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+        thread_notice.assert_called_once()
+        auto_nudge.assert_called_once()
+        heartbeat_tick.assert_not_called()
+        assert [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_not_resolved_by_default_running_detect(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-running"
+        pane_text = "same pane without enough stale evidence"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=0,
+        )
+        stale_item = registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        watcher.tick()
+
+        unresolved = registry.list_unresolved_attention_items()
+        stale_ids = [
+            item["id"] for item in unresolved if item["reason"] == "STALE_FROZEN"
+        ]
+        assert stale_ids == [stale_item["id"]]
+
+    def test_empty_capture_does_not_resolve_stale_frozen_or_reset_counters(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-empty-capture"
+        old_text = "old frozen pane"
+        old_hash = _pane_hash(old_text)
+        old_last_output_ts = time.time() - 999
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=old_hash,
+            last_output_ts=old_last_output_ts,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+        stale_item = registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(""))
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["last_pane_hash"] == old_hash
+        assert row["last_output_ts"] == pytest.approx(old_last_output_ts)
+        assert row["idle_ticks"] == 3
+        assert row["nudge_count"] == 1
+        stale_ids = [
+            item["id"]
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+        assert stale_ids == [stale_item["id"]]
+
+    def test_stale_frozen_resolves_on_drive_signal_when_represented(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-drive"
+        pane_text = "still frozen but user replied"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=0,
+        )
+        registry.open_attention_item(task_id, "STALE_FROZEN")
+        registry.enqueue_intent(
+            "drive",
+            task_id=task_id,
+            payload={"task_id": task_id},
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.watcher._on_hang") as on_hang,
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+        ):
+            watcher.tick()
+            on_hang.assert_not_called()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_resolves_on_pane_hash_change(self, registry, db_path):
+        task_id = "t-attn-stale-resolve"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash("old frozen pane"),
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+        )
+        registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture("new active output"))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ) as reconcile_digest:
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+
+    def test_waiting_user_digest_removes_item_after_progress(self, registry, db_path):
+        task_id = "t-attn-digest-progress"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("waiting at prompt"))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            assert len(posted) == 1
+            assert task_id in posted[0]
+            assert "reason `WAITING_USER`" in posted[0]
+            assert registry.get_projection(
+                "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+            )["payload"] == {"item_count": 1, "task_ids": [task_id]}
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher._tmux_capture = FakeCapture("agent made progress")
+            watcher.tick()
+
+        assert edited == ["**Hermes action feed**\nNo unresolved attention items."]
+        assert registry.list_unresolved_attention_items() == []
+        assert registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )["payload"] == {"item_count": 0, "task_ids": []}
+        heartbeat_tick.assert_not_called()
+
+    def test_stale_frozen_digest_persists_across_running_then_drive_removes(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-digest-drive"
+        pane_text = "unchanged ambiguous running pane"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=0,
+        )
+        registry.open_attention_item(
+            task_id,
+            "STALE_FROZEN",
+            priority=50,
+            detail="existing unresolved stale/frozen item",
+        )
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick"),
+        ):
+            feed_mod.reconcile_attention_digest(registry)
+            assert len(posted) == 1
+            assert task_id in posted[0]
+            assert "reason `STALE_FROZEN`" in posted[0]
+
+            watcher.tick()
+            unresolved = registry.list_unresolved_attention_items()
+            assert [item["reason"] for item in unresolved] == ["STALE_FROZEN"]
+            assert edited == []
+
+            registry.enqueue_intent("drive", task_id=task_id, payload={"task_id": task_id})
+            watcher.tick()
+
+        assert edited == ["**Hermes action feed**\nNo unresolved attention items."]
+        assert registry.list_unresolved_attention_items() == []
+
+    def test_missing_digest_message_recreated_with_current_attention_item(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-missing-digest"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.open_attention_item(task_id, "WAITING_USER", priority=100)
+        registry.upsert_projection(
+            "feed-1",
+            feed_mod._ATTENTION_DIGEST_PROJECTION_NAME,
+            message_id="missing-digest-msg",
+            content_hash="stale-hash",
+            payload={"item_count": 0, "task_ids": []},
+        )
+
+        posted: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "replacement-digest-msg"
+
+        with (
+            patch(
+                "session_orchestration.feed._edit_discord_message",
+                return_value=feed_mod._EDIT_MISSING,
+            ) as edit_message,
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+        ):
+            result = feed_mod.reconcile_attention_digest(
+                registry,
+                feed_channel_id="feed-1",
+                now="2026-06-29T02:00:00+00:00",
+            )
+
+        assert result["status"] == "recreated"
+        edit_message.assert_called_once()
+        assert len(posted) == 1
+        assert task_id in posted[0]
+        projection = registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )
+        assert projection["message_id"] == "replacement-digest-msg"
+        assert projection["payload"] == {"item_count": 1, "task_ids": [task_id]}
+
+    def test_already_nudged_stale_episode_still_reconciles_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-already-nudged-digest"
+        pane_text = "unchanged stale pane after earlier nudge"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+
+        posted: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed.push_hang_notification") as hang_notice,
+            patch("session_orchestration.watcher._send_auto_nudge") as auto_nudge,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+
+        assert len(posted) == 1
+        assert task_id in posted[0]
+        assert "reason `STALE_FROZEN`" in posted[0]
+        assert registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )["payload"] == {"item_count": 1, "task_ids": [task_id]}
+        hang_notice.assert_not_called()
+        auto_nudge.assert_not_called()
+        heartbeat_tick.assert_not_called()
+
+    def test_direct_user_attention_transition_closes_prior_reason_and_updates_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-direct-transition"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("waiting"))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            adapter._lifecycle = SessionLifecycle.PAUSED_HANDOFF
+            watcher._tmux_capture = FakeCapture("handoff")
+            watcher.tick()
+
+        assert len(posted) == 1
+        assert "reason `WAITING_USER`" in posted[0]
+        assert len(edited) == 1
+        assert "reason `PAUSED_HANDOFF`" in edited[0]
+        assert "reason `WAITING_USER`" not in edited[0]
+        unresolved = registry.list_unresolved_attention_items()
+        assert [item["reason"] for item in unresolved] == ["PAUSED_HANDOFF"]
+        heartbeat_tick.assert_not_called()
 
 class TestLockSkipsCapture:
     """A tick whose target session is locked skips capture entirely."""
@@ -500,1327 +1050,292 @@ class TestIdleTickIncrement:
         row = registry.get(task_id)
         assert (row.get("idle_ticks") or 0) == 0
 
-
-# ---------------------------------------------------------------------------
-# Marker tailing tests (T008)
-# ---------------------------------------------------------------------------
-
-
-def _seed_row_with_workdir(
-    registry: SessionOrchestrationRegistry,
-    task_id: str,
-    workdir: str,
-    *,
-    agent: str = "fake",
-    state: str = "RUNNING",
-    tmux_session: str = "hermes-fake-marker",
-    **extra,
-) -> None:
-    """Insert a row that includes a workdir so the watcher can locate the
-    marker file at ``{workdir}/.hermes/sessions/{task_id}.jsonl``."""
-    registry.upsert(
-        task_id,
-        agent=agent,
-        run_id=f"run-{uuid.uuid4().hex[:8]}",
-        repo=f"repo-{uuid.uuid4().hex[:8]}",
-        state=state,
-        tmux_session=tmux_session,
-        workdir=workdir,
-        **extra,
-    )
-
-
-def _write_stale_marker(marker_file: Path, kind: str, task_id: str, age_seconds: int = 400) -> None:
-    """Write a marker line with a timestamp ``age_seconds`` in the past."""
-    stale_ts = (datetime.now(tz=timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
-    line = json.dumps({"v": 1, "ts": stale_ts, "kind": kind, "task": task_id, "payload": {}})
-    marker_file.parent.mkdir(parents=True, exist_ok=True)
-    with marker_file.open("ab") as fh:
-        fh.write((line + "\n").encode())
-
-
-class TestMarkerTailing:
-    """Per-tick marker tailing: authoritative state + heartbeat hang-guard."""
-
-    def test_recent_marker_overrides_pane_state(self, registry, tmp_path):
-        """A recent marker's kind determines state; adapter.detect() is NOT called."""
-        task_id = "t-marker-recent-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir)
-
-        # Write a recent 'status' marker (maps to RUNNING)
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(str(marker_file), "status", {"phase": "running"}, task=task_id)
-
-        # Adapter would return WAITING_USER if called — marker must override it
-        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "RUNNING", (
-            "status marker (->RUNNING) must override adapter WAITING_USER"
-        )
-        assert adapter.detect_calls == [], (
-            "adapter.detect() must NOT be called when a recent marker provides state"
-        )
-
-    def test_stale_marker_falls_back_to_pane(self, registry, tmp_path):
-        """A marker older than the recency window is ignored; pane detect() is used."""
-        task_id = "t-marker-stale-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir)
-
-        # Write a stale 'status' marker (400 s old — outside 300 s window)
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        _write_stale_marker(marker_file, "status", task_id, age_seconds=400)
-
-        # Adapter returns WAITING_USER (pane fallback should win)
-        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "WAITING_USER", (
-            "stale marker must not override state; pane detect() should win"
-        )
-        assert len(adapter.detect_calls) == 1, (
-            "adapter.detect() must be called when all markers are stale"
-        )
-
-    def test_absent_marker_file_falls_back_to_pane(self, registry, tmp_path):
-        """When the marker file does not exist, pane detect() is the sole signal."""
-        task_id = "t-marker-absent-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir)
-        # No marker file created
-
-        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "WAITING_USER"
-        assert len(adapter.detect_calls) == 1
-
-    def test_marker_offset_advances_across_ticks(self, registry, tmp_path):
-        """marker_offset in the registry advances after each tick so each tick
-        reads only NEW marker lines (never re-reads previously consumed lines)."""
-        task_id = "t-marker-offset-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir)
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write first marker and run tick 1
-        append_marker(str(marker_file), "status", {"phase": "running"}, task=task_id)
-        offset_after_first_marker = marker_file.stat().st_size
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane text")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        row_after_tick1 = registry.get(task_id)
-        assert row_after_tick1 is not None
-        assert row_after_tick1.get("marker_offset", 0) == offset_after_first_marker, (
-            "marker_offset must advance to end of first marker after tick 1"
-        )
-
-        # Write second marker and run tick 2
-        append_marker(str(marker_file), "heartbeat", {"note": None}, task=task_id)
-        offset_after_second_marker = marker_file.stat().st_size
-
-        watcher.tick()
-
-        row_after_tick2 = registry.get(task_id)
-        assert row_after_tick2 is not None
-        assert row_after_tick2.get("marker_offset", 0) == offset_after_second_marker, (
-            "marker_offset must advance to end of second marker after tick 2"
-        )
-        assert row_after_tick2["marker_offset"] > row_after_tick1["marker_offset"], (
-            "marker_offset must be strictly larger after tick 2 than tick 1"
-        )
-
-    def test_heartbeat_marker_suppresses_hang_guard(self, registry, tmp_path, monkeypatch):
-        """A recent heartbeat marker prevents _on_hang from firing even when pane
-        hash is unchanged past idle/stale thresholds."""
-        task_id = "t-hang-suppress-001"
-        workdir = str(tmp_path)
-        static_pane = "static pane text"
-        # Pre-set idle_ticks=5 and last_pane_hash matching the static pane text so
-        # the hang condition (idle_ticks > 0, pane unchanged) would normally fire.
-        _seed_row_with_workdir(
-            registry,
-            task_id,
-            workdir,
-            idle_ticks=5,
-            last_pane_hash=_pane_hash(static_pane),
-        )
-
-        # Write a recent heartbeat marker
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(str(marker_file), "heartbeat", {"note": None}, task=task_id)
-
-        hang_called = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_hang",
-            lambda *a, **kw: hang_called.append(True),
-        )
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture(static_pane)
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert hang_called == [], (
-            "_on_hang must NOT be called when a recent heartbeat marker exists"
-        )
-
-    def test_stale_heartbeat_does_not_suppress_hang_guard(self, registry, tmp_path, monkeypatch):
-        """A heartbeat marker older than the recency window must not suppress _on_hang."""
-        task_id = "t-hang-stale-001"
-        workdir = str(tmp_path)
-        static_pane = "static pane text stale"
-        _seed_row_with_workdir(
-            registry,
-            task_id,
-            workdir,
-            idle_ticks=5,
-            last_pane_hash=_pane_hash(static_pane),
-        )
-
-        # Write a stale heartbeat marker (400 s old — outside window)
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        _write_stale_marker(marker_file, "heartbeat", task_id, age_seconds=400)
-
-        hang_called = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_hang",
-            lambda *a, **kw: hang_called.append(True),
-        )
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture(static_pane)
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert hang_called == [True], (
-            "_on_hang must be called when the only heartbeat marker is stale"
-        )
-
-    def test_migrate_schema_idempotent(self, db_path):
-        """Creating two registry instances on the same DB must not raise.
-
-        The second creation triggers _migrate_schema on an already-migrated DB
-        (the marker_offset column already exists); the idempotent ALTER TABLE
-        must swallow the OperationalError silently.
-        """
-        reg1 = SessionOrchestrationRegistry(db_path=db_path)
-        reg2 = SessionOrchestrationRegistry(db_path=db_path)
-        # Explicitly calling _migrate_schema a third time must also be silent
-        reg2._migrate_schema()
-        # Verify the column is present by inserting and reading back a row
-        reg1.upsert(
-            "t-migrate-001",
-            agent="fake",
-            run_id="run-mig-001",
-            repo="repo-mig-001",
-            marker_offset=42,
-        )
-        row = reg1.get("t-migrate-001")
-        assert row is not None
-        assert row.get("marker_offset") == 42, (
-            "marker_offset column must be present and writable after migration"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Handoff marker tests (T009)
-# ---------------------------------------------------------------------------
-
-
-class FakeAdapterWithResume(FakeAdapter):
-    """FakeAdapter that records resume() calls instead of raising."""
-
-    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
-        super().__init__(lifecycle)
-        self.resume_calls: List[tuple] = []  # (handle, prompt) pairs
-
-    def resume(self, handle: SessionHandle, prompt: str) -> None:
-        self.resume_calls.append((handle, prompt))
-
-
-class TestHandoffMarkers:
-    """T009: handoff_continue auto-resumes; handoff_decision DMs the user."""
-
-    def test_handoff_continue_calls_resume_and_sets_running(self, registry, tmp_path):
-        """A recent handoff_continue marker must call adapter.resume(handle, '')
-        and override the lifecycle to RUNNING before the upsert."""
-        task_id = "t-hc-resume-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir)
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_continue",
-            {"handoff_text": "carry on"},
-            task=task_id,
-        )
-
-        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert len(adapter.resume_calls) == 1, (
-            "adapter.resume() must be called exactly once for handoff_continue"
-        )
-        _handle, prompt = adapter.resume_calls[0]
-        assert prompt == "", "resume must be called with an empty prompt"
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "RUNNING", (
-            "state must be RUNNING after handoff_continue overrides PAUSED_HANDOFF"
-        )
-
-    def test_handoff_continue_does_not_call_send_dm(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """handoff_continue must NOT trigger a DM — only auto-resume."""
-        task_id = "t-hc-no-dm-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, discord_user_id="user-123")
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_continue",
-            {"handoff_text": "carry on"},
-            task=task_id,
-        )
-
-        dm_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda *a, **kw: dm_calls.append(a),
-        )
-
-        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert dm_calls == [], "send_dm must NOT be called for handoff_continue"
-
-    def test_handoff_decision_calls_send_dm_with_question(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """A recent handoff_decision marker must send a DM containing the
-        marker payload's question text when discord_user_id is present."""
-        task_id = "t-hd-dm-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(
-            registry, task_id, workdir, discord_user_id="user-456"
-        )
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_decision",
-            {"question": "continue?", "handoff_text": "needs a decision"},
-            task=task_id,
-        )
-
-        # Inject a fake bot token so the DM branch executes
-        monkeypatch.setattr(
-            "tools.discord_tool._get_bot_token",
-            lambda: "fake-bot-token",
-        )
-
-        dm_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda user_id, message, token, **kw: dm_calls.append(
-                (user_id, message, token)
-            ),
-        )
-
-        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert len(dm_calls) == 1, "send_dm must be called exactly once"
-        _, message, token = dm_calls[0]
-        assert "continue?" in message, "DM must include the question text"
-        assert token == "fake-bot-token"
-
-    def test_handoff_decision_does_not_call_resume(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """handoff_decision must NOT call adapter.resume() — DM only."""
-        task_id = "t-hd-no-resume-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(
-            registry, task_id, workdir, discord_user_id="user-789"
-        )
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_decision",
-            {"question": "what to do?", "handoff_text": "decision needed"},
-            task=task_id,
-        )
-
-        # Suppress network calls
-        monkeypatch.setattr("tools.discord_tool._get_bot_token", lambda: "tok")
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda *a, **kw: True,
-        )
-
-        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert adapter.resume_calls == [], (
-            "adapter.resume() must NOT be called for handoff_decision"
-        )
-
-    def test_handoff_decision_skips_dm_when_no_user_id(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """handoff_decision with no discord_user_id must be a no-op (no DM,
-        no exception)."""
-        task_id = "t-hd-no-uid-001"
-        workdir = str(tmp_path)
-        # No discord_user_id in the row
-        _seed_row_with_workdir(registry, task_id, workdir)
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_decision",
-            {"question": "no user?", "handoff_text": "need decision"},
-            task=task_id,
-        )
-
-        dm_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda *a, **kw: dm_calls.append(a),
-        )
-
-        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-
-        # Must not raise
-        watcher.tick()
-
-        assert dm_calls == [], (
-            "send_dm must NOT be called when discord_user_id is absent"
-        )
-
-    def test_handoff_continue_resume_runs_under_lock(self, tmp_path):
-        """Lock-ordering contract: acquire_lock → adapter.resume → release_lock.
-
-        The watcher must hold the per-session lock when it calls adapter.resume()
-        for handoff_continue, so the relay cannot race on the same tmux pane.
-        We verify this by wrapping the registry and adapter to record a shared
-        event log and asserting the acquire/resume/release order.
-        """
-        from session_orchestration.registry import SessionOrchestrationRegistry
-
-        # --- shared event log ---
-        events: List[str] = []
-
-        # --- registry wrapper that records lock events ---
-        inner_registry = SessionOrchestrationRegistry(db_path=tmp_path / "lock-order.db")
-
-        class _LockRecordingRegistry:
-            """Thin proxy that records acquire/release into `events`."""
-
-            def __getattr__(self, name: str):
-                return getattr(inner_registry, name)
-
-            def acquire_lock(self, task_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-                result = inner_registry.acquire_lock(task_id, holder, ttl_seconds=ttl_seconds)
-                if result:
-                    events.append(f"acquire:{task_id}")
-                return result
-
-            def release_lock(self, task_id: str, holder: str) -> None:
-                events.append(f"release:{task_id}")
-                return inner_registry.release_lock(task_id, holder)
-
-        recording_registry = _LockRecordingRegistry()
-
-        # --- adapter that records resume into the same event log ---
-        class _LockRecordingAdapter(FakeAdapterWithResume):
-            def resume(self, handle: "SessionHandle", prompt: str) -> None:
-                events.append("resume")
-                super().resume(handle, prompt)
-
-        task_id = "t-lock-order-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(inner_registry, task_id, workdir)
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "handoff_continue",
-            {"handoff_text": "carry on"},
-            task=task_id,
-        )
-
-        adapter = _LockRecordingAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(recording_registry, adapter, capture)
-        watcher.tick()
-
-        # Must have seen all three events
-        assert "resume" in events, "adapter.resume() must have been called"
-        acquire_idx = next(
-            (i for i, e in enumerate(events) if e == f"acquire:{task_id}"), None
-        )
-        resume_idx = next((i for i, e in enumerate(events) if e == "resume"), None)
-        release_idx = next(
-            (i for i, e in enumerate(events) if e == f"release:{task_id}"), None
-        )
-        assert acquire_idx is not None, "acquire_lock must have fired"
-        assert release_idx is not None, "release_lock must have fired"
-        assert acquire_idx < resume_idx, (
-            "acquire_lock must precede adapter.resume() — lock-contract violation"
-        )
-        assert resume_idx < release_idx, (
-            "adapter.resume() must precede release_lock — lock-contract violation"
-        )
-
-
-class TestHangEscalation:
-    """T010: hang ladder final rungs — DM user and mark ERROR on escalation."""
-
-    # --- shared fake registry ---
-
-    class _FakeRegistryForHang:
-        """Records upsert calls; increment_counter is a no-op."""
-
-        def __init__(self) -> None:
-            self.upsert_calls: List[tuple] = []  # (task_id, kwargs)
-
-        def upsert(self, task_id: str, **kwargs) -> None:
-            self.upsert_calls.append((task_id, kwargs))
-
-        def increment_counter(self, task_id: str, counter: str, *, by: int = 1) -> None:
-            pass  # no-op; nudge_count increment is not the focus here
-
-    def _make_hang_row(
-        self,
-        task_id: str,
-        *,
-        nudge_count: int = 1,
-        discord_user_id: str | None = None,
-        idle_ticks: int = 5,
-        elapsed_seconds: float = 400.0,
-    ) -> dict:
-        """Build a minimal row dict that passes _on_hang's idle+stale thresholds."""
-        row: dict = {
-            "task_id": task_id,
-            "agent": "fake",
-            "run_id": "run-test",
-            "repo": "repo-test",
-            "source": "spawn",
-            "nudge_count": nudge_count,
-            "idle_ticks": idle_ticks,
-            "last_output_ts": time.time() - elapsed_seconds,
-        }
-        if discord_user_id is not None:
-            row["discord_user_id"] = discord_user_id
-        return row
-
-    def test_hang_escalation_sends_dm_and_marks_error(self, monkeypatch):
-        """nudge_count=1, discord_user_id set -> send_dm called + state ERROR."""
-        task_id = "t-hang-esc-dm-001"
-        row = self._make_hang_row(task_id, nudge_count=1, discord_user_id="user-esc-001")
-
-        fake_reg = self._FakeRegistryForHang()
-        dm_calls: List = []
-
-        monkeypatch.setattr(
-            "tools.discord_tool._get_bot_token",
-            lambda: "fake-token",
-        )
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda user_id, message, token, **kw: dm_calls.append(
-                (user_id, message, token)
-            ),
-        )
-        # Suppress push_hang_notification network call
-        monkeypatch.setattr(
-            "session_orchestration.feed.push_hang_notification",
-            lambda *a, **kw: None,
-        )
-
-        _on_hang(task_id, row, registry=fake_reg)
-
-        assert len(dm_calls) == 1, "send_dm must be called exactly once on escalation"
-        user_id_sent, message, token = dm_calls[0]
-        assert user_id_sent == "user-esc-001"
-        assert task_id in message, "DM message must include the task_id"
-        assert token == "fake-token"
-
-        error_upserts = [
-            (tid, kw)
-            for tid, kw in fake_reg.upsert_calls
-            if kw.get("state") == "ERROR"
-        ]
-        assert len(error_upserts) == 1, "registry.upsert must set state=ERROR"
-        assert error_upserts[0][0] == task_id
-
-    def test_hang_escalation_marks_error_even_when_no_user_id(self, monkeypatch):
-        """nudge_count=1, no discord_user_id -> no DM but state still ERROR."""
-        task_id = "t-hang-esc-nouid-001"
-        row = self._make_hang_row(task_id, nudge_count=1, discord_user_id=None)
-
-        fake_reg = self._FakeRegistryForHang()
-        dm_calls: List = []
-
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda *a, **kw: dm_calls.append(a),
-        )
-        monkeypatch.setattr(
-            "session_orchestration.feed.push_hang_notification",
-            lambda *a, **kw: None,
-        )
-
-        _on_hang(task_id, row, registry=fake_reg)
-
-        assert dm_calls == [], "send_dm must NOT be called when discord_user_id is absent"
-
-        error_upserts = [
-            (tid, kw)
-            for tid, kw in fake_reg.upsert_calls
-            if kw.get("state") == "ERROR"
-        ]
-        assert len(error_upserts) == 1, (
-            "registry.upsert must still mark ERROR even without a discord_user_id"
-        )
-        assert error_upserts[0][0] == task_id
-
-    def test_hang_first_rung_no_dm_no_error(self, monkeypatch):
-        """nudge_count=0 -> first rung: no DM and state NOT marked ERROR."""
-        task_id = "t-hang-first-rung-001"
-        row = self._make_hang_row(task_id, nudge_count=0, discord_user_id="user-first")
-
-        fake_reg = self._FakeRegistryForHang()
-        dm_calls: List = []
-
-        monkeypatch.setattr(
-            "tools.discord_tool._get_bot_token",
-            lambda: "fake-token",
-        )
-        monkeypatch.setattr(
-            "session_orchestration.dm_transport.send_dm",
-            lambda *a, **kw: dm_calls.append(a),
-        )
-        monkeypatch.setattr(
-            "session_orchestration.feed.push_hang_notification",
-            lambda *a, **kw: None,
-        )
-        # Suppress _send_auto_nudge's relay import so it fails non-fatally
-        monkeypatch.setattr(
-            "session_orchestration.watcher._send_auto_nudge",
-            lambda *a, **kw: None,
-        )
-
-        _on_hang(task_id, row, registry=fake_reg)
-
-        assert dm_calls == [], "send_dm must NOT be called on the first hang rung"
-
-        error_upserts = [
-            (tid, kw)
-            for tid, kw in fake_reg.upsert_calls
-            if kw.get("state") == "ERROR"
-        ]
-        assert error_upserts == [], (
-            "state must NOT be set to ERROR on the first hang rung (nudge_count=0)"
-        )
-
-
-# ---------------------------------------------------------------------------
-# T011 — terminate adapter helper + done-marker turn-change + last_question
-# ---------------------------------------------------------------------------
-
-
-class FakeAdapterWithTerminate(FakeAdapter):
-    """FakeAdapter that records terminate() calls instead of raising."""
-
-    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
-        super().__init__(lifecycle)
-        self.terminate_calls: List[SessionHandle] = []
-
-    def terminate(self, handle: SessionHandle) -> None:
-        self.terminate_calls.append(handle)
-
-
-class TestHandleTerminateAdapter:
-    """_handle_terminate_adapter calls adapter.terminate() and optionally re-spawns."""
-
-    def _make_registry_with_row(self, db_path: Path, task_id: str = "task-t011-001"):
-        reg = SessionOrchestrationRegistry(db_path=db_path)
-        reg.upsert(
-            task_id,
-            agent="fake",
-            run_id=f"run-{uuid.uuid4().hex[:8]}",
-            repo=f"repo-{uuid.uuid4().hex[:8]}",
-            state="DONE",  # already marked terminal by _apply_intent
-            tmux_session="hermes-fake-t011",
-            workdir="/tmp/fake-workdir",
-        )
-        return reg
-
-    def test_handle_terminate_adapter_calls_adapter_terminate(self, db_path):
-        """_handle_terminate_adapter must call adapter.terminate(handle)."""
-        from session_orchestration.watcher import _handle_terminate_adapter
-
-        task_id = "task-t011-001"
-        reg = self._make_registry_with_row(db_path, task_id)
-        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
-        adapter_map = {"fake": adapter}
-
-        intent = {
-            "intent": "terminate",
-            "task_id": task_id,
-            "payload": json.dumps({"restart": False}),
-        }
-        _handle_terminate_adapter(intent, reg, adapter_map)
-
-        assert len(adapter.terminate_calls) == 1, (
-            "adapter.terminate() must be called exactly once"
-        )
-
-    def test_handle_terminate_adapter_restart_calls_spawn(self, db_path):
-        """With restart=True, _handle_terminate_adapter must call _spawn_fn."""
-        from session_orchestration.watcher import _handle_terminate_adapter
-
-        task_id = "task-t011-002"
-        reg = self._make_registry_with_row(db_path, task_id)
-        reg.upsert(
-            task_id,
-            agent="fake",
-            run_id=None,
-            repo=None,
-            source="spawn",
-            state="ERROR",  # restart path marks ERROR
-        )
-        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
-        adapter_map = {"fake": adapter}
-
-        spawn_calls: List = []
-
-        def fake_spawn(request):
-            spawn_calls.append(request)
-
-        intent = {
-            "intent": "terminate",
-            "task_id": task_id,
-            "payload": json.dumps({"restart": True}),
-        }
-        _handle_terminate_adapter(intent, reg, adapter_map, _spawn_fn=fake_spawn)
-
-        assert len(spawn_calls) == 1, "spawn_fn must be called exactly once on restart=True"
-        req = spawn_calls[0]
-        # Restart uses placeholder prompt because original is not persisted
-        assert req.prompt == "continue", (
-            f"restart must use placeholder prompt 'continue', got {req.prompt!r}"
-        )
-        assert req.agent == "fake", f"agent must be preserved, got {req.agent!r}"
-
-    def test_handle_terminate_adapter_no_restart_no_spawn(self, db_path):
-        """With restart=False, _handle_terminate_adapter must NOT call _spawn_fn."""
-        from session_orchestration.watcher import _handle_terminate_adapter
-
-        task_id = "task-t011-003"
-        reg = self._make_registry_with_row(db_path, task_id)
-        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
-
-        spawn_calls: List = []
-
-        intent = {
-            "intent": "terminate",
-            "task_id": task_id,
-            "payload": json.dumps({"restart": False}),
-        }
-        _handle_terminate_adapter(
-            intent, reg, {"fake": adapter}, _spawn_fn=lambda r: spawn_calls.append(r)
-        )
-
-        assert spawn_calls == [], "spawn_fn must NOT be called when restart=False"
-
-
-class TestDoneMarkerFiresTurnChange:
-    """A recent done marker transitions state to DONE and fires _on_turn_change."""
-
-    def test_done_marker_fires_on_turn_change(self, registry, tmp_path, monkeypatch):
-        """RUNNING -> DONE transition (via done marker) calls _on_turn_change."""
-        task_id = "t-done-tc-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "done",
-            {"summary": "task finished"},
-            task=task_id,
-        )
-
-        turn_change_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
-                (tid, new_s, old_s)
-            ),
-        )
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("pane output")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "DONE", f"expected DONE, got {row['state']!r}"
-
-        # _on_turn_change must have fired for the DONE transition
-        done_transitions = [c for c in turn_change_calls if c[1] == "DONE"]
-        assert done_transitions, (
-            "_on_turn_change must be called for the RUNNING -> DONE transition"
-        )
-        tid_called, new_s, old_s = done_transitions[0]
-        assert tid_called == task_id
-        assert old_s == "RUNNING"
-
-    def test_done_row_excluded_from_active_rows_next_tick(self, registry, tmp_path):
-        """After transitioning to DONE, the row is in _TERMINAL_STATES and
-        not re-processed on the next tick."""
-        task_id = "t-done-excl-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(str(marker_file), "done", {"summary": "all done"}, task=task_id)
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-
-        # First tick: processes the row and marks DONE
-        n1 = watcher.tick()
-        assert registry.get(task_id)["state"] == "DONE"
-
-        # Second tick: DONE row must NOT be re-processed (terminal state)
-        n2 = watcher.tick()
-        assert n2 == 0, f"DONE row must not be processed on next tick, got n2={n2}"
-
-
-class TestNeedsInputMarkerStoresLastQuestion:
-    """A needs_input marker stores its question in the last_question column."""
-
-    def test_needs_input_marker_stores_last_question(self, registry, tmp_path):
-        """A recent needs_input marker must store payload.question in last_question."""
-        task_id = "t-ni-lq-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
-
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(
-            str(marker_file),
-            "needs_input",
-            {"question": "What next?", "options": ["A", "B"]},
-            task=task_id,
-        )
-
-        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
-        capture = FakeCapture("❯ ")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row.get("last_question") == "What next?", (
-            f"expected last_question='What next?', got {row.get('last_question')!r}"
-        )
-
-    def test_no_needs_input_marker_last_question_unchanged(self, registry, tmp_path):
-        """When no needs_input marker is present, last_question is not written."""
-        task_id = "t-ni-lq-002"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
-
-        # Write a heartbeat marker (not needs_input)
-        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
-        marker_file.parent.mkdir(parents=True, exist_ok=True)
-        append_marker(str(marker_file), "heartbeat", {}, task=task_id)
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("working…")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        # last_question must remain None (not written from a heartbeat marker)
-        assert row.get("last_question") is None, (
-            f"last_question must be None when no needs_input marker present, "
-            f"got {row.get('last_question')!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# T013 — recommended_next_tick_interval + RUNNING transition gate
-# ---------------------------------------------------------------------------
-
-
-class TestRecommendedNextTickInterval:
-    """SessionWatcher.recommended_next_tick_interval() returns fast/idle cadence."""
-
-    def test_fast_when_running_row_present(self, registry, db_path):
-        """Registry has a RUNNING row -> interval == _FAST_TICK_SECONDS (30.0)."""
-        from session_orchestration.watcher import _FAST_TICK_SECONDS
-
-        _seed_row(registry, task_id="t-tick-run-001", state="RUNNING")
-        adapter = FakeAdapter()
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-
-        interval = watcher.recommended_next_tick_interval()
-        assert interval == _FAST_TICK_SECONDS, (
-            f"expected _FAST_TICK_SECONDS={_FAST_TICK_SECONDS}, got {interval}"
-        )
-
-    def test_fast_when_waiting_user_row_present(self, registry, db_path):
-        """Registry has a WAITING_USER row -> interval == _FAST_TICK_SECONDS (30.0)."""
-        from session_orchestration.watcher import _FAST_TICK_SECONDS
-
-        _seed_row(registry, task_id="t-tick-wu-001", state="WAITING_USER")
-        adapter = FakeAdapter()
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-
-        interval = watcher.recommended_next_tick_interval()
-        assert interval == _FAST_TICK_SECONDS, (
-            f"expected _FAST_TICK_SECONDS={_FAST_TICK_SECONDS}, got {interval}"
-        )
-
-    def test_idle_when_no_active_rows(self, registry, db_path):
-        """Registry has only a DONE row -> interval == _IDLE_TICK_SECONDS (120.0)."""
-        from session_orchestration.watcher import _IDLE_TICK_SECONDS
-
-        _seed_row(registry, task_id="t-tick-done-001", state="DONE")
-        adapter = FakeAdapter()
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-
-        interval = watcher.recommended_next_tick_interval()
-        assert interval == _IDLE_TICK_SECONDS, (
-            f"expected _IDLE_TICK_SECONDS={_IDLE_TICK_SECONDS}, got {interval}"
-        )
-
-    def test_idle_when_registry_empty(self, registry, db_path):
-        """Empty registry -> interval == _IDLE_TICK_SECONDS."""
-        from session_orchestration.watcher import _IDLE_TICK_SECONDS
-
-        adapter = FakeAdapter()
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-
-        interval = watcher.recommended_next_tick_interval()
-        assert interval == _IDLE_TICK_SECONDS
-
-
-class TestProcessRowRunningTransition:
-    """T013 PART D: RUNNING is a notify state for attention->RUNNING transitions only."""
-
-    def test_waiting_user_to_running_fires_on_turn_change(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """old_state=WAITING_USER, adapter returns RUNNING -> _on_turn_change fires."""
-        task_id = "t-run-trans-001"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(
-            registry, task_id, workdir, state="WAITING_USER"
-        )
-
-        turn_change_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
-                (tid, new_s, old_s)
-            ),
-        )
-
-        # Adapter returns RUNNING (simulates user replying, session back to RUNNING)
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("❯ ")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        running_transitions = [
-            c for c in turn_change_calls
-            if c[1] == "RUNNING" and c[2] == "WAITING_USER"
-        ]
-        assert running_transitions, (
-            "_on_turn_change must be called for WAITING_USER -> RUNNING transition"
-        )
-
-    def test_running_to_running_does_not_fire_on_turn_change(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """Steady-state RUNNING tick must NOT fire _on_turn_change."""
-        task_id = "t-run-trans-002"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
-
-        turn_change_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
-                (tid, new_s, old_s)
-            ),
-        )
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("working…")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        running_running = [
-            c for c in turn_change_calls
-            if c[1] == "RUNNING" and c[2] == "RUNNING"
-        ]
-        assert running_running == [], (
-            "_on_turn_change must NOT fire for RUNNING -> RUNNING (no-op)"
-        )
-
-    def test_done_to_running_does_not_fire_on_turn_change(
-        self, registry, tmp_path, monkeypatch
-    ):
-        """DONE -> RUNNING (benign non-attention source) must NOT fire _on_turn_change."""
-        task_id = "t-run-trans-003"
-        workdir = str(tmp_path)
-        _seed_row_with_workdir(registry, task_id, workdir, state="DONE")
-
-        # Manually set DONE row as active for this test (override _ACTIVE_STATES filter)
-        # by writing a fresh RUNNING state directly so _process_row sees it as DONE->RUNNING
-        # Use a marker to force RUNNING lifecycle from a DONE-seeded row
-        # Actually, the row with state=DONE won't be in active_rows (it's terminal).
-        # To test the guard, we need a non-attention source state that IS active.
-        # Use STALLED (active but not attention) as old_state.
-        registry.upsert(
-            task_id,
-            agent="fake",
-            run_id="run-stalled",
-            repo="repo-test",
-            source="spawn",
-            state="STALLED",
-        )
-
-        turn_change_calls: List = []
-        monkeypatch.setattr(
-            "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
-                (tid, new_s, old_s)
-            ),
-        )
-
-        # Adapter returns RUNNING — STALLED -> RUNNING is benign (not from attention state)
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("working…")
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        running_from_stalled = [
-            c for c in turn_change_calls
-            if c[1] == "RUNNING" and c[2] == "STALLED"
-        ]
-        assert running_from_stalled == [], (
-            "_on_turn_change must NOT fire for STALLED -> RUNNING (not from attention state)"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Dead-tmux reap tests (T-FEED-001)
-# ---------------------------------------------------------------------------
-
-
-def _make_watcher_with_liveness(
-    registry: SessionOrchestrationRegistry,
-    adapter: FakeAdapter,
-    capture: FakeCapture,
-    liveness_fn,
-    *,
-    adapter_name: str = "fake",
-) -> SessionWatcher:
-    """Build a SessionWatcher with injected fakes including liveness function."""
-    watcher = SessionWatcher(
-        registry=registry,
-        adapters={adapter_name: adapter},
-        tmux_capture=capture,
-        tmux_liveness_fn=liveness_fn,
-    )
-    probe_runner = FakeProbeRunner()
-    probe_specs = {type(adapter).__name__: _fake_probe_spec(adapter)}
-    watcher.startup_verify(probe_runner=probe_runner, probe_specs=probe_specs)
-    return watcher
-
-
-class TestDeadTmuxReap:
-    """Dead-tmux reap: sessions whose tmux pane dies are marked terminal immediately.
-
-    (a) pane-gone + no done marker + no recent heartbeat -> ERROR + terminated_at set
-    (b) pane-gone + done marker present -> DONE
-    (c) recent heartbeat -> NOT reaped (session stays active)
-    (d) dead_tmux_reap=false -> NOT reaped
-    """
-
-    def _seed(
-        self,
-        registry: SessionOrchestrationRegistry,
-        task_id: str = "reap-001",
-        state: str = "RUNNING",
-        tmux_session: str = "hermes-reap-001",
-        workdir: Optional[str] = None,
-    ) -> None:
+    def test_pane_change_resets_stale_episode_action_counter(self, registry, db_path):
+        task_id = "t-idle-003"
+        old_text = "old frozen output"
+        _seed_row(registry, task_id=task_id, tmux_session="reset-session")
         registry.upsert(
             task_id,
             agent="fake",
             run_id=f"run-{uuid.uuid4().hex[:8]}",
             repo=f"repo-{uuid.uuid4().hex[:8]}",
-            state=state,
-            tmux_session=tmux_session,
-            workdir=workdir,
+            last_pane_hash=_pane_hash(old_text),
+            last_output_ts=time.time() - 999,
+            idle_ticks=5,
+            nudge_count=1,
         )
 
-    def test_pane_gone_no_done_marker_yields_error(self, registry, db_path, tmp_path):
-        """(a) Pane gone + no done marker + no recent heartbeat -> ERROR + terminated_at."""
-        task_id = "reap-a-001"
-        tmux_session = "dead-session-a"
-        workdir = str(tmp_path)
-        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
-
-        # Liveness check: pane is GONE
-        def dead(_s):
-            return False
-
         adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("some text")
-        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
+        capture = FakeCapture("new output after progress")
+        watcher = _make_watcher(registry, adapter, capture)
 
-        processed = watcher.tick()
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["nudge_count"] == 0
+
+
+class TestRunTickEntrypoint:
+    """run_tick remains a single tick-driven cron entrypoint."""
+
+    def test_run_tick_processes_one_cron_tick(self, registry, db_path):
+        task_id = "t-run-tick-001"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("single tick output")
+
+        processed = run_tick(
+            registry=registry,
+            adapters={"fake": adapter},
+            tmux_capture=capture,
+            probe_runner=FakeProbeRunner(),
+            probe_specs={type(adapter).__name__: _fake_probe_spec(adapter)},
+            tmux_liveness_fn=lambda _s: True,
+        )
 
         assert processed == 1
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "ERROR", (
-            "dead pane with no done marker should be marked ERROR"
+        assert len(capture.calls) == 1
+
+
+class TestStaleFrozenGuards:
+    """Deterministic stale/frozen and OMP action eligibility guards."""
+
+    def test_eligible_with_static_hash_idle_threshold_stale_output_and_no_activity(self):
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+
+        assert _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
         )
-        assert row.get("terminated_at") is not None, (
-            "terminated_at must be stamped on dead-tmux reap"
-        )
-        assert isinstance(row["terminated_at"], float), (
-            "terminated_at must be a float epoch"
-        )
-
-    def test_pane_gone_with_done_marker_yields_done(self, registry, db_path, tmp_path):
-        """(b) Pane gone + done marker present -> DONE."""
-        task_id = "reap-b-001"
-        tmux_session = "dead-session-b"
-        workdir = str(tmp_path)
-        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
-
-        # Write a 'done' marker so read_markers_since(offset=0) returns it
-        marker_file = f"{workdir}/.hermes/sessions/{task_id}.jsonl"
-        os.makedirs(f"{workdir}/.hermes/sessions", exist_ok=True)
-        append_marker(marker_file, "done", {}, task=task_id)
-
-        def dead(_s):
-            return False
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture()
-        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] == "DONE", (
-            "dead pane + done marker should be marked DONE"
+        assert _is_omp_nudge_checkin_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
         )
 
-    def test_recent_heartbeat_prevents_reap(self, registry, db_path, tmp_path):
-        """(c) Recent heartbeat marker -> NOT reaped (session allowed to continue)."""
-        task_id = "reap-c-001"
-        tmux_session = "alive-session-c"
-        workdir = str(tmp_path)
-        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
-
-        # Write a recent heartbeat marker (within _MARKER_RECENCY_SECONDS)
-        marker_file = f"{workdir}/.hermes/sessions/{task_id}.jsonl"
-        os.makedirs(f"{workdir}/.hermes/sessions", exist_ok=True)
-        append_marker(marker_file, "heartbeat", {}, task=task_id)
-
-        # Liveness check says pane is DEAD — but heartbeat should prevent reap
-        def dead(_s):
-            return False
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("alive pane output")
-        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        # State must NOT be a terminal state: the heartbeat guards against reap
-        assert row["state"] not in {"DONE", "ERROR"}, (
-            "recent heartbeat must prevent dead-tmux reap"
-        )
-        assert row.get("terminated_at") is None, (
-            "terminated_at must NOT be set when reap is suppressed by heartbeat"
+    def test_not_eligible_when_active_regex_matches(self):
+        now = time.time()
+        pane_text = "Running tool: cargo build"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+        adapter = FakeAdapter(
+            SessionLifecycle.RUNNING,
+            idle_indicator_regex=re.compile(r"Running tool"),
         )
 
-    def test_dead_tmux_reap_disabled_by_config(
-        self, registry, db_path, tmp_path, monkeypatch
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=adapter,
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_not_eligible_when_output_is_fresh(self):
+        now = time.time()
+        pane_text = "unchanged but recent"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 30,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_not_eligible_without_last_output_timestamp(self):
+        now = time.time()
+        pane_text = "unchanged but undated"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_tick_does_not_fire_stale_actions_without_last_output_timestamp(
+        self, registry, db_path
     ):
-        """(d) dead_tmux_reap=false -> NOT reaped even when pane is gone."""
-        import session_orchestration.watcher as _watcher_mod
-
-        # Patch _load_dead_tmux_reap_cfg to return False (knob disabled)
-        monkeypatch.setattr(_watcher_mod, "_load_dead_tmux_reap_cfg", lambda: False)
-
-        task_id = "reap-d-001"
-        tmux_session = "dead-session-d"
-        workdir = str(tmp_path)
-        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
-
-        def dead(_s):
-            return False
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture("some output")
-        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
-
-        watcher.tick()
-
-        row = registry.get(task_id)
-        assert row is not None
-        assert row["state"] not in {"DONE", "ERROR"}, (
-            "dead_tmux_reap=false must prevent reaping even when pane is gone"
-        )
-        assert row.get("terminated_at") is None
-
-
-# ---------------------------------------------------------------------------
-# GC gating in tick()
-# ---------------------------------------------------------------------------
-
-
-class TestTickGc:
-    """Watcher tick GC gate — gc_after_seconds config knob controls deletion."""
-
-    def _seed_terminal(
-        self,
-        registry: SessionOrchestrationRegistry,
-        *,
-        state: str,
-        terminated_at: float,
-    ) -> str:
-        tid = str(uuid.uuid4())
+        task_id = "t-stale-no-output-ts"
+        pane_text = "unchanged but no timestamp"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
         registry.upsert(
-            tid,
+            task_id,
             agent="fake",
             run_id=f"run-{uuid.uuid4().hex[:8]}",
             repo=f"repo-{uuid.uuid4().hex[:8]}",
-            state=state,
-            terminated_at=terminated_at,
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=3,
+            nudge_count=0,
         )
-        return tid
-
-    def test_gc_deletes_old_terminal_row_during_tick(
-        self, registry, monkeypatch
-    ):
-        """(e-positive) An old terminal row is deleted when gc_after_seconds > 0."""
-        import session_orchestration.watcher as _watcher_mod
-
-        now = 1_000_000.0
-        gc_age = 3600
-        # terminated_at is 2 h ago — eligible
-        task_id = self._seed_terminal(
-            registry, state="DONE", terminated_at=now - 7200.0
-        )
-
-        # Patch config loader and time.time inside the module
-        monkeypatch.setattr(_watcher_mod, "_load_gc_after_seconds_cfg", lambda: gc_age)
-        monkeypatch.setattr(_watcher_mod.time, "time", lambda: now)
-
         adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        notifications: List[str] = []
+        nudges: List[str] = []
 
-        assert registry.get(task_id) is None, "old terminal row must be GC-ed during tick"
+        with (
+            patch(
+                "session_orchestration.config.load_session_orchestration_config",
+                return_value=type(
+                    "Cfg",
+                    (),
+                    {"hang_idle_ticks": 3, "hang_stale_seconds": 300},
+                )(),
+            ),
+            patch(
+                "session_orchestration.feed.push_hang_notification",
+                side_effect=lambda tid, *_a, **_kw: notifications.append(tid),
+            ),
+            patch(
+                "session_orchestration.watcher._send_auto_nudge",
+                side_effect=lambda tid, *_a, **_kw: nudges.append(tid),
+            ),
+        ):
+            watcher.tick()
 
-    def test_gc_disabled_when_gc_after_seconds_zero(
-        self, registry, monkeypatch
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["nudge_count"] == 0
+        assert notifications == []
+        assert nudges == []
+
+    def test_not_eligible_when_pane_hash_changed(self):
+        now = time.time()
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=_pane_hash("old output"),
+            current_pane_hash=_pane_hash("new output"),
+            pane_text="new output",
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_omp_action_not_eligible_when_episode_already_nudged(self):
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 1,
+        }
+
+        assert _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+        assert not _is_omp_nudge_checkin_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_on_hang_skips_actions_but_reconciles_when_episode_already_nudged(
+        self, registry
     ):
-        """(e) gc_after_seconds=0 disables GC — no rows deleted even if eligible."""
-        import session_orchestration.watcher as _watcher_mod
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "task_id": "t-stale-already-nudged",
+            "agent": "fake",
+            "state": "RUNNING",
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "last_pane_hash": pane_hash,
+            "nudge_count": 1,
+        }
+        notifications: List[str] = []
+        nudges: List[str] = []
 
-        now = 1_000_000.0
-        task_id = self._seed_terminal(
-            registry, state="DONE", terminated_at=now - 999_999.0
-        )
+        with (
+            patch(
+                "session_orchestration.feed.push_hang_notification",
+                side_effect=lambda tid, *_a, **_kw: notifications.append(tid),
+            ),
+            patch(
+                "session_orchestration.watcher._send_auto_nudge",
+                side_effect=lambda tid, *_a, **_kw: nudges.append(tid),
+            ),
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "unchanged"},
+            ) as reconcile_digest,
+        ):
+            _on_hang(
+                "t-stale-already-nudged",
+                row,
+                registry=registry,
+                adapter=FakeAdapter(SessionLifecycle.RUNNING),
+                pane_text=pane_text,
+                previous_pane_hash=pane_hash,
+                current_pane_hash=pane_hash,
+            )
 
-        # gc_after_seconds == 0 → GC disabled
-        monkeypatch.setattr(_watcher_mod, "_load_gc_after_seconds_cfg", lambda: 0)
-        monkeypatch.setattr(_watcher_mod.time, "time", lambda: now)
-
-        adapter = FakeAdapter(SessionLifecycle.RUNNING)
-        capture = FakeCapture()
-        watcher = _make_watcher(registry, adapter, capture)
-        watcher.tick()
-
-        assert registry.get(task_id) is not None, (
-            "gc_after_seconds=0 must disable GC — row must be retained"
-        )
+        assert notifications == []
+        assert nudges == []
+        reconcile_digest.assert_called_once_with(registry)

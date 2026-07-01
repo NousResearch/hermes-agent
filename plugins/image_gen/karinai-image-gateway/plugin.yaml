@@ -1,0 +1,8 @@
+name: karinai-image-gateway
+version: 1.0.0
+description: "KarinAI managed image gateway backend. Routes image_generate calls to the trusted backend-side image gateway using KARINAI_RUNTIME_TOKEN."
+author: Bambak-org
+kind: backend
+requires_env:
+  - KARINAI_IMAGE_GATEWAY_URL
+  - KARINAI_RUNTIME_TOKEN

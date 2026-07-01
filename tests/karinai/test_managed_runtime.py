@@ -89,6 +89,33 @@ def test_managed_config_requires_runtime_token_when_model_gateway_is_configured(
         )
 
 
+def test_managed_config_requires_runtime_token_when_image_gateway_is_configured():
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_RUNTIME_TOKEN"):
+        ManagedRuntimeConfig.from_env(
+            managed_env(KARINAI_IMAGE_GATEWAY_URL="http://image-gateway.internal")
+        )
+
+
+def test_managed_config_rejects_invalid_image_gateway_url():
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_IMAGE_GATEWAY_URL"):
+        ManagedRuntimeConfig.from_env(
+            managed_env(
+                KARINAI_IMAGE_GATEWAY_URL="not-a-url",
+                KARINAI_RUNTIME_TOKEN="scoped-token",
+            )
+        )
+
+
+def test_managed_config_rejects_image_gateway_hints_without_url():
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_IMAGE_GATEWAY_URL"):
+        ManagedRuntimeConfig.from_env(
+            managed_env(
+                KARINAI_IMAGE_GATEWAY_PROVIDER="openai",
+                KARINAI_RUNTIME_TOKEN="scoped-token",
+            )
+        )
+
+
 def test_managed_config_rejects_invalid_model_gateway_api_mode():
     with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_MODEL_GATEWAY_API_MODE"):
         ManagedRuntimeConfig.from_env(
@@ -158,6 +185,20 @@ def test_write_managed_model_gateway_config_uses_key_env_not_raw_token(tmp_path)
         )
     )
     prepare_managed_runtime_filesystem(cfg)
+    stale_config = state / "config.yaml"
+    stale_config.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"provider": "openai", "api_key": "raw-openai-key"},
+                "providers": {
+                    "openai": {"api_key": "raw-openai-key"},
+                    "karinai-model-gateway": {"api": "http://stale", "api_key": "raw-stale-key"},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
     config_path = write_managed_model_gateway_config(cfg)
 
     assert config_path is not None
@@ -175,7 +216,107 @@ def test_write_managed_model_gateway_config_uses_key_env_not_raw_token(tmp_path)
     assert provider["key_env"] == "KARINAI_RUNTIME_TOKEN"
     assert provider["default_model"] == "karinai/test-model"
     assert provider["transport"] == "chat_completions"
-    assert "scoped-runtime-token" not in config_path.read_text(encoding="utf-8")
+    assert set(data["providers"]) == {"karinai-model-gateway"}
+    serialized = config_path.read_text(encoding="utf-8")
+    assert "scoped-runtime-token" not in serialized
+    assert "raw-openai-key" not in serialized
+    assert "raw-stale-key" not in serialized
+
+
+def test_write_managed_image_gateway_config_routes_image_tool_without_raw_token(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    cfg = ManagedRuntimeConfig.from_env(
+        managed_env(
+            KARINAI_WORKSPACE_DIR=str(workspace),
+            KARINAI_RUNTIME_STATE_DIR=str(state),
+            KARINAI_IMAGE_GATEWAY_URL="http://image-gateway.internal",
+            KARINAI_IMAGE_GATEWAY_PROVIDER="openai",
+            KARINAI_IMAGE_GATEWAY_MODEL="gpt-image-2",
+            KARINAI_RUNTIME_TOKEN="scoped-runtime-token",
+        )
+    )
+    prepare_managed_runtime_filesystem(cfg)
+    stale_config = state / "config.yaml"
+    stale_config.write_text(
+        yaml.safe_dump(
+            {
+                "image_gen": {
+                    "provider": "openai",
+                    "model": "stale-openai-image-model",
+                    "openai": {"api_key": "raw-image-key"},
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    config_path = write_managed_model_gateway_config(cfg)
+
+    assert config_path is not None
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert data["approvals"]["mode"] == "off"
+    assert data["image_gen"] == {
+        "provider": "karinai-image-gateway",
+        "model": "gpt-image-2",
+    }
+    serialized = config_path.read_text(encoding="utf-8")
+    assert "scoped-runtime-token" not in serialized
+    assert "http://image-gateway.internal" not in serialized
+    assert "raw-image-key" not in serialized
+    assert "stale-openai-image-model" not in serialized
+
+
+def test_write_managed_image_gateway_config_clears_stale_model_when_no_model_env(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    cfg = ManagedRuntimeConfig.from_env(
+        managed_env(
+            KARINAI_WORKSPACE_DIR=str(workspace),
+            KARINAI_RUNTIME_STATE_DIR=str(state),
+            KARINAI_IMAGE_GATEWAY_URL="http://image-gateway.internal",
+            KARINAI_RUNTIME_TOKEN="scoped-runtime-token",
+        )
+    )
+    prepare_managed_runtime_filesystem(cfg)
+    (state / "config.yaml").write_text(
+        yaml.safe_dump({"image_gen": {"provider": "openai", "model": "stale-model"}}),
+        encoding="utf-8",
+    )
+    config_path = write_managed_model_gateway_config(cfg)
+
+    assert config_path is not None
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert data["image_gen"] == {"provider": "karinai-image-gateway"}
+    assert "stale-model" not in config_path.read_text(encoding="utf-8")
+
+
+def test_write_managed_gateway_config_removes_stale_image_config_when_gateway_absent(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    cfg = ManagedRuntimeConfig.from_env(
+        managed_env(
+            KARINAI_WORKSPACE_DIR=str(workspace),
+            KARINAI_RUNTIME_STATE_DIR=str(state),
+        )
+    )
+    prepare_managed_runtime_filesystem(cfg)
+    (state / "config.yaml").write_text(
+        yaml.safe_dump(
+            {"image_gen": {"provider": "openai", "model": "stale-image-model"}},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    config_path = write_managed_model_gateway_config(cfg)
+
+    assert config_path is not None
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "image_gen" not in data
+    assert data["approvals"]["mode"] == "off"
 
 
 def test_write_managed_model_gateway_config_without_gateway_still_disables_interactive_approvals(tmp_path):
@@ -387,3 +528,9 @@ def test_karinai_runtime_is_packaged_for_installed_entrypoint():
     assert "config/*.yaml" in package_data
     assert "config/*.example" in package_data
     assert "docker/*.sh" in package_data
+    plugin_data = data["tool"]["setuptools"]["package-data"]["plugins"]
+    assert "**/*.py" in plugin_data
+    manifest = (Path(__file__).resolve().parents[2] / "MANIFEST.in").read_text(
+        encoding="utf-8"
+    )
+    assert "recursive-include plugins *.py plugin.yaml plugin.yml" in manifest

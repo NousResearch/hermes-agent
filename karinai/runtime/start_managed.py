@@ -15,7 +15,7 @@ from .managed import (
     apply_managed_startup_env,
     load_managed_runtime_config,
     prepare_managed_runtime_filesystem,
-    write_managed_model_gateway_config,
+    write_managed_gateway_config,
 )
 
 
@@ -28,7 +28,7 @@ def _run_gateway_main() -> None:
 def main() -> None:
     cfg = load_managed_runtime_config()
     prepare_managed_runtime_filesystem(cfg)
-    write_managed_model_gateway_config(cfg)
+    write_managed_gateway_config(cfg)
     apply_managed_startup_env(cfg)
     os.chdir(cfg.workspace_path)
     _run_gateway_main()

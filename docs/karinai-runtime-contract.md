@@ -93,9 +93,12 @@ API_SERVER_HOST=<private bind>
 API_SERVER_PORT=<private port>
 API_SERVER_KEY=<container-internal key>
 KARINAI_ENABLED_TOOLSETS=<backend-rendered beta tool policy>
-KARINAI_MODEL_GATEWAY_URL=<trusted internal gateway>
+KARINAI_MODEL_GATEWAY_URL=<trusted internal model gateway>
 KARINAI_MODEL_GATEWAY_MODEL=<backend-selected model alias>
-KARINAI_TOOL_GATEWAY_URL=<trusted internal gateway>
+KARINAI_IMAGE_GATEWAY_URL=<trusted internal image gateway>
+KARINAI_IMAGE_GATEWAY_PROVIDER=<backend-selected image provider alias>
+KARINAI_IMAGE_GATEWAY_MODEL=<backend-selected image model alias>
+KARINAI_TOOL_GATEWAY_URL=<trusted internal tool gateway>
 KARINAI_RUNTIME_TOKEN=<scoped runtime token>
 KARINAI_LOCAL_CRON_ENABLED=false
 KARINAI_PLUGIN_INSTALL_ENABLED=false
@@ -156,6 +159,8 @@ The user container is not a trusted place for platform-wide secrets. Code runnin
 The KarinAI agent should receive only scoped runtime tokens for trusted model/tool gateways. Gateways hold real provider credentials outside the user container, enforce policy and quota, and report usage back to backend run records.
 
 When `KARINAI_MODEL_GATEWAY_URL` is set, managed startup renders the upstream-compatible model config inside `HERMES_HOME/config.yaml` with a single custom provider named `karinai-model-gateway`. That config stores `key_env: KARINAI_RUNTIME_TOKEN`, not the token value and not raw upstream provider keys. The backend-selected `KARINAI_MODEL_GATEWAY_MODEL` becomes the default model for the agent process.
+
+When `KARINAI_IMAGE_GATEWAY_URL` is set, managed startup renders `image_gen.provider=karinai-image-gateway` so the `image_generate` tool calls the trusted image gateway with `KARINAI_RUNTIME_TOKEN`. Image provider credentials and routing stay in the gateway service; the managed agent receives only the gateway URL, optional provider/model hints, and scoped runtime token. If no image gateway URL is configured, managed runtime removes stale `image_gen` config and the image tool fails closed rather than falling back to direct upstream providers inside the user container.
 
 ## Prompt and branding contract
 

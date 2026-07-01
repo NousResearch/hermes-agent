@@ -59,15 +59,15 @@ class RelayAdapter(BasePlatformAdapter):
         self._transport = transport
         # Capability surface read by stream_consumer (getattr(..., 4096)).
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
-        # chat_id -> guild_id (Discord) / workspace scope, learned from inbound
+        # chat_id -> scope_id (server/workspace scope), learned from inbound
         # events. The connector's egress guard resolves the owning tenant from
-        # the OUTBOUND action's metadata.guild_id; the gateway's generic delivery
+        # the OUTBOUND action's metadata.scope_id; the gateway's generic delivery
         # path (run.py _thread_metadata_for_source) only carries thread_id, so we
         # re-attach the scope here from what we saw inbound. Keyed by chat_id
         # (channel) since that's what send() receives. See routedEgressGuard.ts.
         self._scope_by_chat: Dict[str, str] = {}
-        # chat_id -> author user_id for DM channels (no guild_id). A DM reply has
-        # no guild discriminator, so the connector resolves its tenant from the
+        # chat_id -> author user_id for DM chats (no scope). A DM reply has
+        # no scope discriminator, so the connector resolves its tenant from the
         # recipient's author binding; we re-attach this user_id as
         # metadata.user_id on the outbound action so it can. See _capture_scope.
         self._dm_user_by_chat: Dict[str, str] = {}
@@ -235,15 +235,15 @@ class RelayAdapter(BasePlatformAdapter):
         tenant resolution. Never raises — scope tracking must not break inbound.
 
         Two cases, matching the connector's two tenant-resolution paths:
-          - GUILD message: remember chat_id -> guild_id. The connector resolves
-            the tenant from metadata.guild_id (routing table).
-          - DM (no guild_id): remember chat_id -> the authentic author user_id.
-            A DM carries no guild discriminator, so the connector instead resolves
+          - SCOPED message: remember chat_id -> scope_id. The connector resolves
+            the tenant from metadata.scope_id (routing table).
+          - DM (no scope): remember chat_id -> the authentic author user_id.
+            A DM carries no scope discriminator, so the connector instead resolves
             the tenant from the recipient's author binding (resolveByUser); it
             needs the user_id on the OUTBOUND action to do that. Without this, a
             DM reply has no resolvable discriminator and the connector's egress
             guard declines it as "target not routed to an onboarded tenant".
-            See gateway-gateway routedEgressGuard.ts / discordTenantOf.
+            See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
         """
         try:
             src = getattr(event, "source", None)
@@ -263,9 +263,9 @@ class RelayAdapter(BasePlatformAdapter):
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
                 self._platform_by_chat[str(chat)] = str(platform_value)
-            guild = getattr(src, "scope_id", None) or getattr(src, "guild_id", None)
-            if guild:
-                self._scope_by_chat[str(chat)] = str(guild)
+            scope = getattr(src, "scope_id", None)
+            if scope:
+                self._scope_by_chat[str(chat)] = str(scope)
                 return
             # DM: no scope. Remember the authentic author id for outbound
             # author-binding resolution (the user we're replying to in this DM).
@@ -279,28 +279,24 @@ class RelayAdapter(BasePlatformAdapter):
         """Ensure the outbound metadata carries the discriminator the connector's
         egress guard needs to resolve the owning tenant. Two cases:
 
-          - GUILD reply: re-attach metadata.scope_id (routing-table resolution;
-            also mirrored to the deprecated metadata.guild_id during the D-Q2.5
-            wire migration so a connector on either side resolves the tenant).
+          - SCOPED reply: re-attach metadata.scope_id (routing-table resolution).
           - DM reply: there is no scope, so re-attach metadata.user_id — the
             authentic author id we saw inbound — which the connector resolves to
             the tenant via the recipient's author binding (resolveByUser). Without
             one of these, egress is declined as 'target not routed to an onboarded
-            tenant'. See gateway-gateway routedEgressGuard.ts / discordTenantOf.
+            tenant'. See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
 
         No-op when the relevant value is already present or unknown for this chat.
         """
         meta: Dict[str, Any] = dict(metadata or {})
-        if not meta.get("scope_id") and not meta.get("guild_id"):
+        if not meta.get("scope_id"):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
-                # D-Q2.5 dual-write: canonical scope_id + deprecated guild_id alias.
                 meta["scope_id"] = scope
-                meta["guild_id"] = scope
         # DM author-binding discriminator. Only meaningful when there's no scope
-        # (a guild reply resolves by scope_id); harmless to carry otherwise, but
+        # (a scoped reply resolves by scope_id); harmless to carry otherwise, but
         # we only set it when this chat is a known DM and the field is absent.
-        if not meta.get("scope_id") and not meta.get("guild_id") and not meta.get("user_id"):
+        if not meta.get("scope_id") and not meta.get("user_id"):
             dm_user = self._dm_user_by_chat.get(str(chat_id))
             if dm_user:
                 meta["user_id"] = dm_user
@@ -405,14 +401,14 @@ class RelayAdapter(BasePlatformAdapter):
         member = payload.get("member") or {}
         user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
         channel_id = str(payload.get("channel_id") or "")
-        guild_id = payload.get("guild_id")  # real Discord interaction field
+        guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
             platform=Platform.RELAY,
             chat_id=channel_id,
             chat_type="channel" if guild_id else "dm",
             user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
             user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
-            scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot (D-Q2.5)
+            scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)

@@ -3275,21 +3275,39 @@ class SessionDB:
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
-    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Atomically replace every message for a session.
+    def replace_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        active_only: bool = False,
+    ) -> None:
+        """Atomically replace the stored messages for a session.
 
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
 
-        DESTRUCTIVE: the prior rows are DELETEd (and drop out of the FTS index).
-        For compaction that must preserve the pre-compaction transcript under
-        the same id, use :meth:`archive_and_compact` instead.
+        DESTRUCTIVE by default: every row for the session is DELETEd (and drops
+        out of the FTS index). For compaction that must preserve the
+        pre-compaction transcript under the same id, use
+        :meth:`archive_and_compact` instead.
+
+        Pass ``active_only=True`` to replace ONLY the live (``active = 1``) rows,
+        leaving soft-archived rows (``active = 0`` — e.g. the ``compacted = 1``
+        turns that :meth:`archive_and_compact` keeps on disk for #38763
+        durability, or rewind/undo rows) untouched. Callers that share a session
+        id with an agent already running in-place compaction must use this so a
+        full-history rewrite doesn't wipe the rows the agent deliberately
+        archived. ``message_count``/``tool_call_count`` then track the live set,
+        matching :meth:`archive_and_compact`.
         """
+
+        active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
             conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
             )
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
@@ -3304,6 +3322,20 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def has_archived_messages(self, session_id: str) -> bool:
+        """Return True if the session has any soft-archived (``active = 0``) rows.
+
+        Used by callers (e.g. the ACP adapter's ``_persist``) that must decide
+        whether a full-history :meth:`replace_messages` would destroy durable
+        compaction-archived turns. Cheap existence probe — does not load rows.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND active = 0 LIMIT 1",
+                (session_id,),
+            )
+            return cursor.fetchone() is not None
 
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]

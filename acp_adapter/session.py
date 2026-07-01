@@ -485,7 +485,23 @@ class SessionManager:
                 and bool(getattr(agent, "_session_db_created", False))
             )
             if not agent_owns_persistence:
-                db.replace_messages(state.session_id, state.history)
+                # Even when the current agent doesn't "own" persistence, the
+                # session on disk may already carry compaction-archived rows —
+                # e.g. after a model switch or a /restore, both of which mint a
+                # fresh agent with _session_db_created=False (so the check above
+                # is False) yet leave the durable archived transcript in place.
+                # A full-history replace would DELETE those archived rows just
+                # like the owned-agent case. Guard against it: when archived
+                # rows exist, replace ONLY the live (active=1) set and leave the
+                # archived turns untouched; otherwise the destructive replace is
+                # safe (fresh create/fork with no archived history to lose).
+                try:
+                    has_archived = db.has_archived_messages(state.session_id)
+                except Exception:
+                    has_archived = False
+                db.replace_messages(
+                    state.session_id, state.history, active_only=has_archived
+                )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 

@@ -337,6 +337,26 @@ class TestPrivateNoteTrace:
         assert kwargs["json"]["private"] is True
 
 
+class TestTypingIndicator:
+    @pytest.mark.asyncio
+    async def test_typing_uses_agent_token_when_set(self):
+        a = _make_adapter(agent_token="agent-tok")
+        a._session = _FakeSession([_FakeResp(200)])
+        await a.send_typing("1:42")
+        _, url, kwargs = a._session.calls[0]
+        assert url.endswith("/toggle_typing_status")
+        assert kwargs["json"]["typing_status"] == "on"
+        assert kwargs["headers"]["api_access_token"] == "agent-tok"
+
+    @pytest.mark.asyncio
+    async def test_typing_falls_back_to_bot_token(self):
+        a = _make_adapter()
+        a._session = _FakeSession([_FakeResp(200)])
+        await a.send_typing("1:42")
+        _, _, kwargs = a._session.calls[0]
+        assert kwargs["headers"]["api_access_token"] == "bot-tok"
+
+
 # ── webhook handler ──────────────────────────────────────────────────────────
 
 

@@ -257,6 +257,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "crwd": {
+        "description": "CRWD MongoDB lookups: gigs, users, membership (gated on CRWD_MONGO_URI)",
+        "tools": ["crwd_db"],
+        "includes": [],
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

@@ -274,9 +274,13 @@ class ChatwootAdapter(BasePlatformAdapter):
             url += f"?token={self._webhook_secret}"
         return url
 
-    def _headers(self, *, private: bool = False) -> Dict[str, str]:
-        """Auth headers. Private notes use the agent token when configured."""
-        token = self._agent_token if (private and self._agent_token) else self._token
+    def _headers(self, *, private: bool = False, use_agent_token: bool = False) -> Dict[str, str]:
+        """Auth headers. Private notes and typing use the agent token when configured."""
+        token = (
+            self._agent_token
+            if ((private or use_agent_token) and self._agent_token)
+            else self._token
+        )
         return {"api_access_token": token}
 
     # -- idempotency ----------------------------------------------------------
@@ -650,7 +654,9 @@ class ChatwootAdapter(BasePlatformAdapter):
         )
         try:
             async with self._session.post(
-                url, json={"typing_status": "on"}, headers=self._headers()
+                url,
+                json={"typing_status": "on"},
+                headers=self._headers(use_agent_token=True),
             ):
                 pass
         except Exception:

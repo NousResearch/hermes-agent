@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("crwd",             "🛍️  CRWD Data",               "gigs, users, and campaign membership lookups"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -116,7 +117,7 @@ def gui_toolset_label(label: str) -> str:
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {
-    "homeassistant", "spotify", "discord", "discord_admin",
+    "homeassistant", "crwd", "spotify", "discord", "discord_admin",
     "video", "video_gen", "x_search",
 }
 
@@ -506,6 +507,20 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "HASS_TOKEN", "prompt": "Home Assistant Long-Lived Access Token"},
                     {"key": "HASS_URL", "prompt": "Home Assistant URL", "default": "http://homeassistant.local:8123"},
+                ],
+            },
+        ],
+    },
+    "crwd": {
+        "name": "CRWD Data",
+        "icon": "🛍️",
+        "providers": [
+            {
+                "name": "CRWD MongoDB",
+                "tag": "Read-only lookups against CRWD's MongoDB",
+                "env_vars": [
+                    {"key": "CRWD_MONGO_URI", "prompt": "CRWD MongoDB URI (mongodb:// or mongodb+srv://)", "url": "https://www.mongodb.com/docs/manual/reference/connection-string/"},
+                    {"key": "CRWD_MONGO_DB", "prompt": "CRWD MongoDB database name", "default": "crwd_staging"},
                 ],
             },
         ],

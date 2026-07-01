@@ -956,6 +956,8 @@ def _read_systemd_unit_properties(
         "ActiveState",
         "SubState",
         "Result",
+        "NRestarts",
+        "StartLimitBurst",
         "ExecMainStatus",
         "MainPID",
     ),
@@ -1096,7 +1098,25 @@ def _wait_for_systemd_service_restart(
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
     result = props.get("Result", "").lower()
     sub_state = props.get("SubState", "").lower()
-    return result == "start-limit-hit" or sub_state == "start-limit-hit"
+    if result == "start-limit-hit" or sub_state == "start-limit-hit":
+        return True
+
+    active_state = props.get("ActiveState", "").lower()
+    if active_state != "failed":
+        return False
+
+    # Planned gateway restarts exit with 75 and are handled by
+    # _recover_pending_systemd_restart(); a stale restart counter should not
+    # turn that controlled handoff into crash-loop guidance.
+    if props.get("ExecMainStatus", "") == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
+        return False
+
+    try:
+        n_restarts = int(props.get("NRestarts", "") or "")
+        start_limit_burst = int(props.get("StartLimitBurst", "") or "")
+    except ValueError:
+        return False
+    return start_limit_burst > 0 and n_restarts >= start_limit_burst
 
 
 def _systemd_error_indicates_start_limit(exc: subprocess.CalledProcessError) -> bool:

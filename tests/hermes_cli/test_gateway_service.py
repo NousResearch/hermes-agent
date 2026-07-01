@@ -112,7 +112,7 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:5] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus,MainPID"],
+            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,NRestarts,StartLimitBurst,ExecMainStatus,MainPID"],
             ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
             ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
             ("wait", False, None),
@@ -1658,6 +1658,42 @@ class TestGatewaySystemServiceRouting:
         out = capsys.readouterr().out.lower()
         assert "rate-limited by systemd" in out
         assert "reset-failed" in out
+
+    def test_systemd_unit_start_limited_detects_restart_counter_burst(self):
+        assert gateway_cli._systemd_unit_is_start_limited(
+            {
+                "ActiveState": "failed",
+                "SubState": "failed",
+                "Result": "exit-code",
+                "NRestarts": "5",
+                "StartLimitBurst": "5",
+                "ExecMainStatus": "1",
+            }
+        )
+
+    def test_systemd_unit_start_limited_ignores_planned_restart_counter(self):
+        assert not gateway_cli._systemd_unit_is_start_limited(
+            {
+                "ActiveState": "failed",
+                "SubState": "failed",
+                "Result": "exit-code",
+                "NRestarts": "5",
+                "StartLimitBurst": "5",
+                "ExecMainStatus": str(GATEWAY_SERVICE_RESTART_EXIT_CODE),
+            }
+        )
+
+    def test_systemd_unit_start_limited_ignores_running_counter(self):
+        assert not gateway_cli._systemd_unit_is_start_limited(
+            {
+                "ActiveState": "active",
+                "SubState": "running",
+                "Result": "success",
+                "NRestarts": "9",
+                "StartLimitBurst": "5",
+                "ExecMainStatus": "0",
+            }
+        )
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)

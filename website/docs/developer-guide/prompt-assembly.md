@@ -235,6 +235,20 @@ All context files are:
 - **Truncated** — capped at `context_file_max_chars` characters (default 20,000) using 70/20 head/tail ratio with a truncation marker
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
+### Context-file budget discipline
+
+Project instruction files such as `AGENTS.md` are runtime prompt surface, not
+ordinary documentation. They are loaded into coding-agent context, so unbounded
+growth directly affects first-turn/model-switch latency, token cost, and the
+salience of critical instructions. Keep these files focused on rules and
+high-blast-radius pitfalls the agent needs in most sessions. Move long
+rationale, history, exhaustive subsystem references, and rarely-needed examples
+to developer docs or reference files, then leave short summaries and links in
+the context file.
+
+For Hermes' own repo, changes to `AGENTS.md` should be treated as
+context-impacting changes and reviewed for size impact as well as correctness.
+
 ## API-call-time-only layers
 
 These are intentionally *not* persisted as part of the cached system prompt:

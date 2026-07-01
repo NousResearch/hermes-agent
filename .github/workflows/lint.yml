@@ -137,6 +137,40 @@ jobs:
         run: |
           ruff check .
 
+  context-budget:
+    # AGENTS.md is runtime prompt surface. Keep it below the context-file
+    # budget so critical instructions are never silently truncated.
+    name: AGENTS.md context budget (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Check AGENTS.md context budget
+        run: |
+          set +e
+          python scripts/check_context_file_budget.py \
+            AGENTS.md \
+            --warn-chars 30000 \
+            --max-chars 38000 \
+            > context-budget.txt 2>&1
+          status=$?
+          cat context-budget.txt
+          {
+            echo "### AGENTS.md context budget"
+            echo
+            echo '```'
+            cat context-budget.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
   windows-footguns:
     # Static guardrails on Windows-unsafe Python primitives — os.kill(pid, 0),
     # os.killpg, os.setsid, signal.SIGKILL without getattr fallback,

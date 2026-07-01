@@ -205,6 +205,67 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         mock_call_llm.return_value = self._make_response("I think this is probably fine")
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
+    @patch("agent.auxiliary_client.call_llm")
+    def test_requests_json_schema_response_format(self, mock_call_llm):
+        """The call must request structured JSON output via response_format,
+        so providers that honor it never fall back to free-text parsing."""
+        mock_call_llm.return_value = self._make_response(
+            '{"verdict": "APPROVE", "reason": "harmless print"}'
+        )
+        _smart_approve("python -c 'print(1)'", "script execution")
+
+        call_kwargs = mock_call_llm.call_args.kwargs
+        extra_body = call_kwargs.get("extra_body") or {}
+        response_format = extra_body.get("response_format") or {}
+        assert response_format.get("type") == "json_schema"
+        schema = response_format.get("json_schema", {}).get("schema", {})
+        assert schema.get("properties", {}).get("verdict", {}).get("enum") == [
+            "APPROVE", "DENY", "ESCALATE",
+        ]
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_json_verdict_approve(self, mock_call_llm):
+        """A well-formed structured JSON response parses to the right verdict."""
+        mock_call_llm.return_value = self._make_response(
+            '{"verdict": "APPROVE", "reason": "benign script execution"}'
+        )
+        assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_json_verdict_deny(self, mock_call_llm):
+        mock_call_llm.return_value = self._make_response(
+            '{"verdict": "DENY", "reason": "recursive delete of root"}'
+        )
+        assert _smart_approve("rm -rf /", "recursive delete") == "deny"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_json_verdict_wrapped_in_code_fence(self, mock_call_llm):
+        """Some providers ignore 'no markdown fences' and wrap JSON in ```json ... ```."""
+        mock_call_llm.return_value = self._make_response(
+            '```json\n{"verdict": "ESCALATE", "reason": "ambiguous intent"}\n```'
+        )
+        assert _smart_approve("rm -rf /tmp/foo", "delete tmp dir") == "escalate"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_json_missing_reason_field_still_parses(self, mock_call_llm):
+        """The 'reason' field is optional — only 'verdict' is required by the schema."""
+        mock_call_llm.return_value = self._make_response('{"verdict": "APPROVE"}')
+        assert _smart_approve("git status", "read-only git command") == "approve"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_malformed_json_falls_back_to_legacy_keyword_scan(self, mock_call_llm):
+        """A provider that ignores response_format entirely and returns plain
+        text must still be parsed via the legacy single-word fallback."""
+        mock_call_llm.return_value = self._make_response("APPROVE")
+        assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_invalid_verdict_value_in_json_escalates(self, mock_call_llm):
+        """A syntactically valid JSON object with an out-of-enum verdict must
+        fail safe to escalate rather than crash or silently approve."""
+        mock_call_llm.return_value = self._make_response('{"verdict": "MAYBE"}')
+        assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+
 
 if __name__ == "__main__":
     unittest.main()

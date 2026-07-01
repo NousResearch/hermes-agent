@@ -703,6 +703,33 @@ class TestCdpFallbackToLocalEngine:
         assert "--cdp" in captured_cmds[0]
         assert "--engine" not in captured_cmds[0]
 
+    def test_cdp_semantic_failure_does_not_retry_locally(self, tmp_path):
+        """Invalid refs/app-level command errors should not switch browsers."""
+        import tools.browser_tool as bt
+
+        captured_cmds = []
+        outputs = [json.dumps({"success": False, "error": "Element reference @e999 not found"})]
+
+        with patch("tools.browser_tool._get_session_info", return_value={
+                 "session_name": "cdp-sess",
+                 "cdp_url": "ws://127.0.0.1:9223/devtools/browser",
+                 "features": {"cdp_override": True},
+             }), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._requires_real_termux_browser_install", return_value=False), \
+             patch("tools.browser_tool._is_local_mode", return_value=False), \
+             patch("tools.browser_tool._get_browser_engine", return_value="lightpanda"), \
+             patch("tools.browser_tool._cdp_fallback_to_local", return_value=True), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._write_owner_pid"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("subprocess.Popen", side_effect=self._popen_writer(outputs, captured_cmds)):
+            result = bt._run_browser_command("cdp-task", "click", ["@e999"])
+
+        assert result == {"success": False, "error": "Element reference @e999 not found"}
+        assert len(captured_cmds) == 1
+        assert "--cdp" in captured_cmds[0]
+
     def test_cdp_failure_can_retry_on_local_lightpanda_session(self, tmp_path):
         """Opt-in CDP fallback retries the command through local Lightpanda."""
         import tools.browser_tool as bt
@@ -797,6 +824,52 @@ class TestCdpFallbackToLocalEngine:
         assert captured_cmds[1][-2:] == ["open", "https://example.com/"]
         assert captured_cmds[2][-2:] == ["snapshot", "-c"]
 
+    def test_cdp_snapshot_fallback_skips_unsafe_cached_warmup_url(self, tmp_path):
+        """Never reopen cached metadata/private URLs during CDP→local warm-up."""
+        import tools.browser_tool as bt
+
+        captured_cmds = []
+        outputs = [
+            json.dumps({"success": False, "error": "CDP socket closed"}),
+            json.dumps({
+                "success": True,
+                "data": {"snapshot": '- heading "Fallback OK" [ref=e1]', "refs": {"e1": {}}},
+            }),
+        ]
+        bt._last_browser_url_by_session_key["cdp-task"] = "http://169.254.169.254/latest/meta-data"
+
+        def fake_session_info(session_key):
+            if session_key.endswith("::local"):
+                return {"session_name": "local-sess", "cdp_url": None, "features": {"local": True}}
+            return {
+                "session_name": "cdp-sess",
+                "cdp_url": "ws://127.0.0.1:9223/devtools/browser",
+                "features": {"cdp_override": True},
+            }
+
+        try:
+            with patch("tools.browser_tool._get_session_info", side_effect=fake_session_info), \
+                 patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+                 patch("tools.browser_tool._requires_real_termux_browser_install", return_value=False), \
+                 patch("tools.browser_tool._is_local_mode", return_value=False), \
+                 patch("tools.browser_tool._get_browser_engine", return_value="lightpanda"), \
+                 patch("tools.browser_tool._cdp_fallback_to_local", return_value=True), \
+                 patch("tools.browser_tool._allow_private_urls", return_value=False), \
+                 patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+                 patch("tools.browser_tool._write_owner_pid"), \
+                 patch("tools.interrupt.is_interrupted", return_value=False), \
+                 patch("subprocess.Popen", side_effect=self._popen_writer(outputs, captured_cmds)):
+                result = bt._run_browser_command("cdp-task", "snapshot", ["-c"])
+        finally:
+            bt._last_browser_url_by_session_key.pop("cdp-task", None)
+            bt._last_active_session_key.pop("cdp-task", None)
+
+        assert result["success"] is True
+        assert len(captured_cmds) == 2
+        assert captured_cmds[0][-2:] == ["snapshot", "-c"]
+        assert captured_cmds[1][-2:] == ["snapshot", "-c"]
+        assert "cdp-task" not in bt._last_browser_url_by_session_key
+
     def test_browser_navigate_uses_fallback_session_for_auto_snapshot(self):
         """After CDP→local fallback, follow-up snapshot uses the local session key."""
         import tools.browser_tool as bt
@@ -834,3 +907,38 @@ class TestCdpFallbackToLocalEngine:
         assert bt._last_active_session_key["nav-cdp"] == "nav-cdp::local"
         assert run_cmd.call_args_list[1].args[0] == "nav-cdp::local"
         bt._last_active_session_key.pop("nav-cdp", None)
+
+    def test_browser_navigate_blocked_redirect_is_not_cached_for_warmup(self):
+        """Blocked redirect URLs must not become future CDP→local warm-up targets."""
+        import tools.browser_tool as bt
+
+        bt._last_browser_url_by_session_key["nav-cdp"] = "https://previous.example/"
+        nav_result = {
+            "success": True,
+            "data": {
+                "title": "metadata",
+                "url": "http://169.254.169.254/latest/meta-data",
+            },
+        }
+        blank_result = {"success": True, "data": {}}
+
+        try:
+            with patch("tools.browser_tool._is_local_backend", return_value=False), \
+                 patch("tools.browser_tool._get_session_info", return_value={
+                     "session_name": "cdp-sess",
+                     "cdp_url": "ws://127.0.0.1:9223/devtools/browser",
+                     "features": {"cdp_override": True},
+                     "_first_nav": False,
+                 }), \
+                 patch("tools.browser_tool._run_browser_command", side_effect=[nav_result, blank_result]) as run_cmd:
+                response = json.loads(bt.browser_navigate("https://example.com", task_id="nav-cdp"))
+        finally:
+            bt._last_active_session_key.pop("nav-cdp", None)
+            bt._last_browser_url_by_session_key.pop("nav-cdp", None)
+
+        assert response == {
+            "success": False,
+            "error": "Blocked: redirect landed on a cloud metadata endpoint",
+        }
+        assert "nav-cdp" not in bt._last_browser_url_by_session_key
+        assert run_cmd.call_args_list[1].args == ("nav-cdp", "open", ["about:blank"])

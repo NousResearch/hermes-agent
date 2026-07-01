@@ -325,6 +325,399 @@ class TestInstall:
         with pytest.raises(CatalogError):
             install_entry(_entry("demo"), enable=True)
 
+    def test_install_http_api_key_writes_bearer_header(self, catalog_dir, monkeypatch):
+        """HTTP + api_key auth must emit a headers block with a Bearer token
+        interpolation placeholder — not just save the key to .env.
+        """
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_API_KEY", "prompt": "API key", "secret": True},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "fc-test-key")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        # Read raw YAML — load_config() interpolates ${VAR} from os.environ,
+        # but we want to verify the placeholder is written to the file.
+        with open(get_config_path(), encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert "headers" in server, server
+        assert server["headers"]["Authorization"] == "Bearer ${DEMO_API_KEY}"
+
+    def test_install_http_api_key_optional_skipped_no_headers(self, catalog_dir, monkeypatch):
+        """HTTP + api_key with an optional key that the user skips must NOT
+        emit a headers block — enabling keyless / anonymous access."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_API_KEY", "prompt": "API key (optional)", "required": False, "secret": True},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        # User hits Enter — empty input, key is optional so no error
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        with open(get_config_path(), encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert "headers" not in server, (
+            "Keyless access: no headers should be written when the optional "
+            f"API key was skipped. Got: {server}"
+        )
+
+    def test_install_http_api_key_prefers_secret_env_var(self, catalog_dir, monkeypatch):
+        """When auth.env has multiple entries, the secret one is used for the
+        Bearer token."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False, "required": False},
+                    {"name": "DEMO_TOKEN", "prompt": "API token", "secret": True},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        with open(get_config_path(), encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        # DEMO_TOKEN is secret → used for Bearer, not DEMO_URL
+        assert server["headers"]["Authorization"] == "Bearer ${DEMO_TOKEN}"
+
+    def test_install_http_none_auth_no_headers(self, catalog_dir):
+        """HTTP + none auth should produce just url, no headers block."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={"type": "none"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        with open(get_config_path(), encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert "headers" not in server, server
+
+    def test_install_stdio_api_key_no_headers(self, catalog_dir, monkeypatch):
+        """stdio + api_key should produce command/args, not headers — the
+        subprocess reads env vars from its own environment."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        with open(get_config_path(), encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        server = raw["mcp_servers"]["demo"]
+        assert server["command"] == "npx"
+        assert "headers" not in server, server
+
+
+# ---------------------------------------------------------------------------
+# _build_server_config unit tests (no install side effects)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildServerConfig:
+    """Unit tests for _build_server_config() — the pure function that
+    translates a CatalogEntry into a config.yaml mcp_servers block."""
+
+    def _make_entry(self, **overrides) -> "CatalogEntry":
+        from hermes_cli.mcp_catalog import (
+            CatalogEntry,
+            TransportSpec,
+            AuthSpec,
+            ToolsSpec,
+        )
+
+        defaults = dict(
+            name="demo",
+            description="Demo",
+            source="https://example.com",
+            transport=TransportSpec(type="stdio", command="npx", args=["-y", "demo"]),
+            auth=AuthSpec(type="none"),
+            tools=ToolsSpec(),
+        )
+        defaults.update(overrides)
+        return CatalogEntry(**defaults)
+
+    def test_stdio_none(self):
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        entry = self._make_entry()
+        cfg = _build_server_config(entry, install_dir=None)
+        assert cfg == {"command": "npx", "args": ["-y", "demo"]}
+
+    def test_http_oauth(self):
+        from hermes_cli.mcp_catalog import _build_server_config, TransportSpec, AuthSpec
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(type="oauth"),
+        )
+        cfg = _build_server_config(entry, install_dir=None)
+        assert cfg == {"url": "https://mcp.example.com/mcp", "auth": "oauth"}
+
+    def test_http_none(self):
+        from hermes_cli.mcp_catalog import _build_server_config, TransportSpec, AuthSpec
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(type="none"),
+        )
+        cfg = _build_server_config(entry, install_dir=None)
+        assert cfg == {"url": "https://mcp.example.com/mcp"}
+
+    def test_http_api_key_emits_bearer_header(self):
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(
+                type="api_key",
+                env=[EnvVarSpec(name="MY_KEY", prompt="key", secret=True)],
+            ),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env={"MY_KEY": "val"})
+        assert cfg["url"] == "https://mcp.example.com/mcp"
+        assert cfg["headers"] == {"Authorization": "Bearer ${MY_KEY}"}
+
+    def test_http_api_key_keyless_when_not_collected(self):
+        """When the bearer env var was not collected (user skipped optional
+        key), no headers block is emitted — enabling keyless access."""
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(
+                type="api_key",
+                env=[EnvVarSpec(name="MY_KEY", prompt="key", secret=True, required=False)],
+            ),
+        )
+        # User skipped the key — empty collected_env
+        cfg = _build_server_config(entry, install_dir=None, collected_env={})
+        assert cfg == {"url": "https://mcp.example.com/mcp"}
+        assert "headers" not in cfg
+
+    def test_http_api_key_keyless_when_collected_env_none(self):
+        """When collected_env is None (legacy caller / no env prompting),
+        headers ARE emitted for backward compat — the caller didn't
+        participate in the keyless flow."""
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(
+                type="api_key",
+                env=[EnvVarSpec(name="MY_KEY", prompt="key", secret=True)],
+            ),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env=None)
+        assert cfg["headers"] == {"Authorization": "Bearer ${MY_KEY}"}
+
+    def test_http_api_key_prefers_secret_var(self):
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(
+                type="api_key",
+                env=[
+                    EnvVarSpec(name="PUBLIC_URL", prompt="url", secret=False, required=False),
+                    EnvVarSpec(name="SECRET_KEY", prompt="key", secret=True),
+                ],
+            ),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env={"PUBLIC_URL": "u", "SECRET_KEY": "k"})
+        assert cfg["headers"]["Authorization"] == "Bearer ${SECRET_KEY}"
+
+    def test_http_api_key_falls_back_to_first_var(self):
+        """When no env var is marked secret, the first one is used."""
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(
+                type="api_key",
+                env=[EnvVarSpec(name="ONLY_VAR", prompt="val", secret=False)],
+            ),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env={"ONLY_VAR": "v"})
+        assert cfg["headers"]["Authorization"] == "Bearer ${ONLY_VAR}"
+
+    def test_http_api_key_empty_env_no_headers(self):
+        """Misconfigured manifest: api_key auth but no env vars — should not
+        crash, should not emit headers."""
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            TransportSpec,
+            AuthSpec,
+        )
+
+        entry = self._make_entry(
+            transport=TransportSpec(type="http", url="https://mcp.example.com/mcp"),
+            auth=AuthSpec(type="api_key", env=[]),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env={})
+        assert cfg == {"url": "https://mcp.example.com/mcp"}
+
+    def test_stdio_api_key_no_headers(self):
+        from hermes_cli.mcp_catalog import (
+            _build_server_config,
+            AuthSpec,
+            EnvVarSpec,
+        )
+
+        entry = self._make_entry(
+            auth=AuthSpec(
+                type="api_key",
+                env=[EnvVarSpec(name="MY_KEY", prompt="key", secret=True)],
+            ),
+        )
+        cfg = _build_server_config(entry, install_dir=None, collected_env={"MY_KEY": "v"})
+        assert "headers" not in cfg
+        assert cfg["command"] == "npx"
+
+
+# ---------------------------------------------------------------------------
+# Firecrawl manifest (shipped catalog entry)
+# ---------------------------------------------------------------------------
+
+
+class TestFirecrawlManifest:
+    """Verify the shipped firecrawl manifest parses correctly and produces
+    the expected config shape on install."""
+
+    def test_firecrawl_manifest_parses(self, monkeypatch):
+        """The shipped firecrawl/manifest.yaml must parse cleanly."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        manifest = root / "firecrawl" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("firecrawl manifest not in this checkout")
+
+        entry = _parse_manifest(manifest)
+        assert entry.name == "firecrawl"
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://mcp.firecrawl.dev/v2/mcp"
+        assert entry.auth.type == "api_key"
+        assert len(entry.auth.env) == 1
+        assert entry.auth.env[0].name == "FIRECRAWL_API_KEY"
+        assert entry.auth.env[0].secret is True
+        assert entry.auth.env[0].required is False  # keyless free tier support
+
+    def test_firecrawl_build_config_emits_bearer_header(self, monkeypatch):
+        """_build_server_config for the firecrawl entry must produce a Bearer
+        header using FIRECRAWL_API_KEY when the key was collected."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest, _build_server_config
+
+        root = _catalog_root()
+        manifest = root / "firecrawl" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("firecrawl manifest not in this checkout")
+
+        entry = _parse_manifest(manifest)
+        cfg = _build_server_config(entry, install_dir=None, collected_env={"FIRECRAWL_API_KEY": "fc-test"})
+        assert cfg["url"] == "https://mcp.firecrawl.dev/v2/mcp"
+        assert cfg["headers"] == {"Authorization": "Bearer ${FIRECRAWL_API_KEY}"}
+
+    def test_firecrawl_build_config_keyless_when_skipped(self, monkeypatch):
+        """_build_server_config for the firecrawl entry must NOT emit headers
+        when the API key was not collected — enabling keyless free tier."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest, _build_server_config
+
+        root = _catalog_root()
+        manifest = root / "firecrawl" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("firecrawl manifest not in this checkout")
+
+        entry = _parse_manifest(manifest)
+        cfg = _build_server_config(entry, install_dir=None, collected_env={})
+        assert cfg["url"] == "https://mcp.firecrawl.dev/v2/mcp"
+        assert "headers" not in cfg, (
+            "Keyless access: no headers should be emitted when "
+            f"FIRECRAWL_API_KEY was not collected. Got: {cfg}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Uninstall

@@ -7783,6 +7783,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Only fall back to the live provider catalog when the curated
             # list is empty (e.g. user-defined endpoints with no curated list).
             model_list = provider_data.get("models", [])
+            model_labels = {}
             if not model_list:
                 try:
                     from hermes_cli.models import provider_model_ids
@@ -7791,9 +7792,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         model_list = live
                 except Exception:
                     pass
+            # Fetch display names from /v1/models for custom providers
+            _base = provider_data.get("base_url") or getattr(self, "base_url", "")
+            if _base and model_list:
+                try:
+                    import urllib.request, json as _j
+                    _url = _base.rstrip("/").removesuffix("/v1") + "/v1/models"
+                    _req = urllib.request.Request(_url, headers={"Accept": "application/json"})
+                    _api_key = provider_data.get("api_key") or getattr(self, "api_key", "")
+                    if _api_key:
+                        _req.add_header("Authorization", f"Bearer {_api_key}")
+                    with urllib.request.urlopen(_req, timeout=3) as _resp:
+                        _data = _j.loads(_resp.read().decode())
+                        for _m in _data.get("data", []):
+                            _mid = _m.get("id", "")
+                            _label = _m.get("display_name") or _m.get("name")
+                            if _mid and _label and _label != _mid:
+                                model_labels[_mid] = _label
+                except Exception:
+                    pass
+            if model_labels:
+                import re as _re
+                def _size_key(mid):
+                    _l = model_labels.get(mid, "")
+                    _match = _re.search(r'\((\d+)GB\)', _l)
+                    return -(int(_match.group(1))) if _match else 0
+                model_list = sorted(model_list, key=_size_key)
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
+            state["model_labels"] = model_labels
             state["selected"] = 0
             self._invalidate(min_interval=0.0)
             return
@@ -14492,8 +14520,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
+                _ml = state.get("model_labels") or {}
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
+                choices = [_ml.get(m, m) for m in model_list] + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:

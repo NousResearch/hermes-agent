@@ -153,6 +153,7 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  model_label?: string
   profile_name?: string
   reasoning_effort?: string
   release_date?: string

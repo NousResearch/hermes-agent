@@ -3508,8 +3508,16 @@ def probe_api_models(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
+                _entries = data.get("data", [])
+                _labels: dict[str, str] = {}
+                for _m in _entries:
+                    _mid = _m.get("id", "")
+                    _label = _m.get("display_name") or _m.get("name")
+                    if _mid and _label and _label != _mid:
+                        _labels[_mid] = _label
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [m.get("id", "") for m in _entries],
+                    "model_labels": _labels,
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

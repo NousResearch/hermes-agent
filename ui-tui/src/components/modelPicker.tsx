@@ -113,8 +113,8 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return allModels
     }
 
-    return fuzzyRank(allModels, filter, m => m).map(r => r.item)
-  }, [allModels, filter, stage])
+    return fuzzyRank(allModels, filter, m => `${m} ${provider?.model_labels?.[m] ?? ''}`).map(r => r.item)
+  }, [allModels, filter, stage, provider])
 
   const models = filteredModels
 
@@ -644,6 +644,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         }
 
         const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+        const label = provider?.model_labels?.[row] ?? row
 
         return (
           <Text
@@ -654,7 +655,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
             wrap="truncate-end"
           >
             {prefix}
-            {idx + 1}. {row}
+            {idx + 1}. {label}
           </Text>
         )
       })}

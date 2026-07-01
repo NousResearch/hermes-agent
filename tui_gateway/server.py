@@ -3144,6 +3144,25 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": _current_profile_name(),
     }
     try:
+        # Opportunistic server-driven model label: read the memo-cached
+        # /v1/models metadata for the agent's endpoint and prefer the
+        # human-readable ``name`` when it differs from the raw model id.
+        _model_id = str(getattr(agent, "model", "") or "")
+        _base_url = str(getattr(agent, "base_url", "") or "")
+        if _model_id and _base_url:
+            from agent.model_metadata import get_cached_endpoint_model_metadata
+
+            # Cache-only: session.info is a hot path, so never trigger a
+            # blocking network fetch here. On a cache miss we omit
+            # ``model_label`` and the TUI falls back to the raw model id.
+            _meta = get_cached_endpoint_model_metadata(_base_url)
+            _entry = (_meta or {}).get(_model_id) or {}
+            _name = str(_entry.get("name") or "")
+            if _name and _name != _model_id:
+                info["model_label"] = _name
+    except Exception:
+        pass
+    try:
         from hermes_cli import __version__, __release_date__
 
         info["version"] = __version__

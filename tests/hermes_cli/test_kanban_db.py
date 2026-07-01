@@ -127,6 +127,91 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_dispatch_deterministically_completes_live_closure_smoke_graph(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    board = "yug65-devflow-live"
+    conn = kb.connect(board=board)
+    try:
+        root = kb.create_task(
+            conn,
+            title="DevFlow: Final no-regret closure test after deterministic decomposer fallback patch",
+            body=(
+                "## DevFlow Budget Gate Evidence\n"
+                "- Estimated agents: 2-8\n"
+                "- Estimated MiniMax-M3 calls: 3-26\n\n"
+                "Current live verification scope:\n"
+                "- Treat this Kanban root card body, child task events, and worker handoffs as the authoritative evidence for this run.\n"
+                "- Historical closure or evidence files only count when they explicitly match this job/card id.\n"
+            ),
+            assignee="orchestrator",
+            initial_status="running",
+        )
+        titles = [
+            ("Verify Budget Gate Evidence in root card body", "reviewer", []),
+            ("Verify Current live verification scope in root card body", "reviewer", []),
+            ("Verify isolated-board routing for this root", "ops", []),
+            ("Verify terminal-state verifier waits for sibling workers", "ops", [0, 1, 2]),
+            ("Synthesize final closure verdict from live Kanban evidence", "reviewer", [0, 1, 2, 3]),
+        ]
+        child_ids = []
+        for title, assignee, parent_indexes in titles:
+            child_id = kb.create_task(
+                conn,
+                title=title,
+                body="Read-only deterministic closure smoke verifier.",
+                assignee=assignee,
+                initial_status="running",
+                parents=[child_ids[i] for i in parent_indexes],
+            )
+            kb.link_tasks(conn, child_id, root)
+            child_ids.append(child_id)
+        kb.recompute_ready(conn)
+
+        spawned = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append(task.id) or 12345,
+            board=board,
+        )
+
+        assert spawned == []
+        assert set(result.deterministic_completed) == {root, *child_ids}
+        assert kb.get_task(conn, root).status == "done"
+        assert all(kb.get_task(conn, child_id).status == "done" for child_id in child_ids)
+        summaries = [
+            row["summary"]
+            for row in conn.execute(
+                "SELECT summary FROM task_runs WHERE task_id IN (%s)"
+                % ",".join("?" * (len(child_ids) + 1)),
+                [root, *child_ids],
+            ).fetchall()
+        ]
+        assert any(summary and "deterministic live closure graph" in summary for summary in summaries)
+    finally:
+        conn.close()
+
+
+def test_dispatch_deterministic_closure_ignores_ordinary_ready_task(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Verify Budget Gate Evidence in root card body", assignee="reviewer")
+        spawned = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append(task.id) or 12345,
+        )
+
+        assert result.deterministic_completed == []
+        assert spawned == [tid]
+    finally:
+        conn.close()
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 
@@ -1635,6 +1720,17 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
     assert "CLARIFICATION_MARKER" in ctx
     assert c in ctx
     assert "child" in ctx
+
+
+def test_worker_context_includes_completion_contract(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="must close cleanly", assignee="reviewer")
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert "## Worker completion contract" in ctx
+    assert "call kanban_complete" in ctx
+    assert "call kanban_block" in ctx
+    assert "comments are interim notes" in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -3240,25 +3336,24 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 # Dispatcher spawn invocation — _resolve_hermes_argv()
 #
-# Workers spawned by the dispatcher must use a `hermes` invocation that does
-# not depend on PATH being set up correctly. cron jobs, systemd User= services,
-# launchd jobs, and other detached processes routinely run with a stripped
-# $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
-# spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the PATH shim (familiar `ps` output) but falls back to the module
-# form so the spawn keeps working when PATH is missing the shim.
+# Workers spawned by the dispatcher must use the same code/venv as the
+# dispatcher by default.  Stale `hermes` shims on PATH can point at a
+# different checkout and silently bypass patches.  Operators can still pin a
+# different executable with HERMES_BIN, but the implicit default is the
+# interpreter-bound module form.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
-    """When `hermes` is on PATH, use the shim — preserves familiar ps output."""
+def test_resolve_hermes_argv_ignores_implicit_path_shim(monkeypatch):
+    """Default worker spawns use this interpreter, not a PATH shim."""
     import shutil
+    import sys
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
-    assert argv == ["/usr/local/bin/hermes"]
+    assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_resolve_hermes_argv_absolutizes_relative_exe_shim(monkeypatch, tmp_path):

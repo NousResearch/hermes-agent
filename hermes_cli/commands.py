@@ -101,6 +101,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
+    CommandDef("devrun", "Run a cautious mobile development job", "Session",
+               gateway_only=True, args_hint="[repo=/path] task=<task>"),
+    CommandDef("devreview", "Run a mobile OpenSquilla development review council", "Session",
+               gateway_only=True, args_hint="[repo=/path] task=<task>"),
+    CommandDef("devflow", "Run the mobile review-to-devrun-or-kanban development flow", "Session",
+               gateway_only=True, args_hint="[repo=/path] task=<task>"),
+    CommandDef("devstatus", "Show DevRun job status", "Session",
+               gateway_only=True, args_hint="[job_id]"),
+    CommandDef("devcancel", "Cancel a queued DevRun job", "Session",
+               gateway_only=True, args_hint="<job_id>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("journey", "Open the learning journey timeline",
@@ -172,6 +182,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True),
+    CommandDef("mcpstatus", "Show MCP server health without reloading or exposing config",
+               "Tools & Skills", aliases=("mcp-status", "mcp_status")),
+    CommandDef("mcpdoctor", "Diagnose MCP server health without reloading or exposing config",
+               "Tools & Skills", aliases=("mcp-doctor", "mcp_doctor")),
+    CommandDef("mcpreloadplan", "Plan MCP reload risk without reloading or exposing config",
+               "Tools & Skills", aliases=("mcp-reload-plan", "mcp_reload_plan")),
+    CommandDef("capabilitystatus", "Show top Hermes capability status without side effects",
+               "Tools & Skills", aliases=("capability-status", "cap_status", "capabilities")),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
@@ -212,8 +230,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "heartbeat", "assignees", "context", "specify", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
-    CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
-               aliases=("reload_mcp",)),
+    CommandDef("reload-mcp", "Reload all MCP servers, or one server when a name is provided",
+               "Tools & Skills", aliases=("reload_mcp",), args_hint="[server]"),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
     CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
@@ -572,6 +590,11 @@ _TELEGRAM_MENU_PRIORITY = (
     "queue",
     "steer",
     "background",
+    "devflow",
+    "devrun",
+    "devreview",
+    "devstatus",
+    "devcancel",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
     "usage",
@@ -1163,7 +1186,21 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - dev*: phone-first DevFlow/DevRun controls; keep them out of Slack's
+#     native 50-command cap while preserving /hermes access.
+_SLACK_VIA_HERMES_ONLY = frozenset(
+    {
+        "credits",
+        "billing",
+        "moa",
+        "debug",
+        "devrun",
+        "devreview",
+        "devflow",
+        "devstatus",
+        "devcancel",
+    }
+)
 
 
 def _sanitize_slack_name(raw: str) -> str:

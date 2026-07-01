@@ -170,6 +170,102 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
         assert "Unknown command" not in result
 
 
+@pytest.mark.asyncio
+async def test_mcpstatus_is_read_only_and_redacted(monkeypatch):
+    """The mobile MCP status surface must not leak config, URLs, or secrets."""
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpstatus leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "linear",
+                "transport": "http",
+                "tools": 7,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+                "url": "https://secret.example/mcp",
+                "headers": {"Authorization": "Bearer sk-secret"},
+                "env": {"TOKEN": "env-secret"},
+            },
+            {
+                "name": "broken",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "failed",
+                "error": "failed with token sk-secret at https://secret.example",
+            },
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcp_status"))
+
+    assert result is not None
+    assert "MCP Status" in result
+    assert "Configured servers: 2" in result
+    assert "Connected servers: 1" in result
+    assert "Tools available: 7" in result
+    assert "- linear: connected, 7 tool(s), http" in result
+    assert "- broken: failed, 0 tool(s), stdio" in result
+    assert "Read-only" in result
+    assert "secret.example" not in result
+    assert "sk-secret" not in result
+    assert "env-secret" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcpstatus_bypasses_active_session_as_read_only(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    running_agent = MagicMock()
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpstatus leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "linear",
+                "transport": "http",
+                "tools": 7,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+            }
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcpstatus"))
+
+    assert result is not None
+    assert "MCP Status" in result
+    assert "Agent is running" not in result
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------
@@ -371,3 +467,346 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_mcpdoctor_is_read_only_redacted_and_actionable(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpdoctor leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "linear",
+                "transport": "http",
+                "tools": 7,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+                "url": "https://secret.example/mcp",
+                "headers": {"Authorization": "Bearer sk-secret"},
+            },
+            {
+                "name": "github",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+                "env": {"TOKEN": "env-secret"},
+            },
+            {
+                "name": "broken",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "failed",
+                "error": "failed with token sk-secret at https://secret.example",
+            },
+            {
+                "name": "off",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": True,
+                "status": "disabled",
+            },
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcp_doctor"))
+
+    assert result is not None
+    assert "MCP Doctor" in result
+    assert "Configured servers: 4" in result
+    assert "Connected servers: 1" in result
+    assert "Configured-only servers: 1" in result
+    assert "Failed servers: 1" in result
+    assert "Disabled servers: 1" in result
+    assert "- linear: connected; reason: connected; auto-fix: no; next: none" in result
+    assert "github: configured; reason: configured but not loaded in this gateway process" in result
+    assert "broken: failed; reason: last connection failed" in result
+    assert "off: disabled; reason: disabled by config" in result
+    assert "Read-only" in result
+    assert "secret.example" not in result
+    assert "sk-secret" not in result
+    assert "env-secret" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcpdoctor_bypasses_active_session_as_read_only(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    running_agent = MagicMock()
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpdoctor leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "github",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+            }
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcpdoctor"))
+
+    assert result is not None
+    assert "MCP Doctor" in result
+    assert "Agent is running" not in result
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcpreloadplan_is_read_only_redacted_and_classifies_risk(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpreloadplan leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "linear",
+                "transport": "http",
+                "tools": 7,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+                "url": "https://secret.example/mcp",
+                "headers": {"Authorization": "Bearer sk-secret"},
+            },
+            {
+                "name": "github",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+                "env": {"TOKEN": "env-secret"},
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+            },
+            {
+                "name": "broken",
+                "transport": "sse",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "failed",
+                "error": "failed with token sk-secret at https://secret.example",
+            },
+            {
+                "name": "off",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": True,
+                "status": "disabled",
+            },
+            {
+                "name": "mystery",
+                "transport": "custom",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+            },
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcp_reload_plan"))
+
+    assert result is not None
+    assert "MCP Reload Plan" in result
+    assert "Configured servers: 5" in result
+    assert "Connected servers: 1" in result
+    assert "Planned reload candidates: 3" in result
+    assert "Risk summary: low=1 / medium=1 / high=1 / parked=1 / unknown=1" in result
+    assert "linear: state=connected; risk=low; surface=already-connected; safe-auto=no" in result
+    assert "github: state=configured; risk=medium; surface=local-process; safe-auto=no" in result
+    assert "broken: state=failed; risk=high; surface=sse; safe-auto=no" in result
+    assert "off: state=disabled; risk=parked; surface=none; safe-auto=no" in result
+    assert "mystery: state=configured; risk=unknown; surface=unknown; safe-auto=no" in result
+    assert "Read-only" in result
+    assert "secret.example" not in result
+    assert "sk-secret" not in result
+    assert "env-secret" not in result
+    assert "npx" not in result
+    assert "@modelcontextprotocol" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcpreloadplan_bypasses_active_session_as_read_only(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    running_agent = MagicMock()
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/mcpreloadplan leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "github",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+            }
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/mcpreloadplan"))
+
+    assert result is not None
+    assert "MCP Reload Plan" in result
+    assert "Agent is running" not in result
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_capabilitystatus_is_read_only_summary(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/capabilitystatus leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "fetch",
+                "transport": "stdio",
+                "tools": 3,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+                "env": {"TOKEN": "env-secret"},
+                "url": "https://secret.example/mcp",
+            },
+            {
+                "name": "github",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
+            },
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/capability-status"))
+
+    assert result is not None
+    assert "Hermes Capability Status" in result
+    assert "MoA: available" in result
+    assert "MCP: 1/2 connected, 3 tool(s)" in result
+    assert "MCP status tools: available / available / available" in result
+    assert "DevFlow: available / available" in result
+    assert "Kanban: available" in result
+    assert "Delegation: available" in result
+    assert "Learning loop:" in result
+    assert "Automation:" in result
+    assert "Browser & media tools:" in result
+    assert "Search & vision tools:" in result
+    assert "Execution & local tools:" in result
+    assert "Context & session controls:" in result
+    assert "Upstream freshness:" in result
+    assert "Read-only" in result
+    assert "tool availability probe" in result
+    assert "secret.example" not in result
+    assert "env-secret" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_capabilitystatus_bypasses_active_session_as_read_only(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.mcp_tool as mcp_tool
+
+    runner = _make_runner()
+    running_agent = MagicMock()
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/capabilitystatus leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        mcp_tool,
+        "get_mcp_status",
+        lambda: [
+            {
+                "name": "fetch",
+                "transport": "stdio",
+                "tools": 3,
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+            }
+        ],
+    )
+
+    result = await runner._handle_message(_make_event("/capabilitystatus"))
+
+    assert result is not None
+    assert "Hermes Capability Status" in result
+    assert "Agent is running" not in result
+    running_agent.interrupt.assert_not_called()
+    runner._run_agent.assert_not_called()

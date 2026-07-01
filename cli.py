@@ -8687,6 +8687,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # MoA preset for the session, pick it from the model picker (MoA
             # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
+                current_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
             )
@@ -8698,7 +8699,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return True
             moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
             normalized = normalize_moa_config(moa_cfg)
-            preset = normalized["default_preset"]
+            preset = current_moa_preset_name(normalized)
             self._pending_moa_restore_model = {
                 "requested_provider": getattr(self, "requested_provider", None),
                 "provider": getattr(self, "provider", None),

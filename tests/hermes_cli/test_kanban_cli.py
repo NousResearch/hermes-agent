@@ -459,18 +459,14 @@ def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
     assert m, f"no task id in: {create_out!r}"
     tid = m.group(1)
 
-    # Mock the auxiliary client so we don't hit a real provider.
+    # Mock the unified auxiliary call path so we don't hit a real provider.
     resp = MagicMock()
     resp.choices = [MagicMock()]
     resp.choices[0].message.content = (
         '{"title": "Spec: rough idea", "body": "**Goal**\\nShip it."}'
     )
-    fake_client = MagicMock()
-    fake_client.chat.completions.create = MagicMock(return_value=resp)
-    monkeypatch.setattr(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        lambda *a, **kw: (fake_client, "test-model"),
-    )
+    call_llm_mock = MagicMock(return_value=resp)
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", call_llm_mock)
 
     # Specify via slash.
     out = kc.run_slash(f"specify {tid}")

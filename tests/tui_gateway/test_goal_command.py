@@ -232,11 +232,12 @@ moa:
 
 
 def test_moa_arg_is_always_one_shot(server, session, hermes_home):
-    # Any arg (even a preset name) is a one-shot prompt through the DEFAULT
-    # preset; /moa never does a sticky switch anymore.
+    # Any arg is a one-shot prompt through the active/default preset; /moa
+    # never does a sticky switch anymore.
     _write_moa_config(hermes_home, """
 moa:
   default_preset: default
+  active_preset: review
   presets:
     default: {}
     review:
@@ -248,15 +249,15 @@ moa:
         model: anthropic/claude-opus-4.8
 """)
     sid, _, s = session
-    r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
+    r = _call(server, "command.dispatch", name="moa", arg="please review this", session_id=sid)
     result = r["result"]
     assert result["type"] == "send"
-    assert result["message"] == "review"
+    assert result["message"] == "please review this"
     assert "one-shot" in result["notice"]
     # Lazy session (no live agent) → MoA preset pinned via model_override for
-    # the build, and it is the DEFAULT preset, not the "review" arg.
+    # the build, and it is the ACTIVE preset, not the prompt text.
     assert s["model_override"]["provider"] == "moa"
-    assert s["model_override"]["model"] == "default"
+    assert s["model_override"]["model"] == "review"
 
 
 def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):

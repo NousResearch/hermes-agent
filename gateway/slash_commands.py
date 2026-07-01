@@ -32,6 +32,7 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
+from gateway.devrun_commands import GatewayDevRunCommandsMixin
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     SessionSource,
@@ -84,7 +85,7 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
-class GatewaySlashCommandsMixin:
+class GatewaySlashCommandsMixin(GatewayDevRunCommandsMixin):
     """In-session slash-command handlers for GatewayRunner."""
 
     def _typed_command_prefix_for(self, platform) -> str:
@@ -4006,6 +4007,8 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+        raw_args = event.get_command_args().strip()
+        target_server = raw_args.split()[0] if raw_args else ""
 
         # Read the gate fresh from disk so a prior "always" click takes
         # effect on the next invocation without restarting the gateway.
@@ -4016,6 +4019,8 @@ class GatewaySlashCommandsMixin:
             confirm_required = bool(approvals.get("mcp_reload_confirm", True))
 
         if not confirm_required:
+            if target_server:
+                return await self._execute_mcp_reload_one(event, target_server)
             return await self._execute_mcp_reload(event)
 
         # Route through slash-confirm.  The primitive sends the prompt and
@@ -4037,19 +4042,440 @@ class GatewaySlashCommandsMixin:
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload
-            result = await self._execute_mcp_reload(event)
+            if target_server:
+                result = await self._execute_mcp_reload_one(event, target_server)
+            else:
+                result = await self._execute_mcp_reload(event)
             if choice == "always":
                 return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
             return result
 
         prompt_message = t("gateway.reload_mcp.confirm_prompt")
+        if target_server:
+            prompt_message = (
+                f"Reload MCP server `{target_server}` only. "
+                "This may start one local MCP subprocess and refresh cached agent tools. "
+                "Continue?"
+            )
         return await self._request_slash_confirm(
             event=event,
             command="reload-mcp",
-            title="/reload-mcp",
+            title=f"/reload-mcp {target_server}" if target_server else "/reload-mcp",
             message=prompt_message,
             handler=_on_confirm,
         )
+
+    async def _read_mcp_statuses(self) -> tuple[list[dict[str, Any]] | None, str | None]:
+        try:
+            from tools.mcp_tool import get_mcp_status
+
+            statuses = await asyncio.to_thread(get_mcp_status)
+            if isinstance(statuses, list):
+                return statuses, None
+            return [], None
+        except Exception as exc:
+            logger.warning("MCP status check failed: %s", exc)
+            return None, "status check failed"
+
+    @staticmethod
+    def _mcpdoctor_reason_and_next(item: dict[str, Any]) -> tuple[str, str, str]:
+        state = str(item.get("status") or "").strip().lower()
+        connected = bool(item.get("connected"))
+        disabled = bool(item.get("disabled"))
+        transport = str(item.get("transport") or "unknown").strip().lower()
+
+        if connected or state == "connected":
+            return (
+                "connected",
+                "none",
+                "no",
+            )
+        if disabled or state == "disabled":
+            return (
+                "disabled by config",
+                "enable intentionally from a trusted terminal if needed",
+                "no",
+            )
+        if state == "connecting":
+            return (
+                "connection in progress",
+                "wait briefly, then run /mcpstatus again",
+                "no",
+            )
+        if state == "failed":
+            return (
+                "last connection failed",
+                "run /reload-mcp only if you are ready to reconnect MCP servers",
+                "no",
+            )
+        if state == "configured":
+            return (
+                "configured but not loaded in this gateway process",
+                "use /reload-mcp with confirmation, or restart gateway during a safe window",
+                "no",
+            )
+        if transport not in {"stdio", "http", "sse", "streamable-http", "unknown"}:
+            return (
+                "unknown transport state",
+                "inspect with hermes mcp list on a trusted terminal",
+                "no",
+            )
+        return (
+            "not connected",
+            "use /mcpstatus after reload or restart to re-check",
+            "no",
+        )
+
+    @staticmethod
+    def _mcpreloadplan_entry(item: dict[str, Any]) -> tuple[str, str, str, str, bool]:
+        """Classify reload risk from the redacted MCP status surface only."""
+        state = str(item.get("status") or "").strip().lower()
+        transport = str(item.get("transport") or "unknown").strip().lower()
+        connected = bool(item.get("connected"))
+        disabled = bool(item.get("disabled"))
+
+        if disabled or state == "disabled":
+            return (
+                "parked",
+                "none",
+                "server is disabled by configuration",
+                "skip unless intentionally enabling it from a trusted terminal",
+                False,
+            )
+        if connected or state == "connected":
+            return (
+                "low",
+                "already-connected",
+                "server is already loaded in this gateway process",
+                "skip reload unless you changed its config",
+                False,
+            )
+        if state == "connecting":
+            return (
+                "high",
+                "in-flight",
+                "connection is already in progress",
+                "wait for it to settle, then re-run /mcpstatus",
+                False,
+            )
+        if state == "failed":
+            return (
+                "high",
+                transport if transport in {"stdio", "http", "sse", "streamable-http"} else "unknown",
+                "last connection failed, so reload could repeat the failure",
+                "reload individually in a safe window and verify after each server",
+                True,
+            )
+        if transport == "stdio":
+            return (
+                "medium",
+                "local-process",
+                "reload may spawn a local MCP subprocess",
+                "batch in a safe window after confirmation, then re-check /mcpstatus",
+                True,
+            )
+        if transport in {"http", "sse", "streamable-http"}:
+            return (
+                "medium",
+                "network",
+                "reload may open a network MCP connection",
+                "reload after auth/quota readiness, then re-check /mcpstatus",
+                True,
+            )
+        return (
+            "unknown",
+            "unknown",
+            "status surface does not identify the reload shape",
+            "inspect from a trusted terminal before reloading",
+            True,
+        )
+
+    async def _handle_mcpstatus_command(self, event: MessageEvent) -> str:
+        """Handle /mcpstatus as a read-only MCP health summary.
+
+        This intentionally does not call the reload/configure/login paths. It
+        only renders the already-redacted runtime status fields that
+        tools.mcp_tool exposes, and it omits detailed error text because MCP
+        failures can include user-provided URLs, command arguments, or headers.
+        """
+        statuses, _error = await self._read_mcp_statuses()
+        if statuses is None:
+            return "MCP Status\nStatus: unavailable\nDetail: status check failed."
+
+        if not statuses:
+            return (
+                "MCP Status\n"
+                "Configured servers: 0\n"
+                "Connected servers: 0\n"
+                "Tools available: 0\n"
+                "Next: use `hermes mcp catalog` or `hermes mcp add` on a trusted terminal."
+            )
+
+        connected = sum(1 for item in statuses if item.get("connected"))
+        total_tools = sum(int(item.get("tools") or 0) for item in statuses)
+        lines = [
+            "MCP Status",
+            f"Configured servers: {len(statuses)}",
+            f"Connected servers: {connected}",
+            f"Tools available: {total_tools}",
+            "",
+            "Servers:",
+        ]
+        for item in statuses[:12]:
+            name = str(item.get("name") or "unknown")
+            transport = str(item.get("transport") or "unknown")
+            state = str(item.get("status") or ("connected" if item.get("connected") else "configured"))
+            tools_count = int(item.get("tools") or 0)
+            disabled = bool(item.get("disabled"))
+            suffix = " (disabled)" if disabled else ""
+            lines.append(f"- {name}: {state}{suffix}, {tools_count} tool(s), {transport}")
+        remaining = len(statuses) - 12
+        if remaining > 0:
+            lines.append(f"- ... {remaining} more server(s)")
+        lines.append("")
+        lines.append("Read-only: no reload, install, login, or config output was performed.")
+        return "\n".join(lines)
+
+    async def _handle_mcpreloadplan_command(self, event: MessageEvent) -> str:
+        """Handle /mcpreloadplan as a read-only MCP reload risk plan.
+
+        This deliberately uses the same redacted status surface as /mcpstatus.
+        It does not read or print raw MCP config and never calls reload, install,
+        login, process start, or network probe paths.
+        """
+        statuses, _error = await self._read_mcp_statuses()
+        if statuses is None:
+            return "MCP Reload Plan\nStatus: unavailable\nDetail: status check failed."
+
+        if not statuses:
+            return (
+                "MCP Reload Plan\n"
+                "Configured servers: 0\n"
+                "Connected servers: 0\n"
+                "Planned reload candidates: 0\n"
+                "Risk summary: low=0 / medium=0 / high=0 / parked=0 / unknown=0\n"
+                "Plan: no configured MCP servers to reload.\n"
+                "Read-only: no reload, install, login, process start, network probe, or config output was performed."
+            )
+
+        connected = sum(1 for item in statuses if item.get("connected"))
+        risk_counts = {"low": 0, "medium": 0, "high": 0, "parked": 0, "unknown": 0}
+        planned_candidates = 0
+
+        classified: list[tuple[dict[str, Any], str, str, str, str, bool]] = []
+        for item in statuses:
+            risk, surface, reason, next_action, candidate = self._mcpreloadplan_entry(item)
+            risk_counts[risk if risk in risk_counts else "unknown"] += 1
+            if candidate:
+                planned_candidates += 1
+            classified.append((item, risk, surface, reason, next_action, candidate))
+
+        planned_lines: list[str] = []
+        for item, risk, surface, reason, next_action, _candidate in classified[:12]:
+            name = str(item.get("name") or "unknown")
+            state = str(item.get("status") or ("connected" if item.get("connected") else "configured"))
+            planned_lines.append(
+                f"- {name}: state={state}; risk={risk}; surface={surface}; safe-auto=no; "
+                f"reason: {reason}; next: {next_action}"
+            )
+
+        remaining = len(statuses) - 12
+        if remaining > 0:
+            planned_lines.append(f"- ... {remaining} more server(s)")
+
+        lines = [
+            "MCP Reload Plan",
+            f"Configured servers: {len(statuses)}",
+            f"Connected servers: {connected}",
+            f"Planned reload candidates: {planned_candidates}",
+            (
+                "Risk summary: "
+                f"low={risk_counts['low']} / medium={risk_counts['medium']} / "
+                f"high={risk_counts['high']} / parked={risk_counts['parked']} / "
+                f"unknown={risk_counts['unknown']}"
+            ),
+            "",
+            "Plan:",
+        ]
+        lines.extend(planned_lines)
+        lines.append("")
+        lines.append("Read-only: no reload, install, login, process start, network probe, or config output was performed.")
+        return "\n".join(lines)
+
+    async def _handle_mcpdoctor_command(self, event: MessageEvent) -> str:
+        """Handle /mcpdoctor as read-only MCP diagnosis.
+
+        The doctor explains coarse causes and next safe actions from the same
+        redacted status surface as /mcpstatus. It never starts, reloads,
+        installs, logs in, or prints config/error detail.
+        """
+        statuses, _error = await self._read_mcp_statuses()
+        if statuses is None:
+            return "MCP Doctor\nStatus: unavailable\nDetail: status check failed."
+
+        if not statuses:
+            return (
+                "MCP Doctor\n"
+                "Configured servers: 0\n"
+                "Finding: no MCP servers are configured.\n"
+                "Next: use `hermes mcp catalog` or `hermes mcp add` on a trusted terminal.\n"
+                "Read-only: no reload, install, login, or config output was performed."
+            )
+
+        connected = sum(1 for item in statuses if item.get("connected"))
+        failed = sum(1 for item in statuses if str(item.get("status") or "").lower() == "failed")
+        disabled = sum(1 for item in statuses if item.get("disabled"))
+        configured_only = sum(
+            1 for item in statuses
+            if str(item.get("status") or "").lower() == "configured"
+        )
+
+        lines = [
+            "MCP Doctor",
+            f"Configured servers: {len(statuses)}",
+            f"Connected servers: {connected}",
+            f"Configured-only servers: {configured_only}",
+            f"Failed servers: {failed}",
+            f"Disabled servers: {disabled}",
+            "",
+            "Diagnosis:",
+        ]
+        for item in statuses[:12]:
+            name = str(item.get("name") or "unknown")
+            state = str(item.get("status") or ("connected" if item.get("connected") else "configured"))
+            reason, next_action, auto_fix = self._mcpdoctor_reason_and_next(item)
+            lines.append(
+                f"- {name}: {state}; reason: {reason}; auto-fix: {auto_fix}; next: {next_action}"
+            )
+        remaining = len(statuses) - 12
+        if remaining > 0:
+            lines.append(f"- ... {remaining} more server(s)")
+        lines.append("")
+        lines.append("Read-only: no reload, install, login, or config output was performed.")
+        return "\n".join(lines)
+
+    async def _handle_capabilitystatus_command(self, event: MessageEvent) -> str:
+        """Show a compact, read-only status of the major unlocked modules."""
+        from hermes_cli.commands import resolve_command
+
+        statuses, _error = await self._read_mcp_statuses()
+        if statuses is None:
+            mcp_line = "MCP: unavailable (status check failed)"
+        else:
+            connected = sum(1 for item in statuses if item.get("connected"))
+            total_tools = sum(int(item.get("tools") or 0) for item in statuses)
+            mcp_line = f"MCP: {connected}/{len(statuses)} connected, {total_tools} tool(s)"
+
+        def _cmd_status(name: str) -> str:
+            return "available" if resolve_command(name) is not None else "missing"
+
+        tool_statuses: dict[str, str] = {}
+        try:
+            import importlib
+            from tools.registry import registry
+
+            # Load only the selected built-in tool modules so their schemas
+            # self-register. This does not execute tool handlers or run
+            # availability probes.
+            for module_name in (
+                "tools.skills_tool",
+                "tools.skill_manager_tool",
+                "tools.memory_tool",
+                "tools.session_search_tool",
+                "tools.cronjob_tools",
+                "tools.browser_tool",
+                "tools.browser_cdp_tool",
+                "tools.image_generation_tool",
+                "tools.tts_tool",
+                "tools.x_search_tool",
+                "tools.vision_tools",
+                "tools.computer_use_tool",
+                "tools.code_execution_tool",
+                "tools.file_tools",
+                "tools.terminal_tool",
+            ):
+                try:
+                    importlib.import_module(module_name)
+                except Exception:
+                    logger.debug("Capability status tool module import failed: %s", module_name, exc_info=True)
+
+            def _tool_status(name: str) -> str:
+                entry = registry.get_entry(name)
+                if entry is None:
+                    return "not loaded"
+                return "registered"
+
+            tool_names = {
+                "skills_list",
+                "skill_view",
+                "skill_manage",
+                "memory",
+                "session_search",
+                "cronjob",
+                "browser_navigate",
+                "browser_snapshot",
+                "browser_cdp",
+                "x_search",
+                "image_generate",
+                "text_to_speech",
+                "vision_analyze",
+                "video_analyze",
+                "computer_use",
+                "execute_code",
+                "read_file",
+                "terminal",
+            }
+            tool_statuses = {name: _tool_status(name) for name in sorted(tool_names)}
+        except Exception:
+            tool_statuses = {}
+
+        def _tools_line(title: str, names: list[str]) -> str:
+            values = [tool_statuses.get(name, "unknown") for name in names]
+            return f"{title}: " + " / ".join(values)
+
+        delegate_status = "unknown"
+        try:
+            # Importing the tool module is the normal registry bootstrap path;
+            # it registers the schema but does not spawn any child agent.
+            import tools.delegate_tool  # noqa: F401
+            from tools.registry import registry
+
+            entry = registry.get_entry("delegate_task")
+            if entry is None:
+                delegate_status = "not registered"
+            else:
+                definitions = registry.get_definitions({"delegate_task"}, quiet=True)
+                delegate_status = (
+                    "available"
+                    if any(
+                        item.get("function", {}).get("name") == "delegate_task"
+                        for item in definitions
+                        if isinstance(item, dict)
+                    )
+                    else "registered but unavailable"
+                )
+        except Exception:
+            delegate_status = "unknown"
+
+        lines = [
+            "Hermes Capability Status",
+            f"MoA: {_cmd_status('moa')}",
+            mcp_line,
+            f"MCP status tools: {_cmd_status('mcpstatus')} / {_cmd_status('mcpdoctor')} / {_cmd_status('mcpreloadplan')}",
+            f"DevFlow: {_cmd_status('devflow')} / {_cmd_status('devstatus')}",
+            f"Kanban: {_cmd_status('kanban')}",
+            f"Delegation: {delegate_status}",
+            _tools_line("Learning loop", ["skills_list", "skill_view", "skill_manage", "memory", "session_search"]),
+            f"Automation: {_cmd_status('cron')} / {_cmd_status('suggestions')} / {_cmd_status('blueprint')} / {tool_statuses.get('cronjob', 'unknown')}",
+            _tools_line("Browser & media tools", ["browser_navigate", "browser_snapshot", "browser_cdp", "image_generate", "text_to_speech"]),
+            _tools_line("Search & vision tools", ["x_search", "vision_analyze", "video_analyze"]),
+            _tools_line("Execution & local tools", ["execute_code", "computer_use", "read_file", "terminal"]),
+            f"Context & session controls: {_cmd_status('compress')} / {_cmd_status('snapshot')} / {_cmd_status('rollback')} / {_cmd_status('sessions')} / {_cmd_status('resume')} / {_cmd_status('branch')} / {_cmd_status('handoff')}",
+            f"Upstream freshness: {_cmd_status('version')} / {_cmd_status('update')}",
+            "",
+            "Read-only: no reload, install, login, tool call, worker start, config output, or tool availability probe was performed.",
+        ]
+        return "\n".join(lines)
 
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
         """Handle /reload-skills — rescan skills dir, queue a note for next turn.

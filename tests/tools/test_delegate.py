@@ -33,6 +33,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _load_config,
 )
 
 
@@ -1120,6 +1121,18 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
         self.assertEqual(_MIN_SPAWN_DEPTH, 1)
+
+
+class TestDelegationConfigIsolation(unittest.TestCase):
+    @patch("hermes_cli.config.load_config")
+    @patch("cli.CLI_CONFIG", {"delegation": {"provider": "custom:aicodee-main", "model": "MiniMax-M3"}})
+    def test_load_config_prefers_current_persistent_default_over_stale_cli_snapshot(self, mock_load):
+        mock_load.return_value = {"delegation": {"model": "", "provider": "", "base_url": "", "api_key": "", "api_mode": ""}}
+
+        cfg = _load_config()
+
+        self.assertEqual(cfg["provider"], "")
+        self.assertEqual(cfg["model"], "")
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):

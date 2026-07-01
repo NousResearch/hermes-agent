@@ -6,7 +6,12 @@ from typing import Any
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
-from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
+from hermes_cli.moa_config import (
+    DEFAULT_MOA_PRESET_NAME,
+    current_moa_preset_name,
+    normalize_moa_config,
+    set_active_moa_preset,
+)
 
 
 def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
@@ -66,9 +71,16 @@ def _print_config(config: dict[str, Any]) -> None:
     print(f"Default: {cfg['default_preset']}")
     active = cfg.get("active_preset") or "(off)"
     print(f"Active in config: {active}")
+    print(f"Effective for /moa: {current_moa_preset_name(cfg)}")
     for name, preset in cfg["presets"].items():
-        marker = "*" if name == cfg["default_preset"] else " "
-        print(f"\n{marker} {name}")
+        markers = []
+        if name == cfg["default_preset"]:
+            markers.append("default")
+        if name == cfg.get("active_preset"):
+            markers.append("active")
+        marker = "*" if markers else " "
+        marker_label = f" ({', '.join(markers)})" if markers else ""
+        print(f"\n{marker} {name}{marker_label}")
         print("  Reference models:")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {slot['provider']}:{slot['model']}")
@@ -110,6 +122,28 @@ def cmd_moa(args) -> None:
         cfg["moa"] = normalize_moa_config(moa)
         save_config(cfg)
         print(f"Saved MoA preset: {preset_name}")
+        _print_config(cfg)
+        return
+
+    if sub in {"activate", "use"}:
+        moa = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+        preset_name = (getattr(args, "name", None) or "").strip()
+        if not preset_name:
+            raise SystemExit("Usage: hermes moa activate <name>")
+        try:
+            cfg["moa"] = set_active_moa_preset(moa, preset_name)
+        except KeyError:
+            raise SystemExit(f"Unknown MoA preset: {preset_name}") from None
+        save_config(cfg)
+        print(f"Activated MoA preset for /moa: {preset_name}")
+        _print_config(cfg)
+        return
+
+    if sub in {"deactivate", "off"}:
+        moa = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+        cfg["moa"] = set_active_moa_preset(moa, "")
+        save_config(cfg)
+        print("Deactivated MoA preset override; /moa now uses the default preset.")
         _print_config(cfg)
         return
 

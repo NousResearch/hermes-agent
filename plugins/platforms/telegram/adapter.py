@@ -4282,15 +4282,36 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            try:
+                from gateway.devrun import (
+                    is_devflow_confirm_message,
+                    render_devflow_button_labels,
+                )
+            except Exception:
+                is_devflow_confirm_message = lambda _message: False
+                render_devflow_button_labels = lambda: {
+                    "once": "✅ Approve Once",
+                    "always": "🔒 Always Approve",
+                    "cancel": "❌ Cancel",
+                }
+            labels = (
+                render_devflow_button_labels()
+                if is_devflow_confirm_message(message)
+                else {
+                    "once": "✅ Approve Once",
+                    "always": "🔒 Always Approve",
+                    "cancel": "❌ Cancel",
+                }
+            )
             preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    InlineKeyboardButton(labels["once"], callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(labels["always"], callback_data=f"sc:always:{confirm_id}"),
                 ],
                 [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    InlineKeyboardButton(labels["cancel"], callback_data=f"sc:cancel:{confirm_id}"),
                 ],
             ])
 
@@ -5021,9 +5042,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 label_map = {
-                    "once": "✅ Approved once",
-                    "always": "🔒 Always approve",
-                    "cancel": "❌ Cancelled",
+                    "once": "已启动本次",
+                    "always": "已设为始终允许",
+                    "cancel": "已暂不启动",
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -5031,8 +5052,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text=label)
 
                 try:
+                    original_text = getattr(query.message, "text", "") if query.message else ""
+                    try:
+                        from gateway.devrun import (
+                            is_devflow_confirm_message,
+                            render_devflow_resolved_banner,
+                        )
+                    except Exception:
+                        is_devflow_confirm_message = lambda _message: False
+                        render_devflow_resolved_banner = None
+                    resolved_text = (
+                        render_devflow_resolved_banner(choice)
+                        if render_devflow_resolved_banner and is_devflow_confirm_message(original_text)
+                        else f"{label} by {user_display}"
+                    )
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
+                        text=self.format_message(resolved_text),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )

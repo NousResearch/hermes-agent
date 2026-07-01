@@ -1471,7 +1471,11 @@ def _get_platform_tools(
             for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
-                ts_tools = set(resolve_toolset(ts_key))
+                # Compare the toolset's STATIC membership: a tool registered
+                # into a toolset (e.g. delegate_cli -> delegation, desktop-only
+                # read_terminal -> terminal) that the composite never listed must
+                # not drop the whole toolset. See issue #49622.
+                ts_tools = set(resolve_toolset(ts_key, include_registry=False))
                 if ts_tools and ts_tools.issubset(composite_tools):
                     expanded.add(ts_key)
 
@@ -1494,7 +1498,12 @@ def _get_platform_tools(
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
-            ts_tools = set(resolve_toolset(ts_key))
+            # Compare the toolset's STATIC membership against the composite (see
+            # issue #49622): get_toolset() merges registry-registered tools into
+            # a toolset, but platform composites enumerate static tool names, so
+            # an all-tools subset test against the merged set drops the whole
+            # toolset the moment a plugin/overlay/desktop tool joins it.
+            ts_tools = set(resolve_toolset(ts_key, include_registry=False))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
@@ -1566,7 +1575,10 @@ def _get_platform_tools(
         # by agent/coding_context.py — not per-platform capabilities to recover.
         if ts_def.get("posture"):
             continue
-        ts_tools = set(resolve_toolset(ts_key))
+        # Static membership (see #49622): a registry-added tool absent from the
+        # platform composite must not block recovery of a non-configurable
+        # toolset whose authored tools the composite does list.
+        ts_tools = set(resolve_toolset(ts_key, include_registry=False))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
             continue
         if ts_tools.issubset(configurable_tool_universe):

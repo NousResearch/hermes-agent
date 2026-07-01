@@ -13926,7 +13926,10 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     try:
         path = Path(target)
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
+        payload = json.dumps(
+            {"port": int(actual_port), "project_root": str(PROJECT_ROOT)},
+            separators=(",", ":"),
+        )
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",

@@ -20,6 +20,8 @@ const path = require('node:path')
 
 const {
   readDashboardReadyFile,
+  readDashboardReadyInfo,
+  assertBackendProjectRoot,
   waitForDashboardPort,
   waitForDashboardPortAnnouncement,
   waitForDashboardReadyFile,
@@ -160,6 +162,34 @@ test('readDashboardReadyFile ignores missing, malformed, or invalid files', () =
   } finally {
     tmp.cleanup()
   }
+})
+
+test('readDashboardReadyInfo returns port + projectRoot (AC-3 mechanism)', () => {
+  const tmp = mkTmpReadyFile()
+  try {
+    fs.writeFileSync(tmp.file, JSON.stringify({ port: 4567, project_root: '/Users/x/.hermes/runtime/hermes-agent' }))
+    const info = readDashboardReadyInfo(tmp.file)
+    assert.equal(info.port, 4567)
+    assert.equal(info.projectRoot, '/Users/x/.hermes/runtime/hermes-agent')
+    // pre-migration backend (no project_root) -> projectRoot null, port still read
+    fs.writeFileSync(tmp.file, JSON.stringify({ port: 4567 }))
+    assert.equal(readDashboardReadyInfo(tmp.file).projectRoot, null)
+  } finally {
+    tmp.cleanup()
+  }
+})
+
+test('assertBackendProjectRoot: AC-3 effect gate, fail-closed on missing', () => {
+  const RT = '/Users/x/.hermes/runtime/hermes-agent'
+  // under the runtime tree -> pass
+  assert.equal(assertBackendProjectRoot({ port: 1, projectRoot: RT }, RT), true)
+  // a subdir under it -> pass
+  assert.equal(assertBackendProjectRoot({ port: 1, projectRoot: RT + '/sub' }, RT), true)
+  // the DEV tree (sibling) -> fail
+  assert.equal(assertBackendProjectRoot({ port: 1, projectRoot: '/Users/x/.hermes/hermes-agent' }, RT), false)
+  // MISSING project_root -> FAIL CLOSED (must not pass by omission)
+  assert.equal(assertBackendProjectRoot({ port: 1, projectRoot: null }, RT), false)
+  assert.equal(assertBackendProjectRoot(null, RT), false)
 })
 
 test('waitForDashboardReadyFile resolves when the ready file appears', async () => {

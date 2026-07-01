@@ -1,4 +1,5 @@
 const fs = require('node:fs')
+const path = require('node:path')
 
 const _READY_RE = /^HERMES_DASHBOARD_READY port=(\d+)/m
 
@@ -107,6 +108,34 @@ function readDashboardReadyFile(readyFile) {
   }
 }
 
+// readDashboardReadyInfo — like readDashboardReadyFile but returns the full {port, projectRoot} record.
+// project_root is the tree the backend is actually running from (SPEC 2026-07-01 AC-3 effect gate); a
+// pre-migration backend that never emits it yields projectRoot=null.
+function readDashboardReadyInfo(readyFile) {
+  if (!readyFile) return null
+  try {
+    const parsed = JSON.parse(fs.readFileSync(readyFile, 'utf8'))
+    const port = Number(parsed?.port)
+    if (!(Number.isInteger(port) && port > 0)) return null
+    const projectRoot = typeof parsed?.project_root === 'string' && parsed.project_root ? parsed.project_root : null
+    return { port, projectRoot }
+  } catch {
+    return null
+  }
+}
+
+// assertBackendProjectRoot — AC-3 EFFECT gate. True iff the backend's emitted project_root is UNDER
+// expectedRoot. FAIL-CLOSED: a missing/empty project_root (an un-migrated/older backend) returns false —
+// it must NOT pass by omission (that would resurrect the proxy-gate problem the effect gate exists to kill).
+function assertBackendProjectRoot(readyInfo, expectedRoot, { pathModule = path } = {}) {
+  if (!readyInfo || !readyInfo.projectRoot || !expectedRoot) return false
+  const actual = pathModule.resolve(readyInfo.projectRoot)
+  const expected = pathModule.resolve(expectedRoot)
+  if (actual === expected) return true
+  const rel = pathModule.relative(expected, actual)
+  return rel !== '' && !rel.startsWith('..') && !pathModule.isAbsolute(rel)
+}
+
 function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnnounceTimeoutMs()) {
   return new Promise((resolve, reject) => {
     let done = false
@@ -165,6 +194,8 @@ module.exports = {
   waitForDashboardPortAnnouncement,
   waitForDashboardReadyFile,
   readDashboardReadyFile,
+  readDashboardReadyInfo,
+  assertBackendProjectRoot,
   resolvePortAnnounceTimeoutMs,
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS

@@ -43,6 +43,8 @@ const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-comman
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { parseDesktopBackendRoot } = require('./backend-root-config.cjs')
+const { resolveBackendRoot } = require('./resolve-backend-root.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
@@ -340,6 +342,60 @@ function pathWithHermesManagedNode(...entries) {
 const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+
+// --- Backend root resolution (SPEC 2026-07-01 desktop-backend-runtime-venv-migration) ---
+// The desktop backend should run from the RUNTIME deploy tree (reviewed, FF-only), like every gateway —
+// NOT the churny dev tree. resolveBackendRoot() picks: config override > runtime tree (default) > dev tree.
+// The override is read from config.yaml's `desktop.backend_root` scalar (no YAML dep — targeted parse) or
+// the internal HERMES_DESKTOP_BACKEND_ROOT bridge env. Resolved LAZILY + memoized at first spawn (not at
+// module load) so the fallback surface can reach the app UI; fail-safe to the dev tree on any error.
+function readDesktopBackendRootOverride() {
+  const env = process.env.HERMES_DESKTOP_BACKEND_ROOT
+  if (env) return env
+  try {
+    const cfg = path.join(HERMES_HOME, 'config.yaml')
+    if (fileExists(cfg)) {
+      const parsed = parseDesktopBackendRoot(fs.readFileSync(cfg, 'utf8'))
+      if (parsed) return parsed
+    }
+  } catch { /* fail-safe: any read/parse error → no override */ }
+  return null
+}
+
+// One shared surfaced-condition path for BOTH fallback triggers (absent runtime tree / broken runtime venv).
+let _backendFallbackSurfaced = false
+function surfaceBackendFallback(reason, root) {
+  // Reason-accurate destination: 'runtime-unavailable' is the ONLY reason that actually lands on the dev
+  // tree (resolveBackendRoot tier-3). 'override-unusable' fires BEFORE tier-2 is tried, so the backend may
+  // still start from the runtime tree — don't claim "dev tree" before the destination is known.
+  const dest = reason === 'override-unusable'
+    ? `the runtime tree (or dev tree ${ACTIVE_HERMES_ROOT} if it too is unusable)`
+    : `dev tree ${ACTIVE_HERMES_ROOT}`
+  const msg = `[backend] backend root unusable (${reason}: ${root}) — falling back to ${dest}`
+  console.warn(msg)
+  // Surface once to the app (notify/UI) so a silent stale-code fallback is a monitored condition, not a
+  // boot-log-into-the-void. rememberBoolLog/emitToRenderer are best-effort — never let this throw into spawn.
+  if (!_backendFallbackSurfaced) {
+    _backendFallbackSurfaced = true
+    try { if (typeof rememberLog === 'function') rememberLog(msg) } catch { /* noop */ }
+  }
+}
+
+let _backendResolutionCache = null
+function getBackendResolution() {
+  if (_backendResolutionCache) return _backendResolutionCache
+  _backendResolutionCache = resolveBackendRoot({
+    hermesHome: HERMES_HOME,
+    activeRoot: ACTIVE_HERMES_ROOT,
+    override: readDesktopBackendRootOverride(),
+    isSourceRoot: isHermesSourceRoot,
+    hasVenv: (root) => fileExists(getVenvPython(path.join(root, 'venv'))),
+    onFallback: surfaceBackendFallback,
+  })
+  return _backendResolutionCache
+}
+function backendRoot() { return getBackendResolution().root }
+function backendVenvRoot() { return getBackendResolution().venvRoot }
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -2885,21 +2941,28 @@ function createPythonBackend(root, label, backendArgs, options = {}) {
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
 function createActiveBackend(backendArgs) {
-  const venvPython = getVenvPython(VENV_ROOT)
+  // SPEC 2026-07-01: resolve the backend tree (runtime deploy tree by default, config override, dev fallback)
+  // instead of hardcoding ACTIVE_HERMES_ROOT/VENV_ROOT. Bootstrap ONLY the dev tree — the runtime/override
+  // tiers are chosen precisely because their venv already exists (hasVenv gate), and the runtime tree is
+  // deploy-only (must not be bootstrapped in place).
+  const root = backendRoot()
+  const venvRoot = backendVenvRoot()
+  const tier = getBackendResolution().tier
+  const venvPython = getVenvPython(venvRoot)
   const command = fileExists(venvPython) ? venvPython : findSystemPython()
 
   return {
     kind: 'python',
-    label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
+    label: `Hermes at ${root}${tier === 'dev' ? '' : ` (${tier})`}`,
     command,
     args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
-      venvRoot: VENV_ROOT
+      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
+      venvRoot
     }),
-    root: ACTIVE_HERMES_ROOT,
-    bootstrap: true,
+    root,
+    bootstrap: tier === 'dev',
     shell: false
   }
 }

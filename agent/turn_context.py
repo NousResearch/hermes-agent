@@ -756,7 +756,23 @@ def build_turn_context(
             in {"native", "off"}
         )
 
-        if not _preflight_deferred:
+        # Hard message-count safety valve: when the session has more messages
+        # than the configured hard limit, force compression regardless of
+        # deferral, cooldown, or anti-thrashing.  This mirrors the gateway
+        # hygiene layer (gateway/run.py, #2153/#4750) and breaks the death
+        # spiral where token-based checks fail to fire — e.g. when
+        # should_defer_preflight_to_real_usage() keeps deferring because the
+        # last successful API call's prompt_tokens were below threshold, even
+        # though the session has since grown past it.  Without this valve a
+        # TUI session can grow until the provider starts disconnecting, at
+        # which point no usage data is returned to update the compressor and
+        # the session becomes unrecoverable.
+        _hard_limit = getattr(_compressor, "hygiene_hard_message_limit", 0) or 0
+        _hard_limit_breached = (
+            isinstance(_hard_limit, (int, float)) and _hard_limit > 0 and len(messages) >= _hard_limit
+        )
+
+        if not _preflight_deferred or _hard_limit_breached:
             _last = _compressor.last_prompt_tokens
             # Do NOT overwrite the -1 sentinel (#36718).
             if _last >= 0 and _preflight_tokens > _last:
@@ -770,7 +786,7 @@ def build_turn_context(
 
         _should_compress_now = False
         _compress_block_reason = None
-        if _preflight_deferred:
+        if _preflight_deferred and not _hard_limit_breached:
             logger.info(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
                 "but last real provider prompt was %s after compression",
@@ -778,7 +794,7 @@ def build_turn_context(
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
             )
-        elif _compression_cooldown:
+        elif _compression_cooldown and not _hard_limit_breached:
             logger.info(
                 "Skipping preflight compression: same-session cooldown active "
                 "(~%s seconds remaining, session %s)",
@@ -797,7 +813,10 @@ def build_turn_context(
                 getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         else:
-            _should_compress_now = _compressor.should_compress(_preflight_tokens)
+            if _hard_limit_breached:
+                _should_compress_now = True
+            else:
+                _should_compress_now = _compressor.should_compress(_preflight_tokens)
             if not _should_compress_now:
                 # Context is over threshold but compression is blocked
                 # (summary-LLM cooldown or anti-thrashing). Ask should_compress_info
@@ -821,25 +840,47 @@ def build_turn_context(
             _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
             if callable(_clear_warn):
                 _clear_warn()
-            logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-                f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
-                agent.model,
-                f"{_compressor.context_length:,}",
-            )
-            _preflight_status = automatic_compaction_status_message(
-                _compressor,
-                phase="preflight",
-                default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-                    tokens=_preflight_tokens,
-                    threshold=_compressor.threshold_tokens,
-                ),
-                approx_tokens=_preflight_tokens,
-                threshold_tokens=_compressor.threshold_tokens,
-                context_length=_compressor.context_length,
-                model=agent.model,
-            )
+            if _hard_limit_breached:
+                logger.info(
+                    "Preflight compression: hard message limit %d reached "
+                    "(%d messages, ~%s tokens, model %s, ctx %s)",
+                    _hard_limit, len(messages),
+                    f"{_preflight_tokens:,}", agent.model,
+                    f"{_compressor.context_length:,}",
+                )
+                _preflight_status = automatic_compaction_status_message(
+                    _compressor,
+                    phase="preflight",
+                    default_message=(
+                        f"📦 Preflight compression: {len(messages)} messages "
+                        f">= hard limit {_hard_limit}. "
+                        "This may take a moment."
+                    ),
+                    approx_tokens=_preflight_tokens,
+                    threshold_tokens=_compressor.threshold_tokens,
+                    context_length=_compressor.context_length,
+                    model=agent.model,
+                )
+            else:
+                logger.info(
+                    "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                    f"{_preflight_tokens:,}",
+                    f"{_compressor.threshold_tokens:,}",
+                    agent.model,
+                    f"{_compressor.context_length:,}",
+                )
+                _preflight_status = automatic_compaction_status_message(
+                    _compressor,
+                    phase="preflight",
+                    default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
+                        tokens=_preflight_tokens,
+                        threshold=_compressor.threshold_tokens,
+                    ),
+                    approx_tokens=_preflight_tokens,
+                    threshold_tokens=_compressor.threshold_tokens,
+                    context_length=_compressor.context_length,
+                    model=agent.model,
+                )
             if _preflight_status:
                 agent._emit_status(_preflight_status)
             # Preflight passes honor the same configured per-turn cap

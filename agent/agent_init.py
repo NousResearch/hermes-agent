@@ -1923,6 +1923,14 @@ def init_agent(
     compression_idle_compact_after_seconds = max(
         0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
     )
+    # Hard message-count safety valve (mirrors gateway hygiene, #2153/#4750).
+    # When >0, the TUI/CLI preflight path force-compresses at this message
+    # count regardless of token estimates, breaking the death spiral where
+    # should_defer_preflight_to_real_usage() keeps deferring until the
+    # provider disconnects.
+    compression_hard_msg_limit = int(
+        _compression_cfg.get("hygiene_hard_message_limit", 0) or 0
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -2342,6 +2350,7 @@ def init_agent(
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
+            hygiene_hard_message_limit=compression_hard_msg_limit,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

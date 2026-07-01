@@ -205,6 +205,26 @@ def _billing_or_entitlement_message(
 
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
+
+    # Anthropic Claude Pro/Max OAuth subscriptions surface exhaustion of the
+    # metered "extra usage" bucket as a hard 400 ("You're out of extra
+    # usage"). Point at the exact settings page and note the cycle-reset
+    # option, since the generic "add credits with that provider" line doesn't
+    # apply to a subscription — the user waits for the reset or switches to an
+    # API key.
+    if (provider or "").strip().lower() == "anthropic":
+        lines = [
+            (
+                f"{provider_label} reported that your Claude subscription usage is "
+                f"exhausted for {model_label} (included quota + extra-usage credits)."
+            ),
+            "Options: wait for the billing cycle to reset, or add extra usage at "
+            "https://claude.ai/settings/usage",
+            "You can also switch to an Anthropic API key or another provider with "
+            "/model <model> --provider <provider>.",
+        ]
+        return "\n".join(lines)
+
     lines = [
         (
             f"{provider_label} reported that billing, credits, or account "

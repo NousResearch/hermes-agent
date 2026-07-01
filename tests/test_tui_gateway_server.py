@@ -16,6 +16,19 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_expired_clarify_response_is_idempotently_consumed():
+    response = server._methods["clarify.respond"](
+        "rpc-1",
+        {"request_id": "expired-request", "answer": "late answer"},
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {"status": "expired", "accepted": False},
+    }
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

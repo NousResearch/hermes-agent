@@ -9717,11 +9717,16 @@ def _respond(rid, params, key):
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
-            return _err(rid, 4009, f"no pending {key} request")
+            # Late responses can arrive after _block() timed out and removed
+            # the pending prompt, especially when a client reconnect missed the
+            # prompt-clearing event.  Treat them as idempotently consumed so UI
+            # clients do not surface a hard JSON-RPC error or re-arm a dead
+            # prompt.
+            return _ok(rid, {"status": "expired", "accepted": False})
         _, ev = entry
         _answers[r] = params.get(key, "")
         ev.set()
-    return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "ok", "accepted": True})
 
 
 @method("clarify.respond")

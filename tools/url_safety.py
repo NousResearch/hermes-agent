@@ -28,7 +28,8 @@ import logging
 import os
 import socket
 import asyncio
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+from typing import Any, Optional
+from urllib.parse import quote, urljoin, urlparse, urlsplit, urlunsplit
 
 from utils import is_truthy_value
 
@@ -407,3 +408,30 @@ async def async_is_safe_url(url: str) -> bool:
     ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
     """
     return await asyncio.to_thread(is_safe_url, url)
+
+
+def redirect_target_from_response(response: Any) -> Optional[str]:
+    """Return the redirect target visible from inside an httpx response hook.
+
+    In ``httpx.AsyncClient`` response event hooks, ``response.next_request`` is
+    frequently ``None`` even for a genuine redirect (it is populated later by
+    the redirect-following machinery). Relying on ``next_request`` alone means
+    an SSRF redirect guard silently never fires: a public URL that 302s to
+    ``http://169.254.169.254/`` gets followed anyway. The ``Location`` header,
+    however, is already present on the response, so resolve the target from it
+    first (handling relative Locations via ``urljoin``) and only fall back to
+    ``next_request`` when no ``Location`` header is set.
+    """
+    if not getattr(response, "is_redirect", False):
+        return None
+
+    headers = getattr(response, "headers", {}) or {}
+    location = headers.get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+
+    next_request = getattr(response, "next_request", None)
+    if next_request:
+        return str(next_request.url)
+
+    return None

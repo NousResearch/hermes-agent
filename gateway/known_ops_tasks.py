@@ -56,7 +56,7 @@ def _looks_like_token_usage_request(text: str) -> bool:
     if not normalized:
         return False
     has_token = "token" in normalized or "tokens" in normalized
-    has_usage = any(marker in normalized for marker in ("消耗", "统计", "输入", "输出", "用量"))
+    has_usage = any(marker in normalized for marker in ("消耗", "统计", "输入", "输出", "用量", "使用"))
     has_time_window = any(
         marker in normalized
         for marker in (
@@ -707,16 +707,16 @@ KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
     ),
     KnownOpsTask(
         name="token_usage_report",
-        platforms=frozenset({"feishu"}),
+        platforms=frozenset({"feishu", "telegram"}),
         detector=_looks_like_token_usage_request,
         handler=_render_token_usage_report,
         verification=(
             "unit: tests/gateway/test_known_ops_tasks.py",
             "unit: tests/tools/test_local_repair_tool.py",
-            "runtime: hermes gateway restart && hermes gateway status",
+            "runtime: ask Feishu or Telegram for token usage and verify no agent turn starts",
         ),
         promotion_hint=(
-            "Repeated Feishu requests for token usage over common time windows should "
+            "Repeated messaging-platform requests for token usage over common time windows should "
             "stay on this deterministic state.db report path; extend the time-window "
             "parser instead of adding one-off scripts."
         ),

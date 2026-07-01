@@ -19,7 +19,7 @@ def test_known_ops_task_metadata_exposes_promotion_contract():
     token_task = next(item for item in metadata if item["name"] == "token_usage_report")
     assert "verification" in token_task
     assert "promotion_hint" in token_task
-    assert token_task["platforms"] == ["feishu"]
+    assert token_task["platforms"] == ["feishu", "telegram"]
 
     loop_task = next(item for item in metadata if item["name"] == "agent_loop_diagnostic_report")
     assert "diagnostic-loop" in " ".join(loop_task["verification"])
@@ -34,10 +34,11 @@ def test_known_ops_task_metadata_exposes_promotion_contract():
 
 
 def test_known_ops_task_is_platform_scoped():
-    text = "今日 token 用量统计"
+    text = "请检查今天的token使用情况"
 
     assert match_known_ops_task("feishu", text) is not None
-    assert match_known_ops_task("telegram", text) is None
+    assert match_known_ops_task("telegram", text) is not None
+    assert match_known_ops_task("discord", text) is None
 
 
 def test_github_skill_repo_install_uses_tap_fast_path(monkeypatch):

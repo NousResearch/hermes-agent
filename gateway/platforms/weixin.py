@@ -92,7 +92,10 @@ MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
-RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
+RATE_LIMIT_ERRCODE = -2  # iLink ret=-2: parameter error (per official docs).
+                        # Also used as fallback stale-session signal when
+                        # paired with errmsg="unknown error". Hermes treats
+                        # this as retryable with backoff.
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
@@ -1671,7 +1674,9 @@ class WeixinAdapter(BasePlatformAdapter):
 
     def _rate_limit_error(self) -> RuntimeError:
         return RuntimeError(
-            f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s"
+            f"iLink sendmessage blocked (cooldown {self._rate_limit_cooldown_remaining():.1f}s) — "
+            f"previous attempt returned ret=-2 (parameter error per iLink docs). "
+            f"Check request payload or re-authenticate via `hermes gateway setup`.",
         )
 
     def _open_rate_limit_circuit(self) -> None:
@@ -1772,12 +1777,23 @@ class WeixinAdapter(BasePlatformAdapter):
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
-                            errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
-                            # Record the error so we raise a descriptive
-                            # RuntimeError (instead of AssertionError) if the
-                            # loop exhausts with the server still rate-limiting.
+                            errmsg = resp.get("errmsg") or resp.get("msg") or "parameter_error"
+                            # Log the actual server response BEFORE the circuit
+                            # breaker eats the detail — ret/errcode/errmsg are
+                            # otherwise invisible in the log.
+                            logger.warning(
+                                "[%s] sendmessage ret=%s errcode=%s errmsg=\"%s\" to=%s attempt=%d/%d — "
+                                "per iLink docs ret=-2 means parameter error, not rate limit.",
+                                self.name,
+                                ret,
+                                errcode,
+                                errmsg,
+                                _safe_id(chat_id),
+                                attempt + 1,
+                                self._send_chunk_retries + 1,
+                            )
                             last_error = RuntimeError(
-                                f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
+                                f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
                             if self._record_rate_limit_event():
                                 last_error = self._rate_limit_error()

@@ -85,11 +85,53 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 
+_MUTABLE_CATEGORIES: frozenset[str] = frozenset({"progress", "lifecycle", "info"})
+
+# PROVISIONAL (upstream migration): keys below are re-derived in Phase 3 against
+# the gateway strings actually wrapped on current upstream/main. A key absent from
+# the catalog never matches, so suppression is a harmless no-op for it until then.
+# Full catalog key -> suppression category. ONLY notification-class keys whose
+# emit path drops empty content (direct adapter.send guarded by
+# _send_unless_empty, or status_callback via _prepare_gateway_status_message).
+# Return-value reply messages are intentionally excluded (see plan §Global
+# Constraints). errors/approval/commands keys are absent here => never suppressed.
+GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
+    # progress — ephemeral work status
+    "gateway.long_running": "progress",
+    "gateway.no_activity_warning": "progress",
+    "gateway.subagent_working": "progress",
+    "gateway.queued_next_turn": "progress",
+    "gateway.interrupting_task": "progress",
+    "gateway.steered_into_run": "progress",
+    # lifecycle — gateway daemon lifecycle notifications
+    "gateway.restart_success": "lifecycle",
+    "gateway.gateway_online": "lifecycle",
+    "gateway.shutdown_restarting": "lifecycle",
+    "gateway.shutdown_shutting_down": "lifecycle",
+    # info — one-shot notices
+    "gateway.codex_gpt55_autoraise_notice": "info",
+    "gateway.kanban_done": "info",
+    "gateway.kanban_blocked": "info",
+    "gateway.kanban_crashed": "info",
+    "gateway.kanban_gave_up": "info",
+    "gateway.kanban_timed_out": "info",
+    "gateway.compression_aux_unavailable": "info",
+    "gateway.compression_no_provider": "info",
+    "gateway.compress_aux_model_failed": "info",
+    "gateway.preflight_compression": "info",
+    "gateway.stale_connections_cleaned": "info",
+    "gateway.iteration_budget_exhausted": "info",
+    "gateway.thinking_prefill_retry": "info",
+}
+
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 
 _overrides_cache: dict[str, str] | None = None
 _overrides_lock = threading.Lock()
+
+_suppress_cache: frozenset[str] | None = None
+_suppress_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
@@ -260,6 +302,9 @@ def reset_language_cache() -> None:
     global _overrides_cache
     with _overrides_lock:
         _overrides_cache = None
+    global _suppress_cache
+    with _suppress_lock:
+        _suppress_cache = None
 
 
 def get_language() -> str:
@@ -373,6 +418,35 @@ def _gateway_overrides() -> dict[str, str]:
         return _overrides_cache
 
 
+def _suppressed_categories() -> frozenset[str]:
+    """Categories the user has muted via ``gateway.system_messages.suppress``.
+
+    Accepts a list of category names or the string ``"all"`` (== all mutable
+    categories). Non-mutable / unknown names are ignored with a warning. Cached
+    for the process; ``reset_language_cache()`` clears it.
+    """
+    global _suppress_cache
+    with _suppress_lock:
+        if _suppress_cache is not None:
+            return _suppress_cache
+    raw = (_load_config_dict().get("gateway") or {}).get("system_messages") or {}
+    spec = raw.get("suppress") if isinstance(raw, dict) else None
+    result: set[str] = set()
+    items = [spec] if isinstance(spec, str) else (spec if isinstance(spec, list) else [])
+    for item in items:
+        if item == "all":
+            result |= set(_MUTABLE_CATEGORIES)
+        elif item in _MUTABLE_CATEGORIES:
+            result.add(item)
+        elif item is not None:
+            logger.warning("Ignoring non-suppressible/unknown system-message category %r", item)
+    frozen = frozenset(result)
+    with _suppress_lock:
+        if _suppress_cache is None:
+            _suppress_cache = frozen
+        return _suppress_cache
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
@@ -397,6 +471,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     a matching override short-circuits both the language catalog and the
     English fallback.
     """
+    category = GATEWAY_MESSAGE_CATEGORIES.get(key)
+    if category is not None and category in _suppressed_categories():
+        return ""
     target = _normalize_lang(lang) if lang else get_language()
     # Gateway overrides win over the catalog (populated from gateway.system_messages).
     value = _gateway_overrides().get(key)
@@ -425,6 +502,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
+    "GATEWAY_MESSAGE_CATEGORIES",
     "t",
     "get_language",
     "reset_language_cache",

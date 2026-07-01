@@ -62,11 +62,12 @@ class TestToolProgressCallback:
         # Should have tracked the tool call ID
         assert "terminal" in tool_call_ids
 
-        # Should have called run_coroutine_threadsafe
-        mock_rcts.assert_called_once()
-        coro = mock_rcts.call_args[0][0]
-        # The coroutine should be conn.session_update
-        assert mock_conn.session_update.called or coro is not None
+        # Should have called run_coroutine_threadsafe exactly twice:
+        # 1. ToolCallStart 2. ToolCallProgress (in_progress)
+        assert mock_rcts.call_count == 2, f"Expected 2 calls, got {mock_rcts.call_count}"
+        all_coros = [call[0][0] for call in mock_rcts.call_args_list]
+        for coro in all_coros:
+            assert coro is not None
 
     def test_handles_string_args(self, mock_conn, event_loop_fixture):
         """If args is a JSON string, it should be parsed."""
@@ -295,7 +296,9 @@ class TestStepCallback:
             "args": {"path": "diff-test.txt", "content": "hello"},
             "snapshot": "snapshot",
         }
-        mock_send.assert_called_once()
+        # Now emits two updates: ToolCallStart + ToolCallProgress (in_progress)
+        assert mock_send.call_count == 2, f"Expected 2 calls, got {mock_send.call_count}"
+
 
     def test_todo_completion_emits_native_plan_update_after_tool_completion(self, mock_conn, event_loop_fixture):
         from collections import deque

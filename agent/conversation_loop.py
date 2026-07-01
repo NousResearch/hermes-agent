@@ -3532,6 +3532,17 @@ def run_conversation(
                             final_response=_policy_response,
                             error_detail=_nonretryable_summary,
                         )
+                    # Non-retryable client error on the primary provider with no
+                    # fallback available (or fallback exhausted). Surface the
+                    # classified reason and provider/model/http_status so callers —
+                    # notably ``cli.py``'s HERMES_KANBAN_TASK exit-code branch —
+                    # can route on the structured field instead of inferring from
+                    # the free-text ``error`` summary. Without this, the dispatcher's
+                    # reap classifier reports ``pid N not alive`` whenever a worker
+                    # exits cleanly on a quota/rate-limit/auth error instead of the
+                    # real cause, and ``cli.py``'s quota-exit branch (which maps
+                    # ``failure_reason in {"rate_limit", "billing"}`` to a sentinel
+                    # exit code) never fires. (#t_8acdc493)
                     return {
                         "final_response": None,
                         "messages": messages,
@@ -3539,6 +3550,11 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _nonretryable_summary,
+                        "failure_reason": classified.reason.value,
+                        "error_class": classified.reason.value,
+                        "provider": _provider,
+                        "model": _model,
+                        "http_status": status_code if isinstance(status_code, int) else None,
                     }
 
                 if retry_count >= max_retries:

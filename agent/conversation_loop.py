@@ -3244,6 +3244,16 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
+                        if agent._try_strip_image_parts_from_tool_messages(
+                            api_messages,
+                            remember_model=False,
+                        ):
+                            agent._buffer_status(
+                                "📐 Compression could not reduce the request further — "
+                                "removed retained vision payloads and retrying..."
+                            )
+                            continue
+
                         # Terminal — surface buffered context so the user
                         # sees what compression attempts were made.
                         agent._flush_status_buffer()

@@ -461,6 +461,32 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     raw = script.strip()
 
+    # Reject INLINE SCRIPT CONTENT pasted into `script=` instead of a filename.
+    # A multi-line body (or a shell shebang / shell operators) is the #1 cron
+    # misconfig: the runner treats the whole blob as a path and fails every tick
+    # with `[Errno 63] File name too long` — a double-silent dead job (it never
+    # runs AND its own failure alert never fires). Catch it at the API boundary
+    # so creation fails loudly instead. (scheduler Rule #14.)
+    if "\n" in raw or raw.startswith("#!"):
+        return (
+            "`script` must be a FILENAME under ~/.hermes/scripts/, not inline "
+            "script content. Write the script to e.g. ~/.hermes/scripts/my-job.sh "
+            "(chmod +x), then pass script=\"my-job.sh\"."
+        )
+
+    # Reject FILENAME + ARGS (`foo.sh --flag`): the runner does not split args
+    # off, so it looks for a file literally named `foo.sh --flag` and fails
+    # `Script not found`. Make a thin wrapper that hardcodes the flag and point
+    # the job at the wrapper's bare filename instead.
+    if raw != raw.split()[0]:
+        first = raw.split()[0]
+        return (
+            f"`script` must be a bare filename with no arguments. Got {raw!r}. "
+            f"The runner does not split args off {first!r}; make a wrapper "
+            f"script in ~/.hermes/scripts/ that hardcodes the flags and pass "
+            f"just its filename."
+        )
+
     # Reject absolute paths and ~ expansion at the API boundary.
     # Only relative paths within ~/.hermes/scripts/ are allowed.
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
@@ -481,6 +507,12 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
 
+    # NOTE: we intentionally do NOT require the script file to already exist at
+    # create/update time — creating the job first and writing the script
+    # moments later is a supported workflow (scheduler Rule #16b: a script
+    # created after the job is fine; the transient "Script not found" clears on
+    # the next successful run). We only reject inputs that can NEVER be a valid
+    # filename (inline content, args) above.
     return None
 
 

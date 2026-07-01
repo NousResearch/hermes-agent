@@ -2404,11 +2404,24 @@ def list_authenticated_providers(
     # post-pass so it covers every provider section uniformly, regardless of
     # which branch emitted the row.
     if current_model:
+        # Namespace-aware presence check. ``current_model`` is stored bare in
+        # config (e.g. ``claude-opus-4-8``) while a provider's curated catalog
+        # entries are namespaced (``claude-app/claude-opus-4-8``). A plain
+        # ``current_model not in _models`` never matches the namespaced entry,
+        # so the current model gets injected a SECOND time and the picker shows
+        # it twice (the platform adapters strip the prefix for display, so both
+        # rows render identically). Treat the two as the same model when one is
+        # the other with only a namespace prefix removed — matched on the ``/``
+        # boundary so distinct aggregator entries that merely share a trailing
+        # name (``openai/gpt-5`` vs ``azure/gpt-5``) are NOT collapsed.
+        def _same_model(a: str, b: str) -> bool:
+            return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
         for _row in results:
             if not _row.get("is_current"):
                 continue
             _models = _row.get("models") or []
-            if current_model not in _models:
+            if not any(_same_model(current_model, m) for m in _models):
                 _row["models"] = [current_model, *_models]
                 _row["total_models"] = _row.get("total_models", len(_models)) + 1
             break

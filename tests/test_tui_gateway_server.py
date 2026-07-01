@@ -16,6 +16,56 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+@pytest.fixture(autouse=True)
+def _drain_leaked_build_threads():
+    """Reap daemon ``session.create`` build threads that outlive their test.
+
+    ``session.create`` spawns a ``daemon=True`` ``_build`` thread
+    (``tui_gateway/server.py``) that mutates the process-global
+    ``server._sessions`` dict and calls the (monkeypatched) approval
+    register/unregister + worker-close hooks in its ``finally`` block. Several
+    tests here let that real thread run. If one is still finishing when the NEXT
+    test starts, it appends a foreign session key to that test's process-wide
+    observation lists (``unregistered_keys``, ``closed_workers``, ``seen[...]``)
+    or bumps a concurrent-writer line count — a classic sibling-test-leakage
+    flake that only bites under load/ordering (CI runs each file in one
+    sequential subprocess, so intra-file leakage is exactly what surfaces).
+
+    The conftest philosophy is explicit that intra-file ordering hygiene is the
+    test author's responsibility, so this fixture drains those threads at the
+    file level. Order matters: clear ``server._sessions`` FIRST so any in-flight
+    build thread's ``replaced``/orphan check sees an empty dict and takes its
+    fast exit path, THEN briefly join the threads that appeared during the test.
+    The join is bounded by a single short overall deadline — a genuinely wedged
+    daemon thread is already neutralized by the clear above, so there is no need
+    to wait the full budget on it. Best-effort: never hang the suite.
+    """
+    before = set(threading.enumerate())
+    try:
+        yield
+    finally:
+        # 1. Neutralize first: an in-flight _build thread checks
+        #    `_sessions.get(sid) is not current`; an empty dict makes that True
+        #    so it unregisters + exits immediately instead of blocking.
+        try:
+            server._sessions.clear()
+        except Exception:
+            pass
+        # 2. Briefly reap threads that appeared during this test so their
+        #    finally-block side effects land now (in this test's teardown)
+        #    rather than polluting the next test's observation lists. Bounded by
+        #    ONE short overall deadline; a still-wedged thread is already
+        #    defused by step 1, so we don't burn the budget waiting on it.
+        deadline = time.monotonic() + 2.0
+        for t in threading.enumerate():
+            if t in before or t is threading.main_thread() or not t.is_alive():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            t.join(timeout=remaining)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -5362,6 +5412,12 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    # Capture THIS session's own key before we close it (which pops _sessions[sid]).
+    # The build thread closes the orphan worker + unregisters the notify keyed by
+    # this session_key (see tui_gateway/server.py _build()); scoping the assertions
+    # to own_key keeps them robust against a daemon build thread leaked from a
+    # sibling session.create test appending ITS OWN key to these process-wide lists.
+    own_key = server._sessions[sid]["session_key"]
     assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
@@ -5396,16 +5452,24 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
 
         time.sleep(0.02)
 
-    assert (
-        len(closed_workers) == 1
-    ), f"orphan worker was not cleaned up — closed_workers={closed_workers}"
+    # The orphan-cleanup path must have closed THIS session's worker and
+    # unregistered THIS session's notify. Assert on own_key membership rather
+    # than a raw count/len — a daemon build thread leaked from a sibling
+    # session.create test can append its OWN key to these process-wide lists
+    # mid-run, which would inflate `len(closed_workers) == 1` to 2 (false
+    # failure). Membership on own_key proves the real guarantee immune to shard
+    # composition.
+    assert own_key in closed_workers, (
+        f"orphan worker for this session was not cleaned up — "
+        f"own_key={own_key!r} closed_workers={closed_workers}"
+    )
     # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
-        f"orphan notify registration was not unregistered — "
-        f"unregistered_keys={unregistered_keys}"
+    # and the orphan-cleanup path; the key guarantee is that THIS session's
+    # notify got at least one unregister call (any prior close already popped
+    # the callback; the duplicate is a no-op).
+    assert own_key in unregistered_keys, (
+        f"orphan notify registration for this session was not unregistered — "
+        f"own_key={own_key!r} unregistered_keys={unregistered_keys}"
     )
 
 
@@ -5476,24 +5540,35 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         built = session["agent_ready"].wait(timeout=10.0)
         assert built, "agent build did not complete within timeout"
 
+        # This session's OWN key is what its build thread would close/unregister
+        # on a (non-existent) race — the orphan-cleanup path calls
+        # unregister_gateway_notify(session["session_key"]) and worker.close()
+        # keyed by the same session_key (see tui_gateway/server.py _build()).
+        own_key = session.get("session_key")
+
         # Build finished without a close race — nothing should have been
-        # cleaned up by the orphan check.  Scope the assertions to THIS
-        # test's own session_key: a daemon build thread leaked from a prior
-        # session.create test in the same shard process can fire close/
-        # unregister against its own (foreign) key after we've patched the
-        # global hooks, polluting these lists.  Filtering by this session's
-        # key keeps the regression intent (this session's worker/notify must
-        # survive) while making the test immune to shard composition.
-        # (flaky under -j 8: foreign key e.g. 20260629_210208_d4f545)
-        own_key = session["session_key"]
-        own_closed = [k for k in closed_workers if k == own_key]
-        own_unregistered = [k for k in unregistered_keys if k == own_key]
-        assert (
-            own_closed == []
-        ), f"build thread closed its own worker despite no race: {own_closed}"
-        assert (
-            own_unregistered == []
-        ), f"build thread unregistered its own notify despite no race: {own_unregistered}"
+        # cleaned up by the orphan check FOR THIS SESSION.
+        #
+        # Scope the assertions to THIS session's own key. The
+        # register/unregister/close monkeypatches record calls process-wide,
+        # so a daemon _build thread leaked from a *prior* session.create test
+        # (still finishing after its own test cleared server._sessions, which
+        # flips its `replaced` check True) can append ITS OWN — different —
+        # session key to these lists mid-run. Asserting the global list is
+        # empty makes this test fail on a sibling thread's key
+        # (observed: unregistered_keys == ['20260701_055007_db119b'] for a
+        # session this test never created). Membership-checking own_key proves
+        # the real guarantee — this build thread left its own worker + notify
+        # alone — without being flaky under shard composition. Each session_key
+        # is unique per creation, so it cannot collide with a sibling's.
+        assert own_key not in closed_workers, (
+            f"build thread closed its OWN worker despite no race: "
+            f"own_key={own_key!r} closed_workers={closed_workers}"
+        )
+        assert own_key not in unregistered_keys, (
+            f"build thread unregistered its OWN notify despite no race: "
+            f"own_key={own_key!r} unregistered_keys={unregistered_keys}"
+        )
 
         # Session should have the live worker installed.
         assert session.get("slash_worker") is not None

@@ -81,12 +81,25 @@ class TestSourceLinesAreClamped:
             return f.read()
 
     def test_gateway_run_clamped(self):
-        # The /usage stats handler was extracted from gateway/run.py into
-        # gateway/slash_commands.py (god-file decomposition Phase 3b).
+        # The /usage + /status stats handlers were extracted from gateway/run.py
+        # into gateway/slash_commands.py (god-file decomposition Phase 3b) and
+        # later refactored (the /usage last-turn card moved to
+        # plugins/blackbox/last_turn.py). The context-occupancy percentage in
+        # slash_commands.py must stay clamped at 100% — assert a min(100, ...)
+        # clamp is applied to the context_used/context_total ratio, tolerant of
+        # the variable names used after the refactor.
         src = self._read_file("gateway/slash_commands.py")
-        # Check that the stats handler has min(100, ...)
-        assert "min(100, ctx.last_prompt_tokens" in src, (
-            "gateway/slash_commands.py stats pct is not clamped with min(100, ...)"
+        assert "min(100, round((context_used / context_total)" in src, (
+            "gateway/slash_commands.py context pct is not clamped with min(100, ...)"
+        )
+
+    def test_last_turn_card_context_pct_clamped(self):
+        # The /usage + /context last-turn card renders "% of model max"; token
+        # counts can transiently overshoot the model max (streaming / pre-
+        # compression), so this percentage must also be clamped at 100%.
+        src = self._read_file("plugins/blackbox/last_turn.py")
+        assert "min(100, used / length * 100)" in src, (
+            "plugins/blackbox/last_turn.py context-window pct is not clamped with min(100, ...)"
         )
 
     def test_cli_clamped(self):

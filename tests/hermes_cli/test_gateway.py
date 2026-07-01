@@ -38,6 +38,12 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
         "get_gateway_runtime_snapshot",
         lambda *a, **k: gateway.GatewayRuntimeSnapshot(manager="manual process"),
     )
+    # ``run_gateway()`` now force-exits via ``os._exit`` at both the clean and
+    # failure tails (so a wedged non-daemon worker thread can't block interpreter
+    # finalization and strand the gateway). ``os._exit`` would kill the pytest
+    # process, so neutralize the force-exit by default; tests that assert on the
+    # exit behavior override this with their own recorder.
+    monkeypatch.setattr(gateway, "_force_process_exit", lambda code=0: None)
 
 
 def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
@@ -63,6 +69,7 @@ def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
 
 def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatch):
     calls = []
+    exits = []
 
     def fake_start_gateway(*, replace, verbosity):
         calls.append((replace, verbosity))
@@ -70,12 +77,55 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
 
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     monkeypatch.setattr(gateway.asyncio, "run", lambda coro: False)
+    # Override the helper's no-op stub with a recorder so we can assert the
+    # failure tail force-exits with code 1 (production uses os._exit, not
+    # SystemExit, so a wedged worker can't block the process teardown).
+    monkeypatch.setattr(gateway, "_force_process_exit", lambda code=0: exits.append(code))
 
-    with pytest.raises(SystemExit) as exc_info:
-        gateway.run_gateway(verbose=1, quiet=True, replace=True)
+    gateway.run_gateway(verbose=1, quiet=True, replace=True)
 
-    assert exc_info.value.code == 1
+    assert exits == [1]
     assert calls == [(True, None)]
+
+
+def test_run_gateway_force_exits_zero_after_clean_shutdown(monkeypatch):
+    """Clean shutdown must force-exit(0), NOT fall through to normal interpreter
+    finalization — otherwise a wedged non-daemon executor worker blocks the
+    process from exiting and launchd/systemd can't relaunch it (the 149s
+    restart-blackout bug)."""
+    calls = []
+    exits = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+    monkeypatch.setattr(gateway, "_force_process_exit", lambda code=0: exits.append(code))
+
+    gateway.run_gateway(replace=True)
+
+    assert exits == [0]
+    assert calls == [(True, 0)]
+
+
+def test_force_process_exit_calls_os_exit_and_flushes(monkeypatch):
+    """_force_process_exit must flush stdio and call os._exit with the code."""
+    flushed = []
+    exited = []
+    monkeypatch.setattr(
+        gateway.sys, "stdout", SimpleNamespace(flush=lambda: flushed.append("out"))
+    )
+    monkeypatch.setattr(
+        gateway.sys, "stderr", SimpleNamespace(flush=lambda: flushed.append("err"), write=lambda *a: None)
+    )
+    monkeypatch.setattr(gateway.os, "_exit", lambda code: exited.append(code))
+
+    gateway._force_process_exit(0)
+
+    assert exited == [0]
+    assert set(flushed) == {"out", "err"}
 
 
 def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):

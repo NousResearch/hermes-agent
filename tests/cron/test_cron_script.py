@@ -492,6 +492,41 @@ class TestCronjobToolScriptValidation:
         assert update_result["success"] is False
         assert "relative" in update_result["error"].lower() or "absolute" in update_result["error"].lower()
 
+    def test_create_with_inline_script_body_rejected(self, cron_env, monkeypatch):
+        """A multi-line script BODY pasted into `script=` (instead of a
+        filename) must be rejected at create time — otherwise the runner treats
+        the whole blob as a path and fails every tick with `File name too long`,
+        a double-silent dead job (scheduler Rule #14)."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        inline = "#!/bin/bash\nexport PATH=/usr/bin\ngh pr merge 145 --squash\n"
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 6m",
+            no_agent=True,
+            script=inline,
+        ))
+        assert result["success"] is False
+        assert "filename" in result["error"].lower()
+        assert "inline" in result["error"].lower()
+
+    def test_create_with_script_args_rejected(self, cron_env, monkeypatch):
+        """`script="foo.sh --flag"` must be rejected — the runner does not split
+        args off the filename, so it fails `Script not found: foo.sh --flag`.
+        Callers must use a wrapper that hardcodes the flag."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            no_agent=True,
+            script="rsd-status.sh --notify",
+        ))
+        assert result["success"] is False
+        assert "argument" in result["error"].lower() or "wrapper" in result["error"].lower()
+
     def test_update_clear_script_allowed(self, cron_env, monkeypatch):
         """Clearing a script (empty string) should always be permitted."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")

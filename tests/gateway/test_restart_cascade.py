@@ -1176,3 +1176,391 @@ def test_shipped_breadcrumb_bodies_unchanged():
     # producer: boot_id refreshed every write
     status_src = inspect.getsource(gs)
     assert 'payload["boot_id"] = current_record["boot_id"]' in status_src
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# restart_consumed_interrupted (the self-initiated-restart-that-was-also-
+# drain-interrupted seam fix). Spec: 2026-07-01_restart-reboot-continuity-*.
+# A CLEAN self-restart stays restart_consumed (excluded from auto-resume, F1/F2
+# cascade guard). A self-restart that was STILL RUNNING at drain-timeout becomes
+# restart_consumed_interrupted → auto-resumes (surface-and-wait) → but still
+# records the F2 replay-mark so a genuine loop is bounded.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_clean_self_restart_stays_consumed_not_auto_resumed(tmp_path, monkeypatch):
+    """AC-2: a self-initiated restart that was NOT interrupted (marked at the
+    pre-drain site, interrupted=False) keeps the bare restart_consumed reason and
+    is NOT auto-resumed — the F1/F2 cascade guard is preserved."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner)
+
+    runner._session_initiated_restart[entry.session_key] = True
+    # pre-drain site → interrupted defaults False
+    marked, reason, _alert = runner._mark_resume_pending_for_shutdown(entry.session_key)
+
+    assert marked is True
+    assert reason == "restart_consumed"
+    assert "restart_consumed" not in runner._AUTO_RESUME_REASONS
+    assert runner._schedule_resume_pending_sessions() == 0
+
+
+@pytest.mark.asyncio
+async def test_interrupted_self_restart_becomes_interrupted_reason_and_auto_resumes(
+    tmp_path, monkeypatch
+):
+    """AC-1 (core): a self-initiated restart STILL RUNNING at drain-timeout
+    (interrupted=True) gets restart_consumed_interrupted, which IS auto-resumed."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner)
+
+    runner._session_initiated_restart[entry.session_key] = True
+    marked, reason, _alert = runner._mark_resume_pending_for_shutdown(
+        entry.session_key, interrupted=True
+    )
+
+    assert marked is True
+    assert reason == "restart_consumed_interrupted"
+    assert "restart_consumed_interrupted" in runner._AUTO_RESUME_REASONS
+    assert (
+        runner.session_store._entries[entry.session_key].resume_reason
+        == "restart_consumed_interrupted"
+    )
+    # It PROACTIVELY schedules a boot-time surface-and-wait turn (not silent).
+    assert runner._schedule_resume_pending_sessions() == 1
+    await asyncio.gather(*runner._background_tasks)
+
+
+def test_reason_discriminator_matrix(tmp_path, monkeypatch):
+    """The reason table: self-initiated × interrupted → reason. Non-initiated
+    interrupted stays shutdown_timeout (already auto-resumes, unaffected)."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner)
+    sk = entry.session_key
+
+    # non-initiated, not interrupted → shutdown_timeout
+    assert runner._resume_reason_for_shutdown_mark(sk) == "shutdown_timeout"
+    # non-initiated, interrupted → still shutdown_timeout (reboot/plain-shutdown path)
+    assert runner._resume_reason_for_shutdown_mark(sk, interrupted=True) == "shutdown_timeout"
+
+    runner._session_initiated_restart[sk] = True
+    # self-initiated, not interrupted → restart_consumed (excluded, cascade guard)
+    assert runner._resume_reason_for_shutdown_mark(sk) == "restart_consumed"
+    # self-initiated, interrupted → the new reason (auto-resumes)
+    assert (
+        runner._resume_reason_for_shutdown_mark(sk, interrupted=True)
+        == "restart_consumed_interrupted"
+    )
+
+
+def test_restart_requested_interrupted_prefers_restart_timeout_when_not_self_initiated(
+    tmp_path, monkeypatch
+):
+    """A /restart-requested shutdown that did NOT set the per-session self-init
+    flag still resolves restart_timeout, not the new reason — the new reason is
+    strictly for the self-initiated path."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner)
+    runner._restart_requested = True
+    # not self-initiated for this session
+    assert runner._resume_reason_for_shutdown_mark(entry.session_key, interrupted=True) == "restart_timeout"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_reason_still_records_replay_mark_same_pass(tmp_path, monkeypatch):
+    """AC-2c (D-2 × D-6 interleaving): on ONE post-timeout pass for a session that
+    was _resumed_this_boot, self-restarted, and drain-interrupted again, the mark
+    writes restart_consumed_interrupted AND the replay-mark call still increments.
+    The reason-tag and the replay-mark are NOT mutually exclusive."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_RESTART_LOOP_WINDOW_SECS", "300")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner)
+    sk = entry.session_key
+
+    # Session was auto-resumed this boot, then self-restarts again.
+    runner._resumed_this_boot.add(sk)
+    runner._session_initiated_restart[sk] = True
+    runner._replay_marked_during_stop = set()
+
+    marked, reason, _alert = runner._mark_resume_pending_for_shutdown(sk, interrupted=True)
+
+    assert reason == "restart_consumed_interrupted"
+    # the replay-mark was recorded for this session this pass
+    counts = runner._load_restart_failure_counts()
+    assert len(counts.get(sk, {}).get("replay_marks", [])) == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupted_reason_replay_loop_is_bounded_cross_cycle(tmp_path, monkeypatch):
+    """AC-2b (CROSS-CYCLE, the pass-3-sharpest gate): a session that self-restarts
+    AND is drain-interrupted every cycle (reason=restart_consumed_interrupted) must
+    STILL trip F2/suspend within the 300s window — driven as real resume→re-interrupt
+    cycles seeding _resumed_this_boot, NOT 3 marks in one pass. A build that failed to
+    wire the new reason through the _resumed_this_boot→replay-mark path would loop
+    forever and fail this test (fake-gate rejection)."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_RESTART_LOOP_WINDOW_SECS", "300")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "iloop")
+    sk = entry.session_key
+
+    # Boot 0: session self-initiated a restart AND was drain-interrupted →
+    # the new reason, which IS auto-resumed.
+    runner._session_initiated_restart[sk] = True
+    runner._mark_resume_pending_for_shutdown(sk, interrupted=True)
+    runner.session_store._entries[sk].last_resume_marked_at = datetime.now()
+    runner.session_store._save()
+    assert runner.session_store._entries[sk].resume_reason == "restart_consumed_interrupted"
+
+    scheduled_each_boot = []
+    suspended_at = None
+    for cycle in range(6):
+        booted, _ = _runner(tmp_path, monkeypatch)
+        booted.session_store._ensure_loaded()
+
+        n = booted._schedule_resume_pending_sessions()
+        scheduled_each_boot.append(n)
+        if n:
+            await asyncio.gather(*booted._background_tasks)
+
+        # The resumed turn self-restarts again and is drain-interrupted again.
+        booted._session_initiated_restart[sk] = True
+        booted._replay_marked_during_stop = set()
+        booted._mark_resume_pending_for_shutdown(sk, interrupted=True)
+
+        if booted.session_store._entries[sk].suspended:
+            suspended_at = cycle
+            break
+
+    assert suspended_at is not None, (
+        f"restart_consumed_interrupted replay loop never broke; "
+        f"scheduled per boot = {scheduled_each_boot}"
+    )
+    # After suspension a fresh boot schedules ZERO — cascade bounded.
+    final, _ = _runner(tmp_path, monkeypatch)
+    final.session_store._ensure_loaded()
+    assert final.session_store._entries[sk].suspended is True
+    assert final._schedule_resume_pending_sessions() == 0
+
+
+def test_new_reason_has_recovery_phrase(tmp_path, monkeypatch):
+    """The new reason maps to a concrete recovery-note phrase (not the generic
+    fallback) so the surfaced prompt reads correctly."""
+    from gateway.run import _resume_reason_phrase
+    assert _resume_reason_phrase("restart_consumed_interrupted") == "a gateway restart"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE= observability (Task B, spec 2026-07-01). The mark decision + boot-resume
+# scheduling are logged with session key + reason only (INV-6: no transcript
+# content), via the module logger (INV-3/D-8: non-blocking, no fsync in the hot
+# path).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_phase_shutdown_mark_logs_decision(tmp_path, monkeypatch, caplog):
+    """AC-3: the per-session mark logs PHASE=shutdown_mark with the chosen reason
+    and the interrupted/replay flags — the decision is observable."""
+    import logging
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "phase1")
+    runner._session_initiated_restart[entry.session_key] = True
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        runner._mark_resume_pending_for_shutdown(entry.session_key, interrupted=True)
+
+    lines = [r.getMessage() for r in caplog.records if "PHASE=shutdown_mark" in r.getMessage()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "reason=restart_consumed_interrupted" in line
+    assert "interrupted=True" in line
+    assert entry.session_key in line
+
+
+@pytest.mark.asyncio
+async def test_phase_logs_carry_no_transcript_content(tmp_path, monkeypatch, caplog):
+    """AC-6/INV-6: PHASE log lines carry session keys + flags only — never
+    message/transcript content. NON-TAUTOLOGICAL: the sentinel is seeded into the
+    actual session-carried fields the logger has in scope (the transcript tail
+    and a pending resume message/handoff), so if any PHASE producer ever
+    interpolated message content the assertion WOULD fail."""
+    import logging
+    from unittest.mock import MagicMock
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "phase2")
+    SECRET = "TRANSCRIPT_SECRET_marker_should_never_be_logged"
+
+    # Seed the sentinel into every session-scoped surface a PHASE producer could
+    # plausibly reach if someone "enriched" a log line: the transcript (keyed by
+    # session_id), a pending message, and the running-agent object.
+    runner.session_store.append_to_transcript(
+        entry.session_id, {"role": "user", "content": SECRET}, skip_db=True
+    )
+    runner._pending_messages[entry.session_key] = [SECRET]
+    _fake_agent = MagicMock()
+    _fake_agent.last_user_message = SECRET
+    _fake_agent._session_messages = [{"role": "user", "content": SECRET}]
+    runner._running_agents[entry.session_key] = _fake_agent
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        runner._mark_resume_pending_for_shutdown(entry.session_key)
+
+    # And exercise the boot-resume PHASE producer too (fresh runner so the
+    # SECRET-bearing transcript is loaded from disk, not the mocked agent).
+    booted, _ = _runner(tmp_path, monkeypatch)
+    booted.session_store._ensure_loaded()
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        n = booted._schedule_resume_pending_sessions()
+        if n:
+            await asyncio.gather(*booted._background_tasks)
+
+    phase_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("PHASE=")]
+    assert phase_lines, "expected at least one PHASE= line"
+    for line in phase_lines:
+        assert SECRET not in line, f"transcript content leaked into a PHASE line: {line!r}"
+
+
+def test_phase_mark_log_is_single_emit_and_failopen(tmp_path, monkeypatch):
+    """AC-3 (honest gate — replaces an over-claiming 'non-blocking' test). The
+    per-session mark PHASE log matches the existing synchronous 'Shutdown phase:'
+    logs already in stop() (same FileHandler, same path), so this does NOT claim
+    to defeat a pathological blocking handler. What it DOES enforce, and what
+    actually protects the drain budget:
+      (1) SINGLE emit per mark — no accidental fan-out that would multiply cost
+          across N sessions; and
+      (2) FAIL-OPEN — a handler that RAISES must not abort the mark (the resume
+          flag must still be written), per INV-3.
+    Restores the logger level in finally (test-hygiene, review RC).
+    """
+    import logging
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "phase3")
+
+    emit_count = {"n": 0}
+
+    class _CountingRaisingHandler(logging.Handler):
+        def emit(self, record):
+            if record.getMessage().startswith("PHASE=shutdown_mark"):
+                emit_count["n"] += 1
+                raise RuntimeError("simulated broken log sink")
+
+    lg = logging.getLogger("gateway.run")
+    prev_level = lg.level
+    # logging swallows handler exceptions unless raiseExceptions is on; force the
+    # raise to surface so we PROVE the mark path tolerates it (fail-open).
+    prev_raise = logging.raiseExceptions
+    logging.raiseExceptions = False
+    handler = _CountingRaisingHandler()
+    lg.addHandler(handler)
+    lg.setLevel(logging.INFO)
+    try:
+        marked, reason, _alert = runner._mark_resume_pending_for_shutdown(entry.session_key)
+    finally:
+        lg.removeHandler(handler)
+        lg.setLevel(prev_level)
+        logging.raiseExceptions = prev_raise
+
+    # exactly one PHASE=shutdown_mark emit (no fan-out)
+    assert emit_count["n"] == 1
+    # and the mark still succeeded despite the raising sink (fail-open)
+    assert marked is True
+    assert reason == "shutdown_timeout"
+    assert runner.session_store._entries[entry.session_key].resume_pending is True
+
+
+@pytest.mark.asyncio
+async def test_reason_upgrades_on_repeat_mark_clean_then_interrupted(tmp_path, monkeypatch):
+    """Review RC#3: the fix relies on the POST-drain interrupted=True mark
+    OVERWRITING a prior pre-drain restart_consumed with the interrupted variant.
+    Assert the upgrade directly (mark clean → mark interrupted → reason upgraded),
+    so the feature can't silently regress to 'silent' if mark_resume_pending ever
+    gains idempotency."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "upgrade")
+    sk = entry.session_key
+    runner._session_initiated_restart[sk] = True
+
+    # pre-drain speculative mark (not interrupted) → clean restart_consumed
+    _m, reason1, _a = runner._mark_resume_pending_for_shutdown(sk)
+    assert reason1 == "restart_consumed"
+    assert runner.session_store._entries[sk].resume_reason == "restart_consumed"
+
+    # post-timeout mark (interrupted) → must UPGRADE to the interrupted variant
+    _m, reason2, _a = runner._mark_resume_pending_for_shutdown(sk, interrupted=True)
+    assert reason2 == "restart_consumed_interrupted"
+    assert (
+        runner.session_store._entries[sk].resume_reason == "restart_consumed_interrupted"
+    ), "post-drain interrupted mark must overwrite the pre-drain restart_consumed"
+
+
+@pytest.mark.asyncio
+async def test_self_init_reason_does_not_drift_across_unrelated_later_shutdown(
+    tmp_path, monkeypatch
+):
+    """Review residual #31: a session that once self-restarted (interrupted) must
+    NOT be stamped a restart_consumed* reason on a later UNRELATED plain shutdown —
+    because a successful resume clears resume_reason (→ None) AND the post-turn gate
+    pops _session_initiated_restart. Verify the classification returns to
+    shutdown_timeout once both signals are cleared."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "drift")
+    sk = entry.session_key
+
+    # cycle 1: self-initiated + interrupted → interrupted variant
+    runner._session_initiated_restart[sk] = True
+    _m, reason1, _a = runner._mark_resume_pending_for_shutdown(sk, interrupted=True)
+    assert reason1 == "restart_consumed_interrupted"
+
+    # a successful resume clears the flag + nulls resume_reason (the real path)
+    runner._session_initiated_restart.pop(sk, None)
+    runner.session_store.clear_resume_pending(sk)
+    assert runner.session_store._entries[sk].resume_reason is None
+
+    # cycle 2: a later, UNRELATED plain shutdown (no self-init this time)
+    _m, reason2, _a = runner._mark_resume_pending_for_shutdown(sk)
+    assert reason2 == "shutdown_timeout", (
+        "classification drifted: a self-restart reason leaked into a later "
+        "unrelated shutdown"
+    )
+
+
+def test_interrupted_mark_logs_at_warning_survives_raised_threshold(tmp_path, monkeypatch, caplog):
+    """Review RC (SRE): the restart-continuity audit breadcrumb must survive a
+    gateway.run logger raised to WARNING+ — an INTERRUPTED mark is the diagnostic
+    case an operator greps when a restart goes wrong, so it logs at WARNING (its
+    clean sibling stays INFO)."""
+    import logging
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "warnlvl")
+    runner._session_initiated_restart[entry.session_key] = True
+
+    # Also pin caplog propagation coupling (review residual): gateway.run must
+    # propagate for these audit logs to be visible.
+    assert logging.getLogger("gateway.run").propagate is True
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        runner._mark_resume_pending_for_shutdown(entry.session_key, interrupted=True)
+
+    warn_marks = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "PHASE=shutdown_mark" in r.getMessage()
+        and "reason=restart_consumed_interrupted" in r.getMessage()
+    ]
+    assert len(warn_marks) == 1, "interrupted mark must log at WARNING (survives raised threshold)"
+
+
+def test_clean_mark_stays_info(tmp_path, monkeypatch, caplog):
+    """The clean (non-interrupted, non-replay) mark stays at INFO — WARNING is
+    reserved for the diagnostic cases so routine shutdowns don't spam WARNING."""
+    import logging
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = _entry(runner, "infolvl")
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        runner._mark_resume_pending_for_shutdown(entry.session_key)  # shutdown_timeout, clean
+
+    marks = [r for r in caplog.records if "PHASE=shutdown_mark" in r.getMessage()]
+    assert len(marks) == 1
+    assert marks[0].levelno == logging.INFO

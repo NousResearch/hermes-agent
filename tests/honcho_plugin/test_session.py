@@ -899,6 +899,18 @@ def _settle_prewarm(provider):
     """Wait for the session-start prewarm dialectic thread, then return the
     provider to a clean 'nothing fired yet' state so cadence/first-turn/
     trivial-prompt tests can assert from a known baseline."""
+    # Also drain the background SESSION-INIT thread and pin readiness. Without
+    # this, under CI CPU contention _init_thread can still be alive when the
+    # test calls prefetch(), so _session_ready() returns False and prefetch()
+    # early-returns BEFORE the read-and-clear of _prefetch_result — leaving a
+    # planted stale slot uncleared and flaking assertions like
+    # `_prefetch_result == ""` (test_stale_pending_result_is_discarded_on_read).
+    # Joining the init thread + setting _session_initialized makes readiness
+    # deterministic regardless of scheduler load.
+    _init_thread = getattr(provider, "_init_thread", None)
+    if _init_thread is not None:
+        _init_thread.join(timeout=3.0)
+    provider._session_initialized = True
     if provider._prefetch_thread:
         provider._prefetch_thread.join(timeout=3.0)
     with provider._prefetch_lock:
@@ -1439,6 +1451,27 @@ class TestDialecticLiveness:
         with p._prefetch_lock:
             assert p._prefetch_result == ""
             assert p._prefetch_result_fired_at == -999
+
+    def test_settle_prewarm_drains_init_thread_so_prefetch_not_early_returned(self):
+        """Regression for the CI flake in test_stale_pending_result_is_discarded_on_read:
+        under load the background _init_thread could still be alive when the test
+        called prefetch(), so _session_ready() returned False and prefetch()
+        early-returned BEFORE the read-and-clear of _prefetch_result — leaving a
+        planted stale slot uncleared. _settle_prewarm now joins _init_thread and
+        pins _session_initialized. This asserts readiness is deterministic (the
+        precondition prefetch()'s stale-discard path depends on)."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        # After _settle_prewarm, no init thread may be left alive and the session
+        # must read ready — otherwise prefetch() short-circuits before the clear.
+        init_thread = getattr(p, "_init_thread", None)
+        assert init_thread is None or not init_thread.is_alive(), (
+            "_settle_prewarm must drain the background init thread"
+        )
+        p._session_key = "test"
+        assert p._session_ready() is True, (
+            "session must be ready after settle so prefetch() reaches the "
+            "stale-discard path instead of early-returning"
+        )
 
     def test_fresh_pending_result_is_kept(self):
         """A pending result within the staleness window is injected normally."""

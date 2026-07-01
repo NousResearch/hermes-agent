@@ -177,6 +177,7 @@ from agent.message_sanitization import (  # noqa: F401
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _sanitize_structure_non_ascii,
+    _INTERRUPT_CLOSE_FINISH_REASON,
 )
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -1703,11 +1704,21 @@ class AIAgent:
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
                 self._flushed_db_message_ids = set()
+                self._flushed_db_row_ids = {}
+                self._interrupt_close_repersisted_ids = set()
                 self._flushed_db_message_session_id = current_session_id
             flushed_ids = getattr(self, "_flushed_db_message_ids", None)
             if not isinstance(flushed_ids, set):
                 flushed_ids = set()
                 self._flushed_db_message_ids = flushed_ids
+            flushed_row_ids = getattr(self, "_flushed_db_row_ids", None)
+            if not isinstance(flushed_row_ids, dict):
+                flushed_row_ids = {}
+                self._flushed_db_row_ids = flushed_row_ids
+            repersisted_ids = getattr(self, "_interrupt_close_repersisted_ids", None)
+            if not isinstance(repersisted_ids, set):
+                repersisted_ids = set()
+                self._interrupt_close_repersisted_ids = repersisted_ids
             history_ids = {
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
@@ -1718,6 +1729,29 @@ class AIAgent:
                     continue
                 msg_id = id(msg)
                 if msg_id in flushed_ids:
+                    # Already persisted by identity. One field can still change
+                    # after the initial flush: close_interrupted_tool_sequence
+                    # mutates an existing plain-text assistant tail in place,
+                    # setting finish_reason="interrupt_close" (the resume
+                    # discriminator). Re-persist just that column once so the
+                    # flag survives reload instead of being silently dropped.
+                    if (
+                        msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON
+                        and msg_id not in repersisted_ids
+                    ):
+                        row_id = flushed_row_ids.get(msg_id)
+                        if row_id is not None:
+                            try:
+                                self._session_db.update_message_finish_reason(
+                                    self.session_id, row_id,
+                                    _INTERRUPT_CLOSE_FINISH_REASON,
+                                )
+                                repersisted_ids.add(msg_id)
+                            except Exception as _e:
+                                logger.warning(
+                                    "interrupt_close re-persist failed (row=%s): %s",
+                                    row_id, _e,
+                                )
                     continue
                 if msg_id in history_ids:
                     flushed_ids.add(msg_id)
@@ -1746,7 +1780,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
+                _row_id = self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
                     content=content,
@@ -1762,6 +1796,23 @@ class AIAgent:
                     timestamp=msg.get("timestamp"),
                 )
                 flushed_ids.add(msg_id)
+                if isinstance(_row_id, int):
+                    flushed_row_ids[msg_id] = _row_id
+                    # If this message was appended already carrying the flag,
+                    # it is durably persisted — no later re-persist needed.
+                    if msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON:
+                        repersisted_ids.add(msg_id)
+                elif msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON:
+                    # Load-bearing: without a row id we cannot later re-persist an
+                    # in-place interrupt_close mutation, so a lost flag would fall
+                    # back to the old "skip unfinished work" resume behavior.
+                    # append_message returns cursor.lastrowid (an int) in prod;
+                    # a non-int here means a mock/altered return — make it loud.
+                    logger.warning(
+                        "flush: append_message returned non-int row id (%r) for an "
+                        "interrupt_close message; in-place re-persist will be skipped",
+                        _row_id,
+                    )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

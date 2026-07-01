@@ -476,7 +476,10 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    atomic_json_write(path, payload, indent=None, separators=(",", ":"))
+    # mode=0o600: gateway_state.json carries active_agent_keys (chat-id + user-id,
+    # multi-user metadata) — owner-only, TOCTOU-safe (the temp file is created and
+    # replaced with this mode, no chmod-after-write window). D-1/RC-5.
+    atomic_json_write(path, payload, indent=None, separators=(",", ":"), mode=0o600)
 
 
 def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
@@ -789,6 +792,7 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    active_agent_keys: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -812,6 +816,10 @@ def write_runtime_status(
     # producer of boot_id; safe-restart.py copies this string verbatim.
     payload["boot_id"] = current_record["boot_id"]
     payload["updated_at"] = _utc_now_iso()
+    # schema_version lets future readers branch on the file shape. v2 introduced
+    # `active_agent_keys` (busy-gateway-quiescence). Absent in a pre-v2 file →
+    # readers treat it as v1 (count-only).
+    payload["schema_version"] = 2
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
@@ -821,6 +829,13 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = parse_active_agents(active_agents)
+    if active_agent_keys is not _UNSET:
+        # The live running-session keys (NOT just the count) so the safe-restart
+        # watcher can ask "is MY initiating session still active?" for per-session
+        # quiescence. Carries chat-id + user-id (multi-user metadata) → the file is
+        # written 0600 below (D-1/RC-5). Only persisted when the caller passes it,
+        # so an old caller (count-only) leaves the field absent (INV-6 back-compat).
+        payload["active_agent_keys"] = [str(k) for k in (active_agent_keys or [])]
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
         # for a single-profile gateway. Lets `hermes status` show per-profile

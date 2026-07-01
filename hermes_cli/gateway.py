@@ -4583,8 +4583,66 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         raise
     if not success:
         _exit_diag("gateway.exit_nonzero")
-        sys.exit(1)
+        _force_process_exit(1)
+        return  # unreachable in production; keeps type-checkers + tests calm
     _exit_diag("gateway.exit_clean")
+    # start_gateway() has already completed graceful teardown (adapters
+    # disconnected, SessionDB closed, sessions persisted, executor drained).
+    # Force-exit now so a wedged non-daemon worker thread (an agent turn still
+    # running in the gateway ThreadPoolExecutor) cannot block interpreter
+    # finalization via concurrent.futures' atexit join — which strands the
+    # gateway "down but not exited" and prevents launchd/systemd from
+    # relaunching it (observed: a 149s restart blackout). Nothing of value is
+    # lost by hard-exiting the husk; the graceful work already happened.
+    _force_process_exit(0)
+
+
+def _force_process_exit(code: int) -> None:
+    """Flush stdio and terminate the process immediately.
+
+    Wrapped in a helper (rather than calling ``os._exit`` inline) so tests can
+    monkeypatch it and so any lingering non-daemon threads are logged for
+    post-mortem before we bypass normal interpreter finalization. ``os._exit``
+    skips ``atexit`` handlers by design — that is the whole point here, because
+    the ``concurrent.futures`` atexit join is exactly what hangs.
+    """
+    # Best-effort diagnostics: name any non-daemon threads still alive that
+    # WOULD have blocked a normal exit. This is what to look for next time a
+    # restart stalls — grep the log for "force-exit: lingering non-daemon".
+    try:
+        import threading as _threading
+
+        lingering = [
+            t.name
+            for t in _threading.enumerate()
+            if t.is_alive()
+            and not t.daemon
+            and t is not _threading.main_thread()
+        ]
+        if lingering:
+            try:
+                logger.warning(
+                    "force-exit: %d lingering non-daemon thread(s) would have "
+                    "blocked a normal exit: %s",
+                    len(lingering), ", ".join(lingering[:20]),
+                )
+            except Exception:
+                pass
+            try:
+                sys.stderr.write(
+                    "force-exit: lingering non-daemon thread(s) would have "
+                    f"blocked a normal exit: {', '.join(lingering[:20])}\n"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
 
 
 # =============================================================================

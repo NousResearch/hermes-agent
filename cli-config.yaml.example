@@ -248,6 +248,11 @@ terminal:
 #   # docker_extra_args:
 #   #   - "--cap-add"
 #   #   - "SETUID"
+#   # Optional: environment variables set inside the container.
+#   # Use TMPDIR to redirect session artifacts (snapshot, cwd) to a
+#   # writable path when the image's /tmp is not world-writable.
+#   # docker_env:
+#   #   TMPDIR: "/workspace/.tmp"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container

@@ -599,12 +599,14 @@ class DockerEnvironment(BaseEnvironment):
     ):
         if cwd == "~":
             cwd = "/root"
-        super().__init__(cwd=cwd, timeout=timeout)
+        # Normalise docker_env before super().__init__() so the
+        # get_temp_dir() hook can read container-side TMPDIR.
+        self._env = _normalize_env_dict(env)
+        super().__init__(cwd=cwd, timeout=timeout, env=self._env)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
-        self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
@@ -977,6 +979,23 @@ class DockerEnvironment(BaseEnvironment):
 
         # Initialize session snapshot inside the container
         self.init_session()
+
+    # ------------------------------------------------------------------
+    # Temp directory
+    # ------------------------------------------------------------------
+
+    def get_temp_dir(self) -> str:
+        """Return a writable temp dir for session artifacts inside the container.
+
+        Honours ``TMPDIR`` from the ``docker_env`` config (container-side) so
+        that hardened images whose ``/tmp`` is not world-writable can still
+        host session snapshot files.  Falls back to ``/tmp`` when unset.
+        """
+        for env_var in ("TMPDIR", "TMP", "TEMP"):
+            candidate = self.env.get(env_var)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
+        return "/tmp"
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.

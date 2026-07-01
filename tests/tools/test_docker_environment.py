@@ -373,6 +373,41 @@ def test_docker_env_appears_in_init_env_args(monkeypatch):
     assert "MY_VAR=my_value" in args_str
 
 
+# ── get_temp_dir tests ────────────────────────────────────────────
+
+
+def test_get_temp_dir_honours_docker_env_tmpdir(monkeypatch):
+    """get_temp_dir() should return TMPDIR from docker_env config."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(env={"TMPDIR": "/custom/tmp"})
+
+    assert env.get_temp_dir() == "/custom/tmp"
+    assert env._snapshot_path.startswith("/custom/tmp/")
+
+
+def test_get_temp_dir_defaults_to_tmp(monkeypatch):
+    """get_temp_dir() should fall back to /tmp when no TMPDIR is set."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env()
+
+    assert env.get_temp_dir() == "/tmp"
+    assert env._snapshot_path.startswith("/tmp/")
+
+
+def test_get_temp_dir_strips_trailing_slash(monkeypatch):
+    """get_temp_dir() should strip trailing slashes from the path."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(env={"TMPDIR": "/custom/tmp/"})
+
+    assert env.get_temp_dir() == "/custom/tmp"
+
+
 def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     """docker_forward_env should override docker_env for the same key."""
     env = _make_execute_only_env(forward_env=["MY_KEY"])

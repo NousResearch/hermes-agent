@@ -419,8 +419,68 @@ _OR_HEADERS_BASE = {
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-def _apply_user_default_headers(headers: dict | None) -> dict | None:
-    """Merge user-configured ``model.default_headers`` onto resolved headers.
+def _resolve_user_default_headers(provider: str | None = None) -> dict:
+    """Collect user-configured request headers from config.yaml.
+
+    Two sources, merged with the more specific winning:
+
+    1. ``model.default_headers`` — global override for the active endpoint
+       (the original #40033 knob).
+    2. ``custom_providers[].default_headers`` for the named ``provider`` — lets
+       a specific custom provider (e.g. Requesty) carry its own cache-control /
+       attribution headers without forcing them onto every other endpoint.
+
+    Provider-level headers are applied first, then ``model.default_headers``
+    layered on top, so a value set in both places resolves to the model-level
+    one. Values are stringified. Returns ``{}`` when nothing is configured.
+    """
+    resolved: dict = {}
+    try:
+        from hermes_cli.config import (
+            cfg_get,
+            get_compatible_custom_providers,
+            load_config,
+        )
+        cfg = load_config()
+    except Exception:
+        return resolved
+
+    # 1) provider-level headers (least specific)
+    if provider:
+        try:
+            target = str(provider).strip().lower()
+            for cp in (get_compatible_custom_providers(cfg) or []):
+                names = {
+                    str(cp.get("name", "")).strip().lower(),
+                    str(cp.get("provider_key", "")).strip().lower(),
+                }
+                if target in names and target:
+                    ph = cp.get("default_headers")
+                    if isinstance(ph, dict):
+                        for k, v in ph.items():
+                            if v is not None:
+                                resolved[str(k)] = str(v)
+                    break
+        except Exception:
+            pass
+
+    # 2) model.default_headers (most specific — wins on collision)
+    try:
+        mh = cfg_get(cfg, "model", "default_headers")
+        if isinstance(mh, dict):
+            for k, v in mh.items():
+                if v is not None:
+                    resolved[str(k)] = str(v)
+    except Exception:
+        pass
+
+    return resolved
+
+
+def _apply_user_default_headers(
+    headers: dict | None, provider: str | None = None
+) -> dict | None:
+    """Merge user-configured headers onto resolved headers.
 
     User values take precedence over provider/SDK defaults, mirroring the main
     agent client (``AIAgent._apply_user_default_headers``). This lets a
@@ -430,21 +490,18 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     main turn would succeed but title/compression/vision calls to the same
     endpoint would still fail. (#40033)
 
+    ``provider`` scopes the per-custom-provider ``default_headers`` lookup;
+    pass the active provider name so a provider-specific header set (e.g.
+    Requesty cache headers) is honored in addition to ``model.default_headers``.
+
     Returns the merged dict, or the original ``headers`` (possibly ``None``)
     when nothing is configured. No allocation when there are no overrides.
     """
-    try:
-        from hermes_cli.config import cfg_get, load_config
-        user_headers = cfg_get(load_config(), "model", "default_headers")
-    except Exception:
-        return headers
-    if not isinstance(user_headers, dict) or not user_headers:
+    user_headers = _resolve_user_default_headers(provider)
+    if not user_headers:
         return headers
     merged = dict(headers or {})
-    for key, value in user_headers.items():
-        if value is None:
-            continue
-        merged[str(key)] = str(value)
+    merged.update(user_headers)
     return merged or headers
 
 

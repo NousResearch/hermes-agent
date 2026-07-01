@@ -706,6 +706,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    provider: str = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -825,6 +826,22 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Merge user-configured headers (model.default_headers + the active custom
+    # provider's default_headers) on top, so Anthropic-wire custom providers
+    # (e.g. Requesty via api_mode: anthropic_messages) can carry cache-control /
+    # attribution headers just like the OpenAI-wire path does. User values win
+    # on collision; Hermes' own anthropic-beta / identity headers are preserved
+    # otherwise. Mirrors AIAgent._apply_user_default_headers precedence. (#40033)
+    try:
+        from agent.auxiliary_client import _resolve_user_default_headers
+        _user_headers = _resolve_user_default_headers(provider)
+        if _user_headers:
+            _merged = dict(kwargs.get("default_headers") or {})
+            _merged.update(_user_headers)
+            kwargs["default_headers"] = _merged
+    except Exception:
+        pass
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

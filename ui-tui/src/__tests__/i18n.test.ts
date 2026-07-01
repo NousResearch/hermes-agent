@@ -177,6 +177,7 @@ describe('normalizeLocale', () => {
   it('aliases: zh-cn / zh-hans / chinese → zh', () => {
     expect(normalizeLocale('zh-cn')).toBe('zh')
     expect(normalizeLocale('zh-hans')).toBe('zh')
+    expect(normalizeLocale('zh_Hans_CN')).toBe('zh')
     expect(normalizeLocale('chinese')).toBe('zh')
     expect(normalizeLocale('mandarin')).toBe('zh')
   })
@@ -184,7 +185,9 @@ describe('normalizeLocale', () => {
   it('aliases: zh-tw / zh-hk → zh-hant', () => {
     expect(normalizeLocale('zh-tw')).toBe('zh-hant')
     expect(normalizeLocale('zh-hk')).toBe('zh-hant')
+    expect(normalizeLocale('zh_Hant_TW')).toBe('zh-hant')
     expect(normalizeLocale('traditional-chinese')).toBe('zh-hant')
+    expect(normalizeLocale('traditional chinese')).toBe('zh-hant')
   })
 
   it('aliases: japanese / jp → ja', () => {
@@ -202,6 +205,12 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('spanish')).toBe('es')
     expect(normalizeLocale('espanol')).toBe('es')
     expect(normalizeLocale('es-mx')).toBe('es')
+  })
+
+  it('aliases: underscore region tags normalize like dashboard locale inputs', () => {
+    expect(normalizeLocale('pt_BR')).toBe('pt')
+    expect(normalizeLocale('ko_KR')).toBe('ko')
+    expect(normalizeLocale('hu_HU')).toBe('hu')
   })
 
   it('aliases: français / french → fr', () => {

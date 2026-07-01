@@ -44,6 +44,79 @@ const CATALOGS: Record<Locale, LangPack> = {
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
 
+const LOCALE_ALIASES: Record<string, Locale> = {
+  afrikaans: 'af',
+  'af-za': 'af',
+  brazilian: 'pt',
+  brasileiro: 'pt',
+  chinese: 'zh',
+  'de-at': 'de',
+  'de-ch': 'de',
+  'de-de': 'de',
+  deutsch: 'de',
+  english: 'en',
+  'en-gb': 'en',
+  'en-us': 'en',
+  espanol: 'es',
+  español: 'es',
+  'es-ar': 'es',
+  'es-es': 'es',
+  'es-mx': 'es',
+  france: 'fr',
+  francais: 'fr',
+  français: 'fr',
+  french: 'fr',
+  'fr-be': 'fr',
+  'fr-ca': 'fr',
+  'fr-ch': 'fr',
+  'fr-fr': 'fr',
+  gaeilge: 'ga',
+  'ga-ie': 'ga',
+  german: 'de',
+  hungarian: 'hu',
+  'hu-hu': 'hu',
+  irish: 'ga',
+  italian: 'it',
+  italiano: 'it',
+  'it-ch': 'it',
+  'it-it': 'it',
+  japanese: 'ja',
+  'ja-jp': 'ja',
+  jp: 'ja',
+  korean: 'ko',
+  'ko-kr': 'ko',
+  magyar: 'hu',
+  mandarin: 'zh',
+  portuguese: 'pt',
+  portugues: 'pt',
+  português: 'pt',
+  'pt-br': 'pt',
+  'pt-pt': 'pt',
+  russian: 'ru',
+  'ru-ru': 'ru',
+  русский: 'ru',
+  spanish: 'es',
+  'traditional-chinese': 'zh-hant',
+  turkish: 'tr',
+  türkçe: 'tr',
+  'tr-tr': 'tr',
+  ua: 'uk',
+  ukrainian: 'uk',
+  ukrainisch: 'uk',
+  'uk-ua': 'uk',
+  українська: 'uk',
+  'zh-cn': 'zh',
+  'zh-hans': 'zh',
+  'zh-hans-cn': 'zh',
+  'zh-hant': 'zh-hant',
+  'zh-hant-hk': 'zh-hant',
+  'zh-hant-tw': 'zh-hant',
+  'zh-hk': 'zh-hant',
+  'zh-mo': 'zh-hant',
+  'zh-sg': 'zh',
+  'zh-tw': 'zh-hant',
+}
+
 // ── Locale-specific transient trail patterns ───────────────────
 export const TRAIL_PATTERNS: Record<Locale, { draftPrefix: string; analyzeLabel: string }> = Object.fromEntries(
   LOCALES.map(l => [l, getPack(l).trail])
@@ -64,59 +137,18 @@ const interpolate = (template: string, vars: Record<string, string | number> = {
 
 export const normalizeLocale = (value: unknown): Locale => {
   if (typeof value !== 'string') {return 'en'}
-  const raw = value.trim().toLowerCase()
+  const raw = value.trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '-')
 
   if (!raw) {return 'en'}
 
   // Direct matches against the supported set.
   if ((LOCALES as readonly string[]).includes(raw)) {return raw as Locale}
 
-  // Canonical aliases — one-to-one with agent/i18n.py _LANGUAGE_ALIASES.
-  // English + Chinese
-  if (raw === 'en-us' || raw === 'en-gb' || raw === 'english') {return 'en'}
+  const alias = LOCALE_ALIASES[raw]
+  if (alias) {return alias}
 
-  if (raw === 'zh-cn' || raw === 'zh-hans' || raw === 'zh-sg' || raw === 'chinese' || raw === 'mandarin') {return 'zh'}
-
-  if (raw === 'zh-tw' || raw === 'zh-hk' || raw === 'zh-mo' || raw === 'traditional-chinese' || raw === 'traditional_chinese') {return 'zh-hant'}
-
-  // Japanese
-  if (raw === 'japanese' || raw === 'jp' || raw === 'ja-jp') {return 'ja'}
-
-  // German
-  if (raw === 'german' || raw === 'deutsch' || raw === 'de-de' || raw === 'de-at' || raw === 'de-ch') {return 'de'}
-
-  // Spanish
-  if (raw === 'spanish' || raw === 'español' || raw === 'espanol' || raw === 'es-es' || raw === 'es-mx' || raw === 'es-ar') {return 'es'}
-
-  // French
-  if (raw === 'french' || raw === 'français' || raw === 'france' || raw === 'fr-fr' || raw === 'fr-be' || raw === 'fr-ca' || raw === 'fr-ch') {return 'fr'}
-
-  // Ukrainian
-  if (raw === 'ukrainian' || raw === 'ukrainisch' || raw === 'українська' || raw === 'uk-ua' || raw === 'ua') {return 'uk'}
-
-  // Turkish
-  if (raw === 'turkish' || raw === 'türkçe' || raw === 'tr-tr') {return 'tr'}
-
-  // Afrikaans
-  if (raw === 'afrikaans' || raw === 'af-za') {return 'af'}
-
-  // Korean
-  if (raw === 'korean' || raw === '한국어' || raw === 'ko-kr') {return 'ko'}
-
-  // Italian
-  if (raw === 'italian' || raw === 'italiano' || raw === 'it-it' || raw === 'it-ch') {return 'it'}
-
-  // Irish
-  if (raw === 'irish' || raw === 'gaeilge' || raw === 'ga-ie') {return 'ga'}
-
-  // Portuguese
-  if (raw === 'portuguese' || raw === 'português' || raw === 'portugues' || raw === 'pt-pt' || raw === 'pt-br' || raw === 'brazilian' || raw === 'brasileiro') {return 'pt'}
-
-  // Russian
-  if (raw === 'russian' || raw === 'русский' || raw === 'ru-ru') {return 'ru'}
-
-  // Hungarian
-  if (raw === 'hungarian' || raw === 'magyar' || raw === 'hu-hu') {return 'hu'}
+  const primary = raw.split('-', 1)[0]
+  if ((LOCALES as readonly string[]).includes(primary)) {return primary as Locale}
 
   return 'en'
 }

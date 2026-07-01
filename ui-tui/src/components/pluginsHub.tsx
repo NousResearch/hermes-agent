@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useI18n } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -40,6 +41,7 @@ const GLYPH: Record<string, string> = {
 }
 
 export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
+  const { t: ti } = useI18n()
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
@@ -150,14 +152,14 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading plugins…</Text>
+    return <Text color={t.color.muted}>{ti('plugins.loading')}</Text>
   }
 
   if (err && !rows.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q close</OverlayHint>
+        <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text>
+        <OverlayHint t={t}>{ti('common.escQClose')}</OverlayHint>
       </Box>
     )
   }
@@ -166,11 +168,11 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent}>
-          Plugins Hub
+          {ti('plugins.title')}
         </Text>
-        <Text color={t.color.muted}>no plugins installed</Text>
-        <Text color={t.color.muted}>install: hermes plugins install owner/repo</Text>
-        <OverlayHint t={t}>Esc/q close</OverlayHint>
+        <Text color={t.color.muted}>{ti('plugins.noneInstalled')}</Text>
+        <Text color={t.color.muted}>{ti('plugins.installHint')}</Text>
+        <OverlayHint t={t}>{ti('common.escQClose')}</OverlayHint>
       </Box>
     )
   }
@@ -179,8 +181,9 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
     const status = r.status ?? 'not enabled'
     const glyph = GLYPH[status] ?? '○'
     const ver = r.version ? ` v${r.version}` : ''
-    const src = effectiveScope === 'all' && r.source === 'bundled' ? ' [bundled]' : ''
-    const state = status === 'enabled' ? '' : ` (${status})`
+    const src = effectiveScope === 'all' && r.source === 'bundled' ? ti('plugins.bundledTag') : ''
+    const statusLabel = status === 'not enabled' ? ti('plugins.notEnabled') : status
+    const state = status === 'enabled' ? '' : ` (${statusLabel})`
 
     return `${glyph} ${r.name}${ver}${src}${state}`
   })
@@ -189,17 +192,20 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
   const scopeLabel =
     effectiveScope === 'user'
-      ? `${userCount} user plugin(s)${bundledCount ? ` · +${bundledCount} bundled (Tab)` : ''}`
-      : `all ${rows.length} plugins`
+      ? ti('plugins.userScope', {
+          bundled: bundledCount ? ` · ${ti('plugins.bundledAvailable', { count: bundledCount })}` : '',
+          count: userCount
+        })
+      : ti('plugins.allScope', { count: rows.length })
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Plugins Hub
+        {ti('plugins.title')}
       </Text>
 
       <Text color={t.color.muted}>{scopeLabel}</Text>
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{ti('sys.moreAbove', { count: offset })}</Text>}
 
       {items.map((row, i) => {
         const lineIdx = offset + i
@@ -220,13 +226,13 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
       })}
 
       {offset + VISIBLE < labels.length && (
-        <Text color={t.color.muted}> ↓ {labels.length - offset - VISIBLE} more</Text>
+        <Text color={t.color.muted}>{ti('sys.moreBelow', { count: labels.length - offset - VISIBLE })}</Text>
       )}
 
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>updating…</Text> : null}
+      {err ? <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text> : null}
+      {busy ? <Text color={t.color.accent}>{ti('plugins.updating')}</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter/Space toggle · Tab user/all · 1-9,0 quick · Esc/q close</OverlayHint>
+      <OverlayHint t={t}>{ti('plugins.hint')}</OverlayHint>
     </Box>
   )
 }

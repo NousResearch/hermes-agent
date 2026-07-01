@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useI18n } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -31,6 +32,7 @@ interface Gallery {
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
 export function PetPicker({ gw, onClose, t }: PetPickerProps) {
+  const { t: ti } = useI18n()
   const [gallery, setGallery] = useState<Gallery | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -117,14 +119,14 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading pets…</Text>
+    return <Text color={t.color.muted}>{ti('pet.loading')}</Text>
   }
 
   if (err && !gallery) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc cancel</OverlayHint>
+        <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text>
+        <OverlayHint t={t}>{ti('common.escCancel')}</OverlayHint>
       </Box>
     )
   }
@@ -134,23 +136,25 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Pets
+        {ti('pet.title')}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {query ? `filter: ${query}` : 'type to filter'} · {view.length} pet{view.length === 1 ? '' : 's'}
+        {query ? ti('pet.filter', { query }) : ti('pet.typeToFilter')} · {ti('pet.count', { count: view.length })}
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{ti('sys.moreAbove', { count: offset })}</Text>}
 
       {view.length === 0 ? (
-        <Text color={t.color.muted}>{query ? `no pets match "${query}"` : 'no pets available'}</Text>
+        <Text color={t.color.muted}>
+          {query ? ti('pet.noMatch', { query }) : ti('pet.noneAvailable')}
+        </Text>
       ) : (
         items.map((pet, i) => {
           const at = offset + i === idx
           const isActive = enabled && pet.slug === active
           const mark = isActive ? '●' : pet.installed ? '✓' : ' '
-          const tag = pet.installed ? '' : pet.curated ? ' · official' : ''
+          const tag = pet.installed ? '' : pet.curated ? ti('pet.officialTag') : ''
 
           return (
             <Text bold={at} color={at ? t.color.accent : t.color.muted} inverse={at} key={pet.slug} wrap="truncate-end">
@@ -166,12 +170,14 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
         })
       )}
 
-      {offset + VISIBLE < view.length && <Text color={t.color.muted}> ↓ {view.length - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < view.length && (
+        <Text color={t.color.muted}>{ti('sys.moreBelow', { count: view.length - offset - VISIBLE })}</Text>
+      )}
 
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>adopting…</Text> : null}
+      {err ? <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text> : null}
+      {busy ? <Text color={t.color.accent}>{ti('pet.adopting')}</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter adopt · type to filter · Esc cancel</OverlayHint>
+      <OverlayHint t={t}>{ti('pet.hint')}</OverlayHint>
     </Box>
   )
 }

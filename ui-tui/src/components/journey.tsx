@@ -2,6 +2,7 @@ import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdo
 import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useI18n } from '../i18n/index.js'
 import { openInEditor } from '../lib/editor.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
@@ -131,6 +132,7 @@ function ListRow({ active, cells, t }: { active: boolean; cells: Cell[]; t: Them
 }
 
 export function Journey({ gw, onClose, t }: JourneyProps) {
+  const { t: ti } = useI18n()
   const { stdout } = useStdout()
   const cols = Math.max(40, (stdout?.columns ?? 90) - 3)
   const rows = Math.max(16, (stdout?.rows ?? 30) - 2)
@@ -212,12 +214,12 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     try {
       const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
       if (!detail.ok || detail.content == null) {
-        return setNotice(detail.message || 'cannot edit')
+        return setNotice(detail.message || ti('journey.cannotEdit'))
       }
 
       const edited = await openInEditor(detail.content, detail.kind === 'skill' ? '.md' : '.txt')
       if (edited == null || edited.trim() === detail.content.trim()) {
-        return setNotice('no changes')
+        return setNotice(ti('journey.noChanges'))
       }
 
       const res = await gw.request<MutationResult>('learning.edit', { content: edited, id: node.id })
@@ -373,7 +375,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (err) {
     return (
       <Shell t={t}>
-        <Text color={t.color.error}>error: {err}</Text>
+        <Text color={t.color.error}>{ti('common.errorWithMessage', { message: err })}</Text>
       </Shell>
     )
   }
@@ -381,7 +383,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (!data) {
     return (
       <Shell t={t}>
-        <Text color={t.color.muted}>assembling your learning map…</Text>
+        <Text color={t.color.muted}>{ti('journey.loading')}</Text>
       </Shell>
     )
   }
@@ -390,7 +392,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     return (
       <Shell t={t}>
         <Text color={t.color.muted}>
-          No learning yet — your learned skills and memories will start mapping out here as you use Hermes.
+          {ti('journey.empty')}
         </Text>
       </Shell>
     )
@@ -430,7 +432,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
         <Footer>
           <StatusLines confirm={confirmDelete} label={activeNode.fullLabel || activeNode.label} notice={notice} t={t} />
-          <Hint t={t}>↑↓/jk scroll · PgUp/PgDn page · e edit · d delete · Esc/← back · q close</Hint>
+          <Hint t={t}>{ti('journey.itemHint')}</Hint>
         </Footer>
       </Box>
     )
@@ -448,9 +450,9 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       <Box flexDirection="column" marginBottom={1}>
         <Text wrap="truncate-end">
           <Text bold color={t.color.primary}>
-            ✦ Journey
+            {ti('journey.title')}
           </Text>
-          <Text color={t.color.muted}>  learned skills &amp; memories over time</Text>
+          <Text color={t.color.muted}>  {ti('journey.subtitle')}</Text>
         </Text>
         <Text wrap="wrap">
           {data.legend.map((item, i) => (
@@ -500,8 +502,15 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         />
         {!confirmDelete && !notice && data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
         <Hint t={t}>
-          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''}
-          {activeNode ? ' · e edit · d delete' : ''} · g/G top/bottom · q close
+          {ti(
+            activeNode?.body
+              ? activeNode
+                ? 'journey.timelineHintOpenEdit'
+                : 'journey.timelineHint'
+              : activeNode
+                ? 'journey.timelineHintEdit'
+                : 'journey.timelineHint'
+          )}
         </Hint>
       </Footer>
     </Box>
@@ -547,20 +556,24 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
 }
 
 function Shell({ children, t }: { children: React.ReactNode; t: Theme }) {
+  const { t: ti } = useI18n()
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Text bold color={t.color.primary}>
-        ✦ Journey
+        {ti('journey.title')}
       </Text>
       {children}
-      <Text color={t.color.muted}>Esc/q close</Text>
+      <Text color={t.color.muted}>{ti('common.escQClose')}</Text>
     </Box>
   )
 }
 
 function StatusLines({ confirm, label, notice, t }: { confirm: boolean; label: string; notice: string; t: Theme }) {
+  const { t: ti } = useI18n()
+
   if (confirm) {
-    return <Text color={t.color.error}>delete {label}? y/N</Text>
+    return <Text color={t.color.error}>{ti('journey.deleteConfirm', { label })}</Text>
   }
 
   if (notice) {

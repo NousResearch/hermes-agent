@@ -93,6 +93,47 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _redact_env_assignment(value: str) -> str:
+    if "=" not in value:
+        return value
+    key, _secret = value.split("=", 1)
+    return f"{key}=***"
+
+
+def _redact_docker_env_args(args: list[str]) -> list[str]:
+    """Return a copy of docker args with ``-e KEY=VALUE`` values redacted."""
+    redacted: list[str] = []
+    redact_next = False
+    for arg in args:
+        if redact_next:
+            redacted.append(_redact_env_assignment(arg))
+            redact_next = False
+            continue
+        if arg in {"-e", "--env"}:
+            redacted.append(arg)
+            redact_next = True
+            continue
+        if arg.startswith("--env="):
+            redacted.append("--env=" + _redact_env_assignment(arg[len("--env="):]))
+            continue
+        if arg.startswith("-e") and "=" in arg:
+            redacted.append("-e" + _redact_env_assignment(arg[2:]))
+            continue
+        redacted.append(arg)
+    return redacted
+
+
+def _redact_subprocess_error(error: BaseException) -> str:
+    """Format a subprocess exception without exposing docker env values."""
+    message = str(error)
+    cmd = getattr(error, "cmd", None)
+    if isinstance(cmd, (list, tuple)):
+        raw_cmd = [str(arg) for arg in cmd]
+        redacted_cmd = _redact_docker_env_args(raw_cmd)
+        message = message.replace(repr(raw_cmd), repr(redacted_cmd))
+    return message
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -852,7 +893,7 @@ class DockerEnvironment(BaseEnvironment):
             + env_args
             + validated_extra
         )
-        logger.info(f"Docker run_args: {all_run_args}")
+        logger.info("Docker run_args: %s", _redact_docker_env_args(all_run_args))
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -978,7 +1019,10 @@ class DockerEnvironment(BaseEnvironment):
                 image,
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
-            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            logger.debug(
+                "Starting container: %s",
+                " ".join(_redact_docker_env_args(run_cmd)),
+            )
             try:
                 result = subprocess.run(
                     run_cmd,
@@ -998,7 +1042,7 @@ class DockerEnvironment(BaseEnvironment):
                 # re-raising. See #7439.
                 logger.warning(
                     "docker run failed for %s, cleaning up orphaned container: %s",
-                    container_name, e,
+                    container_name, _redact_subprocess_error(e),
                 )
                 subprocess.run(
                     [self._docker_exe, "rm", "-f", container_name],
@@ -1124,7 +1168,10 @@ class DockerEnvironment(BaseEnvironment):
                     self._container_id = cid
                     logger.info("Recovery: restarted container %s", cid[:12])
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                    logger.warning("Recovery: failed to start container %s: %s", cid[:12], e)
+                    logger.warning(
+                        "Recovery: failed to start container %s: %s",
+                        cid[:12], _redact_subprocess_error(e),
+                    )
 
         # 2. No reusable container — create a fresh one.
         if not self._container_id:
@@ -1159,7 +1206,10 @@ class DockerEnvironment(BaseEnvironment):
                     new_name, self._container_id[:12],
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-                logger.error("Recovery: failed to create new container: %s", e)
+                logger.error(
+                    "Recovery: failed to create new container: %s",
+                    _redact_subprocess_error(e),
+                )
                 return False
 
         # 3. Re-initialize session snapshot in the (re)created container.

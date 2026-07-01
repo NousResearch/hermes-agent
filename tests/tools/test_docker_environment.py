@@ -373,6 +373,96 @@ def test_docker_env_appears_in_init_env_args(monkeypatch):
     assert "MY_VAR=my_value" in args_str
 
 
+def test_redact_docker_env_args_preserves_keys_only():
+    redacted = docker_env._redact_docker_env_args([
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=oauth-token",
+        "-ePASSWORD=hunter2",
+        "--env-file",
+        "/tmp/env.list",
+    ])
+
+    assert redacted == [
+        "-e",
+        "MY_SECRET=***",
+        "--env",
+        "NO_VALUE",
+        "--env=TOKEN=***",
+        "-ePASSWORD=***",
+        "--env-file",
+        "/tmp/env.list",
+    ]
+
+
+def test_redact_subprocess_error_preserves_keys_only():
+    cmd = [
+        "/usr/bin/docker",
+        "run",
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "--env=TOKEN=oauth-token",
+        "python:3.11",
+    ]
+    error = subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    message = docker_env._redact_subprocess_error(error)
+
+    assert "sk-test-12345" not in message
+    assert "oauth-token" not in message
+    assert "MY_SECRET=***" in message
+    assert "--env=TOKEN=***" in message
+
+
+def test_docker_env_values_are_redacted_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger="tools.environments.docker"):
+        _make_dummy_env(
+            env={"MY_SECRET": "sk-test-12345"},
+            persist_across_processes=False,
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+    run_args = _run_args_from_calls(calls)
+    assert "MY_SECRET=sk-test-12345" in run_args
+
+
+def test_docker_run_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        with pytest.raises(subprocess.CalledProcessError):
+            _make_dummy_env(
+                env={"MY_SECRET": "sk-test-12345"},
+                persist_across_processes=False,
+            )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
+
+
 def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     """docker_forward_env should override docker_env for the same key."""
     env = _make_execute_only_env(forward_env=["MY_KEY"])
@@ -1746,6 +1836,39 @@ def test_is_container_gone_matches_removal_errors(monkeypatch):
     assert not env._is_container_gone("Traceback (most recent call last): ...")
     assert not env._is_container_gone("")
     assert not env._is_container_gone("permission denied")
+
+
+def test_recreate_container_failure_redacts_env_values_from_logs(monkeypatch, caplog):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = "old-container-id"
+    env._labels = {
+        "hermes-agent": "1",
+        "hermes-task-id": "task",
+        "hermes-profile": "default",
+    }
+    env._image = "python:3.11"
+    env._image_uses_s6_init = False
+    env._all_run_args = ["-e", "MY_SECRET=sk-test-12345"]
+    env._docker_exe = "/usr/bin/docker"
+    env.cwd = "/root"
+
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment,
+        "_find_reusable_container",
+        lambda self, task_label, profile_label: None,
+    )
+
+    def _run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.ERROR, logger="tools.environments.docker"):
+        assert env._recreate_container() is False
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "sk-test-12345" not in log_text
+    assert "MY_SECRET=***" in log_text
 
 
 def test_execute_recovers_from_out_of_band_removal(monkeypatch):

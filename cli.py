@@ -8370,7 +8370,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
-            self._handle_debug_command()
+            self._handle_debug_command(cmd_original)
         elif canonical == "update":
             if self._handle_update_command():
                 return False
@@ -8585,12 +8585,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.
+                            # Sanitize env to prevent credential leakage —
+                            # quick commands run in the CLI process which
+                            # has all API keys in os.environ.
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                text=True, timeout=30, env=sanitized_env
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
                                 self._console_print(_rich_text_from_ansi(output))
                             else:
                                 self._console_print("[dim]Command returned no output[/]")
@@ -8774,6 +8781,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return mgr
 
 
+
+    def _drain_interrupt_queue_to_pending_input(self) -> None:
+        """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
+
+        While the agent is running, user input is routed into
+        ``_interrupt_queue`` (see the architecture comment near
+        ``_route_user_input_when_busy``). The explicit-interrupt path at the
+        top of ``process_loop`` only drains that queue when
+        ``busy_input_mode == "interrupt"`` AND a ``pending_message`` was
+        acknowledged. If the agent's turn finishes naturally (no interrupt),
+        any messages typed during the turn stay stuck in ``_interrupt_queue``
+        forever. Subsequent ``Enter`` presses re-route to the same blocked
+        queue and the CLI appears to hang.
+
+        Called once at the end of every turn from ``process_loop``'s ``finally``
+        block. Catches and swallows ``Exception`` because the drain must never
+        break the main loop. (#20271)
+        """
+        try:
+            while not self._interrupt_queue.empty():
+                stray = self._interrupt_queue.get_nowait()
+                if stray:
+                    self._pending_input.put(stray)
+        except Exception:
+            pass  # Non-fatal — never break the main loop
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
@@ -10107,9 +10139,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             target=self._reload_mcp, daemon=True
         )
         _reload_thread.start()
-        _reload_thread.join(timeout=30)
-        if _reload_thread.is_alive():
-            print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+        # Do NOT join here — process_loop calls this from its idle branch, so a
+        # blocking join would freeze input consumption for up to 30s (and a hung
+        # MCP server could block far longer). The reload runs purely in the
+        # background daemon thread, which reports its own progress/completion
+        # status via print() inside _reload_mcp().
 
     # Inline-skip tokens that bypass the destructive-slash confirmation modal.
     # A general escape hatch for non-interactive use (scripting/automation) and
@@ -10737,8 +10771,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+        # Recorder creation can fail (no input device, PortAudio init error).
+        # Reset the flag on failure or _voice_recording stays True forever and
+        # every future voice start is silently skipped by the guard above.
         if self._voice_recorder is None:
-            self._voice_recorder = create_audio_recorder()
+            try:
+                self._voice_recorder = create_audio_recorder()
+            except Exception:
+                with self._voice_lock:
+                    self._voice_recording = False
+                raise
 
         # Apply config-driven silence params (numeric-guarded so YAML
         # scalar corruption doesn't break recording start-up).
@@ -14797,6 +14839,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # input buffer and force a clean renderer redraw.
                         if self._last_turn_interrupted:
                             self._recover_terminal_after_interrupt()
+
+                        # Re-queue any messages that arrived in _interrupt_queue
+                        # while the agent was running and were never claimed by
+                        # the explicit interrupt path. See
+                        # _drain_interrupt_queue_to_pending_input for the full
+                        # rationale. Regression of #17666 / #18760 — the drain
+                        # block from the original PR #17939 was deferred as
+                        # "worth its own review" and never re-landed (#20271).
+                        self._drain_interrupt_queue_to_pending_input()
 
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and

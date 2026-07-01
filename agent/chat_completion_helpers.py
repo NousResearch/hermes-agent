@@ -907,14 +907,26 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.provider_data_collection:
         _prefs["data_collection"] = agent.provider_data_collection
 
-    # Claude max-output override on aggregators
+    # Anthropic-compatible max-output fallback (last resort only — applied in
+    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
+    # an explicit value).  Model-gated, not URL-gated: any chat-completions
+    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
+    # Anthropic Messages API treats it as mandatory and proxies that omit it
+    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
+    # as 4096 output tokens — easily exhausted by thinking + large tool calls
+    # like write_file/patch.  OpenRouter/Nous were the only routes covered
+    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
     _ant_max = None
-    if (_is_or or _is_nous) and "claude" in (agent.model or "").lower():
-        try:
-            from agent.anthropic_adapter import _get_anthropic_max_output
+    try:
+        from agent.anthropic_adapter import (
+            _get_anthropic_max_output,
+            _ANTHROPIC_OUTPUT_LIMITS,
+        )
+        _model_norm = (agent.model or "").lower().replace(".", "-")
+        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
             _ant_max = _get_anthropic_max_output(agent.model)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Qwen session metadata
     _qwen_meta = None
@@ -2314,6 +2326,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Some OpenAI-compatible adapters (for example copilot-acp) accept
+        # stream=True but still return a completed response object rather than
+        # an iterator of chunks.  Treat that as "streaming unsupported" for the
+        # rest of this session instead of crashing on ``for chunk in stream``
+        # with ``'types.SimpleNamespace' object is not iterable`` (#11732).
+        response_choices = getattr(stream, "choices", None)
+        if isinstance(response_choices, list) and response_choices:
+            logger.info(
+                "Streaming request returned a final response object instead of "
+                "an iterator; switching %s/%s to non-streaming for this session.",
+                agent.provider or "unknown",
+                agent.model or "unknown",
+            )
+            agent._disable_streaming = True
+            message = getattr(response_choices[0], "message", None)
+            if message is not None:
+                reasoning_text = (
+                    getattr(message, "reasoning_content", None)
+                    or getattr(message, "reasoning", None)
+                )
+                if isinstance(reasoning_text, str) and reasoning_text:
+                    _fire_first_delta()
+                    agent._fire_reasoning_delta(reasoning_text)
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            return stream
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx

@@ -134,7 +134,7 @@ from tools.url_safety import is_safe_url
 async def _wait_for_ready_or_bot_exit(
     ready_event: asyncio.Event,
     bot_task: asyncio.Task,
-    timeout: float,
+    timeout: Optional[float],
 ) -> None:
     """Wait until Discord is ready, or surface early bot startup failure.
 
@@ -335,6 +335,20 @@ def _build_allowed_mentions():
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+
+
+def _discord_ready_timeout_seconds() -> float:
+    """Return the Discord ready wait timeout during gateway startup."""
+    raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
+                raw,
+            )
+    return 30.0
 
 
 class VoiceReceiver:
@@ -1082,7 +1096,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not self._self_is_explicitly_mentioned(message):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -1111,12 +1125,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                _raw_self_mention = self._self_is_explicitly_mentioned(message)
+                if not isinstance(message.channel, discord.DMChannel) and (
+                    message.mentions or _raw_self_mention
+                ):
                     _self_user = self._client.user if self._client is not None else None
-                    _self_mentioned = (
-                        _self_user is not None
-                        and _self_user in message.mentions
-                    )
+                    # Upstream 852c9b3cb: use the explicit-mention detector (handles
+                    # reply-pings / role mentions), which subsumes the older
+                    # `_self_user in message.mentions` form.
+                    _self_mentioned = _raw_self_mention
                     _other_bot_mentions = [
                         m for m in message.mentions
                         if m.bot and m != _self_user
@@ -1224,9 +1241,14 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
 
+            ready_timeout = _discord_ready_timeout_seconds()
             # Wait for ready, but fail fast if discord.py's background startup
             # task dies first (for example on SOCKS/proxy connect errors).
-            await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
+            await _wait_for_ready_or_bot_exit(
+                self._ready_event,
+                self._bot_task,
+                timeout=None if ready_timeout <= 0 else ready_timeout,
+            )
 
             self._running = True
             self._start_liveness_probe()
@@ -4831,6 +4853,30 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _raw_mentioned_user_ids(self, message: Any) -> set:
+        """Extract Discord user-mention IDs directly from raw message content.
+
+        Covers both raw forms — ``<@ID>`` and the legacy ``<@!ID>`` nickname
+        form — which ``message.mentions`` does not always populate (mobile,
+        edited, or relayed messages can carry the mention in the content while
+        leaving the resolved ``mentions`` list empty).
+        """
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
+
+    def _self_is_explicitly_mentioned(self, message: Any) -> bool:
+        """Return True when this bot is explicitly @mentioned in the message.
+
+        Treats the bot as mentioned if it is either present in the resolved
+        ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
+        form in the message content.
+        """
+        if not self._client or not self._client.user:
+            return False
+        if self._client.user in getattr(message, "mentions", []):
+            return True
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -5220,7 +5266,11 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
-        Returns the created thread object, or ``None`` on failure.
+        Returns the created thread object, or ``None`` on failure. Both the
+        primary ``message.create_thread`` and the seed-message fallback are
+        retried once after a short backoff so transient connect errors
+        (e.g. ``Cannot connect to host discord.com:443``) don't immediately
+        burn through to the caller's failure path (#20243).
         """
         # Build a short thread name from the message. Strip Discord mention
         # syntax (users / roles / channels) so thread titles don't end up
@@ -5235,28 +5285,44 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
 
-        try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-            return thread
-        except Exception as direct_error:
-            display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
-            reason = f"Auto-threaded from mention by {display_name}"
+        display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
+        reason = f"Auto-threaded from mention by {display_name}"
+
+        last_direct_error: Exception | None = None
+        last_fallback_error: Exception | None = None
+
+        for attempt in range(2):
             try:
-                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
-                thread = await seed_msg.create_thread(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
-                )
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                 return thread
-            except Exception as fallback_error:
-                logger.warning(
-                    "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
-                    self.name,
-                    direct_error,
-                    fallback_error,
-                )
-                return None
+            except Exception as direct_error:
+                last_direct_error = direct_error
+                try:
+                    seed_msg = await message.channel.send(
+                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                    )
+                    thread = await seed_msg.create_thread(
+                        name=thread_name,
+                        auto_archive_duration=1440,
+                        reason=reason,
+                    )
+                    return thread
+                except Exception as fallback_error:
+                    last_fallback_error = fallback_error
+                    if attempt == 0:
+                        # Brief backoff before the second attempt — most failures
+                        # in this path are transient connect errors that recover
+                        # within a second or two.
+                        await asyncio.sleep(0.75)
+                        continue
+
+        logger.warning(
+            "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",
+            self.name,
+            last_direct_error,
+            last_fallback_error,
+        )
+        return None
 
     async def create_handoff_thread(
         self,
@@ -5858,10 +5924,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if self._client.user:
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -5910,7 +5977,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -5941,6 +6008,26 @@ class DiscordAdapter(BasePlatformAdapter):
                     # event is dropped before it can trigger a second agent run.
                     # Fixes #51057.
                     self._dedup.is_duplicate(str(thread.id))
+                else:
+                    # Auto-threading is the configured routing target for this
+                    # message; if it fails we must NOT silently fall back to an
+                    # inline parent-channel reply (#20243). That breaks
+                    # thread-first Discord workflows by dumping a new task into
+                    # a shared channel. Surface a short visible error so the
+                    # user can retry once Discord recovers, and skip agent
+                    # invocation for this message.
+                    try:
+                        await message.channel.send(
+                            "⚠️ Hermes could not create a Discord thread for "
+                            "this message, so the request was not processed. Please retry."
+                        )
+                    except Exception as notify_error:
+                        logger.warning(
+                            "[%s] Failed to notify user of auto-thread failure: %s",
+                            self.name,
+                            notify_error,
+                        )
+                    return
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)
@@ -6216,6 +6303,23 @@ class DiscordAdapter(BasePlatformAdapter):
         # When channel_context is present, a bare mention means "catch me up"
         # — the context IS the message, so skip the placeholder.
         if (not event_text or not event_text.strip()) and not _channel_context:
+            # Bare mention-only ping (e.g. "@Bot" with nothing else, including
+            # raw <@!ID> forms) with no media, no injected text, and no backfill
+            # context: drop it instead of spawning a fake empty-text turn.
+            # mention_prefix was computed (and message.content stripped) above,
+            # so reuse it rather than re-reading the now-stripped content.
+            if (
+                mention_prefix
+                and not media_urls
+                and not pending_text_injection
+            ):
+                logger.info(
+                    "[%s] Ignoring mention-only message from %s in %s",
+                    self.name,
+                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                    getattr(message.channel, "id", "unknown"),
+                )
+                return
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel

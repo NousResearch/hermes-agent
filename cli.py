@@ -3630,8 +3630,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
-        # bell_on_complete: play terminal bell (\a) when agent finishes a response
+        # bell_on_complete: play terminal bell (\a) when the interactive input
+        # queue drains after a response. In direct/non-interactive chat() calls,
+        # it still fires at the end of that single turn.
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        self._defer_completion_cues_to_queue_drain = False
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -11154,6 +11157,82 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._voice_tts_done.set()
 
+    def _queue_has_pending_work(self) -> bool:
+        """Return True when follow-up work is already queued for this CLI session."""
+        for attr in ("_pending_input", "_interrupt_queue"):
+            q = getattr(self, attr, None)
+            if q is None:
+                continue
+            try:
+                if not q.empty():
+                    return True
+            except Exception:
+                # Be conservative: if queue state cannot be inspected, do not
+                # emit a completion cue that might claim a batch is finished.
+                return True
+        return False
+
+    def _emit_cli_queue_drained_hook(
+        self,
+        *,
+        user_input: Any = None,
+        response: Optional[str] = None,
+        bell_emitted: bool = False,
+    ) -> bool:
+        """Emit the generic classic-CLI queue-drained lifecycle hook.
+
+        This is intentionally generic: core only detects that the interactive CLI
+        has finished a successful turn and both user-input queues are empty.
+        Plugins own concrete side effects such as desktop alerts, telemetry,
+        shell notifications, or other post-turn integrations.
+        """
+        try:
+            from hermes_cli.plugins import _ensure_plugins_discovered, has_hook, invoke_hook
+
+            _ensure_plugins_discovered()
+            if not has_hook("cli_queue_drained"):
+                return False
+            invoke_hook(
+                "cli_queue_drained",
+                cli=self,
+                agent=getattr(self, "agent", None),
+                session_id=getattr(self, "session_id", None),
+                platform=getattr(self, "platform", None) or "cli",
+                user_input=user_input,
+                response=response,
+                queued_work_drained=True,
+                bell_emitted=bool(bell_emitted),
+                interrupted=bool(getattr(self, "_last_turn_interrupted", False)),
+                timestamp=time.time(),
+            )
+            return True
+        except Exception as exc:
+            logger.debug("cli_queue_drained hook dispatch failed: %s", exc)
+            return False
+
+    def _emit_completion_cues_if_idle(self, *, user_input: Any = None, response: Optional[str] = None) -> bool:
+        """Emit terminal bell and cli_queue_drained hook only after queued work drains."""
+        if self._queue_has_pending_work():
+            return False
+        if getattr(self, "_last_turn_interrupted", False):
+            return False
+        if not response or (isinstance(response, str) and response.strip().lower().startswith("error:")):
+            return False
+
+        emitted = False
+        bell_emitted = False
+        if getattr(self, "bell_on_complete", False):
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+            emitted = True
+            bell_emitted = True
+
+        hook_emitted = self._emit_cli_queue_drained_hook(
+            user_input=user_input,
+            response=response,
+            bell_emitted=bell_emitted,
+        )
+        return emitted or hook_emitted
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
@@ -12399,12 +12478,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ))
 
 
-            # Play terminal bell when agent finishes (if enabled).
-            # Works over SSH — the bell propagates to the user's terminal.
-            if self.bell_on_complete:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
-
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
                 _api_calls = result.get("api_calls", 0)
@@ -12452,6 +12525,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
+
+            if not getattr(self, "_defer_completion_cues_to_queue_drain", False):
+                self._emit_completion_cues_if_idle(user_input=message, response=response)
 
             return response
             
@@ -14949,8 +15025,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._pet_reasoning = False
                     app.invalidate()  # Refresh status line
 
+                    response = None
+                    self._defer_completion_cues_to_queue_drain = True
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        response = self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
@@ -15017,6 +15095,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
+
+                        self._defer_completion_cues_to_queue_drain = False
+                        self._emit_completion_cues_if_idle(user_input=user_input, response=response)
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)

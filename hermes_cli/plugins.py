@@ -163,6 +163,14 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # Classic CLI queue-drained lifecycle hook. Fired after a CLI turn finishes
+    # successfully AND both the pending-input and interrupt queues are empty.
+    # Observer plugins can use this for local desktop notifications, telemetry,
+    # shell integrations, or other post-turn side effects without coupling
+    # user-specific behavior to cli.py. Common kwargs: cli, agent, session_id,
+    # platform="cli", user_input, response, queued_work_drained=True,
+    # bell_emitted, interrupted, timestamp.
+    "cli_queue_drained",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

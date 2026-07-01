@@ -1,5 +1,2 @@
 WARNING gateway.run: No user allowlists configured. All unauthorized users will be denied. Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id).
-WARNING tools.registry: check_fn _browser_cdp_check returned False; dependent tools will be unavailable this turn
-WARNING tools.registry: check_fn _browser_dialog_check returned False; dependent tools will be unavailable this turn
-WARNING tools.registry: check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
-WARNING tools.registry: check_fn check_web_api_key returned False; dependent tools will be unavailable this turn
+WARNING gateway.run: Shutdown context: signal=SIGTERM under_systemd=yes parent_pid=1 parent_name=? loadavg_1m=4.65 parent_cmdline='(unknown)'

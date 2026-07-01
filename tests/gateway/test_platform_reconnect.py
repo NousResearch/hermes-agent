@@ -318,9 +318,67 @@ class TestPlatformReconnectWatcher:
                 await run_one_iteration()
 
         assert Platform.TELEGRAM in runner.adapters
+        # count_as_boot=False: a live-process reconnect is not a gateway boot,
+        # so it must not accrue toward the restart-loop breaker (#30719).
         runner._schedule_resume_pending_sessions.assert_called_once_with(
-            platform=Platform.TELEGRAM
+            platform=Platform.TELEGRAM, count_as_boot=False
         )
+
+
+class TestRestartLoopBootAccounting:
+    """The restart-loop breaker (#30719, defense-3) must count gateway boots,
+    not live-process platform reconnects."""
+
+    def _runner(self):
+        runner = object.__new__(GatewayRunner)
+        # Fixed config so the test doesn't depend on a user's config.yaml.
+        runner._restart_loop_guard_config = lambda: (3, 60)
+        return runner
+
+    def test_reconnect_pass_does_not_accrue_or_trip(self, monkeypatch, tmp_path):
+        """Repeated live reconnects within the window neither record a boot nor
+        trip the breaker — otherwise ordinary network churn would suppress
+        auto-resume and poison the window for a later genuine startup."""
+        import gateway.restart_loop_guard as rlg
+
+        monkeypatch.setattr(rlg, "get_hermes_home", lambda: tmp_path)
+        rlg.clear()
+        runner = self._runner()
+
+        for _ in range(5):
+            assert runner._restart_loop_should_skip_resume(count_as_boot=False) is False
+        # Nothing was recorded — the window is still empty.
+        assert rlg._load_boots() == []
+
+    def test_startup_pass_still_trips(self, monkeypatch, tmp_path):
+        """Regression guard: genuine restart-interrupted boots still trip on
+        the Nth boot inside the window."""
+        import gateway.restart_loop_guard as rlg
+
+        monkeypatch.setattr(rlg, "get_hermes_home", lambda: tmp_path)
+        rlg.clear()
+        runner = self._runner()
+
+        assert runner._restart_loop_should_skip_resume(count_as_boot=True) is False
+        assert runner._restart_loop_should_skip_resume(count_as_boot=True) is False
+        assert runner._restart_loop_should_skip_resume(count_as_boot=True) is True
+
+    def test_reconnect_honors_already_tripped_breaker(self, monkeypatch, tmp_path):
+        """A reconnect must still SKIP resume when a real SIGTERM loop has
+        already tripped the breaker — it just doesn't add to the count."""
+        import gateway.restart_loop_guard as rlg
+
+        monkeypatch.setattr(rlg, "get_hermes_home", lambda: tmp_path)
+        rlg.clear()
+        runner = self._runner()
+
+        # Three genuine boots trip the breaker.
+        for _ in range(3):
+            runner._restart_loop_should_skip_resume(count_as_boot=True)
+        before = list(rlg._load_boots())
+        # A subsequent reconnect honors the trip but records nothing new.
+        assert runner._restart_loop_should_skip_resume(count_as_boot=False) is True
+        assert rlg._load_boots() == before
 
     @pytest.mark.asyncio
     async def test_reconnect_nonretryable_removed_from_queue(self):

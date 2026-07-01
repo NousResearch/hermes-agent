@@ -6099,7 +6099,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    def _restart_loop_should_skip_resume(self, count_as_boot: bool) -> bool:
+        """Whether the restart-loop breaker (#30719, defense-3) says to skip
+        auto-resume for this pass.
+
+        A startup pass (``count_as_boot=True``) RECORDS this
+        restart-interrupted boot into the rolling window and trips once too
+        many cluster inside the window. A live reconnect pass
+        (``count_as_boot=False``) must NOT record — a network blip recovered
+        within one already-running process is not a gateway boot, and counting
+        it would let ordinary reconnect churn trip the breaker (and pollute the
+        window for a later genuine startup). It still HONORS an already-tripped
+        breaker so a real SIGTERM-respawn loop is not resurrected by a
+        reconnect. Fails OPEN (returns False) on any error — a broken breaker
+        must never wedge a healthy gateway.
+        """
+        try:
+            from gateway import restart_loop_guard as _rlg
+
+            _max_restarts, _window = self._restart_loop_guard_config()
+            if count_as_boot:
+                return _rlg.check_and_record(_max_restarts, _window)
+            return _rlg.is_restart_loop_tripped(_max_restarts, _window)
+        except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
+            logger.debug("Restart-loop guard check skipped: %s", exc)
+            return False
+
+    def _schedule_resume_pending_sessions(self, platform=None, *, count_as_boot=True) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -6147,16 +6173,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # resume_pending, so a real user message can still continue it (a human
         # is now in the loop). Defenses 1-2 cover the cron/CLI/terminal paths;
         # this catches every other SIGTERM source (e.g. a raw `terminal(
-        # "launchctl kickstart ai.hermes.gateway")`).
-        if candidates:
-            try:
-                from gateway import restart_loop_guard as _rlg
-
-                _max_restarts, _window = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window):
-                    return 0
-            except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
-                logger.debug("Restart-loop guard check skipped: %s", exc)
+        # "launchctl kickstart ai.hermes.gateway")`). ``count_as_boot`` is False
+        # on the live-process reconnect pass so a network blip does not accrue a
+        # phantom boot (it still honors an already-tripped breaker).
+        if candidates and self._restart_loop_should_skip_resume(count_as_boot):
+            return 0
 
         now = datetime.now()
         scheduled = 0
@@ -7488,7 +7509,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            self._schedule_resume_pending_sessions(
+                                platform=platform, count_as_boot=False
+                            )
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",

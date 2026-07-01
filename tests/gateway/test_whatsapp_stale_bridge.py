@@ -310,7 +310,11 @@ class TestDepRefreshStamp:
 
 class TestCacheDirEnvPassthrough:
     @pytest.mark.asyncio
-    async def test_bridge_spawn_env_has_cache_dirs(self, tmp_path):
+    async def test_bridge_spawn_env_has_cache_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_MODE", "bot")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-aux-secret")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
         adapter = _make_adapter(
@@ -339,3 +343,7 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+        assert env["WHATSAPP_MODE"] == "bot"
+        assert "OPENAI_API_KEY" not in env
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env

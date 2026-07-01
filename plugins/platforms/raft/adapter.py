@@ -47,6 +47,7 @@ from gateway.platforms.base import (
     merge_pending_message_event,
 )
 from gateway.session import build_session_key
+from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -539,7 +540,9 @@ class RaftAdapter(BasePlatformAdapter):
             "--wake-adapter", "wake-channel",
             "--wake-channel-endpoint", endpoint,
         ]
-        env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
+        env = hermes_subprocess_env(inherit_credentials=False)
+        env["RAFT_PROFILE"] = profile
+        env["RAFT_CHANNEL_TOKEN"] = self._bridge_token
         try:
             self._bridge_process = subprocess.Popen(
                 cmd, env=env, stdin=subprocess.DEVNULL

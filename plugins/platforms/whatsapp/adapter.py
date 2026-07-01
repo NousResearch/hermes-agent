@@ -32,6 +32,7 @@ from hermes_constants import (
     get_hermes_dir,
     with_hermes_node_path,
 )
+from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -621,8 +622,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Build bridge subprocess environment.
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
-            # with_hermes_node_path() copies os.environ when called with no arg.
-            bridge_env = with_hermes_node_path()
+            bridge_env = with_hermes_node_path(hermes_subprocess_env(inherit_credentials=False))
+            bridge_env["WHATSAPP_MODE"] = whatsapp_mode
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             # Pass the profile-aware cache directories so the bridge writes

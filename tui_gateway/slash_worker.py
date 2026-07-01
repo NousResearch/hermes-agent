@@ -102,7 +102,14 @@ def _run(cli: HermesCLI, command: str) -> str:
         if old is not None:
             cli_mod._cprint = old
 
-    return buf.getvalue().rstrip()
+    # Desktop chat bubbles render plain text, not ANSI. A worker-routed command
+    # that emits Rich color (e.g. /journey building its own Console, which picks
+    # up truecolor from the gateway's inherited COLORTERM) would otherwise leak
+    # raw escapes; strip them at the single choke point. (The TUI opens /journey
+    # as an overlay, so it never travels this path.)
+    from tools.ansi_strip import strip_ansi
+
+    return strip_ansi(buf.getvalue().rstrip())
 
 
 def main():

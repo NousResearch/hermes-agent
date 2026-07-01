@@ -74,6 +74,20 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+_CODEX_PR_REVIEW_LIFECYCLE_RE = re.compile(
+    r"(?im)^\s*RND-Agent:codex-pr-review\s+lifecycle\b"
+)
+_CODE_REVIEW_SUMMARY_MARKER = "## Code Review Summary"
+_DEFAULT_GITHUB_REVIEW_BOT_LOGINS = frozenset(
+    {"rnd-agent", "rnd-agent[bot]", "hermes-agent", "hermes-agent[bot]"}
+)
+_GITHUB_RETRY_COMMAND_RE = re.compile(
+    r"(?is)(?:^|\s)@RND-Agent\b.*\b(?:retry|rerun|re-run|continue|resume)\b|"
+    r"\b(?:retry|rerun|re-run|continue|resume)\b.*(?:^|\s)@RND-Agent\b"
+)
+_ACTIONABLE_PULL_REQUEST_ACTIONS = frozenset(
+    {"opened", "synchronize", "reopened", "ready_for_review"}
+)
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -340,6 +354,195 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    def _github_review_bot_logins(self, route_config: dict) -> set[str]:
+        configured = (
+            route_config.get("github_bot_logins")
+            or route_config.get("bot_logins")
+            or route_config.get("bot_login")
+            or ()
+        )
+        if isinstance(configured, str):
+            configured = [configured]
+        try:
+            extra = {
+                str(login).strip().lower()
+                for login in configured
+                if str(login).strip()
+            }
+        except TypeError:
+            extra = set()
+        return set(_DEFAULT_GITHUB_REVIEW_BOT_LOGINS) | extra
+
+    def _github_pr_review_dedupe_enabled(self, route_config: dict) -> bool:
+        return route_config.get("github_pr_review_dedupe") is True
+
+    def _github_is_review_bot(self, login: Any, route_config: dict) -> bool:
+        if not login:
+            return False
+        return str(login).strip().lower() in self._github_review_bot_logins(
+            route_config
+        )
+
+    def _github_has_human_retry_command(
+        self, payload: dict, route_config: dict
+    ) -> bool:
+        sender_login = ((payload.get("sender") or {}).get("login") or "")
+        if self._github_is_review_bot(sender_login, route_config):
+            return False
+        body = str(((payload.get("comment") or {}).get("body") or ""))
+        return bool(_GITHUB_RETRY_COMMAND_RE.search(body))
+
+    def _is_codex_pr_review_lifecycle_comment(
+        self, payload: dict, route_config: dict
+    ) -> bool:
+        action = str(payload.get("action") or "").lower()
+        if action not in {"created", "edited"}:
+            return False
+
+        comment = payload.get("comment") or {}
+        body = str(comment.get("body") or "")
+        if not _CODEX_PR_REVIEW_LIFECYCLE_RE.search(body):
+            return False
+
+        author_login = ((comment.get("user") or {}).get("login") or "")
+        sender_login = ((payload.get("sender") or {}).get("login") or "")
+        if not (
+            self._github_is_review_bot(author_login, route_config)
+            or self._github_is_review_bot(sender_login, route_config)
+        ):
+            return False
+
+        return not self._github_has_human_retry_command(payload, route_config)
+
+    def _github_pr_context_from_payload(
+        self, payload: dict, event_type: str, route_config: dict
+    ) -> Optional[tuple[str, int, str]]:
+        repo = str(
+            ((payload.get("repository") or {}).get("full_name") or "")
+        ).strip()
+        if not repo:
+            return None
+
+        pr = payload.get("pull_request")
+        pr_number: Any = payload.get("number")
+        head_sha = ""
+        if isinstance(pr, dict):
+            pr_number = pr.get("number") or pr_number
+            head_sha = str(((pr.get("head") or {}).get("sha") or "")).strip()
+        elif event_type == "issue_comment" and isinstance(payload.get("issue"), dict):
+            issue = payload["issue"]
+            if not issue.get("pull_request"):
+                return None
+            pr_number = issue.get("number")
+            if not self._github_has_human_retry_command(payload, route_config):
+                return None
+
+        try:
+            pr_int = int(pr_number)
+        except (TypeError, ValueError):
+            return None
+        if pr_int <= 0:
+            return None
+
+        if not head_sha and event_type == "issue_comment":
+            head_sha = self._github_fetch_pr_head_sha(repo, pr_int)
+        if not head_sha:
+            return None
+        return repo, pr_int, head_sha
+
+    def _github_fetch_pr_head_sha(self, repo: str, pr_number: int) -> str:
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/pulls/{pr_number}",
+                    "--jq",
+                    ".head.sha",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.warning("[webhook] GitHub PR head lookup failed: %s", exc)
+            return ""
+        if result.returncode != 0:
+            logger.warning(
+                "[webhook] gh PR head lookup failed for %s#%s", repo, pr_number
+            )
+            return ""
+        return result.stdout.strip()
+
+    def _github_load_pr_reviews(self, repo: str, pr_number: int) -> list[dict]:
+        try:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/pulls/{pr_number}/reviews?per_page=100",
+                    "--paginate",
+                    "--slurp",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.warning("[webhook] GitHub review dedupe lookup failed: %s", exc)
+            return []
+        if result.returncode != 0:
+            logger.warning(
+                "[webhook] gh review dedupe lookup failed for %s#%s",
+                repo,
+                pr_number,
+            )
+            return []
+        try:
+            data = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            logger.warning("[webhook] gh review dedupe lookup returned invalid JSON")
+            return []
+        if not isinstance(data, list):
+            return []
+        if data and all(isinstance(page, list) for page in data):
+            flattened: list[dict] = []
+            for page in data:
+                flattened.extend(item for item in page if isinstance(item, dict))
+            return flattened
+        return [item for item in data if isinstance(item, dict)]
+
+    def _github_pr_review_already_done(
+        self, payload: dict, event_type: str, route_config: dict
+    ) -> bool:
+        action = str(payload.get("action") or "").lower()
+        if (
+            event_type == "pull_request"
+            and action not in _ACTIONABLE_PULL_REQUEST_ACTIONS
+        ):
+            return False
+        if event_type == "issue_comment" and not self._github_has_human_retry_command(
+            payload, route_config
+        ):
+            return False
+
+        context = self._github_pr_context_from_payload(
+            payload, event_type, route_config
+        )
+        if not context:
+            return False
+        repo, pr_number, head_sha = context
+        reviews = self._github_load_pr_reviews(repo, pr_number)
+        for review in reviews:
+            if str(review.get("commit_id") or "").strip() != head_sha:
+                continue
+            if _CODE_REVIEW_SUMMARY_MARKER not in str(review.get("body") or ""):
+                continue
+            author_login = ((review.get("user") or {}).get("login") or "")
+            if self._github_is_review_bot(author_login, route_config):
+                return True
+        return False
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -549,6 +752,61 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        # Build a unique delivery ID
+        delivery_id = request.headers.get(
+            "X-GitHub-Delivery",
+            request.headers.get(
+                "svix-id",
+                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            ),
+        )
+
+        # ── Idempotency ─────────────────────────────────────────
+        # Skip duplicate deliveries (webhook retries).
+        now = time.time()
+        if not self._record_delivery_id(delivery_id, now):
+            logger.info(
+                "[webhook] Skipping duplicate delivery %s", delivery_id
+            )
+            return web.json_response(
+                {"status": "duplicate", "delivery_id": delivery_id},
+                status=200,
+            )
+
+        if self._github_pr_review_dedupe_enabled(route_config):
+            if event_type == "issue_comment" and self._is_codex_pr_review_lifecycle_comment(
+                payload, route_config
+            ):
+                logger.info(
+                    "[webhook] Ignoring Codex PR-review lifecycle comment for route %s",
+                    route_name,
+                )
+                return web.json_response(
+                    {
+                        "status": "ignored",
+                        "event": event_type,
+                        "reason": "codex_pr_review_lifecycle",
+                    }
+                )
+
+            if (
+                event_type in {"pull_request", "issue_comment"}
+                and self._github_pr_review_already_done(
+                    payload, event_type, route_config
+                )
+            ):
+                logger.info(
+                    "[webhook] Skipping PR review for route %s: same-head review already exists",
+                    route_name,
+                )
+                return web.json_response(
+                    {
+                        "status": "duplicate",
+                        "event": event_type,
+                        "reason": "same_head_review_already_done",
+                    }
+                )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -583,27 +841,6 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
-
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
-        now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
-            )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
-            )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we

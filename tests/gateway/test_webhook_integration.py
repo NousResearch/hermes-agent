@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -141,6 +142,394 @@ class TestGitHubPRWebhook:
         assert event.source.platform == Platform.WEBHOOK
         assert "github-pr" in event.source.chat_id
         assert event.message_id == "gh-delivery-001"
+
+    @pytest.mark.asyncio
+    async def test_codex_lifecycle_comment_from_review_bot_is_ignored(self):
+        """Bot-authored lifecycle/status comments must not start a review run."""
+        routes = {
+            "github-pr-review": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "Review command: {comment.body}",
+                "deliver": "log",
+                "github_pr_review_dedupe": True,
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 16,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/Mesitis/alphapulse/pulls/16"
+                },
+            },
+            "comment": {
+                "body": (
+                    "RND-Agent:codex-pr-review lifecycle running "
+                    "head=975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+                ),
+                "user": {"login": "RND-Agent"},
+            },
+            "repository": {"full_name": "Mesitis/alphapulse"},
+            "sender": {"login": "RND-Agent"},
+        }
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr-review",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "issue_comment",
+                        "X-GitHub-Delivery": "lifecycle-comment-001",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "status": "ignored",
+            "event": "issue_comment",
+            "reason": "codex_pr_review_lifecycle",
+        }
+        adapter.handle_message.assert_not_awaited()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_head_code_review_summary_dedupes_before_agent(self):
+        """A prior same-head RND-Agent formal review summary is terminal."""
+        routes = {
+            "github-pr-review": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "Review PR #{number}",
+                "deliver": "log",
+                "github_pr_review_dedupe": True,
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        head_sha = "975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+        payload = {
+            **GITHUB_PR_PAYLOAD,
+            "action": "synchronize",
+            "pull_request": {
+                **GITHUB_PR_PAYLOAD["pull_request"],
+                "head": {"ref": "feature/webhooks", "sha": head_sha},
+            },
+        }
+        prior_reviews = [[{
+            "state": "CHANGES_REQUESTED",
+            "commit_id": head_sha,
+            "body": "## Code Review Summary\n\nFound a blocking issue.",
+            "user": {"login": "RND-Agent"},
+        }]]
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(prior_reviews), stderr="")
+
+        app = _create_app(adapter)
+        with patch(
+            "gateway.platforms.webhook.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr-review",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "pull_request",
+                        "X-GitHub-Delivery": "same-head-review-001",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "status": "duplicate",
+            "event": "pull_request",
+            "reason": "same_head_review_already_done",
+        }
+        adapter.handle_message.assert_not_awaited()
+        mock_run.assert_called_once_with(
+            [
+                "gh",
+                "api",
+                "repos/org/repo/pulls/42/reviews?per_page=100",
+                "--paginate",
+                "--slurp",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_head_human_retry_dedupes_prior_changes_requested(self):
+        """A same-head retry must not rerun and downgrade CHANGES_REQUESTED."""
+        routes = {
+            "github-pr-review": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "Review command: {comment.body}",
+                "deliver": "log",
+                "github_pr_review_dedupe": True,
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        head_sha = "975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 16,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/Mesitis/alphapulse/pulls/16"
+                },
+            },
+            "comment": {
+                "body": "@RND-Agent continue review",
+                "user": {"login": "maintainer"},
+            },
+            "repository": {"full_name": "Mesitis/alphapulse"},
+            "sender": {"login": "maintainer"},
+        }
+        head_result = MagicMock(returncode=0, stdout=f"{head_sha}\n", stderr="")
+        reviews_result = MagicMock(
+            returncode=0,
+            stdout=json.dumps([[
+                {
+                    "state": "CHANGES_REQUESTED",
+                    "commit_id": head_sha,
+                    "body": "## Code Review Summary\n\nBlocking issue remains.",
+                    "user": {"login": "RND-Agent"},
+                }
+            ]]),
+            stderr="",
+        )
+
+        app = _create_app(adapter)
+        with patch(
+            "gateway.platforms.webhook.subprocess.run",
+            side_effect=[head_result, reviews_result],
+        ) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr-review",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "issue_comment",
+                        "X-GitHub-Delivery": "same-head-retry-001",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "status": "duplicate",
+            "event": "issue_comment",
+            "reason": "same_head_review_already_done",
+        }
+        adapter.handle_message.assert_not_awaited()
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_generic_pull_request_route_does_not_run_review_dedupe(self):
+        """Ordinary PR routes must not block on review lookup without opt-in."""
+        routes = {
+            "github-pr": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "PR #{number}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        head_sha = "975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+        payload = {
+            **GITHUB_PR_PAYLOAD,
+            "action": "synchronize",
+            "pull_request": {
+                **GITHUB_PR_PAYLOAD["pull_request"],
+                "head": {"ref": "feature/webhooks", "sha": head_sha},
+            },
+        }
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "pull_request",
+                        "X-GitHub-Delivery": "generic-pr-001",
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+        await asyncio.sleep(0.05)
+
+        assert data["status"] == "accepted"
+        adapter.handle_message.assert_awaited_once()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generic_issue_comment_route_does_not_suppress_lifecycle_comment(self):
+        """Lifecycle comments are only special on opted-in PR-review routes."""
+        routes = {
+            "github-comments": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "Comment: {comment.body}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 16,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/Mesitis/alphapulse/pulls/16"
+                },
+            },
+            "comment": {
+                "body": (
+                    "RND-Agent:codex-pr-review lifecycle running "
+                    "head=975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+                ),
+                "user": {"login": "RND-Agent"},
+            },
+            "repository": {"full_name": "Mesitis/alphapulse"},
+            "sender": {"login": "RND-Agent"},
+        }
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-comments",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "issue_comment",
+                        "X-GitHub-Delivery": "generic-comment-001",
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+        await asyncio.sleep(0.05)
+
+        assert data["status"] == "accepted"
+        adapter.handle_message.assert_awaited_once()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deliver_only_pull_request_route_does_not_run_review_dedupe(self):
+        """Direct-delivery routes stay on the existing fast path without opt-in."""
+        routes = {
+            "github-pr-alert": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "PR #{number}",
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "12345"},
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter._direct_deliver = AsyncMock(return_value=SendResult(success=True))
+
+        head_sha = "975d343cdc0764ba204cf31e0146ca7f1bb558f1"
+        payload = {
+            **GITHUB_PR_PAYLOAD,
+            "action": "synchronize",
+            "pull_request": {
+                **GITHUB_PR_PAYLOAD["pull_request"],
+                "head": {"ref": "feature/webhooks", "sha": head_sha},
+            },
+        }
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr-alert",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "pull_request",
+                        "X-GitHub-Delivery": "deliver-only-pr-001",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["status"] == "delivered"
+        adapter._direct_deliver.assert_awaited_once()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_delivery_id_skips_review_dedupe_head_lookup(self):
+        """GitHub retries must hit idempotency before any synchronous gh lookup."""
+        routes = {
+            "github-pr-review": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "Review command: {comment.body}",
+                "deliver": "log",
+                "github_pr_review_dedupe": True,
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+        adapter._record_delivery_id("duplicate-retry-001", time.time())
+
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 16,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/Mesitis/alphapulse/pulls/16"
+                },
+            },
+            "comment": {
+                "body": "@RND-Agent continue review",
+                "user": {"login": "maintainer"},
+            },
+            "repository": {"full_name": "Mesitis/alphapulse"},
+            "sender": {"login": "maintainer"},
+        }
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/github-pr-review",
+                    json=payload,
+                    headers={
+                        "X-GitHub-Event": "issue_comment",
+                        "X-GitHub-Delivery": "duplicate-retry-001",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "status": "duplicate",
+            "delivery_id": "duplicate-retry-001",
+        }
+        adapter.handle_message.assert_not_awaited()
+        mock_run.assert_not_called()
 
 
 # ===================================================================

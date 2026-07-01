@@ -87,6 +87,18 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_transform_llm_output_response_text_passthrough(self):
+        r = shell_hooks._parse_response(
+            "transform_llm_output", '{"response_text": "updated final"}',
+        )
+        assert r == "updated final"
+
+    def test_transform_llm_output_empty_text_ignored(self):
+        r = shell_hooks._parse_response(
+            "transform_llm_output", '{"response_text": ""}',
+        )
+        assert r is None
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',

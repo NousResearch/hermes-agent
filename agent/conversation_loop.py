@@ -687,6 +687,18 @@ def run_conversation(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            sender_id_alt=getattr(agent, "_user_id_alt", None) or "",
+            sender_name=getattr(agent, "_user_name", None) or "",
+            chat_id=getattr(agent, "_chat_id", None) or "",
+            chat_name=getattr(agent, "_chat_name", None) or "",
+            chat_type=getattr(agent, "_chat_type", None) or "",
+            # Back-compat alias for channel-aware hooks.  Many platforms call
+            # this a chat/room/guild channel; triggers should not need to parse
+            # gateway session keys or user text to infer it.
+            channel_id=getattr(agent, "_chat_id", None) or "",
+            channel_name=getattr(agent, "_chat_name", None) or "",
+            thread_id=getattr(agent, "_thread_id", None) or "",
+            gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -4411,6 +4423,14 @@ def run_conversation(
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                user_message=persist_user_message or user_message or "",
+                channel_id=getattr(agent, "_chat_id", None) or "",
+                channel_name=getattr(agent, "_chat_name", None) or "",
+                chat_id=getattr(agent, "_chat_id", None) or "",
+                chat_name=getattr(agent, "_chat_name", None) or "",
+                chat_type=getattr(agent, "_chat_type", None) or "",
+                thread_id=getattr(agent, "_thread_id", None) or "",
+                gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:

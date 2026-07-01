@@ -47,6 +47,9 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Replace a final response from transform_llm_output:
+    {"response_text": "Updated assistant text"}
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 """
@@ -419,10 +422,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     return result
 
 
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:
+def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Any]]:
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
-    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    def _callback(**kwargs: Any) -> Optional[Any]:
         # Matcher gate — only meaningful for tool-scoped events.
         if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
@@ -493,8 +496,8 @@ def _block_message(primary: Any, secondary: Any) -> str:
     return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
-def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
-    """Translate stdout JSON into a Hermes wire-shape dict.
+def _parse_response(event: str, stdout: str) -> Optional[Any]:
+    """Translate stdout JSON into a Hermes wire-shape value.
 
     For ``pre_tool_call`` the Claude-Code-style ``{"decision": "block",
     "reason": "..."}`` payload is translated into the canonical Hermes
@@ -506,6 +509,10 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
+
+    For ``transform_llm_output``, a non-empty ``response_text``/``text``
+    string is returned directly because the core hook contract expects a
+    string replacement, not a dict.
 
     Anything else returns ``None``.
     """
@@ -530,6 +537,13 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+        return None
+
+    if event == "transform_llm_output":
+        for key in ("response_text", "text", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                return value
         return None
 
     context = data.get("context")

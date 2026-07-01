@@ -1362,6 +1362,7 @@ def init_agent(
     try:
         _overload_retries = int(_agent_section.get("overload_max_retries", 2))
         _overload_retries = max(_overload_retries, 0)  # 0 = immediate fallback
+        _overload_retries = min(_overload_retries, _api_retries)
     except (TypeError, ValueError):
         _overload_retries = 2
     agent._overload_max_retries = _overload_retries

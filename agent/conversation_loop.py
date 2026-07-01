@@ -2940,7 +2940,7 @@ def run_conversation(
                 _should_fallback = (
                     is_rate_limited
                     or (classified.reason == FailoverReason.overloaded
-                        and retry_count >= agent._overload_max_retries)
+                        and retry_count > agent._overload_max_retries)
                     or (classified.reason == FailoverReason.timeout
                         and retry_count >= 2)
                 )

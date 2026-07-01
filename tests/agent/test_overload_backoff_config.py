@@ -12,11 +12,12 @@ def _make_agent_section(**overrides):
     return overrides
 
 
-def _apply_overload_config(agent, agent_section):
+def _apply_overload_config(agent, agent_section, api_max_retries=3):
     """Replicate the config-reading logic from agent_init.py."""
     try:
         _overload_retries = int(agent_section.get("overload_max_retries", 2))
         _overload_retries = max(_overload_retries, 0)
+        _overload_retries = min(_overload_retries, api_max_retries)
     except (TypeError, ValueError):
         _overload_retries = 2
     agent._overload_max_retries = _overload_retries
@@ -53,11 +54,11 @@ class TestOverloadConfigCustom:
     def test_custom_values(self):
         agent = MagicMock()
         _apply_overload_config(agent, _make_agent_section(
-            overload_max_retries=5,
+            overload_max_retries=3,
             overload_base_delay=10.0,
             overload_max_delay=120.0,
         ))
-        assert agent._overload_max_retries == 5
+        assert agent._overload_max_retries == 3
         assert agent._overload_base_delay == 10.0
         assert agent._overload_max_delay == 120.0
 
@@ -72,19 +73,29 @@ class TestOverloadConfigCustom:
             overload_max_retries="4",
             overload_base_delay="5.5",
             overload_max_delay="90",
-        ))
+        ), api_max_retries=5)
         assert agent._overload_max_retries == 4
         assert agent._overload_base_delay == 5.5
         assert agent._overload_max_delay == 90.0
 
 
 class TestOverloadConfigClamping:
-    """Floor clamping prevents nonsensical values."""
+    """Floor and ceiling clamping prevents nonsensical values."""
 
     def test_negative_retries_clamped_to_zero(self):
         agent = MagicMock()
         _apply_overload_config(agent, _make_agent_section(overload_max_retries=-1))
         assert agent._overload_max_retries == 0
+
+    def test_retries_clamped_to_api_max_retries(self):
+        agent = MagicMock()
+        _apply_overload_config(agent, _make_agent_section(overload_max_retries=10), api_max_retries=3)
+        assert agent._overload_max_retries == 3
+
+    def test_retries_within_api_max_retries_unchanged(self):
+        agent = MagicMock()
+        _apply_overload_config(agent, _make_agent_section(overload_max_retries=2), api_max_retries=5)
+        assert agent._overload_max_retries == 2
 
     def test_base_delay_floor(self):
         agent = MagicMock()
@@ -124,20 +135,26 @@ class TestOverloadFallbackThreshold:
 
     def _should_fallback_overloaded(self, retry_count, overload_max_retries):
         """Replicate the _should_fallback condition for overloaded."""
-        return retry_count >= overload_max_retries
+        return retry_count > overload_max_retries
 
     def test_default_threshold_triggers_at_2(self):
         assert not self._should_fallback_overloaded(0, 2)
         assert not self._should_fallback_overloaded(1, 2)
-        assert self._should_fallback_overloaded(2, 2)
+        assert not self._should_fallback_overloaded(2, 2)
         assert self._should_fallback_overloaded(3, 2)
 
-    def test_zero_threshold_triggers_immediately(self):
-        assert self._should_fallback_overloaded(0, 0)
+    def test_zero_threshold_triggers_after_first_failure(self):
+        assert not self._should_fallback_overloaded(0, 0)
+        assert self._should_fallback_overloaded(1, 0)
+
+    def test_one_retry_is_distinguishable_from_zero(self):
+        assert not self._should_fallback_overloaded(1, 1)
+        assert self._should_fallback_overloaded(2, 1)
 
     def test_high_threshold_delays_fallback(self):
         assert not self._should_fallback_overloaded(4, 5)
-        assert self._should_fallback_overloaded(5, 5)
+        assert not self._should_fallback_overloaded(5, 5)
+        assert self._should_fallback_overloaded(6, 5)
 
 
 # ── Test: backoff delay uses configured values ────────────────────────

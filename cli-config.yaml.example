@@ -640,8 +640,9 @@ agent:
 
   # Overload (503/529) retry policy. Controls how many retries to attempt
   # before falling back (if fallback configured) or surfacing the error.
-  # Set to 0 for immediate fallback on first overload signal. Must be <=
-  # api_max_retries to take effect (the outer loop is the hard ceiling).
+  # Set to 0 for immediate fallback after the first overload failure.
+  # Automatically clamped to api_max_retries (values above are silently
+  # reduced so the overload threshold never exceeds the outer retry loop).
   # overload_max_retries: 2
 
   # Base delay (seconds) for the first overload retry. Subsequent retries

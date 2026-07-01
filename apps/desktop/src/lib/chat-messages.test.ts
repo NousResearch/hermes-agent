@@ -82,6 +82,28 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
   })
 
+  it('hides internal todo snapshots injected by context compression', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'real question', timestamp: 1 },
+      {
+        role: 'user',
+        content:
+          '[Your active task list was preserved across context compression]\n- [>] work. continue (in_progress)',
+        timestamp: 2
+      },
+      {
+        role: 'system',
+        content:
+          '[Your active task list was preserved across context compression]\n- [ ] hidden. not user content (pending)',
+        timestamp: 3
+      },
+      { role: 'assistant', content: 'real answer', timestamp: 4 }
+    ])
+
+    expect(messages).toHaveLength(2)
+    expect(messages.map(message => chatMessageText(message))).toEqual(['real question', 'real answer'])
+  })
+
   it('renders MEDIA tags as assistant attachment links', () => {
     const [message] = toChatMessages([
       {

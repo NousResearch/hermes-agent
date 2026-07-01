@@ -3623,9 +3623,19 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
+            role = row["role"]
+            try:
+                from tools.todo_tool import is_todo_injection_content
+            except Exception:
+                is_todo_injection_content = lambda _content: False
+            if is_todo_injection_content(content):
+                # Legacy rows were persisted as role='user'. Treat them as
+                # internal replay hints so a preserved todo list cannot become
+                # the active/latest user turn after resume or compression.
+                role = "system"
+            if role in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
-            msg = {"role": row["role"], "content": content}
+            msg = {"role": role, "content": content}
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

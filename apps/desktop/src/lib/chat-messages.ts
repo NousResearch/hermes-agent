@@ -131,6 +131,7 @@ export function chatMessageText(message: ChatMessage): string {
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const TODO_INJECTION_PREFIX = '[Your active task list was preserved across context compression]'
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -702,6 +703,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   let pendingToolTimestamp: number | undefined
   let activeAssistantIndex: null | number = null
 
+  const isInternalTodoInjection = (message: SessionMessage): boolean => {
+    const content = textFromUnknown(message.content || message.text || message.context || message.name)
+
+    return content.startsWith(TODO_INJECTION_PREFIX)
+  }
+
   const clearPendingTools = () => {
     pendingToolParts = []
     pendingToolTimestamp = undefined
@@ -745,6 +752,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (isInternalTodoInjection(message)) {
+      // This is a hidden replay hint inserted after context compression. It is
+      // not a user-authored chat turn, and rendering it makes Desktop look like
+      // chats are mixing with internal state from earlier compactions.
+      return
+    }
+
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 

@@ -5,11 +5,13 @@ inherits the user's CWD. A local package (e.g. ``utils/``) in that CWD shadows
 the installed hermes ``utils`` module and crashes the worker on ``import cli``
 (``ImportError: cannot import name 'atomic_replace' from 'utils'``).
 
-#15989 added this guard to the sibling entrypoint ``tui_gateway/entry.py`` but
-missed this child, so the crash still reproduced. slash_worker.py must sanitize
-sys.path before its first non-stdlib import.
+#51693 added this guard to the sibling entrypoints ``tui_gateway/entry.py`` and
+``acp_adapter/entry.py`` (via the shared ``hermes_bootstrap.harden_import_path``
+helper) but missed this child, so the crash still reproduced. slash_worker.py
+must run the guard before its first non-stdlib import.
 """
 
+import ast
 import os
 import subprocess
 import sys
@@ -49,12 +51,42 @@ def test_slash_worker_imports_from_cwd_with_colliding_utils(tmp_path):
 
 def test_sys_path_guard_runs_before_cli_import():
     """The guard must execute before ``import cli`` — reordering it below the
-    import would re-introduce the shadowing crash."""
+    import would re-introduce the shadowing crash. Assert via AST that the
+    ``hermes_bootstrap.harden_import_path()`` call precedes ``import cli``."""
     src = (PROJECT_ROOT / "tui_gateway" / "slash_worker.py").read_text()
-    guard = 'sys.path = [p for p in sys.path if p not in {"", "."}]'
-    cli_import = "import cli as cli_mod"
-    assert guard in src, "sys.path shadowing guard missing from slash_worker.py"
-    assert cli_import in src, "expected 'import cli as cli_mod' in slash_worker.py"
-    assert src.index(guard) < src.index(cli_import), (
-        "sys.path guard must run before 'import cli' (issue #51286)"
+    tree = ast.parse(src)
+
+    harden_call_line = None
+    cli_import_line = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "harden_import_path"
+        ):
+            if harden_call_line is None:
+                harden_call_line = node.lineno
+        if isinstance(node, ast.Import) and any(a.name == "cli" for a in node.names):
+            if cli_import_line is None:
+                cli_import_line = node.lineno
+
+    assert harden_call_line is not None, (
+        "slash_worker.py must call hermes_bootstrap.harden_import_path()"
+    )
+    assert cli_import_line is not None, "slash_worker.py must 'import cli'"
+    assert harden_call_line < cli_import_line, (
+        "harden_import_path() must run before 'import cli' (issue #51286)"
+    )
+
+
+def test_guard_delegates_to_shared_helper_not_inline():
+    """slash_worker should delegate to the shared guard, not re-implement the
+    old inline ``{"", "."}`` sys.path filter that #51693 replaced."""
+    src = (PROJECT_ROOT / "tui_gateway" / "slash_worker.py").read_text()
+    assert '{"", "."}' not in src and "{'', '.'}" not in src, (
+        "slash_worker.py should delegate to hermes_bootstrap.harden_import_path, "
+        "not re-implement the guard inline"
+    )
+    assert "hermes_bootstrap.harden_import_path()" in src, (
+        "slash_worker.py must call the shared hermes_bootstrap.harden_import_path guard"
     )

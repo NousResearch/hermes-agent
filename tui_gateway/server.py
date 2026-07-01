@@ -2977,7 +2977,13 @@ def _get_usage(agent) -> dict:
         # fabricated 0% or the old cumulative reading. The built-in compressor
         # always reports a real last_prompt_tokens once a turn runs, so it is
         # unaffected.
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (conversation_compression.py) to 0 so the transitional turn reads as
+        # unknown (no gauge) instead of leaking context_used=-1. Matches the
+        # CLI status-bar path (cli.py _get_status_bar_snapshot).
         last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        if last_prompt < 0:
+            last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max and last_prompt:
             usage["context_used"] = last_prompt

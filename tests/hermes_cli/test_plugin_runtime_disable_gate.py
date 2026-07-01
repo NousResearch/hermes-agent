@@ -112,6 +112,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/hot/probe",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -142,6 +143,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/hot/probe",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -172,6 +174,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/hot/probe",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -203,6 +206,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/bundledx/probe",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -233,6 +237,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/bundledx/probe",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -259,6 +264,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/status",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 
@@ -283,6 +289,7 @@ class TestPluginApiRuntimeGate:
             "path": "/api/plugins/unknown/action",
             "query_string": b"",
             "headers": [],
+            "state": {"token_authenticated": True},
         }
         request = Request(scope)
 

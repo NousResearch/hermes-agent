@@ -29,10 +29,21 @@ class ShadowImageGatewayProvider(ImageGenProvider):
 
 
 class RunningImageGateway:
-    def __init__(self, *, fail: bool = False, leak: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        leak: str = "",
+        signed_url: str | None = "http://files.internal/generated/test.png",
+        b64_json: str = "",
+        mime_type: str = "image/png",
+    ) -> None:
         self.requests: list[dict[str, Any]] = []
         self.fail = fail
         self.leak = leak
+        self.signed_url = signed_url
+        self.b64_json = b64_json
+        self.mime_type = mime_type
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -71,13 +82,14 @@ class RunningImageGateway:
                     "assets": [
                         {
                             "id": "asset_test_gateway",
-                            "mime_type": "image/png",
+                            "mime_type": owner.mime_type,
                             "size": 68,
                             "checksum": "sha256-test",
                             "width": 1,
                             "height": 1,
                             "format": "png",
-                            "signed_url": "http://files.internal/generated/test.png",
+                            "signed_url": owner.signed_url,
+                            "b64_json": owner.b64_json,
                             "metadata": {"unsafe": owner.leak},
                         }
                     ],
@@ -249,6 +261,86 @@ def test_managed_image_gateway_omits_stale_model_when_no_managed_model_env(tmp_p
     assert body["success"] is True
     assert body["model"] == "karinai/fake-image"
     assert "model" not in gateway.requests[0]["body"]
+
+
+def test_managed_image_gateway_uses_bounded_data_url_when_no_signed_url(tmp_path, monkeypatch):
+    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    with RunningImageGateway(signed_url=None, b64_json=tiny_png_b64) as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw without a signed url"})
+
+    body = json.loads(raw)
+    assert body["success"] is True
+    assert body["image"] == f"data:image/png;base64,{tiny_png_b64}"
+    assert "b64_json" not in json.dumps(body.get("assets", []))
+    assert "metadata" not in json.dumps(body.get("assets", []))
+    assert len(gateway.requests) == 1
+
+
+def test_managed_image_gateway_rejects_invalid_b64_fallback(tmp_path, monkeypatch):
+    with RunningImageGateway(signed_url=None, b64_json="not-valid-base64") as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw invalid b64"})
+
+    body = json.loads(raw)
+    assert body["success"] is False
+    assert body["error_type"] == "image_gateway_contract"
+    assert "invalid b64" in body["error"]
+    assert len(gateway.requests) == 1
+
+
+def test_managed_image_gateway_rejects_oversized_b64_fallback(tmp_path, monkeypatch):
+    oversized_b64 = "A" * 2_000_004
+    with RunningImageGateway(signed_url=None, b64_json=oversized_b64) as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw oversized b64"})
+
+    body = json.loads(raw)
+    assert body["success"] is False
+    assert body["error_type"] == "image_gateway_contract"
+    assert "data URL limit" in body["error"]
+    assert len(gateway.requests) == 1
+
+
+def test_managed_image_gateway_rejects_unsupported_data_url_mime(tmp_path, monkeypatch):
+    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    with RunningImageGateway(signed_url=None, b64_json=tiny_png_b64, mime_type="image/svg+xml") as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw unsupported mime"})
+
+    body = json.loads(raw)
+    assert body["success"] is False
+    assert body["error_type"] == "image_gateway_contract"
+    assert "unsupported image MIME" in body["error"]
+    assert len(gateway.requests) == 1
 
 
 def test_managed_image_gateway_missing_runtime_token_fails_closed(tmp_path, monkeypatch):

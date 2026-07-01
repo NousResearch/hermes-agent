@@ -355,6 +355,50 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     assert "q1" in joined and "a1" in joined and "q2 current" in joined
 
 
+def test_reference_messages_merges_consecutive_user_turns():
+    """Adjacent same-role turns are merged so the advisory view alternates.
+
+    Strict providers (Anthropic, Bedrock, Mistral) reject any request whose
+    ``messages[]`` has two consecutive same-role entries with
+    ``400 ... roles must alternate``. Two ordinary history shapes produce
+    consecutive ``user`` turns in the view: (a) two adjacent user turns in
+    ``messages`` (e.g. an injected snapshot user turn), and (b) an empty
+    assistant turn between two users, which is dropped and collapses
+    ``[user, assistant(empty), user]`` to ``[user, user]``. Both must be merged,
+    with each turn's text preserved.
+    """
+    from agent.moa_loop import _reference_messages
+
+    # (a) adjacent user turns.
+    view_a = _reference_messages(
+        [
+            {"role": "user", "content": "reminder"},
+            {"role": "user", "content": "real q"},
+            {"role": "assistant", "content": "a"},
+        ]
+    )
+    assert all(
+        view_a[i]["role"] != view_a[i + 1]["role"] for i in range(len(view_a) - 1)
+    )
+    joined_a = "\n".join(m["content"] for m in view_a)
+    assert "reminder" in joined_a and "real q" in joined_a
+
+    # (b) empty assistant turn between two users collapses to consecutive users.
+    view_b = _reference_messages(
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a"},
+        ]
+    )
+    assert all(
+        view_b[i]["role"] != view_b[i + 1]["role"] for i in range(len(view_b) - 1)
+    )
+    joined_b = "\n".join(m["content"] for m in view_b)
+    assert "q1" in joined_b and "q2" in joined_b
+
+
 def test_reference_messages_truncates_large_tool_results():
     """Large tool results are previewed head+tail, not replayed verbatim."""
     from agent.moa_loop import _REFERENCE_TOOL_RESULT_BUDGET, _reference_messages

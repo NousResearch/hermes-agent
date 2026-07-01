@@ -410,6 +410,22 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
+
+    def _append_or_merge(role: str, content: str) -> None:
+        # Strict providers (Anthropic, Bedrock, Mistral) reject any request whose
+        # messages[] has two consecutive same-role entries with
+        # ``400 ... roles must alternate``. Two ordinary history shapes produce
+        # consecutive ``user`` turns here — adjacent user turns in ``messages``,
+        # and an empty assistant turn dropped between two users, collapsing
+        # ``[user, assistant(empty), user]`` to ``[user, user]``. Merge adjacent
+        # same-role turns as the view is built so the advisory copy stays
+        # alternating (preserving the end-on-user + no-tool-role guarantees).
+        if rendered and rendered[-1]["role"] == role:
+            prior = rendered[-1]["content"]
+            rendered[-1]["content"] = f"{prior}\n\n{content}" if prior else content
+        else:
+            rendered.append({"role": role, "content": content})
+
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
@@ -420,7 +436,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "user":
             if text.strip():
                 last_user_content = text
-            rendered.append({"role": "user", "content": text})
+            _append_or_merge("user", text)
         elif role == "assistant":
             parts: list[str] = []
             if text.strip():
@@ -430,7 +446,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 parts.append(calls_text)
             # Empty assistant turns (no text, no calls) carry nothing advisory.
             if parts:
-                rendered.append({"role": "assistant", "content": "\n".join(parts)})
+                _append_or_merge("assistant", "\n".join(parts))
         elif role == "tool":
             # Fold the tool result into the preceding assistant turn as text so
             # the reference sees what came back, without emitting a tool-role
@@ -442,7 +458,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 # No assistant turn to attach to (e.g. a leading tool result);
                 # keep it as advisory context on its own assistant-role line.
-                rendered.append({"role": "assistant", "content": block})
+                _append_or_merge("assistant", block)
         # Any other role is ignored.
 
     # End on a user turn: append a synthetic advisory request rather than

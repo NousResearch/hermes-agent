@@ -4373,6 +4373,18 @@ def clear_model_endpoint_credentials(
     return model_cfg
 
 
+def _normalize_model_api_key_for_save(config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(config, dict):
+        return config
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        return config
+    api_key = model_cfg.get("api_key")
+    if api_key is None or isinstance(api_key, (int, float, bool)):
+        model_cfg["api_key"] = ""
+    return config
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
@@ -6599,6 +6611,7 @@ def save_config(
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
             )
+        normalized = _normalize_model_api_key_for_save(normalized)
 
         # Strip schema-default values so the user's custom settings are not
         # silently reset on every save.  Keys the user explicitly set (paths

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-
-from hermes_cli.config import load_config, save_config, save_env_value, get_env_value
+from hermes_cli.config import (
+    get_env_value,
+    load_config,
+    save_config,
+    save_env_value,
+)
 
 
 def _write_provider(provider: str, model: str = "test-model"):
@@ -72,3 +76,18 @@ class TestClearStaleOpenaiBaseUrl:
         result = get_env_value("OPENAI_BASE_URL")
         assert result == "http://localhost:11434/v1", \
             "Should not clear when provider is not configured"
+
+    def test_numeric_model_api_key_normalizes_to_empty_string(self):
+        from hermes_cli.config import _normalize_model_api_key_for_save
+
+        cfg = {
+            "model": {
+                "provider": "custom:example",
+                "default": "test-model",
+                "api_key": 0,
+            }
+        }
+
+        result = _normalize_model_api_key_for_save(cfg)
+
+        assert result["model"]["api_key"] == ""

@@ -58,6 +58,8 @@ const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+const BROWSER_TOOL_KEY_HINT_RE = /(path|file|artifact|output|download|target|screenshot)/i
+const EPOCH_SECONDS_CUTOFF = 1_000_000_000_000
 
 const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
@@ -80,6 +82,44 @@ function parseMaybeJson(value: string): unknown {
   } catch {
     return null
   }
+}
+
+function untrustedToolPayload(value: string): null | string {
+  const trimmed = value.trim()
+  const openTag = trimmed.match(/^<untrusted_tool_result\b[^>]*>\s*/)
+
+  if (!openTag) {
+    return null
+  }
+
+  const closeIndex = trimmed.lastIndexOf('</untrusted_tool_result>')
+
+  if (closeIndex <= openTag[0].length) {
+    return null
+  }
+
+  const wrapped = trimmed.slice(openTag[0].length, closeIndex).trim()
+  const payloadStart = wrapped.indexOf('\n\n')
+
+  return (payloadStart === -1 ? wrapped : wrapped.slice(payloadStart + 2)).trim()
+}
+
+function parseToolPayloads(text: string): unknown[] {
+  const parsed: unknown[] = []
+
+  for (const candidate of [text, untrustedToolPayload(text)]) {
+    if (!candidate) {
+      continue
+    }
+
+    const value = parseMaybeJson(candidate)
+
+    if (value !== null) {
+      parsed.push(value)
+    }
+  }
+
+  return parsed
 }
 
 function looksLikePathOrUrl(value: string): boolean {
@@ -150,6 +190,23 @@ function artifactLabel(value: string): string {
   }
 }
 
+function normalizeArtifactTimestamp(timestamp: null | number | undefined): number | null {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) {
+    return null
+  }
+
+  return timestamp < EPOCH_SECONDS_CUTOFF ? timestamp * 1000 : timestamp
+}
+
+function artifactTimestamp(message: SessionMessage, session: SessionInfo): number {
+  return (
+    normalizeArtifactTimestamp(message.timestamp) ??
+    normalizeArtifactTimestamp(session.last_active) ??
+    normalizeArtifactTimestamp(session.started_at) ??
+    Date.now()
+  )
+}
+
 function messageText(message: SessionMessage): string {
   if (typeof message.content === 'string' && message.content.trim()) {
     return message.content
@@ -164,6 +221,26 @@ function messageText(message: SessionMessage): string {
   }
 
   return ''
+}
+
+function toolNameForMessage(message: SessionMessage): string {
+  const raw = message.tool_name || message.name
+
+  return typeof raw === 'string' ? raw.toLowerCase() : ''
+}
+
+function isBrowserToolMessage(message: SessionMessage): boolean {
+  if (message.role !== 'tool') {
+    return false
+  }
+
+  const toolName = toolNameForMessage(message)
+
+  return toolName.includes('browser') || toolName.includes('cdp') || toolName.includes('playwright')
+}
+
+function hasArtifactKeyHint(keyPath: string, browserTool: boolean): boolean {
+  return (browserTool ? BROWSER_TOOL_KEY_HINT_RE : KEY_HINT_RE).test(keyPath)
 }
 
 function collectStringValues(
@@ -226,8 +303,9 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
 
 function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
   const text = messageText(message)
+  const browserTool = isBrowserToolMessage(message)
 
-  if (text) {
+  if (text && !browserTool) {
     collectArtifactsFromText(text, pushValue)
   }
 
@@ -244,16 +322,14 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
           return
         }
 
-        if (KEY_HINT_RE.test(keyPath) && (looksLikePathOrUrl(normalized) || FILE_EXT_RE.test(normalized))) {
+        if (hasArtifactKeyHint(keyPath, false) && (looksLikePathOrUrl(normalized) || FILE_EXT_RE.test(normalized))) {
           pushValue(normalized)
         }
       })
     }
   }
 
-  const parsed = parseMaybeJson(text)
-
-  if (parsed !== null) {
+  for (const parsed of parseToolPayloads(text)) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
       const normalized = normalizeValue(value)
 
@@ -261,7 +337,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
         return
       }
 
-      if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
+      if (
+        (hasArtifactKeyHint(keyPath, browserTool) || (!browserTool && looksLikePathOrUrl(normalized))) &&
+        looksLikeArtifact(normalized)
+      ) {
         pushValue(normalized)
       }
     })
@@ -298,7 +377,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: artifactTimestamp(message, session)
       })
     })
   }
@@ -307,7 +386,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 }
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return ARTIFACT_TIME_FMT.format(new Date(normalizeArtifactTimestamp(timestamp) ?? timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

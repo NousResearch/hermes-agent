@@ -2580,6 +2580,89 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_prefers_fresh_final_streaming_for_markdown(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        self.assertTrue(adapter.prefers_fresh_final_streaming("可以用 **粗体**。"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_prefers_fresh_final_streaming_false_for_plain_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        self.assertFalse(adapter.prefers_fresh_final_streaming("plain final text"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_prefers_fresh_final_streaming_false_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        self.assertFalse(
+            adapter.prefers_fresh_final_streaming("| A | B |\n|---|---|\n| 1 | 2 |")
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_stream_consumer_fresh_final_uses_feishu_post_send_for_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id=f"om_{len(captured)}"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+        adapter.delete_message = AsyncMock(return_value=True)
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        async def _run():
+            consumer = GatewayStreamConsumer(
+                adapter,
+                "oc_chat",
+                StreamConsumerConfig(fresh_final_after_seconds=0.0),
+            )
+            self.assertTrue(adapter.prefers_fresh_final_streaming("最终 **粗体**"))
+
+            await consumer._send_or_edit("preview text")
+            self.assertTrue(consumer._adapter_prefers_fresh_final("最终 **粗体**"))
+            await consumer._send_or_edit("最终 **粗体**", finalize=True)
+
+            self.assertEqual(consumer.message_id, "om_2")
+            self.assertTrue(consumer.final_response_sent)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            asyncio.run(_run())
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0].request_body.msg_type, "text")
+        self.assertEqual(captured[1].request_body.msg_type, "post")
+        payload = json.loads(captured[1].request_body.content)
+        self.assertEqual(payload["zh_cn"]["content"][0], [{"tag": "md", "text": "最终 **粗体**"}])
+        adapter.delete_message.assert_awaited_once_with("oc_chat", "om_1")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

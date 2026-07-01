@@ -19326,7 +19326,7 @@ def main():
 
 
 def _exit_after_graceful_shutdown(exit_code: int) -> None:
-    """Flush stdio + logging, then hard-exit with ``exit_code``.
+    """Flush stdio, release the PID file + runtime lock, then hard-exit.
 
     Graceful teardown is already complete by the time this runs, so there is
     nothing left that needs a clean interpreter shutdown. We deliberately use
@@ -19334,12 +19334,19 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     triggers ``Py_FinalizeEx`` → ``wait_for_thread_shutdown`` and joins every
     non-daemon thread — exactly the hang (#53107) a wedged tool-worker causes.
 
-    ``os._exit`` also bypasses ``atexit`` handlers. That is safe here: the
-    gateway's atexit-registered cleanup (``remove_pid_file``,
-    ``release_gateway_runtime_lock``) is also performed explicitly inside
-    ``start_gateway``'s teardown, so nothing is leaked. Any NEW atexit handler
-    added to this process would be skipped — perform such cleanup in the
-    teardown path, not via atexit.
+    ``os._exit`` bypasses ``atexit`` handlers, so we cannot rely on the
+    ``atexit``-registered ``remove_pid_file`` / ``release_gateway_runtime_lock``
+    (registered in ``start_gateway``) to run. The full-shutdown path releases
+    both explicitly in ``_stop_impl``, but the EARLY exit paths —
+    clean-fatal-config (#51228) and startup-aborted-before-running — raise
+    ``SystemExit`` right after ``runner.start()`` without going through
+    ``_stop_impl``, so on those paths ``atexit`` was the only thing releasing
+    them. Now that those paths are routed through this backstop (#53107),
+    release both here explicitly. Both calls are idempotent —
+    ``remove_pid_file`` only unlinks a PID file that belongs to this process,
+    and ``release_gateway_runtime_lock`` no-ops when the lock is already
+    released — so this is a no-op on the normal shutdown path and the actual
+    cleanup on the early-exit paths.
 
     Logging is not flushed here: the gateway's handlers are synchronous
     ``RotatingFileHandler``s that write each record immediately (no
@@ -19351,6 +19358,14 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
             stream.flush()
         except Exception:
             pass
+    # Guaranteed cleanup chokepoint: os._exit skips atexit, and the early
+    # SystemExit exit paths never run _stop_impl, so release here (idempotent).
+    try:
+        from gateway.status import remove_pid_file, release_gateway_runtime_lock
+        remove_pid_file()
+        release_gateway_runtime_lock()
+    except Exception:
+        pass
     os._exit(exit_code)
 
 

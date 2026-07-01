@@ -85,7 +85,8 @@ def test_normalize_lang_accepts_supported():
 
 def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("chinese") == "zh"
-    assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n._normalize_lang("simplified-chinese") == "zh"
+    assert i18n._normalize_lang("traditional-chinese") == "zh-hant"
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
@@ -95,6 +96,10 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+
+
+def test_normalize_lang_does_not_infer_chinese_language_from_extra_zh_values():
+    assert i18n._normalize_lang("zh-extra") == "en"
 
 
 def test_normalize_lang_unknown_falls_back():

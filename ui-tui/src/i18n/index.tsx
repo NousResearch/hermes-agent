@@ -96,6 +96,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ru-ru': 'ru',
   русский: 'ru',
   spanish: 'es',
+  'simplified-chinese': 'zh',
   'traditional-chinese': 'zh-hant',
   turkish: 'tr',
   türkçe: 'tr',
@@ -105,16 +106,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ukrainisch: 'uk',
   'uk-ua': 'uk',
   українська: 'uk',
-  'zh-cn': 'zh',
-  'zh-hans': 'zh',
-  'zh-hans-cn': 'zh',
   'zh-hant': 'zh-hant',
-  'zh-hant-hk': 'zh-hant',
-  'zh-hant-tw': 'zh-hant',
-  'zh-hk': 'zh-hant',
-  'zh-mo': 'zh-hant',
-  'zh-sg': 'zh',
-  'zh-tw': 'zh-hant',
 }
 
 // ── Locale-specific transient trail patterns ───────────────────
@@ -146,6 +138,10 @@ export const normalizeLocale = (value: unknown): Locale => {
 
   const alias = LOCALE_ALIASES[raw]
   if (alias) {return alias}
+
+  // Chinese is limited to two explicit language choices here. Do not collapse
+  // extra zh-* values to Simplified/Traditional.
+  if (raw.startsWith('zh-')) {return 'en'}
 
   const primary = raw.split('-', 1)[0]
   if ((LOCALES as readonly string[]).includes(primary)) {return primary as Locale}

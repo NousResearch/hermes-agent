@@ -46,17 +46,17 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
 )
 DEFAULT_LANGUAGE = "en"
 
-# Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
+# Accept a few natural aliases so users who type "chinese" / "simplified-chinese" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "english": "en", "en-us": "en", "en-gb": "en",
-    # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
+    # Chinese is handled as two explicit language choices here:
+    # Simplified Chinese and Traditional Chinese.
+    # Bare "chinese" / "mandarin"
     # also default to Simplified since that's the larger user base.
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    # Traditional Chinese — distinct catalog.  Cover Taiwan / Hong Kong / Macau
-    # locale tags plus the common "traditional" alias.
+    "chinese": "zh", "mandarin": "zh", "simplified-chinese": "zh",
+    "simplified_chinese": "zh",
     "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
@@ -142,7 +142,8 @@ def _normalize_lang(value: Any) -> str:
     """Normalize a user-supplied language value to a supported code.
 
     Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
-    and case-insensitive regional tags (``zh-CN`` -> ``zh``).  Returns the
+    and explicit Chinese language choices (``simplified-chinese`` -> ``zh``).
+    Returns the
     default language for unknown values.
     """
     if not isinstance(value, str):
@@ -154,8 +155,12 @@ def _normalize_lang(value: Any) -> str:
         return key
     if key in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[key]
-    # Try stripping a region suffix (e.g. "pt-br" -> "pt" won't be supported,
-    # but "zh-CN" -> "zh" will).
+    # Chinese is limited to two explicit language choices here. Do not collapse
+    # extra zh-* values to Simplified/Traditional.
+    if key.startswith("zh-"):
+        return DEFAULT_LANGUAGE
+
+    # Try stripping a region suffix (e.g. "pt-br" -> "pt").
     base = key.split("-", 1)[0]
     if base in SUPPORTED_LANGUAGES:
         return base

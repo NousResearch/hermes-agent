@@ -174,20 +174,20 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('english')).toBe('en')
   })
 
-  it('aliases: zh-cn / zh-hans / chinese → zh', () => {
-    expect(normalizeLocale('zh-cn')).toBe('zh')
-    expect(normalizeLocale('zh-hans')).toBe('zh')
-    expect(normalizeLocale('zh_Hans_CN')).toBe('zh')
+  it('aliases: simplified-chinese / chinese → zh', () => {
+    expect(normalizeLocale('simplified chinese')).toBe('zh')
     expect(normalizeLocale('chinese')).toBe('zh')
     expect(normalizeLocale('mandarin')).toBe('zh')
   })
 
-  it('aliases: zh-tw / zh-hk → zh-hant', () => {
-    expect(normalizeLocale('zh-tw')).toBe('zh-hant')
-    expect(normalizeLocale('zh-hk')).toBe('zh-hant')
-    expect(normalizeLocale('zh_Hant_TW')).toBe('zh-hant')
+  it('aliases: zh-hant / traditional-chinese → zh-hant', () => {
+    expect(normalizeLocale('zh-hant')).toBe('zh-hant')
     expect(normalizeLocale('traditional-chinese')).toBe('zh-hant')
     expect(normalizeLocale('traditional chinese')).toBe('zh-hant')
+  })
+
+  it('does not infer Chinese language from extra zh values', () => {
+    expect(normalizeLocale('zh-extra')).toBe('en')
   })
 
   it('aliases: japanese / jp → ja', () => {

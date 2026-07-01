@@ -128,15 +128,7 @@ function normalizeLocale(value: unknown): Locale | null {
   const alias = LOCALE_ALIASES[normalized];
   if (alias) return alias;
 
-  if (
-    normalized === "zh-tw" ||
-    normalized === "zh-hk" ||
-    normalized === "zh-mo" ||
-    normalized.startsWith("zh-hant")
-  ) {
-    return "zh-hant";
-  }
-  if (normalized.startsWith("zh")) return "zh";
+  if (normalized.startsWith("zh-")) return null;
 
   const primary = normalized.split("-")[0];
   return isLocale(primary) ? primary : null;

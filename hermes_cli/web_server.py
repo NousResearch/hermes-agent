@@ -7019,6 +7019,14 @@ def _start_anthropic_pkce(profile: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _coerce_anthropic_pkce_expires_in(value: Any) -> int:
+    try:
+        expires_in = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 3600
+    return expires_in if expires_in > 0 else 3600
+
+
 def _submit_anthropic_pkce(
     session_id: str,
     code_input: str,
@@ -7077,7 +7085,7 @@ def _submit_anthropic_pkce(
 
     access_token = result.get("access_token", "")
     refresh_token = result.get("refresh_token", "")
-    expires_in = int(result.get("expires_in") or 3600)
+    expires_in = _coerce_anthropic_pkce_expires_in(result.get("expires_in"))
     if not access_token:
         with _oauth_sessions_lock:
             sess["status"] = "error"

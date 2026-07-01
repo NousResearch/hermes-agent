@@ -460,6 +460,55 @@ def test_anthropic_pkce_branch_still_works():
     assert "claude.ai" in body["auth_url"]
 
 
+def test_anthropic_pkce_submit_defaults_malformed_expires_in(monkeypatch):
+    """A malformed optional token TTL must not discard a successful login."""
+    from hermes_cli import web_server as ws
+
+    class _FakeTokenResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return (
+                b'{"access_token":"anthropic-access",'
+                b'"refresh_token":"anthropic-refresh","expires_in":"soon"}'
+            )
+
+    saved = {}
+    monkeypatch.setattr(
+        ws.urllib.request, "urlopen", lambda *a, **k: _FakeTokenResponse()
+    )
+    monkeypatch.setattr(
+        ws,
+        "_save_anthropic_oauth_creds",
+        lambda access, refresh, expires_at_ms: saved.update(
+            {
+                "access": access,
+                "refresh": refresh,
+                "expires_at_ms": expires_at_ms,
+            }
+        ),
+    )
+
+    session_id, sess = ws._new_oauth_session("anthropic", "pkce")
+    sess["verifier"] = "verifier"
+    sess["state"] = "state"
+
+    try:
+        result = ws._submit_anthropic_pkce(session_id, "auth-code#state")
+        assert result == {"ok": True, "status": "approved"}
+        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        assert saved["access"] == "anthropic-access"
+        assert saved["refresh"] == "anthropic-refresh"
+        ttl_ms = saved["expires_at_ms"] - int(time.time() * 1000)
+        assert 3_500_000 <= ttl_ms <= 3_700_000
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_xai_oauth_listed_as_loopback_flow():
     """xAI Grok OAuth must surface in the catalog as a first-class loopback flow."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)

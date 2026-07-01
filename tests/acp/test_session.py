@@ -330,6 +330,54 @@ class TestListAndCleanup:
             m["content"] for m in db.get_messages_as_conversation(state.session_id)
         ] == ["v2 replaced"]
 
+    def test_save_session_preserves_archived_rows_on_model_switch(self, tmp_path):
+        """Regression (#50405 W1/W2): a save by a fresh, non-self-persisting
+        agent must not destroy compaction-archived rows.
+
+        Model switches and /restore mint a brand-new agent with
+        ``_session_db_created=False`` (so it does NOT "own" persistence) and
+        then immediately call save_session. If the session had already
+        compacted, a blind full-history replace would DELETE the archived
+        active=0/compacted=1 rows — the same data loss the owned-agent guard
+        prevents. When archived rows exist, _persist must replace only the live
+        set (active_only) and leave the archived transcript intact.
+        """
+        from types import SimpleNamespace
+
+        db = SessionDB(tmp_path / "state.db")
+        # Use a mock agent factory so create_session doesn't spin up a real
+        # AIAgent (which needs credentials and leaks provider-probe state across
+        # xdist workers). The factory's agent does NOT own persistence to db.
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+
+        # Session flushed a live turn, then compaction archived it.
+        db.append_message(
+            session_id=state.session_id, role="user", content="archived needle"
+        )
+        db.archive_and_compact(
+            state.session_id, [{"role": "user", "content": "compacted summary"}]
+        )
+
+        # Model switch: a fresh agent bound to THIS db but not yet self-created.
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = [{"role": "user", "content": "compacted summary"}]
+        manager.save_session(state.session_id)
+
+        # Archived pre-compaction turn survives and stays discoverable.
+        contents = [
+            m["content"]
+            for m in db.get_messages(state.session_id, include_inactive=True)
+        ]
+        assert "archived needle" in contents
+        assert "compacted summary" in contents
+        hits = {r["session_id"] for r in db.search_messages("needle")}
+        assert state.session_id in hits
+
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()

@@ -84,3 +84,28 @@ class TestFlushOverrideMutation:
 
         # Caller's message must NOT have the timestamp injected
         assert "timestamp" not in messages[0]
+
+    def test_repeated_flush_does_not_duplicate_user_message(self):
+        """Second flush of the same messages list must not re-persist the
+        override target.  (#56318)
+
+        Before the fix, the _DB_PERSISTED_MARKER was stamped on the copy
+        (not the caller's live dict), so a second flush saw the original
+        as unmarked and appended it to the DB again.
+        """
+        agent = self._make_agent()
+        messages = [
+            {"role": "user", "content": "synthetic clean"},
+        ]
+
+        agent._flush_messages_to_session_db(messages, [])
+        agent._flush_messages_to_session_db(messages, [])
+
+        user_calls = [
+            c
+            for c in agent._session_db.append_message.call_args_list
+            if c.kwargs.get("role") == "user"
+        ]
+        assert len(user_calls) == 1, (
+            f"Expected exactly 1 user DB write, got {len(user_calls)}"
+        )

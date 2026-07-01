@@ -1747,10 +1747,19 @@ class AIAgent:
         # tool-execution loop re-uses that list for subsequent API calls
         # where the original user text must remain intact. (#56303)
         idx = getattr(self, "_persist_user_message_idx", None)
+        _original_override_msg = None
         if idx is not None and 0 <= idx < len(messages):
+            _original_override_msg = messages[idx]
             messages = list(messages)
             messages[idx] = dict(messages[idx])
         self._apply_persist_user_message_override(messages)
+        # Mark the *original* message so repeated flushes skip it.
+        # The copy above isolates the override rewrite, but the persist
+        # loop stamps _DB_PERSISTED_MARKER on the copy, not the caller's
+        # live dict.  Without this, a second flush sees the original as
+        # unmarked and appends it a second time.  (#56318)
+        if _original_override_msg is not None:
+            _original_override_msg[_DB_PERSISTED_MARKER] = True
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:

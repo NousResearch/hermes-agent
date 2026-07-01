@@ -241,6 +241,20 @@ PLATFORMS = {
 # Toolsets not in this map either need no config or use the simple fallback.
 
 TOOL_CATEGORIES = {
+    "moa": {
+        "name": "Mixture of Agents (MoA)",
+        "description": "Multi-agent orchestration preset",
+        "icon": "🧠",
+        "providers": [
+            {
+                "name": "Standard MoA",
+                "tag": "Balanced routing via OpenRouter",
+                "env_vars": [
+                    {"key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys"}
+                ]
+            }
+        ]
+    },
     "tts": {
         "name": "Text-to-Speech",
         "icon": "🔊",

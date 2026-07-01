@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -283,6 +284,32 @@ def test_managed_image_gateway_uses_bounded_data_url_when_no_signed_url(tmp_path
     assert "metadata" not in json.dumps(body.get("assets", []))
     assert len(gateway.requests) == 1
 
+
+
+def test_managed_image_gateway_persists_large_b64_fallback_to_run_outputs(tmp_path, monkeypatch):
+    image_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * 80_000)
+    large_b64 = base64.b64encode(image_bytes).decode("ascii")
+    with RunningImageGateway(signed_url=None, b64_json=large_b64) as gateway:
+        _managed_image_env(monkeypatch, tmp_path, gateway.url)
+
+        from agent.image_gen_registry import _reset_for_tests
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        from tools.image_generation_tool import _handle_image_generate
+
+        _reset_for_tests()
+        _ensure_plugins_discovered(force=True)
+        raw = _handle_image_generate({"prompt": "draw a large image without a signed url"})
+
+    body = json.loads(raw)
+    rel_path = "outputs/run_product_123/generated-images/img_test_gateway-asset_test_gateway.png"
+    output_path = tmp_path / "workspace" / rel_path
+    assert body["success"] is True
+    assert body["image"] == f"/{rel_path}"
+    assert body["assets"][0]["artifact_path"] == rel_path
+    assert "data:image" not in raw
+    assert output_path.read_bytes() == image_bytes
+    assert "b64_json" not in json.dumps(body.get("assets", []))
+    assert len(gateway.requests) == 1
 
 def test_managed_image_gateway_rejects_invalid_b64_fallback(tmp_path, monkeypatch):
     with RunningImageGateway(signed_url=None, b64_json="not-valid-base64") as gateway:

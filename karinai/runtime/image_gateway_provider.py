@@ -14,7 +14,9 @@ import json
 import logging
 import os
 import re
+import tempfile
 import urllib.error
+from pathlib import Path
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_NAME = "karinai-image-gateway"
 DEFAULT_MODEL = "karinai/image-gateway"
 _MAX_DATA_URL_FALLBACK_B64_CHARS = 2_000_000
+_MAX_INLINE_DATA_URL_B64_CHARS = 100_000
 _ALLOWED_DATA_URL_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _ASPECT_TO_GATEWAY = {
     "landscape": "16:9",
@@ -138,6 +141,23 @@ def _safe_extension(value: object) -> str:
     return "png"
 
 
+def _safe_path_component(value: object, *, fallback: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", _clean(value)).strip(".-_")
+    return (text or fallback)[:96]
+
+
+def _workspace_dir() -> str:
+    try:
+        from gateway.session_context import get_session_env
+
+        value = _clean(get_session_env("KARINAI_WORKSPACE_DIR", ""))
+        if value:
+            return value
+    except Exception:
+        pass
+    return _clean(os.environ.get("KARINAI_WORKSPACE_DIR"))
+
+
 def _load_json_error(raw: bytes) -> str:
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
@@ -200,25 +220,72 @@ def _compact_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
         "height",
         "format",
         "signed_url",
+        "artifact_path",
     }
     return {key: value for key, value in asset.items() if key in allowed and value is not None}
 
 
-def _data_url_from_asset(asset: Dict[str, Any]) -> tuple[str, str]:
+def _image_reference_from_b64_asset(
+    asset: Dict[str, Any],
+    *,
+    product_run_id: str,
+    generation_id: object,
+) -> tuple[str, dict[str, Any], str]:
     raw_b64 = asset.get("b64_json")
     if not isinstance(raw_b64, str) or not raw_b64.strip():
-        return "", ""
+        return "", {}, ""
     b64_json = raw_b64.strip()
     if len(b64_json) > _MAX_DATA_URL_FALLBACK_B64_CHARS:
-        return "", "image gateway b64_json asset exceeded the retrievable data URL limit"
+        return "", {}, "image gateway b64_json asset exceeded the retrievable data URL limit"
     try:
-        base64.b64decode(b64_json, validate=True)
+        image_bytes = base64.b64decode(b64_json, validate=True)
     except (binascii.Error, ValueError):
-        return "", "image gateway returned invalid b64 image data"
+        return "", {}, "image gateway returned invalid b64 image data"
     mime_type = _clean(asset.get("mime_type")) or "image/png"
     if mime_type not in _ALLOWED_DATA_URL_MIME_TYPES:
-        return "", "image gateway returned an unsupported image MIME type"
-    return f"data:{mime_type};base64,{b64_json}", ""
+        return "", {}, "image gateway returned an unsupported image MIME type"
+    if len(b64_json) <= _MAX_INLINE_DATA_URL_B64_CHARS:
+        return f"data:{mime_type};base64,{b64_json}", {}, ""
+
+    workspace_dir = _workspace_dir()
+    if not product_run_id or not workspace_dir:
+        return "", {}, "image gateway returned a large b64_json asset but no managed run output directory is available"
+
+    workspace_root = Path(workspace_dir).expanduser()
+    if not workspace_root.is_absolute():
+        return "", {}, "managed workspace directory must be absolute to store image output artifacts"
+
+    run_component = _safe_path_component(product_run_id, fallback="run")
+    generation_component = _safe_path_component(generation_id, fallback="generation")
+    asset_component = _safe_path_component(asset.get("id"), fallback="asset")
+    extension = _safe_extension(asset.get("format") or mime_type.rsplit("/", 1)[-1])
+    output_root = workspace_root / "outputs" / run_component / "generated-images"
+    filename = f"{generation_component}-{asset_component}.{extension}"
+    output_path = output_root / filename
+
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+        resolved_root = output_root.resolve()
+        resolved_path = output_path.resolve()
+        if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
+            return "", {}, "managed image output path escaped the run output directory"
+        with tempfile.NamedTemporaryFile("wb", dir=output_root, delete=False, prefix=f".{filename}.") as tmp:
+            tmp.write(image_bytes)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, output_path)
+    except Exception as exc:  # noqa: BLE001 - surface as provider contract error
+        try:
+            if "tmp_path" in locals():
+                Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        logger.warning("failed to store managed image output artifact: %s", _redact_text(exc))
+        return "", {}, "failed to store image output artifact in the managed workspace"
+
+    rel_path = output_path.resolve().relative_to(workspace_root.resolve()).as_posix()
+    # This is a short public-safe hint. The backend artifact sweep turns the file
+    # into a signed /api/artifacts/... URL after the run completes.
+    return f"/{rel_path}", {"artifact_path": rel_path}, ""
 
 
 class KarinAIImageGatewayProvider(ImageGenProvider):
@@ -371,11 +438,14 @@ class KarinAIImageGatewayProvider(ImageGenProvider):
         image = _clean(first_asset.get("signed_url"))
         fallback_error = ""
         if not image:
-            # Managed product clients need a retrievable reference in the public
-            # response. Until the image gateway returns product-signed URLs for
-            # every stored asset, allow a bounded, validated data URL fallback for
-            # small gateway-returned b64 assets (used by staging fake-provider e2e).
-            image, fallback_error = _data_url_from_asset(first_asset)
+            # Small gateway-returned b64 assets can travel as a data URL. Larger
+            # assets are written under /workspace/outputs/<run_id>/ so backend
+            # artifact sweep appends a signed /api/artifacts/... link to /v1.
+            image, artifact_metadata, fallback_error = _image_reference_from_b64_asset(
+                first_asset, product_run_id=product_run_id, generation_id=result.get("id")
+            )
+            if artifact_metadata:
+                first_asset.update(artifact_metadata)
         if not image:
             return error_response(
                 error=fallback_error or "image gateway asset had no signed_url or b64_json image data",

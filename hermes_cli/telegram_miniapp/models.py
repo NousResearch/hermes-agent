@@ -49,4 +49,29 @@ class ApprovalsSnapshot(TypedDict):
     items: list[ApprovalItem]
 
 
+class SessionPreviewItem(TypedDict):
+    id: str
+    agent: str
+    state: str
+    meta: str
+    time: str
+    tone: str
+
+
+class SessionsSnapshot(TypedDict):
+    ok: bool
+    items: list[SessionPreviewItem]
+
+
+class LogPreviewItem(TypedDict):
+    level: str
+    message: str
+    time: str
+
+
+class LogsSnapshot(TypedDict):
+    ok: bool
+    items: list[LogPreviewItem]
+
+
 JsonDict = dict[str, Any]

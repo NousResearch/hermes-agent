@@ -80,6 +80,8 @@ def test_route_inventory_and_forbidden_routes_are_absent():
         ("GET", "/api/me"),
         ("GET", "/api/status"),
         ("GET", "/api/approvals"),
+        ("GET", "/api/sessions"),
+        ("GET", "/api/logs"),
     }
 
     assert client.get("/does-not-exist").status_code == 404
@@ -169,6 +171,41 @@ def test_approvals_require_auth_then_return_safe_read_only_queue():
     assert BOT_TOKEN not in serialized
     assert "TELEGRAM_BOT_TOKEN" not in serialized
     assert "pid" not in serialized.lower()
+
+
+def test_sessions_and_logs_require_auth_then_return_safe_read_only_previews():
+    client = make_client()
+
+    assert client.get("/api/sessions").status_code == 401
+    assert client.get("/api/logs").status_code == 401
+
+    auth_client(client)
+    sessions = client.get("/api/sessions")
+    logs = client.get("/api/logs")
+
+    assert sessions.status_code == 200
+    sessions_body = sessions.json()
+    assert sessions_body["ok"] is True
+    assert len(sessions_body["items"]) == 3
+    first_session = sessions_body["items"][0]
+    assert set(first_session) == {"id", "agent", "state", "meta", "time", "tone"}
+    assert first_session["state"] in {"observing", "waiting", "completed"}
+    assert first_session["tone"] in {"ok", "warn", "muted"}
+
+    assert logs.status_code == 200
+    logs_body = logs.json()
+    assert logs_body["ok"] is True
+    assert len(logs_body["items"]) == 4
+    first_log = logs_body["items"][0]
+    assert set(first_log) == {"level", "message", "time"}
+    assert first_log["level"] in {"info", "warn", "error"}
+
+    for serialized in (sessions.text, logs.text):
+        assert "/Volumes/Diver Pro/hermes" not in serialized
+        assert BOT_TOKEN not in serialized
+        assert "TELEGRAM_BOT_TOKEN" not in serialized
+        assert "pid" not in serialized.lower()
+        assert "command" not in serialized.lower()
 
 
 def test_logout_clears_only_miniapp_session():

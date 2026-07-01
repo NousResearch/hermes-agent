@@ -54,6 +54,31 @@ export type ApprovalsSnapshot = {
   items: ApprovalItem[];
 };
 
+export type SessionPreviewItem = {
+  id: string;
+  agent: string;
+  state: "observing" | "waiting" | "completed";
+  meta: string;
+  time: string;
+  tone: "ok" | "warn" | "muted";
+};
+
+export type SessionsSnapshot = {
+  ok: boolean;
+  items: SessionPreviewItem[];
+};
+
+export type LogPreviewItem = {
+  level: "info" | "warn" | "error";
+  message: string;
+  time: string;
+};
+
+export type LogsSnapshot = {
+  ok: boolean;
+  items: LogPreviewItem[];
+};
+
 const API_URL = (import.meta.env.VITE_HERMES_MINIAPP_API_URL ?? "").replace(/\/$/, "");
 
 export function hasMiniAppApi(isTelegramRuntime = false): boolean {
@@ -88,4 +113,12 @@ export async function fetchStatusSnapshot(): Promise<StatusSnapshot> {
 
 export async function fetchApprovalsSnapshot(): Promise<ApprovalsSnapshot> {
   return requestJson<ApprovalsSnapshot>("/api/approvals");
+}
+
+export async function fetchSessionsSnapshot(): Promise<SessionsSnapshot> {
+  return requestJson<SessionsSnapshot>("/api/sessions");
+}
+
+export async function fetchLogsSnapshot(): Promise<LogsSnapshot> {
+  return requestJson<LogsSnapshot>("/api/logs");
 }

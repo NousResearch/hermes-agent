@@ -225,6 +225,39 @@ def test_public_smoke_approvals_are_authenticated_no_store_and_rate_limited():
     assert BOT_TOKEN not in limited.text
 
 
+def test_public_smoke_sessions_and_logs_are_authenticated_no_store_and_rate_limited():
+    client = make_client(public_settings(status_rate_limit_per_minute=1))
+    headers = {"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}
+
+    assert client.get("/api/sessions", headers=headers).status_code == 401
+    assert client.get("/api/logs", headers=headers).status_code == 401
+
+    auth_client(client)
+    first_sessions = client.get("/api/sessions", headers=headers)
+    limited_sessions = client.get("/api/sessions", headers=headers)
+    first_logs = client.get("/api/logs", headers=headers)
+    limited_logs = client.get("/api/logs", headers=headers)
+
+    assert first_sessions.status_code == 200
+    assert first_sessions.headers["cache-control"] == "no-store"
+    assert first_sessions.headers["x-content-type-options"] == "nosniff"
+    assert first_sessions.json()["ok"] is True
+    assert len(first_sessions.json()["items"]) == 3
+    assert limited_sessions.status_code == 429
+
+    assert first_logs.status_code == 200
+    assert first_logs.headers["cache-control"] == "no-store"
+    assert first_logs.headers["x-content-type-options"] == "nosniff"
+    assert first_logs.json()["ok"] is True
+    assert len(first_logs.json()["items"]) == 4
+    assert limited_logs.status_code == 429
+
+    for serialized in (first_sessions.text, first_logs.text, limited_sessions.text, limited_logs.text):
+        assert SMOKE_ORIGIN not in serialized
+        assert BOT_TOKEN not in serialized
+        assert "/Volumes/Diver Pro/hermes" not in serialized
+
+
 def test_public_smoke_default_status_provider_overlays_authoritative_public_mode():
     app = create_app(settings=public_settings())
     client = TestClient(app, base_url=SMOKE_ORIGIN)

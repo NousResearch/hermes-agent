@@ -1,5 +1,16 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
-import { authenticateTelegram, fetchApprovalsSnapshot, fetchStatusSnapshot, hasMiniAppApi, type ApprovalItem, type StatusSnapshot } from "./api";
+import {
+  authenticateTelegram,
+  fetchApprovalsSnapshot,
+  fetchLogsSnapshot,
+  fetchSessionsSnapshot,
+  fetchStatusSnapshot,
+  hasMiniAppApi,
+  type ApprovalItem,
+  type LogPreviewItem,
+  type SessionPreviewItem,
+  type StatusSnapshot,
+} from "./api";
 import {
   approvalPreviews,
   navItems,
@@ -8,8 +19,10 @@ import {
   sessionPreviews,
   statusCards,
   type ApprovalPreview,
+  type LogLine,
   type NavKey,
   type QuickAction,
+  type SessionPreview,
 } from "./mockData";
 import { configureTelegramBackButton, configureTelegramMainButton, getTelegramRuntime, prepareTelegramViewport } from "./telegram";
 
@@ -63,6 +76,30 @@ function mapServerApproval(item: ApprovalItem): ApprovalPreview {
     requestedAt: item.requested_at,
     status: item.status === "waiting" ? "ожидает" : "заблокировано",
     checks: item.checks,
+  };
+}
+
+function mapServerSession(item: SessionPreviewItem): SessionPreview {
+  const stateMap: Record<SessionPreviewItem["state"], SessionPreview["state"]> = {
+    observing: "наблюдение",
+    waiting: "ожидание",
+    completed: "завершено",
+  };
+  return {
+    id: item.id,
+    agent: item.agent,
+    state: stateMap[item.state],
+    meta: item.meta,
+    time: item.time,
+    tone: item.tone,
+  };
+}
+
+function mapServerLog(item: LogPreviewItem): LogLine {
+  return {
+    level: item.level,
+    message: item.message,
+    time: item.time,
   };
 }
 
@@ -137,10 +174,10 @@ function StatusSection({
   );
 }
 
-function SessionsSection() {
+function SessionsSection({ sessions }: { sessions: SessionPreview[] }) {
   return (
     <section className="stack-list" aria-label="Сессии агентов">
-      {sessionPreviews.map((session) => (
+      {sessions.map((session) => (
         <article className={`list-card glass-card tone-${session.tone}`} key={session.id}>
           <div>
             <span className="mono-label">{session.time}</span>
@@ -198,7 +235,7 @@ function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: Appr
   );
 }
 
-function LogsSection() {
+function LogsSection({ logs }: { logs: LogLine[] }) {
   return (
     <section className="mini-panel glass-card full-panel" aria-label="Журнал событий">
       <div className="section-heading compact">
@@ -209,7 +246,7 @@ function LogsSection() {
         <span className="risk risk-read_only">только чтение</span>
       </div>
       <div className="log-list expanded">
-        {recentLogs.map((line) => (
+        {logs.map((line) => (
           <p className={`log-line level-${line.level}`} key={`${line.time}-${line.message}`}>
             <span>{line.time}</span>
             {line.message}
@@ -276,6 +313,8 @@ export function App() {
   const [activeTab, setActiveTab] = useState<NavKey>("status");
   const [selectedApprovalId, setSelectedApprovalId] = useState(approvalPreviews[0]?.id ?? "");
   const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
+  const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
+  const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
   const [isPaletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
@@ -302,18 +341,22 @@ export function App() {
       setApiState("mock");
       setSnapshot(null);
       setServerApprovals([]);
+      setServerSessions([]);
+      setServerLogs([]);
       return;
     }
 
     let cancelled = false;
     setApiState("connecting");
     authenticateTelegram(telegram.initData)
-      .then(() => Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot()]))
-      .then(([status, approvals]) => {
+      .then(() => Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot(), fetchSessionsSnapshot(), fetchLogsSnapshot()]))
+      .then(([status, approvals, sessions, logs]) => {
         if (!cancelled) {
           setSnapshot(status);
           const mappedApprovals = approvals.items.map(mapServerApproval);
           setServerApprovals(mappedApprovals);
+          setServerSessions(sessions.items.map(mapServerSession));
+          setServerLogs(logs.items.map(mapServerLog));
           if (mappedApprovals[0]) setSelectedApprovalId(mappedApprovals[0].id);
           setApiState("connected");
         }
@@ -322,6 +365,8 @@ export function App() {
         if (!cancelled) {
           setSnapshot(null);
           setServerApprovals([]);
+          setServerSessions([]);
+          setServerLogs([]);
           setApiState("offline");
         }
       });
@@ -335,6 +380,8 @@ export function App() {
     : telegram.user?.first_name ?? "локальное превью";
 
   const approvals = serverApprovals.length > 0 ? serverApprovals : approvalPreviews;
+  const sessions = serverSessions.length > 0 ? serverSessions : sessionPreviews;
+  const logs = serverLogs.length > 0 ? serverLogs : recentLogs;
 
   const cards = useMemo(() => {
     if (!snapshot) return statusCards;
@@ -417,9 +464,9 @@ export function App() {
       <SectionIntro activeTab={activeTab} onOpenPalette={() => setPaletteOpen(true)} />
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
-      {activeTab === "sessions" ? <SessionsSection /> : null}
+      {activeTab === "sessions" ? <SessionsSection sessions={sessions} /> : null}
       {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
-      {activeTab === "logs" ? <LogsSection /> : null}
+      {activeTab === "logs" ? <LogsSection logs={logs} /> : null}
 
       <nav className="bottom-nav" aria-label="Навигация">
         {navItems.map((item) => (

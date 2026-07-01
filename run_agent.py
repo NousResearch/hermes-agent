@@ -3904,10 +3904,11 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            # verify lives on the transport: httpx ignores the client-level
+            # ``verify`` when a custom ``transport=`` is supplied.
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts, verify=verify),
                 proxy=_proxy,
-                verify=verify,
             )
         except Exception:
             return None

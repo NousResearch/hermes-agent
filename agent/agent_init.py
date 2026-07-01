@@ -987,7 +987,7 @@ def init_agent(
                 get_compatible_custom_providers(load_config()),
             )
         except Exception:
-            pass
+            logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)

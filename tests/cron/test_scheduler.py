@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
+import cron.scheduler as scheduler
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
@@ -953,6 +954,28 @@ class TestDeliverResultErrorReturns:
         result = _deliver_result(job, "Output.")
         assert result is not None
         assert "no delivery target" in result
+
+    def test_shutdown_skips_standalone_delivery_without_scheduling(self, monkeypatch):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "shutdown-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        monkeypatch.setattr(scheduler, "_scheduler_shutting_down", True)
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as send_mock:
+            result = _deliver_result(job, "Output.")
+
+        assert result is not None
+        assert "scheduler is shutting down" in result
+        send_mock.assert_not_called()
 
 
 class TestRunJobSessionPersistence:

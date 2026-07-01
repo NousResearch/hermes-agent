@@ -296,12 +296,18 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+_scheduler_shutting_down = False
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
 # ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
 _sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+
+def _is_scheduler_shutting_down() -> bool:
+    """True once process/interpreter teardown has started."""
+    return _scheduler_shutting_down or sys.is_finalizing()
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -337,7 +343,8 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
+    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool, _scheduler_shutting_down
+    _scheduler_shutting_down = True
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
@@ -1469,18 +1476,44 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
+            if _is_scheduler_shutting_down():
+                msg = f"delivery to {platform_name}:{chat_id} skipped: scheduler is shutting down"
+                logger.info("Job '%s': %s", job["id"], msg)
+                target_errors.extend([msg])
+                delivery_errors.extend(target_errors)
+                continue
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
-            except RuntimeError:
+            except RuntimeError as e:
+                if _is_scheduler_shutting_down() or "cannot schedule new futures" in str(e):
+                    coro.close()
+                    msg = f"delivery to {platform_name}:{chat_id} skipped during scheduler shutdown: {e}"
+                    logger.info("Job '%s': %s", job["id"], msg)
+                    target_errors.extend([msg])
+                    delivery_errors.extend(target_errors)
+                    continue
                 # asyncio.run() checks for a running loop before awaiting the coroutine;
                 # when it raises, the original coro was never started — close it to
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
+                retry_coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(asyncio.run, retry_coro)
+                        retry_coro = None
+                        result = future.result(timeout=30)
+                except RuntimeError as submit_error:
+                    if retry_coro is not None:
+                        retry_coro.close()
+                    if _is_scheduler_shutting_down() or "cannot schedule new futures" in str(submit_error):
+                        msg = f"delivery to {platform_name}:{chat_id} skipped during scheduler shutdown: {submit_error}"
+                        logger.info("Job '%s': %s", job["id"], msg)
+                        target_errors.extend([msg])
+                        delivery_errors.extend(target_errors)
+                        continue
+                    raise
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
@@ -2535,7 +2568,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        try:
+            if _is_scheduler_shutting_down():
+                return False, "", "", "Cron scheduler is shutting down; job was not started"
+            _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        except RuntimeError as exc:
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            if _is_scheduler_shutting_down() or "cannot schedule new futures" in str(exc):
+                return False, "", "", f"Cron scheduler is shutting down; job was not started: {exc}"
+            raise
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -2938,6 +2979,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+            if _is_scheduler_shutting_down():
+                logger.info("Job '%s' not queued — scheduler is shutting down", job.get("name", job_id))
+                return None
             with _running_lock:
                 if job_id in _running_job_ids:
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -2952,7 +2996,18 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
 
-            return pool.submit(_run_and_release)
+            try:
+                return pool.submit(_run_and_release)
+            except RuntimeError as exc:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                if _is_scheduler_shutting_down() or "cannot schedule new futures" in str(exc):
+                    logger.info(
+                        "Job '%s' not queued — scheduler is shutting down: %s",
+                        job.get("name", job_id), exc,
+                    )
+                    return None
+                raise
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time

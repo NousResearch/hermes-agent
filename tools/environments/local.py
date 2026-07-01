@@ -640,6 +640,24 @@ def _make_run_env(env: dict) -> dict:
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
 
+    # On Windows, prevent MSYS/Git Bash from rewriting POSIX-style arguments
+    # (e.g. ``/c`` in ``cmd /c start notepad``) into filesystem paths before
+    # the target executable (``cmd.exe``) receives them.  Without this,
+    # ``cmd /c`` silently becomes ``cmd C:/...`` and the GUI launch fails
+    # while the bash wrapper still reports exit_code 0 (issue #56147).
+    # ``MSYS2_ARG_CONV_EXCL`` tells MSYS to skip argument conversion for the
+    # listed patterns.  We only exclude ``/c`` (the ``cmd.exe`` switch) to
+    # keep path translation working for genuine POSIX paths.  If the user
+    # already set this var we merge our exclusion into theirs so we don't
+    # clobber a broader custom exclusion list.
+    if _IS_WINDOWS:
+        _existing = run_env.get("MSYS2_ARG_CONV_EXCL", "")
+        _needed = "/c"
+        if _needed not in _existing.split(";"):
+            run_env["MSYS2_ARG_CONV_EXCL"] = (
+                f"{_existing};{_needed}" if _existing else _needed
+            )
+
     return run_env
 
 

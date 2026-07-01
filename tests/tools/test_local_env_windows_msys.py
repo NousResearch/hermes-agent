@@ -196,3 +196,66 @@ class TestExtractCwdFromOutputWindowsMsys:
             env._extract_cwd_from_output(result)
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# _make_run_env — MSYS2_ARG_CONV_EXCL injection on Windows
+# ---------------------------------------------------------------------------
+
+class TestMsysArgConvExcl:
+    """On Windows, ``_make_run_env`` must inject ``MSYS2_ARG_CONV_EXCL=/c``
+    so Git Bash / MSYS does not rewrite the ``/c`` flag of ``cmd /c`` into a
+    filesystem path before ``cmd.exe`` receives it (issue #56147).
+
+    Without this, ``cmd /c start notepad`` silently fails (the GUI process is
+    never launched) while the bash wrapper still reports ``exit_code: 0``.
+    """
+
+    def test_injects_on_windows(self, monkeypatch):
+        import os
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.dict(os.environ, {"PATH": r"C:\Windows\System32"}, clear=True):
+            result = _make_run_env({})
+        assert result.get("MSYS2_ARG_CONV_EXCL") == "/c"
+
+    def test_does_not_inject_on_posix(self, monkeypatch):
+        import os
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        with patch.dict(os.environ, {}, clear=True):
+            result = _make_run_env({})
+        assert "MSYS2_ARG_CONV_EXCL" not in result
+
+    def test_merges_with_existing_exclusion(self, monkeypatch):
+        import os
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.dict(
+            os.environ,
+            {"PATH": r"C:\Windows\System32", "MSYS2_ARG_CONV_EXCL": "/x"},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        assert "/c" in result["MSYS2_ARG_CONV_EXCL"]
+        assert "/x" in result["MSYS2_ARG_CONV_EXCL"]
+
+    def test_does_not_duplicate_when_already_present(self, monkeypatch):
+        import os
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        with patch.dict(
+            os.environ,
+            {"PATH": r"C:\Windows\System32", "MSYS2_ARG_CONV_EXCL": "/c"},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        assert result["MSYS2_ARG_CONV_EXCL"] == "/c"

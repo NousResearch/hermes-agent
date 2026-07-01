@@ -1885,6 +1885,71 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    def test_get_messaging_platforms_resolves_invariants_once(self, monkeypatch):
+        """Per-request invariants must be computed once, not once per platform.
+
+        Regression for the ~10s /api/messaging/platforms latency: each of the
+        ~30 catalog payloads used to call get_running_pid() (shells out to `ps`
+        on macOS) and load_gateway_config() (~360ms full reload) independently.
+        Both are identical for every platform in the catalog, so the endpoint
+        now hoists them to a single call per request and shares them.
+        """
+        import gateway.config as gwconfig
+        from hermes_cli import web_server
+
+        real_load = gwconfig.load_gateway_config
+        load_calls = {"n": 0}
+
+        def counting_load():
+            load_calls["n"] += 1
+            return real_load()
+
+        # Both the endpoint and _gateway_platform_config import
+        # load_gateway_config from gateway.config at call time, so patching the
+        # module attribute counts every payload-path use.
+        monkeypatch.setattr(gwconfig, "load_gateway_config", counting_load)
+
+        pid_calls = {"n": 0}
+
+        def counting_pid(*args, **kwargs):
+            pid_calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(web_server, "get_running_pid", counting_pid)
+
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        assert len(platforms) >= 1  # full catalog still returned
+        assert load_calls["n"] <= 1, (
+            f"load_gateway_config called {load_calls['n']} times; "
+            "expected at most once per request"
+        )
+        assert pid_calls["n"] <= 1, (
+            f"get_running_pid called {pid_calls['n']} times; "
+            "expected at most once per request"
+        )
+
+    def test_get_messaging_platforms_survives_config_load_failure(self, monkeypatch):
+        """A broken gateway config falls back per platform, never 500s."""
+        import gateway.config as gwconfig
+
+        def boom():
+            raise RuntimeError("gateway config is corrupt")
+
+        monkeypatch.setattr(gwconfig, "load_gateway_config", boom)
+
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        telegram = next(p for p in platforms if p["id"] == "telegram")
+        # Fallback path: not enabled, and `configured` derived from env vars
+        # (no token on disk in the isolated test home → False).
+        assert telegram["enabled"] is False
+        assert telegram["configured"] is False
+
     def test_slack_messaging_platform_exposes_user_allowlist(self):
         resp = self.client.get("/api/messaging/platforms")
 

@@ -133,6 +133,38 @@ class TestProfileScopedMessagingReads:
         )
 
 
+    def test_scoped_read_loads_cli_config_once(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Scoped reads hoist load_config() to once per request.
+
+        The scoped payload branch used to call load_config() once per catalog
+        entry (~30x per request). The value is identical for every platform,
+        so the endpoint now loads it once inside _profile_scope and shares it.
+        """
+        import hermes_cli.web_server as web_server
+
+        real_load = web_server.load_config
+        calls = {"n": 0}
+
+        def counting_load():
+            calls["n"] += 1
+            return real_load()
+
+        monkeypatch.setattr(web_server, "load_config", counting_load)
+
+        resp = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        )
+
+        assert resp.status_code == 200
+        assert len(resp.json()["platforms"]) >= 1
+        assert calls["n"] <= 1, (
+            f"load_config called {calls['n']} times during a scoped read; "
+            "expected at most once per request"
+        )
+
+
 class TestProfileScopedMessagingWrites:
     def test_scoped_write_lands_in_target_profile_env(
         self, client, isolated_profiles

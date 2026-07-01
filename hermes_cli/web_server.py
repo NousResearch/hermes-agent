@@ -5633,10 +5633,36 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     }
 
 
-def _gateway_platform_config(platform_id: str):
+# Sentinel distinguishing "caller did not pass a config, load one on demand"
+# (legacy single-payload callers like the /test handler) from "caller passed
+# None because a hoisted, request-level config load already failed" (see
+# get_messaging_platforms).
+_CONFIG_UNSET = object()
+
+
+class _GatewayConfigUnavailable(Exception):
+    """Internal signal: the hoisted per-request config load failed.
+
+    Raised inside :func:`_messaging_platform_payload` to route into the same
+    fallback a genuine per-platform config-load exception would hit, without
+    re-loading (and re-failing) the config once per platform.
+    """
+
+
+def _gateway_platform_config(platform_id: str, config=None):
+    """Resolve the gateway config, ``Platform`` enum, and per-platform config.
+
+    ``config`` may be a preloaded :class:`~gateway.config.GatewayConfig` shared
+    across every platform in one request, or ``None`` to load a fresh copy
+    here. Loading is the expensive part (``load_gateway_config`` re-parses the
+    whole config and re-runs plugin requirement checks, hundreds of ms), so
+    hot paths that build many payloads pass a single shared instance instead
+    of paying that cost per platform.
+    """
     from gateway.config import Platform, load_gateway_config
 
-    config = load_gateway_config()
+    if config is None:
+        config = load_gateway_config()
     platform = Platform(platform_id)
     platform_config = config.platforms.get(platform)
     return config, platform, platform_config
@@ -5647,6 +5673,10 @@ def _messaging_platform_payload(
     env_on_disk: dict[str, str],
     runtime: dict | None,
     scoped: bool = False,
+    *,
+    gateway_running: bool | None = None,
+    gateway_config: Any = _CONFIG_UNSET,
+    cli_config: Any = _CONFIG_UNSET,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     runtime_platforms = runtime.get("platforms") if runtime else {}
@@ -5655,10 +5685,18 @@ def _messaging_platform_payload(
         if isinstance(runtime_platforms, dict)
         else {}
     )
-    gateway_running = (
-        get_running_pid() is not None
-        or get_runtime_status_running_pid(runtime) is not None
-    )
+    # The running PID and the (gateway or CLI) config are identical for every
+    # platform in a request, and each is individually expensive to derive
+    # (get_running_pid shells out to `ps` on macOS; load_gateway_config
+    # re-parses the whole config). Callers that build many payloads at once
+    # (get_messaging_platforms) compute them once inside their _profile_scope
+    # and pass them in; single-payload callers (the /test handler) leave them
+    # unset and let us derive them here.
+    if gateway_running is None:
+        gateway_running = (
+            get_running_pid() is not None
+            or get_runtime_status_running_pid(runtime) is not None
+        )
     env_vars = []
 
     for key in entry["env_vars"]:
@@ -5683,7 +5721,11 @@ def _messaging_platform_payload(
         # env-override layer reads os.environ and would leak the root
         # install's tokens into the profile's reported state.
         try:
-            cfg = load_config()
+            if cli_config is None:
+                # The hoisted, request-level load_config() already failed;
+                # don't retry it once per platform.
+                raise _GatewayConfigUnavailable()
+            cfg = load_config() if cli_config is _CONFIG_UNSET else cli_config
             platforms_cfg = cfg.get("platforms") or {}
             plat_cfg = platforms_cfg.get(platform_id)
             if not isinstance(plat_cfg, dict):
@@ -5697,13 +5739,20 @@ def _messaging_platform_payload(
         configured = all(env_on_disk.get(key) for key in entry["required_env"])
     else:
         try:
-            gateway_config, platform, platform_config = _gateway_platform_config(
-                platform_id
+            if gateway_config is None:
+                # The hoisted, request-level load_gateway_config() already
+                # failed; fall through to the env-var fallback below instead
+                # of re-failing the load once per platform. A broken config
+                # yields the same payloads it always did, never a 500.
+                raise _GatewayConfigUnavailable()
+            resolved_config, platform, platform_config = _gateway_platform_config(
+                platform_id,
+                None if gateway_config is _CONFIG_UNSET else gateway_config,
             )
             enabled = bool(platform_config and platform_config.enabled)
             configured = bool(
                 platform_config
-                and gateway_config._is_platform_connected(platform, platform_config)
+                and resolved_config._is_platform_connected(platform, platform_config)
             )
             home_channel = (
                 platform_config.home_channel.to_dict()
@@ -6153,16 +6202,59 @@ async def get_messaging_platforms(profile: Optional[str] = None):
     # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
     # all resolve against the requested profile's HERMES_HOME.
     with _profile_scope(profile) as scoped_dir:
+        scoped = scoped_dir is not None
         env_on_disk = load_env()
         runtime = read_runtime_status()
+        # Build the catalog before touching any config: loading the gateway
+        # config can re-run plugin discovery, which mutates the platform
+        # registry the catalog is derived from. Snapshotting the catalog first
+        # keeps plugin metadata (labels, env vars) stable, matching the order
+        # of operations before the invariants below were hoisted.
+        catalog = _messaging_platform_catalog()
+        # Compute the per-request invariants once and share them across every
+        # payload. Previously each of the ~30 catalog entries derived
+        # gateway_running (get_running_pid shells out to `ps` on macOS) and
+        # loaded the config independently, so a single request paid ~30x the
+        # cost — ~10s on macOS, timing out the dashboard. Both values are
+        # identical for every platform in the catalog, and both must be
+        # resolved INSIDE _profile_scope so they read the requested profile's
+        # HERMES_HOME. Only one of the two configs is ever consumed per mode,
+        # so only that one is loaded.
+        gateway_running = (
+            get_running_pid() is not None
+            or get_runtime_status_running_pid(runtime) is not None
+        )
+        gateway_config: Any = None
+        cli_config: Any = None
+        try:
+            if scoped:
+                cli_config = load_config()
+            else:
+                from gateway.config import load_gateway_config
+
+                gateway_config = load_gateway_config()
+        except Exception:
+            # A broken config must not 500 the whole endpoint; leaving the
+            # relevant config as None makes each payload take the same
+            # fallback it hit when every payload loaded (and failed to load)
+            # the config on its own.
+            _log.exception(
+                "messaging platforms config load failed; using fallback payloads"
+            )
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
             "platforms": [
                 _messaging_platform_payload(
-                    entry, env_on_disk, runtime, scoped=scoped_dir is not None
+                    entry,
+                    env_on_disk,
+                    runtime,
+                    scoped=scoped,
+                    gateway_running=gateway_running,
+                    gateway_config=gateway_config,
+                    cli_config=cli_config,
                 )
-                for entry in _messaging_platform_catalog()
+                for entry in catalog
             ]
         }
 

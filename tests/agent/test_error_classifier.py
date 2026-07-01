@@ -476,28 +476,21 @@ class TestClassifyApiError:
     # compression-and-retry path, not the blind server_error/overloaded retry
     # that exhausts and drops the turn.
 
-    def test_500_context_overflow_routes_to_compression(self):
-        """A llama.cpp 500 'Context size has been exceeded.' must compress."""
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 529])
+    def test_5xx_context_overflow_routes_to_compression(self, status_code):
+        """Explicit context-overflow wording on any of the codes the fix covers
+        (500/502/503/529) must route to context_overflow + compression, not a
+        blind server_error/overloaded retry. Covers all four branches the code
+        touches (the original PR only asserted 500 and 503)."""
         e = MockAPIError(
             "Context size has been exceeded.",
-            status_code=500,
-            body={"error": {"code": 500, "message": "Context size has been exceeded.", "type": "server_error"}},
+            status_code=status_code,
+            body={"error": {"code": status_code, "message": "Context size has been exceeded.", "type": "server_error"}},
         )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
         assert result.should_compress is True
         assert result.retryable is True
-
-    def test_503_context_overflow_routes_to_compression(self):
-        """An overflow surfaced as 503 (busy / model-load OOM) must compress."""
-        e = MockAPIError(
-            "the request exceeds the available context size",
-            status_code=503,
-            body={"error": {"message": "the request exceeds the available context size"}},
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.context_overflow
-        assert result.should_compress is True
 
     def test_500_plain_server_error_not_compressed(self):
         """A genuine 500 crash without overflow wording must NOT be swallowed

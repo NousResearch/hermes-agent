@@ -78,6 +78,19 @@ CASES = {
         ["plugins/kanban/dashboard/dist/index.js", "agent/x.py"],
         _lanes(python=True, scan=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # Media / binary assets can't be imported or executed by Python → nothing heavy.
+    "logo png → nothing heavy": (["assets/logo.png"], _lanes()),
+    "nested icon svg → nothing heavy": (["hermes_cli/web_dist/assets/x.svg"], _lanes()),
+    "sound wav → nothing heavy": (["assets/notify.wav"], _lanes()),
+    "font woff2 → nothing heavy": (["web/fonts/inter.woff2"], _lanes(frontend=True)),
+    # Git/repo metadata never affects the Python suite.
+    "gitignore → nothing heavy": ([".gitignore"], _lanes()),
+    "mailmap → nothing heavy": ([".mailmap"], _lanes()),
+    "nested gitignore → nothing heavy": (["subdir/.gitignore"], _lanes()),
+    # A media file MIXED with real python still runs Python (fail-open).
+    "mixed png + python → python": (["docs/logo.png", "agent/x.py"], _lanes(python=True, scan=True)),
+    # A .json fixture is NOT media — data a test reads could change behavior → python stays on.
+    "json fixture → python (fail-open)": (["tests/fixtures/data.json"], _lanes(python=True)),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

@@ -61,6 +61,29 @@ def _is_built_dashboard_asset(p: str) -> bool:
         and p.endswith(_BROWSER_ASSET_EXTS)
     )
 
+
+# Media / binary assets that cannot be imported or executed by Python anywhere in
+# the tree — a logo swap, a screenshot, an icon, a sound. These force the whole
+# pytest matrix today for zero reason. (Data-ish text like .json/.csv/.txt is NOT
+# here: a fixture the tests read could legitimately change behavior → fail-open.)
+_MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".avif", ".svg",
+               ".bmp", ".tiff", ".wav", ".mp3", ".mp4", ".mov", ".webm", ".ogg",
+               ".woff", ".woff2", ".ttf", ".eot", ".otf")
+
+# Git/repo metadata files that never affect the Python test suite.
+_REPO_META_FILES = {".gitignore", ".gitattributes", ".mailmap", ".editorconfig",
+                    ".dockerignore", ".prettierignore", ".npmignore",
+                    "CODEOWNERS", ".gitmodules"}
+
+
+def _is_media(p: str) -> bool:
+    return p.endswith(_MEDIA_EXTS)
+
+
+def _is_repo_meta(p: str) -> bool:
+    # match by basename so nested locations (e.g. subdir/.gitignore) also qualify
+    return p in _REPO_META_FILES or p.rsplit("/", 1)[-1] in _REPO_META_FILES
+
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
 _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
@@ -79,6 +102,8 @@ def _py_irrelevant(p: str) -> bool:
     return (
         _is_docs(p)
         or _is_built_dashboard_asset(p)
+        or _is_media(p)
+        or _is_repo_meta(p)
         or p in _ROOT_NPM
         or p.startswith(_PY_SKIP)
         or p.startswith(_DOCKER_META)

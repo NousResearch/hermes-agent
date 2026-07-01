@@ -294,6 +294,43 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_journey_command(self, cmd_original: str) -> None:
+        """Handle /journey — the learning timeline (see `hermes journey`).
+
+        The read-only views (default + ``list``) render Rich color, which
+        patch_stdout would swallow as raw escapes; capture with forced ANSI and
+        re-emit through ``_cprint``. ``delete``/``edit`` are interactive
+        (confirm prompt / ``$EDITOR``) so they keep the real stdio.
+        """
+        import argparse
+        import io
+        import shlex
+        from contextlib import redirect_stdout
+
+        from cli import _cprint
+        from hermes_cli.journey import register_cli
+
+        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+        register_cli(parser)
+        rest = cmd_original.split(None, 1)
+        try:
+            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
+        except SystemExit:
+            return
+
+        interactive = getattr(args, "journey_action", None) in ("delete", "edit")
+        try:
+            if interactive:
+                args.func(args)
+                return
+            args.force_color = True
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                args.func(args)
+            _cprint(buf.getvalue().rstrip("\n"))
+        except Exception as exc:
+            _cprint(f"  /journey failed: {exc}")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 

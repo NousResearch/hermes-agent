@@ -140,7 +140,13 @@ async def _drive_picker(runner, event):
     "seed_model",
     [
         # Already-nested dict (common case).
-        {"default": "old-model", "provider": "openai-codex"},
+        {
+            "default": "old-model",
+            "provider": "custom",
+            "base_url": "https://api.custom.example/v1",
+            "api_key": "sk-stale",
+            "api_mode": "anthropic_messages",
+        },
         # Flat-string model: must be coerced to a nested dict on a tap (same
         # scalar-``model:`` guard the text path has) instead of raising
         # ``TypeError`` on assignment.
@@ -165,7 +171,9 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model)
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert "base_url" not in written["model"]
+    assert "api_key" not in written["model"]
+    assert "api_mode" not in written["model"]
 
 
 @pytest.mark.asyncio

@@ -494,6 +494,23 @@ Sessions with **active background processes** are never auto-reset, regardless o
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
 
+:::warning `sessions.json` is not the session list
+`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
+messaging session keys (`agent:main:<platform>:...`) to active session IDs.
+It only ever contains gateway/messaging entries, so if you run a messaging
+platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
+
+This is **expected** and does **not** mean your CLI sessions are missing.
+`hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
+which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
+under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+
+If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
+`state.db` not receiving them — run `hermes sessions repair` and watch for a
+`⚠ Session store unavailable` warning at CLI startup, which means SQLite
+persistence failed for that run.
+:::
+
 :::note Legacy JSONL transcripts
 Sessions created before state.db became canonical may have leftover
 `*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or

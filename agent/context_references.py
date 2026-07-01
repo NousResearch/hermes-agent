@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -151,13 +152,24 @@ async def preprocess_context_references_async(
     blocks: list[str] = []
     injected_tokens = 0
 
-    for ref in refs:
-        warning, block = await _expand_reference(
-            ref,
-            cwd_path,
-            url_fetcher=url_fetcher,
-            allowed_root=allowed_root_path,
+    # Expand all references concurrently. Each _expand_reference is independent
+    # (no shared state during expansion) — a message with several @url: refs
+    # would otherwise pay one full web_extract round-trip per ref in series.
+    # gather preserves positional order, so we reassemble warnings/blocks in the
+    # original ref order exactly as the prior serial loop did; the token-budget
+    # check below is unchanged (it runs once, after all refs are expanded).
+    expanded = await asyncio.gather(
+        *(
+            _expand_reference(
+                ref,
+                cwd_path,
+                url_fetcher=url_fetcher,
+                allowed_root=allowed_root_path,
+            )
+            for ref in refs
         )
+    )
+    for warning, block in expanded:
         if warning:
             warnings.append(warning)
         if block:
@@ -290,6 +302,7 @@ def _expand_git_reference(
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["git", *args],
@@ -298,6 +311,7 @@ def _expand_git_reference(
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
@@ -325,9 +339,9 @@ async def _fetch_url_content(
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
-    raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
+    raw = await web_extract_tool([url], format="markdown")
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = payload.get("results", [])
     if not docs:
         return ""
     doc = docs[0]
@@ -483,6 +497,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
 
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["rg", "--files", str(path.relative_to(cwd))],
@@ -491,6 +506,7 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

@@ -12,6 +12,8 @@ Verifies that the agent cache correctly:
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 def _make_runner():
@@ -1565,8 +1567,11 @@ class TestAgentCacheMessageCountRebaseline:
     """
 
     def _runner_with_db(self, db):
+        from hermes_state import AsyncSessionDB
+
         runner = _make_runner()
-        runner._session_db = db
+        # The gateway holds the async facade; the production refresh awaits it.
+        runner._session_db = AsyncSessionDB(db)
         return runner
 
     @staticmethod
@@ -1577,7 +1582,7 @@ class TestAgentCacheMessageCountRebaseline:
         the cached agent (or either side is None / it's a legacy 2-tuple).
         """
         try:
-            row = runner._session_db.get_session(session_id)
+            row = runner._session_db._db.get_session(session_id)
             live = row.get("message_count", 0) if row else None
         except Exception:
             live = None
@@ -1591,7 +1596,8 @@ class TestAgentCacheMessageCountRebaseline:
         )
         return not invalidate
 
-    def test_same_process_turns_preserve_cached_agent(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_same_process_turns_preserve_cached_agent(self, tmp_path):
         """The regression guard: consecutive same-process turns must REUSE
         the cached agent (prompt cache preserved), not rebuild every turn.
 
@@ -1619,7 +1625,7 @@ class TestAgentCacheMessageCountRebaseline:
             db.append_message("s1", role="user", content="u")
             db.append_message("s1", role="assistant", content="a")
             # Post-turn re-baseline (the fix).
-            runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+            await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
             # Next turn's guard decision.
             if self._guard_would_reuse(runner, "telegram:s1", "s1"):
                 reuses += 1
@@ -1630,7 +1636,8 @@ class TestAgentCacheMessageCountRebaseline:
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
 
-    def test_cross_process_write_still_invalidates(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_cross_process_write_still_invalidates(self, tmp_path):
         """After the re-baseline, a DIFFERENT process appending to the same
         session must still flip the guard to rebuild (the #45966 fix holds).
         """
@@ -1650,7 +1657,7 @@ class TestAgentCacheMessageCountRebaseline:
         # Our own turn + re-baseline -> reuse next turn.
         db.append_message("s1", role="user", content="u")
         db.append_message("s1", role="assistant", content="a")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
@@ -1660,10 +1667,11 @@ class TestAgentCacheMessageCountRebaseline:
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
-    def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
         """Re-baseline must never crash and must leave legacy 2-tuples and
         pending-sentinel entries untouched."""
-        from hermes_state import SessionDB
+        from hermes_state import AsyncSessionDB, SessionDB
         from gateway.run import _AGENT_PENDING_SENTINEL
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
@@ -1673,24 +1681,24 @@ class TestAgentCacheMessageCountRebaseline:
 
         # No session_db -> no-op, no crash.
         runner._session_db = None
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-        runner._session_db = db
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        runner._session_db = AsyncSessionDB(db)
 
         # Falsy session_id -> no-op.
-        runner._refresh_agent_cache_message_count("telegram:s1", "")
-        runner._refresh_agent_cache_message_count("telegram:s1", None)
+        await runner._refresh_agent_cache_message_count("telegram:s1", "")
+        await runner._refresh_agent_cache_message_count("telegram:s1", None)
 
         # Legacy 2-tuple is left untouched (it opts out of the guard).
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert len(runner._agent_cache["telegram:s1"]) == 2
 
         # Pending sentinel entry is left untouched.
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
             assert runner._agent_cache["telegram:s1"][2] == 0
@@ -1700,9 +1708,123 @@ class TestAgentCacheMessageCountRebaseline:
             def get_session(self, _sid):
                 raise RuntimeError("db locked")
 
-        runner._session_db = _BoomDB()  # type: ignore[assignment]
+        runner._session_db = AsyncSessionDB(_BoomDB())  # type: ignore[assignment]
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig", 5)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
+
+
+class TestCrossProcessInvalidationDefersCleanup:
+    """#52197: cross-process cache invalidation must NOT run agent cleanup
+    while holding ``_agent_cache_lock``.
+
+    The #45966 guard popped the stale cached agent and then called the
+    blocking ``_cleanup_agent_resources`` (memory-provider shutdown, socket
+    teardown) *inside* the ``with _agent_cache_lock:`` block, on the gateway
+    event-loop thread.  While that ran, ``_sweep_idle_cached_agents`` (driven
+    by the session-expiry watcher) blocked acquiring the same lock and the
+    asyncio loop stalled, tripping Discord heartbeat-blocked warnings.
+
+    The fix mirrors the cap-enforcer / idle-sweep paths: pop under the lock,
+    release it, then schedule the SOFT release (which preserves the session's
+    terminal sandbox / browser / bg processes for the immediately-rebuilt
+    agent) on a daemon thread.
+
+    These tests replicate the exact eviction sequence the production guard now
+    performs and pin the invariant: the lock is free while cleanup runs, and
+    the hard-teardown path is never used here.
+    """
+
+    def _runner(self):
+        from collections import OrderedDict
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = OrderedDict()
+        runner._agent_cache_lock = threading.Lock()
+        return runner
+
+    @staticmethod
+    def _evict_like_production(runner, session_key):
+        """Run the post-#52197 cross-process eviction sequence verbatim:
+        pop the stale entry under the lock, then schedule the soft release
+        on a daemon thread AFTER the lock is released."""
+        _xproc_evicted_agent = None
+        with runner._agent_cache_lock:
+            evicted = runner._agent_cache.pop(session_key, None)
+            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+            if _ev_agent is not None:
+                _xproc_evicted_agent = _ev_agent
+        if _xproc_evicted_agent is not None:
+            threading.Thread(
+                target=runner._release_evicted_agent_soft,
+                args=(_xproc_evicted_agent,),
+                daemon=True,
+                name="agent-xproc-evict-test",
+            ).start()
+
+    def test_cleanup_runs_with_lock_released(self):
+        """The cache lock must be acquirable WHILE the evicted agent's
+        cleanup is running — proving cleanup is off the locked path."""
+        runner = self._runner()
+
+        cleanup_started = threading.Event()
+        release_lock = threading.Event()
+
+        def _soft(agent):
+            cleanup_started.set()
+            # Block here as if memory-provider shutdown / socket teardown is
+            # slow.  If cleanup were still holding _agent_cache_lock, the
+            # assertion below could never acquire it.
+            release_lock.wait(timeout=2.0)
+
+        runner._release_evicted_agent_soft = _soft
+        runner._cleanup_agent_resources = MagicMock()
+
+        old_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (old_agent, "sig", 3)
+
+        self._evict_like_production(runner, "telegram:s1")
+
+        # Wait until the (blocking) cleanup is mid-flight.
+        assert cleanup_started.wait(timeout=2.0)
+
+        # The lock MUST be free right now — this is the heart of #52197.
+        # A 0.5s acquire timeout would fire if cleanup held the lock.
+        acquired = runner._agent_cache_lock.acquire(timeout=0.5)
+        assert acquired, "cache lock blocked during cross-process cleanup (#52197)"
+        runner._agent_cache_lock.release()
+
+        # Let the cleanup thread finish.
+        release_lock.set()
+
+        # Stale entry was popped, hard-teardown path never used.
+        assert "telegram:s1" not in runner._agent_cache
+        runner._cleanup_agent_resources.assert_not_called()
+
+    def test_soft_release_scheduled_for_evicted_agent(self):
+        """The evicted agent is handed to the soft-release path, not the
+        hard ``_cleanup_agent_resources`` teardown."""
+        runner = self._runner()
+
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+        runner._cleanup_agent_resources = MagicMock()
+
+        old_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (old_agent, "sig", 3)
+
+        self._evict_like_production(runner, "telegram:s1")
+
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+
+        assert release_calls == [old_agent]
+        runner._cleanup_agent_resources.assert_not_called()
+

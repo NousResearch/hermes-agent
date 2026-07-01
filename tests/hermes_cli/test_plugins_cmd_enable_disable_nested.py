@@ -114,7 +114,7 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("nemo_relay")  # bare name
+        cmd_enable("nemo_relay", allow_tool_override=False)  # bare name
 
         saved = mock_save_en.call_args[0][0]
         # The canonical key — NOT the bare name — must be persisted, because
@@ -136,7 +136,7 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("observability/nemo_relay")
+        cmd_enable("observability/nemo_relay", allow_tool_override=False)
         saved = mock_save_en.call_args[0][0]
         assert "observability/nemo_relay" in saved
 
@@ -188,6 +188,153 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("disk-cleanup")
+        cmd_enable("disk-cleanup", allow_tool_override=False)
         saved = mock_save_en.call_args[0][0]
         assert "disk-cleanup" in saved
+
+
+# ---------------------------------------------------------------------------
+# cmd_enable — built-in tool override consent (issue #29249)
+# ---------------------------------------------------------------------------
+
+
+class TestEnableToolOverrideConsent:
+    """Enabling a non-bundled plugin must surface a consent decision about the
+    privileged ``allow_tool_override`` capability, and persist the operator's
+    choice under ``plugins.entries.<key>.allow_tool_override``."""
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_flag_true_grants_override_without_prompt(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        cmd_enable("disk-cleanup", allow_tool_override=True)
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", True
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_flag_false_declines_override_without_prompt(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        cmd_enable("disk-cleanup", allow_tool_override=False)
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", False
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_interactive_yes_grants_override(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", return_value="y"):
+            cmd_enable("disk-cleanup")  # no flag -> prompt
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", True
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_interactive_blank_enter_defaults_to_deny(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """A blind Enter must NOT grant a privileged capability."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", return_value=""):
+            cmd_enable("disk-cleanup")
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", False
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_interactive_eof_defaults_to_deny(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """Non-interactive stdin (EOFError) must fail closed to deny."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", side_effect=EOFError):
+            cmd_enable("disk-cleanup")
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", False
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_bundled_plugin_never_prompts_or_writes_entry(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, tmp_path,
+    ):
+        """Bundled plugins are trusted — no consent prompt, no entry write."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        # Bundled dir holds the plugin; user dir is empty.
+        _make_plugin_dir(tmp_path / "bundled", "trusted_bundled", {
+            "name": "trusted_bundled", "version": "1.0.0",
+        })
+        mock_user.return_value = tmp_path / "empty"
+        mock_bundled.return_value = tmp_path / "bundled"
+
+        # Console.input would raise if called — proving no prompt fired.
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
+            cmd_enable("trusted_bundled")
+
+        mock_set_flag.assert_not_called()

@@ -350,6 +350,65 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
+async def test_discord_accepts_raw_bot_mentions_when_required(adapter, monkeypatch):
+    """Raw <@!ID> mention should trigger even when message.mentions is empty."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=322),
+        content=f"<@!{bot_user.id}> hello from raw mention",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from raw mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_bare_bot_mentions_without_text(adapter, monkeypatch):
+    """A bare raw @bot ping with no other text should be dropped, not a fake turn."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=323),
+        content=f"<@{bot_user.id}>",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_bare_bot_mentions_with_populated_mentions(adapter, monkeypatch):
+    """Bare @bot ping is dropped even when message.mentions resolves the bot."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=324),
+        content=f"<@{bot_user.id}>",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discord_dms_ignore_mention_requirement(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -407,6 +466,74 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "reply without mention"
     assert event.source.chat_id == "123"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_matches_channel_name(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123, name="cypher"),
+        content="name-configured channel without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "name-configured channel without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_matches_hash_channel_name(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "#cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123, name="cypher"),
+        content="hash-name-configured channel without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_parent_channel_name_matches_thread_gates(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "#cypher")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=123, name="cypher")
+    thread = FakeThread(channel_id=456, name="topic", parent=parent)
+    message = make_message(channel=thread, content="thread message without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.thread_id == "456"
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_matches_channel_name(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "cypher")
+
+    adapter._auto_create_thread = AsyncMock()
+    message = make_message(channel=FakeTextChannel(channel_id=123, name="cypher"), content="hello")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "group"
 
 

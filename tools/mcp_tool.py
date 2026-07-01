@@ -3367,6 +3367,22 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
+            # Truncate oversized MCP results to prevent unbounded context
+            # allocation.  Uses the same byte cap as the terminal tool.
+            # (#56059)
+            from tools.tool_output_limits import get_max_bytes
+            _max = get_max_bytes()
+            if len(text_result) > _max:
+                _head = int(_max * 0.4)
+                _tail = _max - _head
+                _omitted = len(text_result) - _head - _tail
+                text_result = (
+                    text_result[:_head]
+                    + f"\n\n... [OUTPUT TRUNCATED - {_omitted} chars omitted "
+                    f"out of {len(text_result)} total] ...\n\n"
+                    + text_result[-_tail:]
+                )
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content

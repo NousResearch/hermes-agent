@@ -90,7 +90,12 @@ export async function substituteVars(input) {
         throw formatMissingError(missing);
     }
     const text = input.raw.replace(varPattern(), (_full, name) => {
-        return resolved.get(name);
+        // Presets interpolate $VAR tokens inside double-quoted JSON strings
+        // (e.g. "email": "$TO"), so a value containing " or \ would break out
+        // of the string and corrupt / inject into the JMAP envelope. Escape
+        // for JSON string context: JSON.stringify quotes + escapes the value,
+        // and slice(1, -1) drops the surrounding quotes it adds.
+        return JSON.stringify(resolved.get(name)).slice(1, -1);
     });
     return { text };
 }

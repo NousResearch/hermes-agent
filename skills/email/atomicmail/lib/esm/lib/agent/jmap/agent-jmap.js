@@ -27,6 +27,9 @@ export const BUNDLED_OPS_PRESET_NAMES = [
 export const JMAP_MAIL_URN = "urn:ietf:params:jmap:mail";
 /** RFC 9404 blob extension URN (Blob/upload, Blob/get, Blob/lookup). */
 export const JMAP_BLOB_URN = "urn:ietf:params:jmap:blob";
+// Node's undici fetch() has no default read/idle timeout; bound JMAP requests
+// so a stalled connection can't hang the calling agent tool indefinitely.
+const JMAP_TIMEOUT_MS = 30000;
 export function parseJmapEnvelope(raw, defaultUsing, source) {
     let value;
     try {
@@ -179,6 +182,7 @@ export async function fetchJmapWellKnown(apiUrl, capabilityJwt) {
     const base = apiUrl.replace(/\/+$/, "");
     const res = await fetch(`${base}/.well-known/jmap`, {
         headers: { Authorization: `Bearer ${capabilityJwt}` },
+        signal: AbortSignal.timeout(JMAP_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -349,6 +353,7 @@ export async function postJmap(jmapPostUrl, capabilityJwt, envelope) {
             Authorization: `Bearer ${capabilityJwt}`,
         },
         body: JSON.stringify(envelope),
+        signal: AbortSignal.timeout(JMAP_TIMEOUT_MS),
     });
     const bodyText = await res.text();
     return { ok: res.ok, status: res.status, bodyText };

@@ -21,6 +21,10 @@ const EXT_TO_MIME = {
     ".gz": "application/gzip",
     ".xml": "application/xml",
 };
+// Node's undici fetch() has no default read/idle timeout; give binary uploads a
+// generous bound so large files still succeed but a stalled connection can't
+// hang the calling agent tool indefinitely.
+const UPLOAD_TIMEOUT_MS = 60000;
 export function guessMimeTypeFromFilename(name) {
     const lower = name.toLowerCase();
     const dot = lower.lastIndexOf(".");
@@ -42,6 +46,7 @@ export async function postBinaryBlobUpload(uploadUrlExpanded, capabilityJwt, byt
             "Content-Type": contentType,
         },
         body,
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {

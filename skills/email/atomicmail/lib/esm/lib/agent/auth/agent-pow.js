@@ -35,9 +35,27 @@ function scryptHash(data, salt) {
         });
     });
 }
+// A difficulty above the digest bit-length (POW_HASH_BYTES * 8 = 512) can never
+// be satisfied, so it would spin forever; anything beyond a handful of bits is
+// already astronomically expensive. Reject impossible difficulties up front and
+// cap total iterations as a hard safety net against a misconfigured or tampered
+// challenge (nominal server difficulty is ~6, i.e. ~64 iterations).
+const MAX_POW_DIFFICULTY = POW_HASH_BYTES * 8;
+const MAX_POW_ITERATIONS = 100_000_000n;
+function assertSolvableDifficulty(difficulty) {
+    if (typeof difficulty !== "number" ||
+        !Number.isInteger(difficulty) ||
+        difficulty < 0 ||
+        difficulty > MAX_POW_DIFFICULTY) {
+        throw new Error(`PoW difficulty ${difficulty} is out of range (expected an integer ` +
+            `0-${MAX_POW_DIFFICULTY}); refusing to grind — the challenge is likely ` +
+            "misconfigured or tampered.");
+    }
+}
 export async function solvePow(challenge, difficulty, salt, onProgress) {
+    assertSolvableDifficulty(difficulty);
     let nonce = 0n;
-    while (true) {
+    while (nonce < MAX_POW_ITERATIONS) {
         const digest = await scryptHash(`${challenge}:${nonce}`, salt);
         if (hasLeadingZeroBits(digest, difficulty)) {
             return { powHex: bytesToHex(digest), nonce: nonce.toString() };
@@ -46,4 +64,6 @@ export async function solvePow(challenge, difficulty, salt, onProgress) {
         if (onProgress && nonce % 64n === 0n)
             onProgress(nonce);
     }
+    throw new Error(`PoW exceeded ${MAX_POW_ITERATIONS} iterations without a solution ` +
+        `at difficulty ${difficulty}; aborting to avoid an unbounded hang.`);
 }

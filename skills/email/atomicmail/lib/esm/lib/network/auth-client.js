@@ -13,6 +13,8 @@ import { DEFAULT_POW_SCRYPT_SALT_HEX } from "../core/consts.js";
 // constants on either side breaks PoW interop.
 const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 };
 const POW_HASH_BYTES = 64;
+// Node's undici fetch() has no default read/idle timeout; bound every request.
+const AUTH_TIMEOUT_MS = 15000;
 /** Thrown for any non-2xx HTTP response or malformed payload. */
 export class AuthClientError extends Error {
     status;
@@ -68,6 +70,7 @@ export class AuthClient {
         const res = await fetch(`${this.baseUrl}/api/v1/capability`, {
             method: "POST",
             headers: { Authorization: `Bearer ${sessionJWT}` },
+            signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
         });
         const text = await res.text();
         if (!res.ok) {
@@ -79,6 +82,7 @@ export class AuthClient {
     async fetchChallenge() {
         const res = await fetch(`${this.baseUrl}/api/v1/challenge`, {
             method: "POST",
+            signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
         });
         const text = await res.text();
         if (!res.ok) {
@@ -88,7 +92,8 @@ export class AuthClient {
         const payload = decodeJwtPayload(challengeJWT);
         if (typeof payload.jti !== "string" ||
             typeof payload.difficulty !== "number") {
-            throw new AuthClientError(res.status, challengeJWT, "Challenge JWT payload is malformed (missing jti or difficulty).");
+            // Do not embed the raw challenge JWT (a bearer token) in the error.
+            throw new AuthClientError(res.status, `${challengeJWT.slice(0, 12)}…(challenge JWT redacted)`, "Challenge JWT payload is malformed (missing jti or difficulty).");
         }
         return {
             challengeJWT,
@@ -104,6 +109,7 @@ export class AuthClient {
                 Authorization: `Bearer ${challengeJWT}`,
             },
             body: JSON.stringify(body),
+            signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
         });
         const text = await res.text();
         if (!res.ok) {
@@ -142,14 +148,32 @@ export class AuthClient {
      * within the challenge JWT's 3-minute TTL.
      */
     async solvePoW(challenge, difficulty) {
+        assertSolvableDifficulty(difficulty);
         let nonce = 0n;
-        while (true) {
+        while (nonce < MAX_POW_ITERATIONS) {
             const digest = await scryptHash(`${challenge}:${nonce}`, this.scryptSaltHex);
             if (hasLeadingZeroBits(digest, difficulty)) {
                 return { powHex: bytesToHex(digest), nonce };
             }
             nonce++;
         }
+        throw new AuthClientError(0, "", `PoW exceeded ${MAX_POW_ITERATIONS} iterations without a solution ` +
+            `at difficulty ${difficulty}; aborting to avoid an unbounded hang.`);
+    }
+}
+// A difficulty above the digest bit-length (POW_HASH_BYTES * 8 = 512) can never
+// be satisfied and would spin forever; cap iterations as a hard safety net for a
+// misconfigured or tampered challenge (nominal server difficulty is ~6).
+const MAX_POW_DIFFICULTY = POW_HASH_BYTES * 8;
+const MAX_POW_ITERATIONS = 100_000_000n;
+function assertSolvableDifficulty(difficulty) {
+    if (typeof difficulty !== "number" ||
+        !Number.isInteger(difficulty) ||
+        difficulty < 0 ||
+        difficulty > MAX_POW_DIFFICULTY) {
+        throw new AuthClientError(0, "", `PoW difficulty ${difficulty} is out of range (expected an integer ` +
+            `0-${MAX_POW_DIFFICULTY}); refusing to grind — the challenge is likely ` +
+            "misconfigured or tampered.");
     }
 }
 function scryptHash(data, salt) {

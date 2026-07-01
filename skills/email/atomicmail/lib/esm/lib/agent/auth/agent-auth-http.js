@@ -1,9 +1,13 @@
 // auth-service HTTP: challenge → session → capability.
 import { decodeJwtPayload } from "./agent-jwt.js";
 import { solvePow } from "./agent-pow.js";
+// Node's undici fetch() has no default read/idle timeout, so a stalled
+// connection would hang the calling agent tool. Bound every auth request.
+const AUTH_TIMEOUT_MS = 15000;
 export async function fetchChallenge(authUrl) {
     const res = await fetch(`${authUrl}/api/v1/challenge`, {
         method: "POST",
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -30,6 +34,7 @@ export async function exchangeSession(authUrl, body) {
             Authorization: `Bearer ${challengeJWT}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -54,6 +59,7 @@ export async function fetchCapability(authUrl, sessionJWT) {
     const res = await fetch(`${authUrl}/api/v1/capability`, {
         method: "POST",
         headers: { Authorization: `Bearer ${sessionJWT}` },
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {

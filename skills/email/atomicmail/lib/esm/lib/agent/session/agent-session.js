@@ -189,7 +189,12 @@ export class AgentSession {
                     "lose access to your old account. Then retry with forced=true " +
                     "(MCP) or --forced (AgentSkill).");
             }
-            await this.store.clear();
+            // Reset in-memory state so the signup below runs as a fresh
+            // registration, but do NOT clear the old on-disk credentials yet:
+            // signup is a multi-call network flow and any failure before the
+            // final store.save() must leave the old apiKey/inboxId intact and
+            // recoverable. The subsequent store.save() calls overwrite the
+            // session/capability/credentials artifacts in place on success.
             this.apiKey = undefined;
             this.inboxId = undefined;
             this.sessionJWT = undefined;

@@ -68,6 +68,37 @@ class TestGenerateTitle:
             title = generate_title("how do I set up docker", "First install...")
             assert title == "Setting Up Docker Environment"
 
+    def test_strips_think_blocks(self):
+        """Reasoning-model output wrapped in <think>...</think> must not
+        leak into the session title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>The user wants a title. I'll summarize the topic "
+            "concisely.</think>Debugging Python Import Errors"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("help me fix this import", "Sure...")
+            assert title == "Debugging Python Import Errors"
+            assert "<think>" not in title
+            assert "summarize" not in title
+
+    def test_strips_unterminated_think_block(self):
+        """An unterminated <think> block (no close tag) must still be
+        stripped so the leaked reasoning doesn't become the title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>Let me reason about a good title for this session"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("hello", "hi there")
+            # Everything from the unterminated open tag onward is stripped,
+            # leaving nothing → None.
+            assert title is None
+
     def test_strips_title_prefix(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

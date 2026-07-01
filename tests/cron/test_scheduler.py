@@ -4785,3 +4785,77 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestCronEnvLoaderUsesHermesDotenv:
+    """Regression: cron/scheduler.py must call load_hermes_dotenv (not bare
+    dotenv.load_dotenv) so that external secret sources such as Bitwarden
+    Secrets Manager are resolved for cron jobs.  Ref: #33465.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_provider(self):
+        fake_runtime = {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "stub",
+            "requested_provider": None,
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ):
+            yield
+
+    def _make_job(self):
+        return {
+            "id": "env-loader-test",
+            "name": "env-loader",
+            "prompt": "hello",
+            "schedule": "*/5 * * * *",
+        }
+
+    def test_run_job_calls_load_hermes_dotenv(self, tmp_path):
+        """run_job must invoke load_hermes_dotenv so BSM secrets are resolved."""
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(
+            return_value={"final_response": "ok", "messages": []}
+        )
+        with patch.object(scheduler, "_hermes_home", tmp_path), \
+             patch.object(scheduler, "_resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv") as mock_load_env, \
+             patch("hermes_state.SessionDB", return_value=MagicMock()), \
+             patch("run_agent.AIAgent", return_value=agent):
+            scheduler.run_job(self._make_job())
+
+        assert mock_load_env.call_count >= 1
+        found_impl_call = any(
+            str(tmp_path) in str(call.kwargs.get("hermes_home", ""))
+            for call in mock_load_env.call_args_list
+        )
+        assert found_impl_call, (
+            f"No call with hermes_home pointing at tmp_path found. "
+            f"Calls: {mock_load_env.call_args_list}"
+        )
+
+    def test_load_hermes_dotenv_not_dotenv_load_dotenv(self, tmp_path):
+        """Ensure scheduler does NOT call bare dotenv.load_dotenv."""
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(
+            return_value={"final_response": "ok", "messages": []}
+        )
+        with patch.object(scheduler, "_hermes_home", tmp_path), \
+             patch.object(scheduler, "_resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("dotenv.load_dotenv") as mock_bare_dotenv, \
+             patch("hermes_state.SessionDB", return_value=MagicMock()), \
+             patch("run_agent.AIAgent", return_value=agent):
+            scheduler.run_job(self._make_job())
+
+        mock_bare_dotenv.assert_not_called()

@@ -53,6 +53,48 @@ const navTitles: Record<NavKey, string> = {
   logs: "Журнал событий",
 };
 
+const STORAGE_KEYS = {
+  activeTab: "hermes-miniapp:active-tab",
+  selectedApprovalId: "hermes-miniapp:selected-approval-id",
+} as const;
+
+function isNavKey(value: string | null): value is NavKey {
+  return value === "status" || value === "sessions" || value === "approvals" || value === "logs";
+}
+
+function readStoredNavKey(): NavKey {
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEYS.activeTab);
+    return isNavKey(value) ? value : "status";
+  } catch {
+    return "status";
+  }
+}
+
+function readStoredApprovalId(fallback: string): string {
+  try {
+    return window.localStorage.getItem(STORAGE_KEYS.selectedApprovalId) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredValue(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // localStorage is optional in Telegram WebView/private contexts.
+  }
+}
+
+function removeStoredValue(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // localStorage is optional in Telegram WebView/private contexts.
+  }
+}
+
 function RiskBadge({ action }: { action: Pick<QuickAction, "risk"> }) {
   return <span className={`risk risk-${action.risk}`}>{riskLabels[action.risk]}</span>;
 }
@@ -385,8 +427,8 @@ function CommandPalette({ isOpen, onClose, onNavigate }: { isOpen: boolean; onCl
 export function App() {
   const [snapshot, setSnapshot] = useState<StatusSnapshot | null>(null);
   const [apiState, setApiState] = useState<"mock" | "connecting" | "connected" | "offline">("mock");
-  const [activeTab, setActiveTab] = useState<NavKey>("status");
-  const [selectedApprovalId, setSelectedApprovalId] = useState(approvalPreviews[0]?.id ?? "");
+  const [activeTab, setActiveTab] = useState<NavKey>(() => readStoredNavKey());
+  const [selectedApprovalId, setSelectedApprovalId] = useState(() => readStoredApprovalId(approvalPreviews[0]?.id ?? ""));
   const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
@@ -404,6 +446,10 @@ export function App() {
   const telegram = getTelegramRuntime();
   const apiConfigured = hasMiniAppApi(telegram.isTelegram);
   const publicSmoke = snapshot?.miniapp.public_exposure === true;
+  const hasServerSnapshot = lastSuccessAt !== null;
+  const approvals = hasServerSnapshot ? serverApprovals : approvalPreviews;
+  const sessions = hasServerSnapshot ? serverSessions : sessionPreviews;
+  const logs = hasServerSnapshot ? serverLogs : recentLogs;
 
   const closeTransientUi = useCallback(() => {
     if (isPaletteOpen) {
@@ -415,6 +461,26 @@ export function App() {
 
   useEffect(() => configureTelegramBackButton(isPaletteOpen || activeTab !== "status", closeTransientUi), [activeTab, closeTransientUi, isPaletteOpen]);
   useEffect(() => configureTelegramMainButton("Только чтение", () => undefined), []);
+
+  useEffect(() => {
+    writeStoredValue(STORAGE_KEYS.activeTab, activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (approvals.length === 0) {
+      if (selectedApprovalId) setSelectedApprovalId("");
+      removeStoredValue(STORAGE_KEYS.selectedApprovalId);
+      return;
+    }
+
+    const selectedExists = approvals.some((approval) => approval.id === selectedApprovalId);
+    if (!selectedExists) {
+      setSelectedApprovalId(approvals[0].id);
+      return;
+    }
+
+    writeStoredValue(STORAGE_KEYS.selectedApprovalId, selectedApprovalId);
+  }, [approvals, selectedApprovalId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
@@ -506,11 +572,6 @@ export function App() {
   const displayName = telegram.user?.username
     ? `@${telegram.user.username}`
     : telegram.user?.first_name ?? "локальное превью";
-
-  const hasServerSnapshot = lastSuccessAt !== null;
-  const approvals = hasServerSnapshot ? serverApprovals : approvalPreviews;
-  const sessions = hasServerSnapshot ? serverSessions : sessionPreviews;
-  const logs = hasServerSnapshot ? serverLogs : recentLogs;
 
   const cards = useMemo(() => {
     if (!snapshot) return statusCards;

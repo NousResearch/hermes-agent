@@ -46,6 +46,30 @@ BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
 
+def _safe_tar_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Return tar members safe to extract into a staging directory.
+
+    Mirrors the important parts of Python 3.12's data filter for the sync-back
+    use case while keeping Python 3.11 compatibility: no absolute paths, no
+    parent traversal, and no links or special files.
+    """
+    members: list[tarfile.TarInfo] = []
+    for member in tar.getmembers():
+        name = member.name
+        parts = [part for part in name.split("/") if part not in ("", ".")]
+        if name.startswith("/") or ".." in parts:
+            logger.warning("sync_back: skipping unsafe tar member %s", name)
+            continue
+        if member.issym() or member.islnk() or member.isdev():
+            logger.warning("sync_back: skipping unsafe tar member %s", name)
+            continue
+        if not (member.isfile() or member.isdir()):
+            logger.warning("sync_back: skipping unsupported tar member %s", name)
+            continue
+        members.append(member)
+    return members
+
+
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
     """Enumerate all files that should be synced to a remote environment.
@@ -350,7 +374,7 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                    tar.extractall(staging, members=_safe_tar_members(tar))
 
                 applied = 0
                 upload_only_host_paths = (

@@ -471,3 +471,27 @@ class TestSyncBackSizeCap:
         # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
+
+    def test_sync_back_skips_unsafe_tar_member(self, tmp_path, caplog):
+        """Path traversal entries are ignored during sync-back extraction."""
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+
+        def download_fn(dest: Path):
+            with tarfile.open(dest, "w") as tar:
+                info = tarfile.TarInfo(name="../escape.txt")
+                content = b"escaped"
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=[(host_file, "/root/.hermes/skill.md")],
+            bulk_download_fn=download_fn,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert not (tmp_path / "escape.txt").exists()
+        assert Path(host_file).read_bytes() == b"original"
+        assert any("unsafe tar member" in r.message for r in caplog.records)

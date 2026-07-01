@@ -8,6 +8,7 @@ http.server with a mocked agent handler.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 import json
 import os
 import tempfile
@@ -311,6 +312,45 @@ class TestRegistryDispatchConvention:
 
 
 # --------------------------------------------------------------------------
+# A2A reply capture
+# --------------------------------------------------------------------------
+
+class TestReplyCapture:
+    def test_send_waits_for_notify_marked_final_reply(self):
+        """Interim/editable sends must not satisfy the blocked A2A RPC future."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        fut = Future()
+        with adapter._pending_lock:
+            adapter._pending_replies["ctx-final"] = fut
+
+        async def run():
+            interim = await adapter.send(
+                "ctx-final",
+                "⏩ Steered into current run (iteration 1/200).",
+                metadata={"expect_edits": True},
+            )
+            assert interim.success is True
+            assert fut.done() is False
+
+            final = await adapter.send(
+                "ctx-final",
+                "FINAL_PROOF_PAYLOAD",
+                metadata={"notify": True},
+            )
+            assert final.success is True
+            assert fut.result(timeout=0) == "FINAL_PROOF_PAYLOAD"
+
+        try:
+            asyncio.run(run())
+        finally:
+            with adapter._pending_lock:
+                adapter._pending_replies.pop("ctx-final", None)
+
+
+# --------------------------------------------------------------------------
 # End-to-end inbound round-trip (real http.server + mocked agent)
 # --------------------------------------------------------------------------
 
@@ -340,7 +380,7 @@ class TestInboundRoundTrip:
         # by resolving the pending future via the real send() path.
         async def fake_handle_message(event):
             # The reply path the gateway would normally drive.
-            await adapter.send(event.source.chat_id, "ECHO: " + event.text)
+            await adapter.send(event.source.chat_id, "ECHO: " + event.text, metadata={"notify": True})
 
         adapter.handle_message = fake_handle_message  # type: ignore
         adapter._message_handler = object()  # non-None so dispatch proceeds
@@ -383,6 +423,29 @@ class TestInboundRoundTrip:
             assert "ECHO:" in reply
             assert "hello agent" in reply  # framed text still contains the task
 
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_connect_accepts_gateway_reconnect_kwarg(self, monkeypatch):
+        """Gateway reconnection passes is_reconnect=... to every adapter connect()."""
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        import socket
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        monkeypatch.setenv("A2A_PORT", str(port))
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+
+        async def run():
+            assert await adapter.connect(is_reconnect=True) is True
             await adapter.disconnect()
 
         asyncio.run(run())

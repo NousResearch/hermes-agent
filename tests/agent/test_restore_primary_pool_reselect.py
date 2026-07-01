@@ -220,3 +220,36 @@ class TestRestorePrimaryPoolReselect:
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
         assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+    def test_restore_skips_mismatched_fallback_pool(self):
+        """Do not swap a fallback-provider pool entry while restoring primary."""
+        entries = [
+            _make_entry("deepseek-1", "deepseek-key", priority=0),
+        ]
+        pool = _build_mock_pool(entries)
+        pool.provider = "deepseek"
+
+        agent = self._make_agent(pool)
+        agent.provider = "custom"
+        agent.model = "ornith-35b"
+        agent.base_url = "https://primary-host.example.com/v1"
+        agent.api_key = "primary-snapshot-key"
+        agent._client_kwargs["api_key"] = "primary-snapshot-key"
+        agent._client_kwargs["base_url"] = "https://primary-host.example.com/v1"
+        agent._primary_runtime["provider"] = "custom"
+        agent._primary_runtime["model"] = "ornith-35b"
+        agent._primary_runtime["base_url"] = "https://primary-host.example.com/v1"
+        agent._primary_runtime["api_key"] = "primary-snapshot-key"
+        agent._primary_runtime["client_kwargs"] = {
+            "api_key": "primary-snapshot-key",
+            "base_url": "https://primary-host.example.com/v1",
+        }
+        agent._swap_credential = MagicMock()
+
+        result = agent._restore_primary_runtime()
+
+        assert result is True
+        agent._swap_credential.assert_not_called()
+        assert agent.api_key == "primary-snapshot-key"
+        assert agent._client_kwargs["api_key"] == "primary-snapshot-key"
+        assert agent.base_url == "https://primary-host.example.com/v1"

@@ -253,8 +253,18 @@ class TestBranchFlushesBeforeEndSession:
         agent = MagicMock()
         cli_instance.agent = agent
 
+        # Track relative ordering of the flush vs end_session via a shared
+        # parent mock — the flush MUST precede end_session (a flush after the
+        # session ends would be useless).
+        manager = MagicMock()
+        manager.attach_mock(agent._flush_messages_to_session_db, "flush")
+        cli_instance._session_db.end_session = manager.end_session
+
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
         agent._flush_messages_to_session_db.assert_called_once_with(
             cli_instance.conversation_history
         )
+        # Ordering invariant: flush is called before end_session.
+        ordered = [c[0] for c in manager.mock_calls if c[0] in ("flush", "end_session")]
+        assert ordered.index("flush") < ordered.index("end_session")

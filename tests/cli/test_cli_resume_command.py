@@ -341,6 +341,11 @@ class TestResumeFlushesBeforeEndSession:
         cli_obj._session_db.get_messages_as_conversation.return_value = []
         cli_obj._session_db.resolve_resume_session_id.return_value = "target"
 
+        # Track flush vs end_session ordering — flush MUST precede end_session.
+        manager = MagicMock()
+        manager.attach_mock(agent._flush_messages_to_session_db, "flush")
+        manager.attach_mock(cli_obj._session_db.end_session, "end_session")
+
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
             patch("cli._cprint"),
@@ -351,3 +356,6 @@ class TestResumeFlushesBeforeEndSession:
             [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
         )
         cli_obj._session_db.end_session.assert_called_once()
+        # Ordering invariant: flush is called before end_session.
+        ordered = [c[0] for c in manager.mock_calls if c[0] in ("flush", "end_session")]
+        assert ordered.index("flush") < ordered.index("end_session")

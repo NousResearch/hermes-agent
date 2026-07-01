@@ -109,6 +109,10 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
+  # API server gateway adapter imports aiohttp.web directly when
+  # API_SERVER_ENABLED=true. Keep it in core so local/browser API users do not
+  # need the broad messaging extra for the API server to bind.
+  "aiohttp==3.14.1",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500

@@ -1519,6 +1519,7 @@ name = "hermes-agent"
 version = "0.18.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
@@ -1733,6 +1734,7 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "aiohttp", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.1" },

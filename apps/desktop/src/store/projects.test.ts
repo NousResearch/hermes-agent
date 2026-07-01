@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sidebarAgentsGrouped } from '@/store/layout'
 
@@ -11,6 +11,7 @@ import {
   enterProject,
   exitProjectScope,
   pickProjectFolder,
+  revealPath,
   refreshWorktrees
 } from './projects'
 
@@ -73,6 +74,38 @@ describe('worktree refresh', () => {
     const before = $worktreeRefreshToken.get()
     refreshWorktrees()
     expect($worktreeRefreshToken.get()).toBe(before + 1)
+  })
+})
+
+describe('revealPath', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('uses the local desktop bridge in local mode', async () => {
+    const reveal = vi.fn().mockResolvedValue(true)
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { revealPath: reveal } })
+    isDesktopFsRemoteMode.mockReturnValue(false)
+
+    await revealPath('/local/repo')
+
+    expect(reveal).toHaveBeenCalledWith('/local/repo')
+  })
+
+  it('does not call the local desktop bridge in remote mode', async () => {
+    const reveal = vi.fn().mockResolvedValue(true)
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { revealPath: reveal } })
+    isDesktopFsRemoteMode.mockReturnValue(true)
+
+    await revealPath('/backend/repo')
+
+    expect(reveal).not.toHaveBeenCalled()
   })
 })
 

@@ -26,6 +26,7 @@ import {
   setActiveProject,
   updateProject
 } from '@/store/projects'
+import { $connection } from '@/store/session'
 
 import type { SidebarProjectTree } from './workspace-groups'
 
@@ -93,6 +94,7 @@ export function ProjectMenu({
   // Open toward the content area: right when the sidebar is on the left, left
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
+  const isRemote = useStore($connection)?.mode === 'remote'
 
   const removeAuto = () => {
     dismissAutoProject(project.id)
@@ -165,10 +167,12 @@ export function ProjectMenu({
               <DropdownMenuSeparator />
             </>
           )}
-          <DropdownMenuItem disabled={!project.path} onSelect={() => void revealPath(project.path)}>
-            <Codicon name="folder-opened" size="0.875rem" />
-            <span>{p.reveal}</span>
-          </DropdownMenuItem>
+          {!isRemote && (
+            <DropdownMenuItem disabled={!project.path} onSelect={() => void revealPath(project.path)}>
+              <Codicon name="folder-opened" size="0.875rem" />
+              <span>{p.reveal}</span>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem disabled={!project.path} onSelect={() => void copyPath(project.path)}>
             <Codicon name="copy" size="0.875rem" />
             <span>{p.copyPath}</span>

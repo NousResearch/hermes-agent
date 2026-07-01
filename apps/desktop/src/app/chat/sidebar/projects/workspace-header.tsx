@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useState } from 'react'
 
@@ -27,6 +28,7 @@ import { gitRef } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { copyPath, listRepoBranches, revealPath, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import { $connection } from '@/store/session'
 
 import { SidebarCount, SidebarRowLead } from '../chrome'
 
@@ -107,6 +109,7 @@ export function WorkspaceShowMoreButton({
 export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
+  const isRemote = useStore($connection)?.mode === 'remote'
 
   return (
     <DropdownMenu>
@@ -121,10 +124,12 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
-        <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
-          <Codicon name="folder-opened" size="0.875rem" />
-          <span>{p.reveal}</span>
-        </DropdownMenuItem>
+        {!isRemote && (
+          <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
+            <Codicon name="folder-opened" size="0.875rem" />
+            <span>{p.reveal}</span>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
           <Codicon name="copy" size="0.875rem" />
           <span>{p.copyPath}</span>

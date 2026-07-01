@@ -6990,12 +6990,29 @@ class TelegramAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Scope-B (SPEC INV-6): accumulate EVERY constituent update's
+            # message_id so a hard-kill re-delivery of any buffered constituent
+            # (not just the first) is answerable and thus suppressible rather
+            # than re-answered. Seed with the first constituent's own id.
+            _first_mid = getattr(event, "message_id", None)
+            event._constituent_message_ids = (  # type: ignore[attr-defined]
+                [str(_first_mid)] if _first_mid is not None else []
+            )
             self._pending_text_batches[key] = event
         else:
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Record this follow-up constituent's message_id (SPEC INV-6).
+            _mid = getattr(event, "message_id", None)
+            if _mid is not None:
+                _ids = getattr(existing, "_constituent_message_ids", None)
+                if _ids is None:
+                    _ids = []
+                    existing._constituent_message_ids = _ids  # type: ignore[attr-defined]
+                if str(_mid) not in _ids:
+                    _ids.append(str(_mid))
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)

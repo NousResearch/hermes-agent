@@ -8351,6 +8351,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
+            # Flush the Telegram boot-redelivery HWM to disk before teardown so
+            # the next boot's guard has the freshest dispatched-update_id (scope
+            # B / SPEC D-2). Best-effort; never blocks shutdown.
+            try:
+                _hwm = getattr(self, "_tg_redelivery_hwm", None)
+                if _hwm is not None:
+                    _hwm.flush()
+            except Exception:
+                pass
+
             def _kill_tool_subprocesses(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
@@ -10886,6 +10896,125 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _is_telegram_boot_redelivered_duplicate(self, event, session_entry) -> bool:
+        """SPEC scope B — return True iff this inbound Telegram event is a
+        hard-kill re-delivery whose answer is already durably in the transcript
+        (so it must be SUPPRESSED). Returns False (PROCESS) in every uncertain
+        case — never drops a genuine message. Gated to Telegram + the config
+        flag; a no-op for every other platform/path.
+        """
+        try:
+            from gateway import telegram_redelivery as _tgr
+        except Exception:
+            return False
+        # Platform gate: only Telegram populates platform_update_id.
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        try:
+            platform_value = platform.value
+        except Exception:
+            return False
+        if platform_value != "telegram":
+            return False
+        # Config gate (default on). config.yaml telegram.redelivery_guard.
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+            _cfg = (_load_full_config().get("telegram") or {})
+            if _cfg.get("redelivery_guard", True) is False:
+                return False
+        except Exception:
+            pass
+        update_id = getattr(event, "platform_update_id", None)
+        if update_id is None:
+            return False  # nothing to scope on — process
+
+        # Lazy-init the per-process HWM tracker + suppression counter.
+        if getattr(self, "_tg_redelivery_hwm", None) is None:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile = get_active_profile_name() or "default"
+            except Exception:
+                _profile = "default"
+            self._tg_redelivery_profile = _profile
+            self._tg_redelivery_boot_hwm = _tgr.read_hwm(_hermes_home, _profile)
+            self._tg_redelivery_hwm = _tgr.TelegramHwmTracker(_hermes_home, _profile)
+            self._tg_redelivery_counter = _tgr.RedeliverySuppressionCounter()
+
+        # Track this dispatch's update_id in the in-memory HWM (coalesced flush
+        # happens elsewhere). This advances the HWM as the gateway processes.
+        self._tg_redelivery_hwm.observe_dispatch(update_id)
+        # Coalesced checkpoint: throttled to <=30s, so this is a cheap no-op on
+        # most calls and a small atomic write at most once per window (SPEC D-2).
+        try:
+            self._tg_redelivery_hwm.maybe_checkpoint()
+        except Exception:
+            pass
+
+        seconds_since_boot = time.time() - getattr(self, "_startup_time", 0.0)
+        in_scope = _tgr.in_redelivery_scope(
+            update_id, self._tg_redelivery_boot_hwm,
+            seconds_since_boot=seconds_since_boot,
+        )
+        message_id = getattr(event, "message_id", None)
+        is_edited = bool(getattr(event, "is_edited", False))
+        session_id = getattr(session_entry, "session_id", None)
+
+        def _answerable(sid, mid):
+            return self.session_store.has_platform_message_id_answerable(sid, str(mid))
+
+        suppress = _tgr.decide_redelivery(
+            in_scope=in_scope,
+            session_id=session_id,
+            message_id=str(message_id) if message_id is not None else None,
+            is_edited=is_edited,
+            answerable_fn=_answerable,
+        )
+        if suppress:
+            self._tg_redelivery_counter.record(update_id=update_id, message_id=message_id)
+        return suppress
+
+    def _persist_telegram_aggregate_constituents(self, event, session_entry) -> None:
+        """SPEC INV-6 — for a buffered Telegram turn that aggregated multiple
+        updates, persist each NON-first constituent message_id as a lightweight
+        ``observed=1`` companion row so a future hard-kill re-delivery of any
+        constituent (not just the first, which the turn row carries) is
+        answerable and thus suppressed rather than re-answered. ``observed`` rows
+        are excluded from conversational context reconstruction, so this adds no
+        prompt tokens (cache-safe). Best-effort; never blocks the turn.
+        """
+        try:
+            ids = list(getattr(event, "_constituent_message_ids", None) or [])
+        except Exception:
+            return
+        if len(ids) < 2:
+            return  # single-message turn — the turn row already carries its id
+        first = str(getattr(event, "message_id", "")) if getattr(event, "message_id", None) is not None else None
+        session_id = getattr(session_entry, "session_id", None)
+        if session_id is None:
+            return
+        db = getattr(self.session_store, "_db", None)
+        if db is None:
+            return
+        for mid in ids:
+            mid = str(mid)
+            if first is not None and mid == first:
+                continue  # the conversational turn row already stamps the first
+            try:
+                if db.has_platform_message_id(session_id, mid):
+                    continue  # already recorded (idempotent)
+                db.append_message(
+                    session_id,
+                    "user",
+                    content="",
+                    platform_message_id=mid,
+                    observed=True,
+                )
+            except Exception:
+                logger.debug(
+                    "scope-B: failed to persist companion observed row for %s", mid,
+                    exc_info=True,
+                )
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -10918,6 +11047,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
+
+        # ── Telegram hard-kill boot-redelivery guard (scope B) ─────────────
+        # A hard kill after answering a Telegram update but before PTB confirms
+        # its offset makes Telegram re-deliver the answered update on boot. If
+        # its message_id is already in this session's transcript AND the update
+        # is within the restart-recovery scope, suppress the duplicate answer.
+        # Fail-OPEN in every uncertain case (never drop a genuine message).
+        if self._is_telegram_boot_redelivered_duplicate(event, session_entry):
+            return None
+        # SPEC INV-6: record companion answerable rows for a multi-update
+        # aggregate so a future re-delivery of a non-first constituent suppresses.
+        self._persist_telegram_aggregate_constituents(event, session_entry)
+
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(

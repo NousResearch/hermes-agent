@@ -2091,6 +2091,21 @@ such as `{missing.attr}` or `{missing[key]}`, remain literal instead of crashing
 the gateway. Restart the gateway after changing these overrides so its cached
 configuration is reloaded.
 
+Non-critical notifications can also be muted by category:
+
+```yaml
+gateway:
+  system_messages:
+    suppress:
+      - progress   # work-status updates
+      - lifecycle  # gateway start/restart/shutdown notices
+      - info       # optional informational notices
+```
+
+Use `suppress: all` to mute all three categories. Error messages, approval
+prompts, and command replies are never suppressible. Unknown category names are
+ignored with a warning.
+
 ## Group Chat Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,

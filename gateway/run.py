@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -6354,6 +6354,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
             
             # Try to connect
@@ -7162,6 +7163,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+                    adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
                     adapter._busy_text_mode = self._busy_text_mode
 
                     # Reconnect after an outage: preserve the platform's
@@ -7818,6 +7820,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
 
             try:
@@ -7985,6 +7988,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return YuanbaoAdapter(config)
 
         return None
+
+    def _make_adapter_auth_check(
+        self,
+        platform: Platform,
+    ) -> Callable[[str, Optional[str], Optional[str]], bool]:
+        """Build a platform-bound auth callback for adapter use.
+
+        Adapters that fetch external context (e.g. Slack
+        ``conversations.replies``) call this through
+        ``BasePlatformAdapter._is_sender_authorized`` to mark non-allowlisted
+        senders as unverified in LLM context, mitigating indirect prompt
+        injection from third parties in shared threads/channels.
+
+        The returned callback delegates to :meth:`_is_user_authorized` so the
+        full auth chain — platform allowlists, group allowlists, pairing
+        store, allow-all flags — stays the single source of truth.
+        """
+        def check(
+            user_id: str,
+            chat_type: Optional[str] = None,
+            chat_id: Optional[str] = None,
+        ) -> bool:
+            if not user_id:
+                return False
+            source = SessionSource(
+                platform=platform,
+                chat_id=chat_id or "",
+                chat_type=chat_type or "group",
+                user_id=user_id,
+            )
+            return self._is_user_authorized(source)
+        return check
+
 
 
 

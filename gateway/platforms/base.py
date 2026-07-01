@@ -2309,6 +2309,12 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional authorization check, registered by GatewayRunner. Used by
+        # adapters that fetch external context (e.g. Slack thread history) to
+        # mark senders not on the allowlist as unverified in LLM context,
+        # mitigating indirect prompt injection from third parties in a shared
+        # thread/channel.
+        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2740,6 +2746,44 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_authorization_check(
+        self,
+        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
+    ) -> None:
+        """Register a platform-bound authorization check.
+
+        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
+        It is used by adapters that pull external context (e.g. Slack thread
+        replies via ``conversations.replies``) to flag messages from senders
+        that are not on the configured allowlist, so the LLM can treat them
+        as unverified background reference rather than authoritative input.
+        """
+        self._authorization_check = callback
+
+    def _is_sender_authorized(
+        self,
+        user_id: Optional[str],
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return whether ``user_id`` is on the allowlist, if a check is configured.
+
+        Returns ``True``/``False`` when an authorization check has been
+        registered via :meth:`set_authorization_check`. Returns ``None``
+        when no check is registered (caller should treat as "trust unknown"
+        and preserve legacy behaviour).
+        """
+        if not user_id or self._authorization_check is None:
+            return None
+        try:
+            return bool(self._authorization_check(user_id, chat_type, chat_id))
+        except Exception:
+            logger.warning(
+                "[%s] Authorization check raised for user %s; treating as unknown",
+                self.name, user_id, exc_info=True,
+            )
+            return None
     
     def set_session_store(self, session_store: Any) -> None:
         """

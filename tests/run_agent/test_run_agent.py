@@ -2740,6 +2740,45 @@ class TestConcurrentToolExecution:
         assert "fast-result" in flushed[0][-1]["content"]
         assert "timed out after" in flushed[1][-1]["content"]
 
+    def test_concurrent_timeout_prefers_late_real_result_over_timeout_message(self, agent, monkeypatch):
+        """A worker that finishes in the window between the deadline snapshot
+        and the result loop must keep its real result, not be overwritten with
+        a fabricated 'timed out' message (late-completion race)."""
+        import concurrent.futures as _cf
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "a"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "b"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        # Both tools return instantly, so results[*] are populated almost
+        # immediately. We still force the deadline path by making the FIRST
+        # wait() report everything as not-done (after crossing the deadline),
+        # so the loop snapshots both as timed-out even though the workers have
+        # in fact already written their results. The fix must surface the real
+        # results, not the timeout message.
+        real_wait = _cf.wait
+        calls = {"n": 0}
+
+        def fake_wait(fs, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                import time as _t
+                _t.sleep(0.15)  # ensure monotonic() >= deadline
+                return set(), set(fs)
+            return real_wait(fs, timeout=timeout)
+
+        with patch("agent.tool_executor.concurrent.futures.wait", side_effect=fake_wait), \
+             patch("run_agent.handle_function_call", side_effect=lambda name, args, task_id, **k: f"real-{args.get('q')}"):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        joined = " ".join(m["content"] for m in messages)
+        assert "timed out after" not in joined, "late-completing real results must not be discarded"
+        assert "real-a" in messages[0]["content"]
+        assert "real-b" in messages[1]["content"]
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")

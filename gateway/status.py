@@ -83,7 +83,20 @@ def _get_lock_dir() -> Path:
     if override:
         return Path(override)
     state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    if "XDG_STATE_HOME" not in os.environ and not _has_writable_ancestor(state_home):
+        state_home = _get_process_hermes_home() / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
+
+
+def _has_writable_ancestor(path: Path) -> bool:
+    """Return True when *path* can plausibly be created by this process."""
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+    return os.access(current, os.W_OK | os.X_OK)
 
 
 def _utc_now_iso() -> str:

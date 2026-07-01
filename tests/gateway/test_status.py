@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway import status
 
 
@@ -157,6 +158,68 @@ class TestGatewayPidState:
         status.release_gateway_runtime_lock()
 
         assert status.is_gateway_runtime_lock_active() is False
+
+    def test_lock_dir_falls_back_to_hermes_home_when_home_state_unwritable(self, tmp_path, monkeypatch):
+        """Container regression: HOME=/root under a non-root UID must not send
+        gateway-locks into an unwritable HOME-derived state directory (#56402)."""
+        bad_home = tmp_path / "root"
+        hermes_home = tmp_path / "data"
+        bad_home.mkdir()
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(bad_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: bad_home))
+        monkeypatch.setattr(
+            status.os,
+            "access",
+            lambda path, mode: not str(path).startswith(str(bad_home)),
+        )
+
+        assert status._get_lock_dir() == (
+            hermes_home / ".local" / "state" / "hermes" / "gateway-locks"
+        )
+
+    def test_lock_dir_honors_explicit_xdg_state_home(self, tmp_path, monkeypatch):
+        xdg_state = tmp_path / "xdg-state"
+        hermes_home = tmp_path / "data"
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("XDG_STATE_HOME", str(xdg_state))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.setattr(status.os, "access", lambda path, mode: False)
+
+        assert status._get_lock_dir() == xdg_state / "hermes" / "gateway-locks"
+
+    def test_lock_dir_fallback_ignores_context_hermes_home_override(self, tmp_path, monkeypatch):
+        bad_home = tmp_path / "root"
+        process_home = tmp_path / "process-home"
+        profile_home = tmp_path / "profile-home"
+        bad_home.mkdir()
+        process_home.mkdir()
+        profile_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(bad_home))
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: bad_home))
+        monkeypatch.setattr(
+            status.os,
+            "access",
+            lambda path, mode: not str(path).startswith(str(bad_home)),
+        )
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            assert status._get_lock_dir() == (
+                process_home / ".local" / "state" / "hermes" / "gateway-locks"
+            )
+        finally:
+            reset_hermes_home_override(token)
 
     def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

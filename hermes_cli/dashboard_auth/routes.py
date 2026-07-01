@@ -86,17 +86,10 @@ def _redirect_uri(request: Request) -> str:
         resolve_public_url,
     )
 
-    # Tier 1: operator-declared public URL.
     public_url = resolve_public_url()
     if public_url:
-        # ``public_url`` is the complete authority (possibly with a
-        # path prefix already baked in). Append the auth callback path
-        # verbatim. ``resolve_public_url`` already stripped any trailing
-        # slash so we don't produce ``//auth/callback`` double-slashes.
         return f"{public_url}/auth/callback"
 
-    # Tier 2 + 3: reconstruct from the request URL, optionally with
-    # X-Forwarded-Prefix layered on top of the path.
     base = str(request.url_for("auth_callback"))
     prefix = prefix_from_request(request)
     if not prefix:
@@ -124,17 +117,8 @@ def _prefix(request: Request) -> str:
     return prefix_from_request(request)
 
 
-# ---------------------------------------------------------------------------
-# Public: login page (server-rendered HTML, no SPA bundle)
-# ---------------------------------------------------------------------------
-
-
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
-    # Read the ``next=`` query the gate's ``_unauth_response`` set on
-    # the redirect URL. Validate against the same same-origin rules the
-    # callback applies (defence in depth — the gate already filters,
-    # but /login is reachable directly too).
     next_path = _validate_post_login_target(
         request.query_params.get("next", "")
     )
@@ -144,18 +128,10 @@ async def login_page(request: Request) -> HTMLResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# Public: provider list for the login-page bootstrap
-# ---------------------------------------------------------------------------
-
-
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    # Advertise only interactive providers; a token-only credential (e.g. drain)
-    # is not a sign-in option.
     providers = list_session_providers()
     if not providers:
-        # Q13: fail-closed when zero providers are registered.
         return JSONResponse(
             {"detail": "no auth providers registered"},
             status_code=503,
@@ -174,11 +150,6 @@ async def api_auth_providers() -> Any:
     }
 
 
-# ---------------------------------------------------------------------------
-# Public: OAuth round trip
-# ---------------------------------------------------------------------------
-
-
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
     p = get_provider(provider)
@@ -192,9 +163,22 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Provider does not support interactive login: {provider!r}",
         )
+    if getattr(p, "supports_password", False):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This provider uses password login. "
+                "POST to /auth/password-login instead."
+            ),
+        )
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=400,
+            detail="Provider does not support OAuth login.",
+        )
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -214,18 +198,9 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     )
 
     resp = RedirectResponse(url=ls.redirect_url, status_code=302)
-    # Pack the provider name into the PKCE cookie so the callback can
-    # find it without a separate cookie. Provider may or may not have
-    # already included a ``provider=`` segment.
     pkce = ls.cookie_payload.get("hermes_session_pkce", "")
     if "provider=" not in pkce:
         pkce = f"provider={provider};{pkce}" if pkce else f"provider={provider}"
-    # Carry ``next=`` through the round trip in the PKCE cookie. Real
-    # IDPs only echo back ``code`` + ``state`` on the callback URL, so
-    # query-string transport would lose the value — the cookie is the
-    # only server-controlled channel that survives. Validate before we
-    # store it so an attacker who reaches /auth/login directly with
-    # ``next=//evil.example`` can't poison the cookie.
     safe_next = _validate_post_login_target(next)
     if safe_next:
         from urllib.parse import quote
@@ -257,20 +232,12 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
-    # ``next`` segment is optional (only present when /auth/login was
-    # given a next= query). All keys live in the same flat namespace;
-    # ``next`` carries a URL-encoded path so it never contains ``;``.
     parts = dict(
         seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
     )
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")
     verifier = parts.get("verifier", "")
-    # Read next= from the cookie ONLY. The IDP doesn't echo next= back
-    # on the callback URL (it only carries ``code`` + ``state``), so any
-    # next= query parameter on the callback URL is attacker-controlled
-    # and MUST be ignored.
     next_from_cookie = parts.get("next", "")
 
     p = get_provider(provider_name)
@@ -342,12 +309,6 @@ async def auth_callback(
     )
 
     expires_in = max(60, session.expires_at - int(time.time()))
-    # Honour the ``next=`` value the gate's _unauth_response set in the
-    # /login redirect URL and that /auth/login persisted into the PKCE
-    # cookie. We re-validate against the same-origin rules here — the
-    # cookie is server-set so this is defence in depth, but a regression
-    # that lets attacker-controlled bytes into the cookie would otherwise
-    # produce an open redirect.
     landing = _validate_post_login_target(next_from_cookie) or "/"
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
@@ -359,59 +320,26 @@ async def auth_callback(
         prefix=_prefix(request),
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
-    # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
-    # so it never lingers to suppress a future silent attempt after logout.
     clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
 
 
 def _validate_post_login_target(raw: str) -> str:
-    """Return ``raw`` if it's a safe same-origin path, else empty string.
-
-    The ``next`` query param survives a full OAuth round trip — the gate
-    encodes it into the /login redirect, the login page emits it back into
-    /auth/login, and the IDP preserves it across /authorize/callback. We
-    have to re-validate here because the value came back in via the
-    URL (an attacker could craft a /auth/callback URL with their own
-    ``next=https://evil.example``).
-    """
     if not raw:
         return ""
     from urllib.parse import unquote
     decoded = unquote(raw)
     if not decoded.startswith("/") or decoded.startswith("//"):
         return ""
-    # Don't loop back to login pages or auth flow.
     if any(
         decoded == p or decoded.startswith(p)
         for p in ("/login", "/auth/", "/api/auth/")
     ):
         return ""
-    # Reject any ``/api/*`` target. The gate's ``_safe_next_target``
-    # already filters these out before they reach the cookie, but a
-    # malicious or stale ``next=`` value that re-enters via the
-    # callback URL must not be honoured: a successful redirect to an
-    # API endpoint renders raw JSON in the browser address bar — never
-    # a useful post-login destination, and indistinguishable from an
-    # attacker trying to weaponise the redirect.
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
 
-
-# ---------------------------------------------------------------------------
-# Public: password (non-redirect) login
-# ---------------------------------------------------------------------------
-#
-# Brute-force throttle. The OAuth flow has no guessable secret on our side
-# (the IDP owns credentials), but ``/auth/password-login`` accepts a
-# password we verify locally, so it's a credential-stuffing target. A
-# simple in-process sliding-window limiter per client IP raises the cost
-# of online guessing without any external dependency. It is intentionally
-# best-effort: process-local (resets on restart), and behind a trusting
-# proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
-# this is defence-in-depth on top of the provider's own constant-time
-# verify, not the only line of defence.
 
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
@@ -420,14 +348,6 @@ _pw_attempts_lock = threading.Lock()
 
 
 def _password_rate_limited(ip: str) -> bool:
-    """True if ``ip`` has exceeded the password-login attempt budget.
-
-    Sliding window: prune attempts older than the window, then check the
-    count. Records the attempt timestamp when allowed. An empty IP (no
-    discernible client) shares a single bucket — fail-safe toward
-    throttling rather than letting unattributable traffic through
-    unmetered.
-    """
     now = time.monotonic()
     cutoff = now - _PW_RATE_WINDOW_SEC
     key = ip or "_unknown_"
@@ -442,7 +362,6 @@ def _password_rate_limited(ip: str) -> bool:
 
 
 def _reset_password_rate_limit() -> None:
-    """Test-only: clear all rate-limit buckets."""
     with _pw_attempts_lock:
         _pw_attempts.clear()
 
@@ -456,21 +375,6 @@ class _PasswordLoginBody(BaseModel):
 
 @router.post("/auth/password-login", name="auth_password_login")
 async def auth_password_login(request: Request, body: _PasswordLoginBody):
-    """Authenticate a username/password against a password provider.
-
-    Mirrors the cookie-minting tail of ``/auth/callback`` but skips the
-    PKCE/state/code machinery (those are OAuth-only). On success sets the
-    session cookies and returns JSON ``{"ok": true, "next": <path>}`` —
-    the credential form POSTs via fetch and navigates client-side, so a
-    302 (which fetch follows opaquely) is the wrong shape here.
-
-    Failure modes, all deliberately generic so the endpoint can't be used
-    as a username oracle or a provider-enumeration oracle:
-      * unknown provider / provider lacks password support → 404
-      * bad credentials → 401 ("Invalid credentials")
-      * backing store unreachable → 503
-      * too many attempts from this IP → 429
-    """
     ip = _client_ip(request)
     if _password_rate_limited(ip):
         audit_log(
@@ -486,8 +390,6 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
     p = get_provider(body.provider)
     if p is None or not getattr(p, "supports_password", False):
-        # Don't leak which providers exist or which support passwords —
-        # same 404 whether the provider is unknown or OAuth-only.
         audit_log(
             AuditEvent.LOGIN_FAILURE,
             provider=body.provider,
@@ -507,11 +409,8 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
             reason="invalid_credentials",
             ip=ip,
         )
-        # Generic message — never distinguish unknown-user from wrong-password.
         raise HTTPException(status_code=401, detail="Invalid credentials")
     except NotImplementedError:
-        # supports_password was True but the method isn't actually
-        # implemented — a provider bug, not a client error.
         raise HTTPException(status_code=500, detail="Provider misconfigured")
     except ProviderError as e:
         audit_log(
@@ -549,13 +448,10 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 async def auth_logout(request: Request):
     _at, rt = read_session_cookies(request)
     if rt:
-        # Best-effort revoke. Try every provider so a session minted by
-        # any registered provider is revoked correctly. Failures are
-        # logged but never raised.
         for provider in list_providers():
             try:
                 provider.revoke_session(refresh_token=rt)
-            except Exception as e:  # noqa: BLE001 — best-effort
+            except Exception as e:
                 _log.warning(
                     "dashboard-auth: revoke on %r failed: %s",
                     provider.name, e,
@@ -576,14 +472,8 @@ async def auth_logout(request: Request):
     return resp
 
 
-# ---------------------------------------------------------------------------
-# Auth-required: identity probe for the SPA
-# ---------------------------------------------------------------------------
-
-
 @router.get("/api/auth/me", name="auth_me")
 async def api_auth_me(request: Request):
-    """Return the verified session as JSON. Auth-required (gate enforces)."""
     sess = getattr(request.state, "session", None)
     if sess is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -597,30 +487,12 @@ async def api_auth_me(request: Request):
     }
 
 
-# ---------------------------------------------------------------------------
-# Auth-required: WS upgrade ticket (Phase 5)
-# ---------------------------------------------------------------------------
-
-
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
 async def api_auth_ws_ticket(request: Request):
-    """Mint a short-lived single-use ticket for the authenticated session.
-
-    Browsers cannot set ``Authorization`` on a WebSocket upgrade, so in
-    gated mode the SPA POSTs this endpoint to get a ``?ticket=`` value to
-    append to ``/api/pty``, ``/api/ws``, ``/api/pub``, or ``/api/events``.
-
-    The ticket has a 30-second TTL and is single-use. Calling this endpoint
-    multiple times in quick succession (e.g. one ticket per WS) is the
-    expected pattern.
-    """
     sess = getattr(request.state, "session", None)
     if sess is None:
-        # Middleware should already have rejected, but check defensively.
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Import here so the routes module stays usable in test contexts that
-    # don't load the ticket store.
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
 
     ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)

@@ -2743,6 +2743,13 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
+def cmd_terminal_setup(args):
+    """Terminal emulator configuration wizard for Shift+Enter newline support."""
+    from hermes_cli.terminal_setup import run_terminal_setup
+
+    run_terminal_setup(args)
+
+
 def cmd_postinstall(args):
     """One-shot bootstrap for pip users: install non-Python deps + run setup."""
     from hermes_cli.config import stamp_install_method
@@ -12673,7 +12680,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "terminal-setup", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13373,6 +13380,8 @@ def main():
     # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+
+    build_terminal_setup_parser(subparsers, cmd_terminal_setup=cmd_terminal_setup)
 
     # =========================================================================
     # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)

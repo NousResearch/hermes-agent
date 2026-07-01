@@ -124,8 +124,81 @@ def enforce_pr_head_invariant(
     if not evidence:
         return None
     if evidence.get("pr_head_verified"):
+        if command is not None:
+            _, risk_label = command_requires_pr_head_guard(command)
+            if risk_label == "review-thread resolution":
+                review_thread_block = enforce_review_thread_resolution_gate(
+                    repo_root=repo_root,
+                    evidence=evidence,
+                    command=command,
+                )
+                if review_thread_block is not None:
+                    return review_thread_block
         return None
     return _block_message(action_label=risk_label or action_label, evidence=evidence)
+
+
+def enforce_review_thread_resolution_gate(
+    *,
+    repo_root: Path | None,
+    evidence: dict[str, Any] | None = None,
+    command: str | None = None,
+) -> str | None:
+    """Block review-thread resolution unless patch evidence proves the fix."""
+    if repo_root is None:
+        return None
+    evidence = dict(evidence or {})
+    if not evidence:
+        evidence = dict(update_runtime_evidence())
+
+    comment_id = _resolve_review_thread_comment_id(command, evidence)
+    if not comment_id:
+        return (
+            "Blocked review-thread resolution: no review thread/comment ID is available. "
+            "Record the specific thread or comment before resolving it."
+        )
+
+    if not evidence.get("pr_head_verified"):
+        return _block_message(action_label="review-thread resolution", evidence=evidence)
+
+    failing_file = str(evidence.get("failing_file") or "").strip()
+    failing_line = _coerce_int(evidence.get("failing_line"))
+    if not failing_file or failing_line is None:
+        return (
+            "Blocked review-thread resolution: missing failing file/line evidence for "
+            f"thread/comment {comment_id}. Capture the reviewer target before resolving it."
+        )
+
+    patch_text = _fetch_pr_patch(repo_root)
+    if patch_text is None:
+        update_runtime_evidence(
+            review_thread_comment_id=comment_id,
+            fetched_pr_patch_checked=False,
+            review_thread_patch_clean=False,
+        )
+        return (
+            "Blocked review-thread resolution: unable to fetch the live PR patch for "
+            f"thread/comment {comment_id}. Verify the checkout and retry."
+        )
+
+    issue_still_present = _patch_still_mentions_issue(
+        patch_text,
+        failing_file=failing_file,
+        failing_line=failing_line,
+        failing_blob_sha=str(evidence.get("failing_blob_sha") or "").strip() or None,
+    )
+    update_runtime_evidence(
+        review_thread_comment_id=comment_id,
+        fetched_pr_patch_checked=True,
+        review_thread_patch_clean=not issue_still_present,
+    )
+    if issue_still_present:
+        return (
+            "Blocked review-thread resolution: the fetched PR patch still shows the "
+            f"reported issue for thread/comment {comment_id} in {failing_file}:{failing_line}. "
+            "Fix the live PR head first, then retry the resolution."
+        )
+    return None
 
 
 def _block_message(*, action_label: str, evidence: dict[str, Any]) -> str:
@@ -143,6 +216,92 @@ def _block_message(*, action_label: str, evidence: dict[str, Any]) -> str:
         f"Local HEAD: {local_sha}\n"
         "Repair the checkout/ref alignment first, then retry this action."
     )
+
+
+def _resolve_review_thread_comment_id(
+    command: str | None,
+    evidence: dict[str, Any],
+) -> str | None:
+    for key in ("review_thread_comment_id", "thread_comment_id", "comment_id"):
+        value = str(evidence.get(key) or "").strip()
+        if value:
+            return value
+    if command:
+        match = re.search(
+            r'(?:threadId|commentId)\s*[:=]\s*["\']?([A-Za-z0-9_.:-]+)["\']?',
+            command,
+        )
+        if match:
+            return match.group(1)
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_pr_patch(repo_root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "diff", "--patch"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    patch_text = completed.stdout or ""
+    return patch_text if patch_text.strip() else None
+
+
+def _patch_still_mentions_issue(
+    patch_text: str,
+    *,
+    failing_file: str,
+    failing_line: int,
+    failing_blob_sha: str | None = None,
+) -> bool:
+    if failing_blob_sha and failing_blob_sha in patch_text:
+        return True
+
+    current_file = None
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            current_file = None
+            match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
+            if match:
+                current_file = match.group(2)
+            continue
+        if current_file is None:
+            continue
+        if not _paths_match(current_file, failing_file):
+            continue
+        if not line.startswith("@@"):
+            continue
+        hunk_match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+        if not hunk_match:
+            continue
+        start = int(hunk_match.group(1))
+        length = int(hunk_match.group(2) or "1")
+        end = start + max(length - 1, 0)
+        if start <= failing_line <= end:
+            return True
+    return False
+
+
+def _paths_match(left: str, right: str) -> bool:
+    left_norm = left.replace("\\", "/").lstrip("./")
+    right_norm = right.replace("\\", "/").lstrip("./")
+    return left_norm == right_norm or left_norm.endswith(f"/{right_norm}") or right_norm.endswith(f"/{left_norm}")
 
 
 def _git(repo_root: Path, *args: str) -> str | None:

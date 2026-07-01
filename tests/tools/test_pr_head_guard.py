@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.pr_head_guard import command_requires_pr_head_guard, enforce_pr_head_invariant, resolve_repo_root_for_path
-from agent.runtime_evidence import clear_runtime_evidence, current_runtime_evidence
+from agent.runtime_evidence import clear_runtime_evidence, current_runtime_evidence, seed_turn_runtime_evidence
 from tools.approval import check_all_command_guards
 
 _REAL_RUN = subprocess.run
@@ -49,6 +49,32 @@ def _mock_gh_pr_view(number: int, branch: str, sha: str, repo_name: str):
     def _run(cmd, *args, **kwargs):
         if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(cmd, 0, payload, "")
+        return _REAL_RUN(cmd, *args, **kwargs)
+
+    return _run
+
+
+def _mock_gh_pr_view_and_diff(
+    number: int,
+    branch: str,
+    sha: str,
+    repo_name: str,
+    diff_text: str,
+):
+    payload = json.dumps(
+        {
+            "number": number,
+            "headRefName": branch,
+            "headRefOid": sha,
+            "repository": {"nameWithOwner": repo_name},
+        }
+    )
+
+    def _run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, payload, "")
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "diff"]:
+            return subprocess.CompletedProcess(cmd, 0, diff_text, "")
         return _REAL_RUN(cmd, *args, **kwargs)
 
     return _run
@@ -131,6 +157,152 @@ def test_mismatched_local_head_blocks_review_thread_resolution(tmp_path):
 
     assert result["approved"] is False
     assert "review-thread resolution" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_missing_thread_id_blocks_review_thread_resolution(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+
+    seed_turn_runtime_evidence(
+        failing_file="src/app.py",
+        failing_line=17,
+    )
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view(17, "feat/runtime-guardrails", head_sha, "org/repo"),
+    ):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is False
+    assert "no review thread/comment ID is available" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_local_only_fix_blocks_review_thread_resolution(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(
+        review_thread_comment_id="T123",
+        failing_file="src/app.py",
+        failing_line=17,
+    )
+
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view(17, "feat/runtime-guardrails", f"{head_sha[:-1]}0", "org/repo"),
+    ):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"T123\"}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is False
+    assert "local checkout does not match the live PR head" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_fix_not_pushed_blocks_review_thread_resolution(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(
+        review_thread_comment_id="T123",
+        failing_file="src/app.py",
+        failing_line=17,
+    )
+
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view(17, "feat/runtime-guardrails", f"{head_sha[:-1]}0", "org/repo"),
+    ):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"T123\"}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is False
+    assert "live PR head" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_fetched_patch_still_contains_issue_blocks_resolution(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(
+        review_thread_comment_id="T123",
+        failing_file="src/app.py",
+        failing_line=17,
+        failing_blob_sha="deadbeef",
+    )
+
+    patch_text = """diff --git a/src/app.py b/src/app.py
+index 1111111..2222222 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -15,4 +15,4 @@
+ line 15
+ line 16
+-line 17
++line 17 fixed
+ line 18
+"""
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view_and_diff(17, "feat/runtime-guardrails", head_sha, "org/repo", patch_text),
+    ):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"T123\"}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is False
+    assert "fetched PR patch still shows the reported issue" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_live_pr_head_patch_allowing_resolution(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(
+        review_thread_comment_id="T123",
+        failing_file="src/app.py",
+        failing_line=17,
+        failing_blob_sha="deadbeef",
+    )
+
+    patch_text = """diff --git a/src/app.py b/src/app.py
+index 1111111..2222222 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,4 +1,4 @@
+ line 1
+ line 2
+-line 3
++line 3 fixed
+ line 4
+"""
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view_and_diff(17, "feat/runtime-guardrails", head_sha, "org/repo", patch_text),
+    ):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"T123\"}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is True
+    evidence = current_runtime_evidence()
+    assert evidence is not None
+    assert evidence["review_thread_patch_clean"] is True
+    assert evidence["fetched_pr_patch_checked"] is True
     clear_runtime_evidence()
 
 

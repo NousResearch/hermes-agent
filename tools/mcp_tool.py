@@ -2688,7 +2688,10 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     # implementations, so match on a small allow-list of stable
     # substrings rather than exception type.  Kept narrow to avoid
     # false positives on unrelated server errors.
-    msg = str(exc).lower()
+    # Fall back to repr() when str() is empty — anyio.ClosedResourceError
+    # is raised without a message arg, so str(exc) == "" and the marker
+    # check would silently miss it, preventing the auto-reconnect path.
+    msg = (str(exc) or repr(exc)).lower()
     if not msg:
         return False
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)

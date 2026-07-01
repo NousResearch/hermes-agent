@@ -97,6 +97,20 @@ def test_is_session_expired_rejects_empty_message():
     assert _is_session_expired_error(Exception()) is False
 
 
+def test_is_session_expired_detects_bare_closed_resource_error():
+    """anyio.ClosedResourceError is raised without a message argument, so
+    str(exc) == "". The repr fallback ("ClosedResourceError()") must still
+    match the "closedresourceerror" marker so the auto-reconnect path fires
+    on stale stdio pipes — otherwise every MCP tool call after a server
+    kill stays broken until a full Hermes restart."""
+    from tools.mcp_tool import _is_session_expired_error
+    try:
+        from anyio import ClosedResourceError
+    except ImportError:
+        pytest.skip("anyio not installed")
+    assert _is_session_expired_error(ClosedResourceError()) is True
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------

@@ -134,17 +134,17 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
-    icon: props => <Codicon name="robot" {...props} />,
+    icon: props => <Codicon name="add" {...props} />,
     action: 'new-session'
   },
   {
     id: 'skills',
     label: '',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
+    icon: props => <Codicon name="tools" {...props} />,
     route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'messaging', label: '', icon: props => <Codicon name="comment-discussion" {...props} />, route: MESSAGING_ROUTE },
+  { id: 'artifacts', label: '', icon: props => <Codicon name="archive" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
 // Two modes via the `compact` height variant (styles.css):
@@ -1044,9 +1044,19 @@ export function ChatSidebar({
       collapsible="none"
     >
       <SidebarContent className="relative gap-0 overflow-hidden bg-transparent px-2.5 before:pointer-events-none before:absolute before:inset-0 before:bg-[linear-gradient(180deg,color-mix(in_srgb,white_20%,transparent),transparent_28%)] before:content-['']">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.55rem)]">
           <SidebarGroupContent>
-            <SidebarMenu className="gap-px">
+            {contentVisible && (
+              <div className="hermes-sidebar-brand mb-3 flex items-center gap-2.5 px-1.5">
+                <div aria-hidden className="hermes-sidebar-brand-mark">
+                  <Codicon name="sparkle" size="0.95rem" />
+                </div>
+                <div className="min-w-0">
+                  <div className="hermes-sidebar-brand-title">HERMES AGENT</div>
+                </div>
+              </div>
+            )}
+            <SidebarMenu className="gap-1">
               {SIDEBAR_NAV.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
@@ -1086,10 +1096,13 @@ export function ChatSidebar({
 
                         onNavigate(item)
                       }}
+                      isActive={active}
                       tooltip={s.nav[item.id] ?? item.label}
                       type="button"
                     >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      <span className="hermes-sidebar-nav-icon grid size-5 shrink-0 place-items-center">
+                        <item.icon className="text-[0.95rem] text-[color-mix(in_srgb,currentColor_82%,transparent)]" />
+                      </span>
                       {contentVisible && (
                         <>
                           <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>

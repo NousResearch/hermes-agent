@@ -177,31 +177,31 @@ export const atlasTheme: DesktopTheme = {
   label: 'Atlas',
   description: 'Soft classical glass - marble, haze, and winged serifs',
   colors: {
-    background: '#f7fbff',
-    foreground: '#24314a',
-    card: 'rgba(255, 255, 255, 0.56)',
+    background: '#eef6ff',
+    foreground: '#1f3152',
+    card: 'rgba(255, 255, 255, 0.7)',
     cardForeground: '#24314a',
-    muted: 'rgba(239, 246, 255, 0.66)',
-    mutedForeground: '#71809c',
-    popover: 'rgba(255, 255, 255, 0.68)',
+    muted: 'rgba(224, 238, 255, 0.76)',
+    mutedForeground: '#5f7397',
+    popover: 'rgba(255, 255, 255, 0.78)',
     popoverForeground: '#24314a',
-    primary: '#2563eb',
+    primary: '#1f5ff2',
     primaryForeground: '#ffffff',
-    secondary: 'rgba(219, 234, 254, 0.62)',
+    secondary: 'rgba(207, 228, 255, 0.78)',
     secondaryForeground: '#24314a',
-    accent: 'rgba(191, 219, 254, 0.58)',
-    accentForeground: '#1d4ed8',
-    border: 'rgba(178, 194, 224, 0.46)',
-    input: 'rgba(219, 234, 254, 0.7)',
-    ring: '#2563eb',
-    midground: '#2563eb',
-    composerRing: '#7aa7ff',
+    accent: 'rgba(158, 199, 255, 0.7)',
+    accentForeground: '#1555d8',
+    border: 'rgba(116, 151, 216, 0.54)',
+    input: 'rgba(176, 210, 255, 0.82)',
+    ring: '#1f5ff2',
+    midground: '#2465f4',
+    composerRing: '#4f86ff',
     destructive: '#ef4444',
     destructiveForeground: '#ffffff',
-    sidebarBackground: 'rgba(248, 251, 255, 0.54)',
-    sidebarBorder: 'rgba(178, 194, 224, 0.44)',
-    userBubble: 'rgba(219, 234, 254, 0.42)',
-    userBubbleBorder: 'rgba(147, 197, 253, 0.46)'
+    sidebarBackground: 'rgba(238, 247, 255, 0.72)',
+    sidebarBorder: 'rgba(113, 149, 214, 0.52)',
+    userBubble: 'rgba(220, 236, 255, 0.66)',
+    userBubbleBorder: 'rgba(101, 158, 255, 0.58)'
   },
   darkColors: {
     background: '#07101f',
@@ -241,15 +241,15 @@ export const atlasTheme: DesktopTheme = {
     spacingMul: 1.04
   },
   layout: {
-    sidebarWidth: '15.75rem',
-    composerWidth: '54rem'
+    sidebarWidth: '16.35rem',
+    composerWidth: '56.5rem'
   },
   mixes: {
-    chrome: '96%',
+    chrome: '98%',
     sidebar: '100%',
-    card: '18%',
-    elevated: '22%',
-    bubble: '6%'
+    card: '28%',
+    elevated: '32%',
+    bubble: '16%'
   },
   darkMixes: {
     chrome: '78%',

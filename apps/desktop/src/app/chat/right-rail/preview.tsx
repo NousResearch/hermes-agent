@@ -103,6 +103,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         "relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--dt-sidebar-border) bg-(--dt-sidebar-bg) text-(--ui-text-tertiary) before:pointer-events-none before:absolute before:inset-0 before:bg-[linear-gradient(180deg,color-mix(in_srgb,white_18%,transparent),transparent_30%)] before:content-['']",
         panesFlipped ? 'border-r' : 'border-l'
       )}
+      data-slot="preview-rail"
       // Windows/WSLg paint Electron's Window Controls Overlay across our
       // titlebar band, so the editor-style tab strip (which normally sits IN that
       // band) would land under the fixed titlebar tools. --right-rail-top-inset

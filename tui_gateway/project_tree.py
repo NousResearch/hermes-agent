@@ -40,6 +40,11 @@ Resolve = Callable[[str], Optional[dict]]
 _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
+# Overview rows are previews, but they are also the first history surface users
+# see in Desktop grouped/project mode. Keep the default in sync with the
+# renderer's PROJECT_OVERVIEW_PREVIEW_LIMIT so older desktop bundles that omit
+# preview_limit do not make history look capped at three sessions.
+PROJECT_OVERVIEW_PREVIEW_LIMIT = 10
 
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
@@ -427,7 +432,7 @@ def build_tree(
     discovered_repos: list[dict],
     resolve: Optional[Resolve] = None,
     *,
-    preview_limit: int = 3,
+    preview_limit: int = PROJECT_OVERVIEW_PREVIEW_LIMIT,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
 ) -> dict:

@@ -234,6 +234,18 @@ def test_overview_drops_session_rows_but_keeps_counts_and_previews():
     assert project["repos"][0]["sessionCount"] == 4
 
 
+def test_overview_default_preview_does_not_make_history_look_capped_at_three():
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [_session("/repo", branch="main") for _ in range(4)]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=False)
+    project = tree["projects"][0]
+
+    assert project["sessionCount"] == 4
+    assert len(project["previewSessions"]) == 4
+    assert pt.PROJECT_OVERVIEW_PREVIEW_LIMIT == 10
+
+
 def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     discovered = [{"root": "/www/fresh", "label": "fresh", "sessions": 0, "last_active": 5}]
 

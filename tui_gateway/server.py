@@ -10646,7 +10646,7 @@ def _(rid, params: dict) -> dict:
 
         tree, active_id = _build_project_tree(
             db,
-            preview_limit=int(params.get("preview_limit") or 3),
+            preview_limit=int(params.get("preview_limit") or project_tree.PROJECT_OVERVIEW_PREVIEW_LIMIT),
             hydrate=False,
             session_limit=int(params.get("session_limit") or 2000),
             include_discovered=True,

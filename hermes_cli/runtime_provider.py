@@ -1540,6 +1540,39 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # Vertex AI: OAuth2-token provider (Gemini via the OpenAI-compatible
+    # endpoint). Resolve BEFORE the custom-runtime / credential-pool / generic
+    # paths. The credential *path* (GOOGLE_APPLICATION_CREDENTIALS /
+    # VERTEX_CREDENTIALS_PATH) must never reach the credential pool or the
+    # generic api_key resolver — those would treat the file path as a static
+    # API key. Instead we mint a short-lived OAuth2 access token here and hand
+    # it to the standard OpenAI client as api_key, with base_url computed from
+    # the project ID + region. The token is re-minted per call (5-min refresh
+    # margin) by get_vertex_config(); mid-session expiry is additionally
+    # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
+    if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        from agent.vertex_adapter import get_vertex_config
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            raise AuthError(
+                "Vertex AI credentials could not be resolved. Vertex uses "
+                "OAuth2 (not a static API key): provide a service-account JSON "
+                "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
+                "in ~/.hermes/.env, or run 'gcloud auth application-default "
+                "login' for ADC. Set the GCP project/region under vertex: in "
+                "config.yaml if they aren't embedded in the credentials. "
+                "Install the extra with: pip install 'hermes-agent[vertex]'."
+            )
+        return {
+            "provider": "vertex",
+            "api_mode": "chat_completions",
+            "base_url": base_url.rstrip("/"),
+            "api_key": token,
+            "source": "vertex-oauth",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

@@ -701,6 +701,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/google-vertex',
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
         'guides/oauth-over-ssh',

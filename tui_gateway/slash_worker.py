@@ -89,7 +89,7 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Rich Console captures its file handle at construction time, so
     # contextlib.redirect_stdout won't affect it. Swap the console's
     # underlying file to our buffer so self.console.print() is captured.
-    cli.console = Console(file=buf, force_terminal=True, width=120)
+    cli.console = Console(file=buf, force_terminal=False, color_system=None, width=120)
 
     old = getattr(cli_mod, "_cprint", None)
     if old is not None:

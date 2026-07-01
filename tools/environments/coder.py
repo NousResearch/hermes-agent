@@ -137,6 +137,10 @@ class CoderEnvironment(BaseEnvironment):
     _PTY_EMPTY_EOF_RECONNECTS = 5
     _PTY_EMPTY_EOF_RECONNECT_WINDOW = 3.0
     _PTY_EMPTY_EOF_RECONNECT_DELAY = 0.2
+    # Conservative, widely supported HTTP request-line/URL limit.  Coder's PTY
+    # endpoint currently carries the command in the query string, so reject
+    # locally before a proxy/server rejects an oversized URL opaquely.
+    _MAX_PTY_URL_LENGTH = 8192
 
     def __init__(
         self,
@@ -209,27 +213,6 @@ class CoderEnvironment(BaseEnvironment):
         if remaining + 0.05 >= configured_timeout:
             return self.timeout
         return max(0.001, min(configured_timeout, remaining))
-
-    def _sleep_for_startup(
-        self,
-        seconds: float,
-        *,
-        deadline: float,
-        cancel_state: dict | None,
-        what: str,
-    ) -> None:
-        remaining_sleep = max(0.0, seconds)
-        while remaining_sleep > 0:
-            self._raise_if_cancelled(cancel_state)
-            self._check_startup_deadline(deadline, what)
-            chunk = min(remaining_sleep, 0.2, max(0.0, deadline - time.monotonic()))
-            if chunk <= 0:
-                self._check_startup_deadline(deadline, what)
-                return
-            time.sleep(chunk)
-            remaining_sleep -= chunk
-        self._raise_if_cancelled(cancel_state)
-        self._check_startup_deadline(deadline, what)
 
     def _ensure_workspace(self, *, deadline: float | None = None, cancel_state: dict | None = None) -> dict:
         self._raise_if_cancelled(cancel_state)
@@ -311,12 +294,9 @@ class CoderEnvironment(BaseEnvironment):
                         f"Coder workspace build {build_id} finished with status {status or 'unknown'}"
                     )
                 return
-            self._sleep_for_startup(
-                2,
-                deadline=deadline,
-                cancel_state=cancel_state,
-                what=f"workspace build {build_id} to complete",
-            )
+            time.sleep(min(2, max(0.0, deadline - time.monotonic())))
+            self._raise_if_cancelled(cancel_state)
+            self._check_startup_deadline(deadline, f"workspace build {build_id} to complete")
 
     @staticmethod
     def _agent_startup_ready(agent: dict) -> bool:
@@ -351,12 +331,9 @@ class CoderEnvironment(BaseEnvironment):
                         return agent
 
             self._check_startup_deadline(deadline, "workspace agent startup")
-            self._sleep_for_startup(
-                2,
-                deadline=deadline,
-                cancel_state=cancel_state,
-                what="workspace agent startup",
-            )
+            time.sleep(min(2, max(0.0, deadline - time.monotonic())))
+            self._raise_if_cancelled(cancel_state)
+            self._check_startup_deadline(deadline, "workspace agent startup")
             payload = self._get_workspace_payload(deadline=deadline, cancel_state=cancel_state)
 
     def _resolve_agent_id(
@@ -531,6 +508,18 @@ class CoderEnvironment(BaseEnvironment):
         exit_marker = self._exit_marker(reconnect_id)
         pty_command = self._pty_command(cmd_string, login=login, exit_marker=exit_marker)
         pty_url = self._pty_url(agent_id, command=pty_command, reconnect_id=reconnect_id)
+        encoded_url_length = len(pty_url.encode("utf-8"))
+        if encoded_url_length > self._MAX_PTY_URL_LENGTH:
+            excess = encoded_url_length - self._MAX_PTY_URL_LENGTH
+            suggested_command_length = max(0, len(cmd_string) - excess)
+            return (
+                "Coder PTY command is too long for the HTTP query URL: "
+                f"encoded URL is {encoded_url_length} bytes, "
+                f"limit is {self._MAX_PTY_URL_LENGTH} bytes. "
+                f"Shorten the command to roughly {suggested_command_length} characters "
+                "or put the script in a file/stdin and execute that instead.",
+                1,
+            )
         output_parts: list[str] = []
         recv_poll_timeout = max(0.1, min(self._PTY_RECV_POLL_TIMEOUT, float(timeout)))
         max_empty_reconnects = self._PTY_EMPTY_EOF_RECONNECTS

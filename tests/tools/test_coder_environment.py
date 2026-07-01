@@ -438,6 +438,36 @@ def test_coder_environment_execute_existing_workspace_then_reads_pty_until_eof(m
     assert pty_command != "pwd"
 
 
+def test_coder_environment_rejects_pty_url_that_exceeds_http_query_limit(monkeypatch):
+    reconnect_id = uuid.UUID("44444444-5555-6666-7777-888888888888")
+    connect_mock = MagicMock()
+
+    monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
+    monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_MAX_PTY_URL_LENGTH", 250, raising=False)
+    monkeypatch.setattr(
+        "tools.environments.coder.coder_workspace_name_for_task",
+        lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
+    )
+
+    env = CoderEnvironment(
+        base_url="https://coder.example",
+        task_id="20260521_180000_ef3456",
+        api_key="secret-token",
+        timeout=5,
+        init_session=False,
+    )
+
+    result = env.execute("printf '%s' " + "x" * 500)
+
+    assert result["returncode"] == 1
+    assert "Coder PTY command is too long" in result["output"]
+    assert "limit is 250 bytes" in result["output"]
+    assert "Shorten the command to roughly" in result["output"]
+    connect_mock.assert_not_called()
+
+
 def test_coder_environment_reconnects_same_pty_after_empty_initial_eof(monkeypatch):
     reconnect_id = uuid.UUID("22222222-3333-4444-5555-666666666666")
     exit_marker = f"__HERMES_EXIT_{reconnect_id}__"
@@ -448,7 +478,7 @@ def test_coder_environment_reconnects_same_pty_after_empty_initial_eof(monkeypat
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
     monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
     monkeypatch.setattr("tools.environments.coder.time.sleep", lambda _seconds: None)
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -492,7 +522,7 @@ def test_coder_environment_reconnects_empty_eof_with_stdin_without_resending(mon
 
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
     monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -534,7 +564,7 @@ def test_coder_environment_recv_timeout_poll_does_not_fail_silent_command(monkey
 
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
     monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -574,7 +604,7 @@ def test_coder_environment_stdin_data_uses_binary_json_frames_and_eof(monkeypatc
 
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
     monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -603,7 +633,7 @@ def test_coder_environment_returns_nonzero_exit_code_from_pty_marker(monkeypatch
 
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
     monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -630,7 +660,7 @@ def test_coder_environment_returns_nonzero_exit_code_from_pty_marker(monkeypatch
 def test_coder_environment_missing_exit_marker_returns_backend_error(monkeypatch):
     fake_ws = _FakeWebSocket([b"plain output without marker\n"])
     monkeypatch.setattr("tools.environments.coder.connect", MagicMock(return_value=fake_ws))
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
@@ -777,7 +807,7 @@ def test_coder_process_kill_sends_ctrl_c_to_active_pty(monkeypatch):
 
     fake_ws = _BlockingWebSocket()
     monkeypatch.setattr("tools.environments.coder.connect", MagicMock(return_value=fake_ws))
-    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
+    monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self, **_kwargs: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
         lambda task_id, db=None: "hermes-20260521-173045-ab12cd",

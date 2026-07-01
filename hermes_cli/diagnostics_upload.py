@@ -36,7 +36,38 @@ NAS_BASE = os.environ.get(
 _REQUEST_TIMEOUT = 30
 _UPLOAD_TIMEOUT = 120
 
+# The upload-url response is a tiny signed-upload metadata object. Keep a
+# generous explicit cap so an unexpected proxy/portal response cannot be fully
+# buffered before JSON parsing.
+_UPLOAD_URL_RESPONSE_MAX_BYTES = 64 * 1024
+
 _USER_AGENT = "hermes-agent/debug-share"
+
+
+def _read_capped_response(resp, *, max_bytes: int = _UPLOAD_URL_RESPONSE_MAX_BYTES) -> bytes:
+    """Read at most ``max_bytes`` from a small JSON response.
+
+    Raises ``RuntimeError`` before JSON parsing if the server declares or sends
+    a body larger than the expected small metadata envelope.
+    """
+    content_length = resp.headers.get("Content-Length") if getattr(resp, "headers", None) else None
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise RuntimeError(
+                    "diagnostics upload-url response exceeded size limit "
+                    f"({int(content_length)} bytes > {max_bytes} bytes)"
+                )
+        except ValueError:
+            pass
+
+    body = resp.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise RuntimeError(
+            "diagnostics upload-url response exceeded size limit "
+            f"({max_bytes} bytes)"
+        )
+    return body
 
 
 def request_upload_url(
@@ -75,7 +106,7 @@ def request_upload_url(
             raise RuntimeError(
                 f"diagnostics upload-url request failed: HTTP {status}"
             )
-        body = resp.read().decode("utf-8")
+        body = _read_capped_response(resp).decode("utf-8")
 
     try:
         result = json.loads(body)

@@ -91,6 +91,33 @@ class TestRequestUploadUrl:
             with pytest.raises(RuntimeError):
                 request_upload_url()
 
+    def test_declared_oversized_response_raises_before_read(self):
+        from hermes_cli.diagnostics_upload import request_upload_url
+
+        resp = _resp(status=200, body=b"{}")
+        resp.headers = {"Content-Length": str(65 * 1024)}
+        with patch(
+            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            return_value=resp,
+        ):
+            with pytest.raises(RuntimeError, match="size limit"):
+                request_upload_url()
+        resp.read.assert_not_called()
+
+    def test_streamed_oversized_response_raises_before_json_parse(self):
+        from hermes_cli import diagnostics_upload as mod
+
+        resp = _resp(status=200, body=b"")
+        resp.headers = {}
+        resp.read.return_value = b"{" + (b"a" * mod._UPLOAD_URL_RESPONSE_MAX_BYTES)
+        with patch(
+            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            return_value=resp,
+        ):
+            with pytest.raises(RuntimeError, match="size limit"):
+                mod.request_upload_url()
+        resp.read.assert_called_once_with(mod._UPLOAD_URL_RESPONSE_MAX_BYTES + 1)
+
     def test_base_url_env_override(self, monkeypatch):
         # NAS_BASE is read at import time; re-import the module under the
         # patched env to confirm the override is honoured.

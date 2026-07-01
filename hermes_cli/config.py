@@ -6036,6 +6036,23 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     config.pop("api_base", None)
     model.pop("api_base", None)
 
+    # OpenCode providers (opencode-zen, opencode-go) expose their OpenAI-compatible
+    # API at a /v1 path. Configs saved by older Hermes versions (or hand-edited
+    # configs) may have the base_url without the trailing /v1, which causes
+    # chat_completions requests to hit a non-existent /chat/completions path
+    # and return an HTML 404. Auto-correct the suffix here at load time so
+    # the runtime always sees a valid endpoint. Anthropic_messages models
+    # strip /v1 again in runtime_provider.py, so this normalization is safe.
+    _OPENCODE_PROVIDERS = {"opencode-zen", "opencode-go"}
+    _provider_norm = str(model.get("provider") or "").strip().lower()
+    _base_norm = str(model.get("base_url") or "").strip()
+    if (
+        _provider_norm in _OPENCODE_PROVIDERS
+        and _base_norm
+        and not _base_norm.rstrip("/").endswith("/v1")
+    ):
+        model["base_url"] = _base_norm.rstrip("/") + "/v1"
+
     # Canonicalize the model id to ``default``. ``model`` and ``name`` are
     # last-resort aliases (in that order) — only consulted when ``default`` is
     # empty, then dropped so later loads/saves can't reintroduce the ambiguity.

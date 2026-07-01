@@ -3537,6 +3537,23 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
     },
+    "CRWD_MONGO_URI": {
+        "description": "CRWD MongoDB connection string for the crwd_db tool",
+        "prompt": "CRWD MongoDB URI (mongodb:// or mongodb+srv://)",
+        "url": "https://www.mongodb.com/docs/manual/reference/connection-string/",
+        "tools": ["crwd_db"],
+        "password": True,
+        "category": "tool",
+    },
+    "CRWD_MONGO_DB": {
+        "description": "CRWD MongoDB database name for the crwd_db tool (default: crwd_staging)",
+        "prompt": "CRWD MongoDB database name",
+        "url": None,
+        "tools": ["crwd_db"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
     "FIRECRAWL_API_URL": {
         "description": "Firecrawl API URL for self-hosted instances (optional)",
         "prompt": "Firecrawl API URL (leave empty for cloud)",

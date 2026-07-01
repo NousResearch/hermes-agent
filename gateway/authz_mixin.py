@@ -58,7 +58,12 @@ class GatewayAuthorizationMixin:
         """Resolve the live adapter for an inbound ``SessionSource``."""
         if source is None:
             return None
-        return self._authorization_adapter(source.platform, source.profile)
+        # ``getattr`` guards test fixtures that build a bare source via
+        # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
+        return self._authorization_adapter(
+            getattr(source, "platform", None),
+            getattr(source, "profile", None),
+        )
 
     def _adapter_authorization_is_upstream(
         self,

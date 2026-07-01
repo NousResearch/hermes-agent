@@ -546,13 +546,12 @@ async def _ssrf_redirect_guard(response):
 
     Must be async because httpx.AsyncClient awaits response event hooks.
     """
-    if response.is_redirect and response.next_request:
-        redirect_url = str(response.next_request.url)
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
-            )
+    from tools.url_safety import is_safe_url, redirect_target_from_response
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url and not is_safe_url(redirect_url):
+        raise ValueError(
+            f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+        )
 
 
 # ---------------------------------------------------------------------------

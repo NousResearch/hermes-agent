@@ -85,9 +85,10 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("Brave Search HTTP error: %s", exc)
+            status_code = getattr(exc.response, "status_code", "unknown")
             return {
                 "success": False,
-                "error": f"Brave Search returned HTTP {exc.response.status_code}",
+                "error": f"Brave Search returned HTTP {status_code}",
             }
         except httpx.RequestError as exc:
             logger.warning("Brave Search request error: %s", exc)

@@ -172,6 +172,19 @@ class TestSearXNGSearchProviderSearch:
         assert result["success"] is False
         assert "500" in result["error"]
 
+    def test_http_error_without_response_returns_failure(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        http_err = httpx.HTTPStatusError("boom", request=MagicMock(), response=None)
+
+        with patch("httpx.get", side_effect=http_err):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "unknown" in result["error"]
+
     def test_request_error_returns_failure(self, monkeypatch):
         import httpx
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")

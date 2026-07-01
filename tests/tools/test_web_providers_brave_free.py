@@ -166,6 +166,19 @@ class TestBraveFreeProviderSearch:
         assert result["success"] is False
         assert "429" in result["error"]
 
+    def test_http_error_without_response_returns_failure(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+
+        err = httpx.HTTPStatusError("boom", request=MagicMock(), response=None)
+
+        with patch("httpx.get", side_effect=err):
+            result = BraveFreeWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
+        assert "unknown" in result["error"]
+
     def test_request_error_returns_failure(self, monkeypatch):
         import httpx
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")

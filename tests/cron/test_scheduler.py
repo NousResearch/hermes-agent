@@ -1926,6 +1926,36 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
 
+    def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
+        """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-4o-mini\n"
+            "fallback_model:\n"
+            "  provider: anthropic\n"
+            "  model: claude-sonnet-4-6\n"
+        )
+
+        job = {"id": "fb-merge", "name": "fallback merge", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        fb = mock_agent_cls.call_args.kwargs.get("fallback_model") or []
+        models = [e.get("model") for e in fb if isinstance(e, dict)]
+        assert models == ["gpt-4o-mini", "claude-sonnet-4-6"]
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

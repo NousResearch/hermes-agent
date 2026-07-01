@@ -707,14 +707,24 @@ def resolve_skill_config_values(
 # ── Description extraction ────────────────────────────────────────────────
 
 
+# Maximum description length injected into the system prompt skill index.
+# Must balance routing fidelity against prompt-cache pressure (every char
+# in the system prompt is paid for on every API call).  60 chars was too
+# short — most non-trivial skill descriptions were cut before their trigger
+# criteria.  300 chars preserves the first 2-3 sentences of a typical
+# description (enough for the model to decide whether to load the skill)
+# while keeping the index block ~3× smaller than the 1024-char runtime
+# limit in skills_tool.py.
+_SYSTEM_PROMPT_MAX_DESC = 300
+
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     """Extract a truncated description from parsed frontmatter."""
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if len(desc) > _SYSTEM_PROMPT_MAX_DESC:
+        return desc[:_SYSTEM_PROMPT_MAX_DESC - 3] + "..."
     return desc
 
 

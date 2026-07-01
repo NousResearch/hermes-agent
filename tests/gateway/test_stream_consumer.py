@@ -132,6 +132,32 @@ class TestFinalizeCapabilityGate:
         picky.edit_message.assert_called_once()
         assert picky.edit_message.call_args[1]["finalize"] is True
 
+    @pytest.mark.asyncio
+    async def test_failed_turn_final_finalize_confirms_already_visible_text(self):
+        """If final text is already visible, a failed finalize edit must not
+        make the gateway resend the same answer as a duplicate (#55761)."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="m1",
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False, error="telegram flood control",
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+
+        await consumer._send_or_edit("final answer")
+        delivered = await consumer._send_or_edit(
+            "final answer",
+            finalize=True,
+            is_turn_final=True,
+        )
+
+        assert delivered is False
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is True
+
 
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.

@@ -1476,3 +1476,99 @@ class TestSilenceCallbackLock:
         recorder.cancel()
         with recorder._lock:
             assert recorder._on_silence_stop is None
+
+
+class TestGetBeepVolume:
+    """Issue #55908: beep amplitude must come from config.yaml, with safe fallback."""
+
+    def _get(self):
+        from tools.voice_mode import _get_beep_volume
+        return _get_beep_volume()
+
+    def test_default_when_key_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={"voice": {}}):
+            assert self._get() == 0.3
+
+    def test_default_when_voice_section_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert self._get() == 0.3
+
+    def test_custom_value_honored(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 0.6}}):
+            assert self._get() == 0.6
+
+    def test_zero_is_accepted(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 0.0}}):
+            assert self._get() == 0.0
+
+    def test_one_is_accepted(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 1.0}}):
+            assert self._get() == 1.0
+
+    def test_out_of_range_high_clamps_to_default(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 1.5}}):
+            assert self._get() == 0.3
+
+    def test_out_of_range_low_clamps_to_default(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": -0.5}}):
+            assert self._get() == 0.3
+
+    def test_string_numeric_is_coerced(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": "0.7"}}):
+            assert self._get() == 0.7
+
+    def test_non_numeric_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": "loud"}}):
+            assert self._get() == 0.3
+
+    def test_bool_value_falls_back(self):
+        """Booleans must not silently pass as 0.0/1.0 (same guard as silence_threshold)."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": True}}):
+            assert self._get() == 0.3
+
+    def test_nan_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": float("nan")}}):
+            assert self._get() == 0.3
+
+    def test_load_config_exception_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   side_effect=RuntimeError("broken config")):
+            assert self._get() == 0.3
+
+    def test_voice_section_wrong_type_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": "not-a-dict"}):
+            assert self._get() == 0.3
+
+
+class TestPlayBeepVolumeWiring:
+    """Issue #55908: play_beep multiplies by the volume returned by _get_beep_volume.
+
+    Static wiring check — the behaviour is covered by TestGetBeepVolume above; this
+    class guards against regressions that re-introduce a hardcoded ``0.3`` literal
+    at the amplitude line in play_beep (the original bug class).
+    """
+
+    def test_play_beep_does_not_use_hardcoded_0_3_literal(self):
+        import inspect
+
+        from tools import voice_mode as vm_mod
+
+        source = inspect.getsource(vm_mod.play_beep)
+        # The fix replaces ``tone * 0.3 * 32767`` with ``tone * beep_volume * 32767``
+        # where beep_volume is the result of _get_beep_volume().
+        hardcoded = " * 0.3 * 32767"
+        assert hardcoded not in source, (
+            "play_beep still contains a hardcoded 0.3 amplitude; use _get_beep_volume()"
+        )
+        assert "beep_volume * 32767" in source
+        assert "_get_beep_volume()" in source

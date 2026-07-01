@@ -1316,7 +1316,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `"auto"` (default) | Enabled for models whose name matches `TOOL_USE_ENFORCEMENT_MODELS` (in `agent/prompt_builder.py`): `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Disabled for all others (e.g. Claude, which uses tools reliably without it). |
 | `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
 | `false` | Always disabled, regardless of model. |
 | `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
@@ -1327,7 +1327,7 @@ When enabled, three layers of guidance may be added to the system prompt:
 
 1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
 
-2. **OpenAI execution discipline** (GPT and Codex models only) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
+2. **OpenAI execution discipline** (GPT, Codex, and Grok models) — additional guidance addressing failure modes common to these families: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
 
 3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
 
@@ -1341,6 +1341,17 @@ If you're using a model not in the default auto list and notice it frequently de
 agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
+
+:::caution Small or quantized local models
+On a small or quantized local model (e.g. a heavily-quantized Qwen / GLM / DeepSeek served through vLLM or llama.cpp), this guidance can have the **opposite** effect. The extra system-prompt volume can push the model off its native tool-call format, so it emits the call as **text** instead of a structured `tool_calls` — the same symptom as [Tool calls appear as text](../integrations/providers.md#tool-calls-appear-as-text-instead-of-executing), but caused by the prompt rather than a missing parser flag. Because `qwen`, `gemma`, `glm`, and `deepseek` are matched by `"auto"`, this can happen at the default setting. If your `--tool-call-parser` flags are already correct and you still see text tool calls, disable the guidance:
+
+```yaml
+agent:
+  tool_use_enforcement: false
+  task_completion_guidance: false
+  parallel_tool_call_guidance: false
+```
+:::
 
 ## Tool-Loop Guardrails
 

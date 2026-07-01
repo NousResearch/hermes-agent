@@ -964,6 +964,15 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
 | **Ollama** | Tool calling is enabled by default — make sure your model supports it (check with `ollama show model-name`) |
 | **LM Studio** | Update to 0.3.6+ and use a model with native tool support |
 
+**Second cause — system-prompt guidance on small/quantized models:** If the parser flags above are already correct and the model *still* emits tool calls as text (most often a small or quantized local model), the cause may be prompt volume rather than the parser. Hermes injects tool-use / task-completion / parallel-tool-call guidance into the system prompt (see [Tool-Use Enforcement](../user-guide/configuration.md#tool-use-enforcement)); on a fragile model the extra volume can displace the native tool-call format. Disable it and retest:
+
+```yaml
+agent:
+  tool_use_enforcement: false
+  task_completion_guidance: false
+  parallel_tool_call_guidance: false
+```
+
 #### Model seems to forget context or give incoherent responses
 
 **Cause:** Context window is too small. When the conversation exceeds the context limit, most servers silently drop older messages. Hermes's system prompt + tool schemas alone can use 4k–8k tokens.

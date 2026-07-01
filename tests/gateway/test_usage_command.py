@@ -21,6 +21,7 @@ def _make_mock_agent(**overrides):
         "session_output_tokens": 10_000,
         "session_cache_read_tokens": 5_000,
         "session_cache_write_tokens": 2_000,
+        "session_reasoning_tokens": 0,
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -79,13 +80,20 @@ class TestUsageCachedAgent:
         with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
             result = await runner._handle_usage_command(event)
 
-        assert "claude-sonnet-4.6" in result
-        assert "35,000" in result  # input tokens
-        assert "10,000" in result  # output tokens
-        assert "50,000" in result  # total
-        assert "30,000" in result  # context
-        assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
+        # The last-turn card (resident fallback from session counters, since the
+        # mock channel has no blackbox row) shows the new /context vocabulary.
+        # NOTE: the redundant "Session Token Usage" header + Model/Total/API-calls
+        # lines were removed (Ace, 2026-06-30) — the card owns those now, and the
+        # thin fallback (no blackbox row) carries the token split, not the model.
+        assert "35,000" in result   # uncached (session_input_tokens)
+        assert "10,000" in result   # output billed (session_output_tokens)
+        assert "uncached" in result
+        assert "Total (billed in+out)" in result
+        assert "Last turn" in result
+        # The old redundant header lines are gone.
+        assert "Session Token Usage" not in result
+        # Cost and cache-hit reporting is removed everywhere (the rich-card "Turn
+        # Cost" only renders from a real blackbox row, never the thin fallback).
         assert "$" not in result
         assert "Cache read" not in result
         assert "Cache write" not in result
@@ -93,9 +101,12 @@ class TestUsageCachedAgent:
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
-        """When agent is in both dicts, the running one wins."""
-        running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000)
-        cached = _make_mock_agent(session_api_calls=5, session_total_tokens=50_000)
+        """When agent is in both dicts, the running one wins — proven via the
+        card's token split (the redundant Total/API-calls header was removed)."""
+        running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000,
+                                   session_input_tokens=70_000)
+        cached = _make_mock_agent(session_api_calls=5, session_total_tokens=50_000,
+                                  session_input_tokens=35_000)
         runner = _make_runner(SK, agent=running, cached_agent=cached)
         event = MagicMock()
 
@@ -104,8 +115,10 @@ class TestUsageCachedAgent:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
-        assert "80,000" in result   # running agent's total
-        assert "API calls: 10" in result
+        # The running agent's uncached count (70,000) drives the card, not the
+        # cached agent's (35,000).
+        assert "70,000" in result
+        assert "35,000" not in result
 
     @pytest.mark.asyncio
     async def test_sentinel_skipped_uses_cache(self):
@@ -122,8 +135,9 @@ class TestUsageCachedAgent:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
-        assert "claude-sonnet-4.6" in result
-        assert "Session Token Usage" in result
+        # The cached agent's last-turn card renders (its uncached count = 35,000).
+        assert "35,000" in result
+        assert "Last turn" in result
 
     @pytest.mark.asyncio
     async def test_no_agent_anywhere_falls_to_history(self):
@@ -173,6 +187,14 @@ class TestUsageAccountSection:
         runner = _make_runner(SK, cached_agent=agent)
         event = MagicMock()
 
+        # Force the single-provider FALLBACK path this test covers: the DRY
+        # compact block (render_compact_lines via claude_usage_lib) returns []
+        # so /usage falls back to fetch_account_usage. (Stubbed because the codex
+        # snapshot reader bypasses the test sandbox and would otherwise return a
+        # real host snapshot.)
+        monkeypatch.setattr(
+            runner, "_compact_account_limit_lines", lambda: [],
+        )
         monkeypatch.setattr(
             "gateway.slash_commands.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
@@ -190,7 +212,7 @@ class TestUsageAccountSection:
             mock_cost.return_value = MagicMock(amount_usd=None, status="included")
             result = await runner._handle_usage_command(event)
 
-        assert "📊 **Session Token Usage**" in result
+        # The account-limits section (single-provider fallback) appears below the card.
         assert "📈 **Account limits**" in result
         assert "Provider: openai-codex (Pro)" in result
 
@@ -221,6 +243,9 @@ class TestUsageAccountSection:
             return fn(*args, **kwargs)
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        # Force the single-provider fallback (DRY compact block returns []) so the
+        # persisted-provider fetch path under test is exercised deterministically.
+        monkeypatch.setattr(runner, "_compact_account_limit_lines", lambda: [])
         monkeypatch.setattr(
             "gateway.slash_commands.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
@@ -243,6 +268,74 @@ class TestUsageAccountSection:
         assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+    @pytest.mark.asyncio
+    async def test_compact_account_block_and_rate_limit_ordering(self, monkeypatch):
+        """The DRY compact multi-sub block renders, with the rate-limit line
+        directly ABOVE the Account-limits header (both are 'ceiling' info)."""
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-cmp"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "hi"}]
+        event = MagicMock()
+
+        # Stub the compact block (the DRY render_compact_lines path) deterministically.
+        monkeypatch.setattr(
+            runner, "_compact_account_limit_lines",
+            lambda: ["📈 **Account limits**",
+                     "✅ Claude (Max 20x): 73% used (5h · resets Tue 14:40)",
+                     "⚠️ OpenAI Codex (Pro): 81% used (7d · resets Sun 23:00)"],
+        )
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact",
+                   return_value="Requests/min: 3388/4000 left | Tokens/min: 318.0K/400.0K left"), \
+             patch("agent.account_usage.nous_credits_lines", lambda markdown=False: []):
+            result = await runner._handle_usage_command(event)
+
+        assert "📈 **Account limits**" in result
+        assert "Claude (Max 20x): 73% used" in result
+        assert "OpenAI Codex (Pro): 81% used" in result
+        # Rate limits render as a readable block, separated from Account limits
+        # by a blank line.
+        lines = result.splitlines()
+        header_i = lines.index("⏱️ **Rate Limits:**")
+        acct_i = lines.index("📈 **Account limits**")
+        assert lines[header_i + 1] == "• Requests/min: 3388/4000 left"
+        assert lines[header_i + 2] == "• Tokens/min: 318.0K/400.0K left"
+        assert lines[header_i + 3] == ""
+        assert header_i < acct_i, "rate limits must render above account limits"
+
+    @pytest.mark.asyncio
+    async def test_context_breakdown_renders_above_last_turn_card(self, monkeypatch):
+        """Context breakdown ('where is my budget going') leads, above the
+        last-turn card ('what the last turn cost') — Ace 2026-06-30."""
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-order"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [{"role": "user", "content": "hi"}]
+        event = MagicMock()
+
+        fake_bd = {
+            "categories": [
+                {"id": "system_prompt", "label": "System prompt", "tokens": 4000, "color": "x"},
+            ],
+            "estimated_total": 4000, "context_max": 200000,
+            "context_percent": 2, "context_used": 4000, "model": "m",
+        }
+        monkeypatch.setattr(runner, "_compact_account_limit_lines", lambda: [])
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.context_breakdown.compute_session_context_breakdown", return_value=fake_bd), \
+             patch("agent.account_usage.nous_credits_lines", lambda markdown=False: []):
+            result = await runner._handle_usage_command(event)
+
+        bd_i = result.index("Context breakdown")
+        lt_i = result.index("Last turn")
+        assert bd_i < lt_i, "context breakdown must render above the last-turn card"
+        # Output opens on the breakdown header, not a blank line.
+        assert result.lstrip("\n").startswith("🧩")
 
 
 class TestUsageLastTurnSnapshot:
@@ -284,11 +377,18 @@ class TestUsageLastTurnSnapshot:
         with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=500):
             result = await runner._handle_usage_command(event)
 
-        # Real last-turn numbers must appear (not just the rough ~500 estimate).
-        assert "120,000" in result   # last-turn input
-        assert "8,000" in result     # last-turn output
+        # Real last-turn numbers must appear in the new /context card vocabulary
+        # (not just the rough ~500 estimate). Output + reasoning fold into one
+        # billed-out total (8,000 + 1,500 = 9,500); in billed = 120k+110k+2k = 232k.
+        assert "120,000" in result   # last-turn uncached input
         assert "110,000" in result   # last-turn cache read
+        assert "9,500" in result     # output billed (8,000 + 1,500 reasoning, folded)
+        assert "232,000" in result   # tokens-in billed
+        assert "Total (billed in+out): 241,500" in result
+        assert "uncached" in result
         assert "Last turn" in result or "last turn" in result.lower()
+        # Honest fallback label: the agent is genuinely not resident here.
+        assert "persisted; agent not resident" in result
 
     @pytest.mark.asyncio
     async def test_no_snapshot_still_falls_to_history(self):
@@ -311,3 +411,69 @@ class TestUsageLastTurnSnapshot:
         assert "Session Info" in result
         assert "~500" in result
 
+
+
+class TestUsageContextBreakdown:
+    """The /usage output includes the per-category context breakdown.
+
+    Ported from upstream PR #55204, adapted to this fleet's card-based /usage
+    (the old '📊 Session Token Usage' header was removed in favour of the
+    shared last-turn card, so the fail-open assertion checks the card instead).
+    """
+
+    @pytest.mark.asyncio
+    async def test_breakdown_lines_rendered_for_live_agent(self):
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-bd"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hi"},
+        ]
+        event = MagicMock()
+
+        fake_payload = {
+            "categories": [
+                {"id": "system_prompt", "label": "System prompt", "tokens": 4000, "color": "x"},
+                {"id": "tool_definitions", "label": "Tool definitions", "tokens": 6000, "color": "x"},
+                {"id": "conversation", "label": "Conversation", "tokens": 0, "color": "x"},
+            ],
+            "estimated_total": 10000,
+            "context_max": 200000,
+            "context_percent": 5,
+            "context_used": 30000,
+            "model": "anthropic/claude-sonnet-4.6",
+        }
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.context_breakdown.compute_session_context_breakdown", return_value=fake_payload):
+            result = await runner._handle_usage_command(event)
+
+        # Localized header + at least the two non-zero category labels appear,
+        # each labelled as a percentage of the estimated total.
+        assert "Context breakdown" in result
+        assert "System prompt" in result
+        assert "Tool definitions" in result
+        assert "4,000" in result   # system prompt tokens, comma-formatted
+        assert "40%" in result     # 4000 / 10000
+        assert "60%" in result     # 6000 / 10000
+        # Zero-token category is dropped, not rendered.
+        assert "Conversation" not in result
+
+    @pytest.mark.asyncio
+    async def test_breakdown_failure_is_non_fatal(self):
+        """A breakdown engine error must not break the rest of /usage."""
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        runner.session_store.get_or_create_session.side_effect = RuntimeError("boom")
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.context_breakdown.compute_session_context_breakdown",
+                   side_effect=RuntimeError("engine down")):
+            result = await runner._handle_usage_command(event)
+
+        # Core usage lines still render (the last-turn card), no breakdown header.
+        assert "Last turn" in result
+        assert "Context breakdown" not in result

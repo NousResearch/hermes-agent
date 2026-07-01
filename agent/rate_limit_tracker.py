@@ -235,12 +235,12 @@ def format_rate_limit_compact(state: RateLimitState) -> str:
 
     parts = []
     if rm.limit > 0:
-        parts.append(f"RPM: {rm.remaining}/{rm.limit}")
+        parts.append(f"Requests/min: {rm.remaining}/{rm.limit} left")
     if rh.limit > 0:
-        parts.append(f"RPH: {_fmt_count(rh.remaining)}/{_fmt_count(rh.limit)} (resets {_fmt_seconds(rh.remaining_seconds_now)})")
+        parts.append(f"Requests/hr: {_fmt_count(rh.remaining)}/{_fmt_count(rh.limit)} left (resets {_fmt_seconds(rh.remaining_seconds_now)})")
     if tm.limit > 0:
-        parts.append(f"TPM: {_fmt_count(tm.remaining)}/{_fmt_count(tm.limit)}")
+        parts.append(f"Tokens/min: {_fmt_count(tm.remaining)}/{_fmt_count(tm.limit)} left")
     if th.limit > 0:
-        parts.append(f"TPH: {_fmt_count(th.remaining)}/{_fmt_count(th.limit)} (resets {_fmt_seconds(th.remaining_seconds_now)})")
+        parts.append(f"Tokens/hr: {_fmt_count(th.remaining)}/{_fmt_count(th.limit)} left (resets {_fmt_seconds(th.remaining_seconds_now)})")
 
     return " | ".join(parts)

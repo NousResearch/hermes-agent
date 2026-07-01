@@ -3570,6 +3570,177 @@ class GatewaySlashCommandsMixin:
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
         return "\n".join(lines)
 
+    def _compact_account_limit_lines(self) -> list:
+        """Build the compact '📈 Account limits' block (one line per subscription).
+
+        DRY: loads the SAME ~/.hermes/scripts/claude_usage_lib.py that powers the
+        full /claude-usage report and calls its render_compact_lines() — so the
+        set of subscriptions (all Claude subs + Codex) tracks automatically with
+        the registry. Returns [] (header omitted) when nothing is available so
+        the caller can fall back to the single-provider snapshot. Never raises.
+        """
+        try:
+            import importlib.util
+            import os
+            import sys
+
+            lib_path = os.path.expanduser("~/.hermes/scripts/claude_usage_lib.py")
+            if not os.path.isfile(lib_path):
+                return []
+            # Cache the loaded module under a stable sys.modules key so the
+            # library's top-level imports (subprocess, sqlite3, etc.) are only
+            # executed once instead of re-run on every /usage call (Greptile P2).
+            _MOD_KEY = "_hermes_claude_usage_lib"
+            mod = sys.modules.get(_MOD_KEY)
+            if mod is None:
+                spec = importlib.util.spec_from_file_location(_MOD_KEY, lib_path)
+                if spec is None or spec.loader is None:
+                    return []
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[_MOD_KEY] = mod
+                try:
+                    spec.loader.exec_module(mod)
+                except Exception:
+                    sys.modules.pop(_MOD_KEY, None)  # don't cache a half-loaded module
+                    raise
+            render = getattr(mod, "render_compact_lines", None)
+            if render is None:
+                return []
+            sub_lines = render() or []
+            if not sub_lines:
+                return []
+            return ["📈 **Account limits**", *sub_lines]
+        except Exception:
+            return []
+
+    def _context_breakdown_lines(self, agent, source) -> list:
+        """Render the per-category context breakdown for /usage.
+
+        Estimated (chars/4) — same engine the desktop popover uses (upstream
+        PR #54907/#55204; reuses agent.context_breakdown — no new tool/engine).
+        Returns an empty list and never raises on failure so /usage stays robust.
+        """
+        try:
+            from agent.context_breakdown import compute_session_context_breakdown
+
+            history: list = []
+            try:
+                entry = self.session_store.get_or_create_session(source)
+                history = self.session_store.load_transcript(entry.session_id) or []
+            except Exception:
+                history = []
+
+            payload = compute_session_context_breakdown(agent, history)
+            categories = payload.get("categories") or []
+            if not categories:
+                return []
+
+            total = payload.get("estimated_total") or 0
+            out = [t("gateway.usage.breakdown_header")]
+            for cat in categories:
+                tokens = int(cat.get("tokens") or 0)
+                if tokens <= 0:
+                    continue
+                cat_id = str(cat.get("id") or "")
+                label = t(f"gateway.usage.breakdown_cat_{cat_id}")
+                # Missing key → t() echoes the key back; fall back to the
+                # English label the engine already provides.
+                if label.endswith(f"breakdown_cat_{cat_id}"):
+                    label = str(cat.get("label") or cat_id)
+                pct = round(tokens / total * 100) if total else 0
+                out.append(
+                    t("gateway.usage.breakdown_line", label=label, count=f"{tokens:,}", pct=pct)
+                )
+            return out if len(out) > 1 else []
+        except Exception:
+            return []
+
+    def _render_last_turn_card(self, source, thin_snap, fallback_label=None, compressions=None) -> list:
+        """Render the rich /context last-turn card for the invoking channel, or a
+        reworded thin fallback. Returns a list of lines (may be empty).
+
+        PRD usage-format-codex Part A: /usage's last-turn section reuses the SAME
+        renderer /context uses (plugins.blackbox.last_turn) so the numbers are
+        byte-identical. Channel is passed EXPLICITLY (event.source) and the
+        returned record's channel is verified to match — a found-but-wrong-channel
+        record falls back + WARNs, never renders confidently-wrong cross-channel
+        numbers (D-7). `thin_snap` is the eviction-safe get_last_turn_usage dict
+        (or the resident agent's session counters, or None) used for the fallback
+        when blackbox has no matching turn. `fallback_label` overrides the thin
+        fallback's parenthetical so the header is honest at each call site (the
+        persisted branch says "agent not resident"; the resident branch says
+        "session totals").
+        """
+        platform = source.platform.value if source and source.platform else ""
+        chat_id = str(source.chat_id) if source and source.chat_id is not None else ""
+        rec = None
+        render_last_turn_record = None
+        try:
+            from plugins.blackbox.last_turn import (
+                compute_last_turn_record,
+                render_last_turn_record,
+            )
+            rec = compute_last_turn_record(platform, chat_id)
+        except Exception as e:
+            logger.warning("usage last-turn card: blackbox compute failed (%s); using fallback", e)
+            rec = None
+
+        if rec and rec.get("found") and render_last_turn_record is not None:
+            # Channel-match guard (D-7): a non-empty channel request must return
+            # THIS channel's row. If the store handed back another channel's row,
+            # do NOT render it — fall back loudly.
+            if platform and chat_id:
+                if str(rec.get("platform", "")) == platform and str(rec.get("chat_id", "")) == chat_id:
+                    try:
+                        return render_last_turn_record(rec, compressions=compressions)
+                    except Exception as e:
+                        logger.warning("usage last-turn card: render failed (%s); using fallback", e)
+                else:
+                    logger.warning(
+                        "usage last-turn card: blackbox returned channel %s/%s != requested %s/%s; "
+                        "falling back to thin snapshot",
+                        rec.get("platform"), rec.get("chat_id"), platform, chat_id,
+                    )
+            else:
+                # No channel bound (shouldn't happen for a messaging /usage) — the
+                # global-newest rec is acceptable; render it.
+                try:
+                    return render_last_turn_record(rec, compressions=compressions)
+                except Exception as e:
+                    logger.warning("usage last-turn card: render failed (%s); using fallback", e)
+
+        # Fallback: blackbox unavailable / no turn for this channel / mismatch.
+        # Reworded thin snapshot in the same vocabulary (uncached + cache + a
+        # labelled total). Reasoning is folded into the output total so "Total"
+        # means the same magnitude as the rich card's billed-out (INV-4).
+        if not thin_snap:
+            return []
+        logger.warning("usage last-turn card: degraded to thin get_last_turn_usage snapshot")
+
+        def _as_int(v):
+            try:
+                return int(v or 0)
+            except (TypeError, ValueError):
+                return 0
+        lt_in = _as_int(thin_snap.get("input_tokens"))
+        lt_out = _as_int(thin_snap.get("output_tokens"))
+        lt_cr = _as_int(thin_snap.get("cache_read_tokens"))
+        lt_cw = _as_int(thin_snap.get("cache_write_tokens"))
+        lt_rsn = _as_int(thin_snap.get("reasoning_tokens"))
+        in_billed = lt_in + lt_cr + lt_cw
+        out_billed = lt_out + lt_rsn  # fold reasoning into the output total
+        out_label = fallback_label or "persisted; agent not resident"
+        out_lines = [f"📊 **Last turn** ({out_label})"]
+        if in_billed:
+            out_lines.append(
+                f"• Tokens in: {in_billed:,} billed "
+                f"({lt_cr:,} cache-read + {lt_cw:,} cache-write + {lt_in:,} uncached)"
+            )
+        if out_billed:
+            out_lines.append(f"• Tokens out: {out_billed:,} billed")
+        out_lines.append(f"• Total (billed in+out): {in_billed + out_billed:,}")
+        return out_lines
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
 
@@ -3608,11 +3779,20 @@ class GatewaySlashCommandsMixin:
             provider = provider or persisted.get("billing_provider")
             base_url = base_url or persisted.get("billing_base_url")
 
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
+        # Account limits — the DRY compact multi-subscription block (one line per
+        # sub: all Claude subs + Codex), sourced from the SAME claude_usage_lib
+        # render the full /claude-usage uses, so add/remove a subscription and
+        # both surfaces track automatically. Falls back to the single-provider
+        # snapshot when the shared lib isn't available. Off the event loop;
+        # fail-open (account_lines stays []).
         account_lines: list[str] = []
         credits_lines: list[str] = []
-        if provider:
+        try:
+            account_lines = await asyncio.to_thread(self._compact_account_limit_lines)
+        except Exception:
+            account_lines = []
+        if not account_lines and provider:
+            # Fallback: the resident provider's own snapshot (legacy single-sub).
             try:
                 account_snapshot = await asyncio.to_thread(
                     fetch_account_usage,
@@ -3643,56 +3823,92 @@ class GatewaySlashCommandsMixin:
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []
 
-            # Rate limits (when available from provider headers)
+            # Rate limits (provider throttling headroom) are surfaced DOWN next to
+            # the Account-limits section (both are "how close am I to a ceiling"),
+            # not at the top — see below. Render them as a small block rather than
+            # a cramped pipe-separated row so the ceiling sections stay readable.
+            rate_limit_lines: list[str] = []
             rl_state = agent.get_rate_limit_state()
             if rl_state and rl_state.has_data:
                 from agent.rate_limit_tracker import format_rate_limit_compact
-                lines.append(t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)))
-                lines.append("")
+                _compact_rl = format_rate_limit_compact(rl_state)
+                _rl_parts = [p.strip() for p in str(_compact_rl).split("|") if p.strip()]
+                if _rl_parts:
+                    rate_limit_lines.append(t("gateway.usage.rate_limits", state="").rstrip())
+                    rate_limit_lines.extend(f"• {p}" for p in _rl_parts)
 
-            # Session token usage — detailed breakdown matching CLI
-            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            # The full last-turn card (PRD usage-format-codex Part A) is the SAME
+            # renderer /context uses, and already carries Model / Agent / Session /
+            # API Calls / tokens / Compressions — so the old session header +
+            # Model/Total/API-calls lines were redundant with it and were removed
+            # (Ace, 2026-06-30). The card (cost, tokens in/out with finished/
+            # unfinished + uncached, context window, cached, compressions, session)
+            # follows directly.
 
-            lines.append(t("gateway.usage.header_session"))
-            lines.append(t("gateway.usage.label_model", model=agent.model))
-            lines.append(t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}"))
-            lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
-            lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
-            lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
-
-            # Context window and compressions
+            # The rich /context last-turn card for THIS channel (replaces the old
+            # hand-built input/output + char/4 composition block). When the
+            # blackbox store has no turn recorded for this channel yet (e.g. the
+            # agent is resident but its first turn hasn't landed in the store, or
+            # tests), fall back to the resident agent's OWN session counters so the
+            # card is never emptier than the pre-card display. The live compressor's
+            # compression_count is threaded into the card (• Compressions: N row,
+            # right after Cached) instead of being appended orphaned below.
+            def _as_int(v):
+                try:
+                    return int(v or 0)
+                except (TypeError, ValueError):
+                    return 0
+            agent_thin = {
+                "input_tokens": _as_int(getattr(agent, "session_input_tokens", 0)),
+                "output_tokens": _as_int(getattr(agent, "session_output_tokens", 0)),
+                "cache_read_tokens": _as_int(getattr(agent, "session_cache_read_tokens", 0)),
+                "cache_write_tokens": _as_int(getattr(agent, "session_cache_write_tokens", 0)),
+                "reasoning_tokens": _as_int(getattr(agent, "session_reasoning_tokens", 0)),
+            }
             ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
-            # Real last-request composition (char/4 fixed vs non-fixed). Sourced
-            # from the agent's last_turn_usage snapshot captured at the call site
-            # (see agent.model_metadata.compose_request_breakdown). Shown side by
-            # side with the measured occupancy above — the two are independent
-            # (char/4 estimate vs provider tokenizer count), never reconciled.
-            _ltu = getattr(agent, "last_turn_usage", None)
-            _comp = _ltu.get("last_composition") if isinstance(_ltu, dict) else None
-            if isinstance(_comp, dict):
-                _cs = int(_comp.get("sys_tokens", 0) or 0)
-                _ct = int(_comp.get("tool_schema_tokens", 0) or 0)
-                _ch = int(_comp.get("history_tokens", 0) or 0)
-                _cr = int(_comp.get("tool_result_tokens", 0) or 0)
-                _ca = int(_comp.get("tool_arg_tokens", 0) or 0)
-                _fixed = _cs + _ct
-                _nonfixed = _ch + _cr + _ca
-                lines.append(t("gateway.usage.comp_header"))
-                lines.append(t("gateway.usage.comp_fixed",
-                               fixed=f"{_fixed:,}", sys=f"{_cs:,}", tools=f"{_ct:,}"))
-                lines.append(t("gateway.usage.comp_nonfixed",
-                               nonfixed=f"{_nonfixed:,}", hist=f"{_ch:,}",
-                               results=f"{_cr:,}", args=f"{_ca:,}"))
-                lines.append(t("gateway.usage.comp_total", total=f"{_fixed + _nonfixed:,}"))
-            if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+            _comp_count = _as_int(getattr(ctx, "compression_count", 0))
 
-            if account_lines:
+            # Per-category context breakdown (estimated — chars/4 heuristic) goes
+            # FIRST (Ace 2026-06-30): "where is my CURRENT context budget going"
+            # (system prompt / tools / rules / skills / MCP / subagents / memory /
+            # conversation) frames the rest. Same engine the desktop popover uses
+            # (upstream PR #54907/#55204). Fail-open: error → no breakdown.
+            breakdown_lines = self._context_breakdown_lines(agent, source)
+            if breakdown_lines:
+                lines.extend(breakdown_lines)
+
+            # The full last-turn card (PRD usage-format-codex Part A) — the SAME
+            # renderer /context uses — answers "what the last turn cost". When the
+            # blackbox store has no turn for this channel yet, fall back to the
+            # resident agent's OWN session counters so the card is never emptier
+            # than the pre-card display. compression_count is threaded in (•
+            # Compressions: N row, after Cached).
+            try:
+                card = self._render_last_turn_card(
+                    source, agent_thin,
+                    fallback_label="session totals; first turn not yet recorded",
+                    compressions=_comp_count,
+                )
+            except Exception:
+                card = []
+            if card:
+                # The card carries a leading blank line — keep it as a separator
+                # from the breakdown above, but strip it when the card is the very
+                # first block (no breakdown rendered) so /usage doesn't open blank.
+                if not breakdown_lines and card and card[0] == "":
+                    card = card[1:]
+                lines.extend(card)
+
+            # Rate limits + Account limits together — both answer "how close am I
+            # to a ceiling": rate limits = provider throttling headroom (this
+            # minute/hour), account limits = subscription quota (5h/7d windows).
+            if rate_limit_lines or account_lines:
                 lines.append("")
+            if rate_limit_lines:
+                lines.extend(rate_limit_lines)
+            if rate_limit_lines and account_lines:
+                lines.append("")
+            if account_lines:
                 lines.extend(account_lines)
             if credits_lines:
                 lines.append("")
@@ -3703,45 +3919,22 @@ class GatewaySlashCommandsMixin:
         # No agent at all -- check session history for a rough count
         session_entry = self.session_store.get_or_create_session(source)
 
-        # Eviction-safe last-turn snapshot: even with no resident agent, the
-        # sessions row persists the last turn's token split (see
-        # SessionDB.update_token_counts / get_last_turn_usage). Surface it so
-        # /usage shows real last-turn numbers between turns instead of only a
-        # rough transcript estimate.
+        # Eviction-safe last-turn card: even with no resident agent, render the
+        # full /context last-turn card for THIS channel from the blackbox store
+        # (PRD usage-format-codex Part A). Falls back to the thin persisted
+        # get_last_turn_usage snapshot (reworded) when blackbox has no matching
+        # turn — the helper handles both + the channel-match guard.
         last_turn_lines: list[str] = []
+        thin_snap = None
         if getattr(self, "_session_db", None) is not None:
             try:
-                snap = self._session_db.get_last_turn_usage(session_entry.session_id)
+                thin_snap = self._session_db.get_last_turn_usage(session_entry.session_id)
             except Exception:
-                snap = None
-            if snap:
-                def _as_int(v):
-                    try:
-                        return int(v or 0)
-                    except (TypeError, ValueError):
-                        return 0
-                lt_in = _as_int(snap.get("input_tokens"))
-                lt_out = _as_int(snap.get("output_tokens"))
-                lt_cr = _as_int(snap.get("cache_read_tokens"))
-                lt_cw = _as_int(snap.get("cache_write_tokens"))
-                lt_rsn = _as_int(snap.get("reasoning_tokens"))
-                last_turn_lines.append("📊 **Last turn** (persisted; agent not resident)")
-                last_turn_lines.append(
-                    t("gateway.usage.label_input_tokens", count=f"{lt_in:,}")
-                )
-                if lt_cr:
-                    last_turn_lines.append(
-                        t("gateway.usage.label_cache_read", count=f"{lt_cr:,}")
-                    )
-                if lt_cw:
-                    last_turn_lines.append(
-                        t("gateway.usage.label_cache_write", count=f"{lt_cw:,}")
-                    )
-                last_turn_lines.append(
-                    t("gateway.usage.label_output_tokens", count=f"{lt_out:,}")
-                )
-                if lt_rsn:
-                    last_turn_lines.append(f"Reasoning tokens: {lt_rsn:,}")
+                thin_snap = None
+        try:
+            last_turn_lines = self._render_last_turn_card(source, thin_snap)
+        except Exception:
+            last_turn_lines = []
 
         history = self.session_store.load_transcript(session_entry.session_id)
         if history:

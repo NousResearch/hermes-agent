@@ -172,10 +172,12 @@ class TestFormatting:
     def test_format_compact(self):
         state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
         result = format_rate_limit_compact(state)
-        assert "RPM:" in result
-        assert "RPH:" in result
-        assert "TPM:" in result
-        assert "TPH:" in result
+        # Spelled-out labels (no jargon RPM/TPM) — Ace, 2026-06-30.
+        assert "Requests/min:" in result
+        assert "Requests/hr:" in result
+        assert "Tokens/min:" in result
+        assert "Tokens/hr:" in result
+        assert "left" in result
         assert "resets" in result
 
     def test_format_compact_no_data(self):

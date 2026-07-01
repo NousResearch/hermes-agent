@@ -112,9 +112,13 @@ class TestBrowserConsole:
             result = json.loads(browser_console(task_id="test"))
 
         serialized = json.dumps(result)
+        # The secret body must be gone. The exact mask format
+        # (partial ``sk-…7890`` vs full ``***`` for keyed ``token=`` values)
+        # is owned by agent.redact and intentionally not pinned here.
         assert "BROWSERCONSOLESECRET" not in serialized
-        assert "sk-" in result["console_messages"][0]["text"]
-        assert "..." in result["console_messages"][0]["text"]
+        redacted_text = result["console_messages"][0]["text"]
+        assert fake_key not in redacted_text
+        assert "***" in redacted_text or "..." in redacted_text
 
     def test_redacts_secrets_from_eval_result(self):
         from tools.browser_tool import _browser_eval

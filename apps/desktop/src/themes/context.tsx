@@ -13,7 +13,7 @@ import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
-import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { persistString, storedString } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { hexToRgb, mix, readableOn } from './color'
@@ -21,15 +21,12 @@ import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAP
 import type { DesktopTheme, DesktopThemeColors, DesktopThemeMixes } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
 
-// Legacy global skin (pre per-profile themes). Still the inheritance fallback
-// for any profile without its own assignment, so single-profile users and old
-// installs are unaffected.
+// Global desktop appearance. Profiles own model/runtime config, but the desktop
+// shell skin is intentionally shared so profile switches cannot repaint the app
+// into a different visual system.
 const SKIN_KEY = 'hermes-desktop-theme-v2'
 const MODE_KEY = 'hermes-desktop-mode-v1'
-// Per-profile skin + light/dark mode assignments: { [profileKey]: value }. A
-// profile inherits the global default until it's given its own appearance.
-const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
-const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
+const ATLAS_GLOBAL_DEFAULT_MIGRATION_KEY = 'hermes-desktop-atlas-global-default-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
@@ -48,29 +45,34 @@ const normalizeSkin = (name: string | null): string =>
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
 
-// ─── Per-profile appearance persistence ─────────────────────────────────────
-// Skin and mode are each stored per profile. "default" isn't a real profile —
-// it *is* the legacy global slot, so it reads/writes the global directly. Named
-// profiles get their own entry and fall back to that global until assigned, so
-// unassigned profiles and pre-per-profile installs stay on the global value.
-const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => ({
-  resolve: (profile: string): T => normalize(storedStringRecord(record)[profile] ?? storedString(legacy)),
-  assign: (profile: string, value: T): void => {
-    if (profile === 'default') {
-      persistString(legacy, value)
-    } else {
-      persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
-    }
+// ─── Global appearance persistence ──────────────────────────────────────────
+// Keep the public `resolve(profile)` / `assign(profile, value)` shape so callers
+// don't need to know where the preference lives, but deliberately ignore the
+// profile key. Old per-profile records may remain in localStorage; they no
+// longer affect the shell.
+const globalPref = <T extends string>(key: string, normalize: (v: string | null) => T) => ({
+  resolve: (_profile: string): T => normalize(storedString(key)),
+  assign: (_profile: string, value: T): void => {
+    persistString(key, value)
   }
 })
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
-export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
+export const skinPref = globalPref(SKIN_KEY, normalizeSkin)
+export const modePref = globalPref(MODE_KEY, normalizeMode)
 
 // Last active profile — lets the boot paint pick its appearance before the
 // gateway reports which profile actually launched.
 const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
+const ensureAtlasGlobalDefault = () => {
+  if (storedString(ATLAS_GLOBAL_DEFAULT_MIGRATION_KEY) === 'done') {
+    return
+  }
+
+  persistString(SKIN_KEY, DEFAULT_SKIN_NAME)
+  persistString(MODE_KEY, 'light')
+  persistString(ATLAS_GLOBAL_DEFAULT_MIGRATION_KEY, 'done')
+}
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 // hexToRgb / mix / readableOn live in ./color so the VS Code converter shares
@@ -280,10 +282,10 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
   window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
 
-// Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
-// active profile's appearance so a non-default profile relaunch paints its own
-// skin + light/dark mode.
+// Boot-time paint to avoid a flash before <ThemeProvider> mounts. Appearance is
+// global, so every profile starts from the same shell theme.
 if (typeof window !== 'undefined') {
+  ensureAtlasGlobalDefault()
   const profile = readBootProfileKey()
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
@@ -327,9 +329,7 @@ const ThemeContext = createContext<ThemeContextValue>({
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Skin + mode are assigned per profile; the active profile drives which
-  // appearance shows. Single-profile users only ever see "default", so their
-  // behavior is unchanged.
+  // Profiles still drive model/session state, but appearance is global.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
 
   // Built-ins + user-installed themes. Reactive so an import shows up live in
@@ -354,8 +354,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     typeof window === 'undefined' ? 'light' : modePref.resolve(readBootProfileKey())
   )
 
-  // Follow profile switches: paint the profile's assigned skin + mode and
-  // remember it for the next boot's first paint.
+  // Remember the active profile for boot/session behavior, but keep the shell
+  // on the global skin + mode when profiles switch.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
     setThemeNameState(skinPref.resolve(profileKey))
@@ -375,8 +375,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // material, titlebar, new-window pre-paint background).
   useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
-  // Assign to whichever profile is live right now (read fresh so the callbacks
-  // stay stable across profile switches).
+  // Persist globally. The live profile argument is accepted by the preference
+  // facade for API compatibility, but it does not namespace appearance.
   const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
 
   const setTheme = useCallback((name: string) => {
@@ -403,11 +403,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
 export const useTheme = (): ThemeContextValue => useContext(ThemeContext)
 
-/** Sync the desktop skin with the active Hermes backend theme on connect. */
+/** Legacy hook kept for API compatibility. Backend/profile themes no longer drive the desktop shell. */
 export function useSyncThemeFromBackend(backendThemeName: string | undefined, setTheme: (name: string) => void) {
   useEffect(() => {
-    if (backendThemeName && BUILTIN_THEMES[backendThemeName]) {
-      setTheme(backendThemeName)
-    }
+    void backendThemeName
+    void setTheme
   }, [backendThemeName, setTheme])
 }

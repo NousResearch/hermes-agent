@@ -469,6 +469,44 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
 
+    # ── 5xx that are actually context overflow ──
+    # Some local inference servers (llama.cpp / llama-server, and vLLM/Ollama
+    # behind a Cloudflare/Tailscale hop) report context overflow with a 5xx
+    # status instead of the standard 400/413. These must route into the
+    # compression-and-retry path, not the blind server_error/overloaded retry
+    # that exhausts and drops the turn.
+
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 529])
+    def test_5xx_context_overflow_routes_to_compression(self, status_code):
+        """Explicit context-overflow wording on any of the codes the fix covers
+        (500/502/503/529) must route to context_overflow + compression, not a
+        blind server_error/overloaded retry. Covers all four branches the code
+        touches (the original PR only asserted 500 and 503)."""
+        e = MockAPIError(
+            "Context size has been exceeded.",
+            status_code=status_code,
+            body={"error": {"code": status_code, "message": "Context size has been exceeded.", "type": "server_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+        assert result.retryable is True
+
+    def test_500_plain_server_error_not_compressed(self):
+        """A genuine 500 crash without overflow wording must NOT be swallowed
+        into compression — it stays a retryable server_error."""
+        e = MockAPIError("Internal Server Error", status_code=500)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
+    def test_503_plain_overloaded_not_compressed(self):
+        """A genuine 503 overload without overflow wording stays overloaded."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):

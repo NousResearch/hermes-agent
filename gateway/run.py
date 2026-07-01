@@ -631,20 +631,19 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
 def _auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
 
-    Reads ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from
-    ``config.yaml`` ``agent.gateway_auto_continue_freshness`` at gateway
-    startup, same pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to the
-    module default when unset or malformed.  Non-positive values disable
-    the freshness gate (restores the pre-fix "always fresh" behaviour for
-    users who want to opt out).
+    Thin wrapper that delegates to the canonical implementation in
+    ``gateway.session`` (the single source of truth shared with the
+    routing-time zombie gate in ``get_or_create_session``).  Reads
+    ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    ``agent.gateway_auto_continue_freshness`` at gateway startup, same
+    pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to the module default
+    when unset or malformed.  Non-positive values disable the freshness gate
+    (restores the pre-fix "always fresh" behaviour for users who want to opt
+    out).  Kept here so existing call sites and test patches importing it
+    from ``gateway.run`` continue to work.
     """
-    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
-    if raw is None or raw == "":
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
+    from gateway.session import auto_continue_freshness_window
+    return auto_continue_freshness_window()
 
 
 def _float_env(name: str, default: float) -> float:
@@ -1718,6 +1717,48 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_OWN_POLICY_OPEN_ENV = {
+    Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
+    Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
+    Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
+    Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
+    Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS"),
+}
+
+
+def _own_policy_open_startup_violation(config) -> Optional[str]:
+    """Return a startup-abort reason when open policy lacks allow-all opt-in."""
+    for platform, platform_config in getattr(config, "platforms", {}).items():
+        if not getattr(platform_config, "enabled", False):
+            continue
+        open_env = _OWN_POLICY_OPEN_ENV.get(platform)
+        if not open_env:
+            continue
+        dm_env, group_env, allow_all_env = open_env
+        extra = getattr(platform_config, "extra", None) or {}
+        dm_policy = str(
+            extra.get("dm_policy")
+            or (os.getenv(dm_env, "pairing") if dm_env else "pairing")
+        ).strip().lower()
+        group_policy = str(
+            extra.get("group_policy")
+            or (os.getenv(group_env, "pairing") if group_env else "pairing")
+        ).strip().lower()
+        if dm_policy != "open" and group_policy != "open":
+            continue
+        gateway_allow_all = os.getenv(
+            "GATEWAY_ALLOW_ALL_USERS", ""
+        ).lower() in {"true", "1", "yes"}
+        platform_opted_in = gateway_allow_all or (
+            allow_all_env
+            and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
+        )
+        if platform_opted_in:
+            continue
+        return f"{platform.value}: open policy without allow-all opt-in"
+    return None
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -4727,7 +4768,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _BUSY_QUEUE_MAX_PENDING = 32
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._adapter_for_source(event.source)
         if not adapter:
             return
         # #28503 — Previously this called ``merge_pending_message_event``
@@ -4784,7 +4825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._adapter_for_source(event.source)
             if not adapter:
                 return True
 
@@ -4886,7 +4927,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         # Normal busy case (agent actively running a task)
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
 
@@ -6279,10 +6320,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
-                "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
-                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+                "No env user allowlists configured. Messaging platforms default to "
+                "pairing/allowlist policies and will deny unknown senders unless you "
+                "configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id) "
+                "or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus "
+                "dm_policy/group_policy: open on the platform."
             )
+
+        reason = _own_policy_open_startup_violation(self.config)
+        if reason:
+            platform_value = reason.split(":", 1)[0]
+            allow_all_env = None
+            for platform, open_env in _OWN_POLICY_OPEN_ENV.items():
+                if platform.value == platform_value:
+                    allow_all_env = open_env[2]
+                    break
+            logger.error(
+                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
+                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.",
+                platform_value,
+                allow_all_env or "a platform allow-all flag",
+            )
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+            except Exception:
+                pass
+            self._request_clean_exit(reason)
+            return True
         
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
@@ -7873,6 +7938,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         with _profile_runtime_scope(profile_home):
             profile_cfg = load_gateway_config()
+            violation = _own_policy_open_startup_violation(profile_cfg)
+        if violation:
+            raise MultiplexConfigError(
+                f"Profile '{profile_name}' enables {violation}. "
+                "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
+                "for that profile, or change dm_policy/group_policy away from "
+                "'open'."
+            )
 
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
@@ -8176,6 +8249,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = event.source
 
+        # 🔴 Cross-session leak guard. This handler runs inside a per-message
+        # asyncio task created via create_task(), which snapshots the spawning
+        # context with copy_context(). If a *concurrent* message had already
+        # bound its session via set_session_vars() when this task was created,
+        # we inherited ITS HERMES_SESSION_* ContextVars. Until we bind our own
+        # (a few steps down, in _set_session_env), any subprocess spawned here
+        # would read the foreign session's identity via the subprocess-env
+        # bridge — the _UNSET-strip guard there can't help because the vars are
+        # set-to-foreign, not _UNSET. Reset to _UNSET now so that window strips
+        # safe (no session) instead of leaking the sibling's. See
+        # gateway/session_context.reset_session_vars + the inheritance test.
+        try:
+            from gateway.session_context import reset_session_vars
+            reset_session_vars()
+        except Exception:
+            logger.debug("reset_session_vars failed at handler entry", exc_info=True)
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not getattr(event, "internal", False)
@@ -8252,7 +8342,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+            if (
+                source.chat_type == "dm"
+                and self._get_unauthorized_dm_behavior(
+                    source.platform,
+                    profile=source.profile,
+                )
+                == "pair"
+            ):
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
@@ -8263,7 +8360,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._adapter_for_source(source)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -8273,7 +8370,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._adapter_for_source(source)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -17250,10 +17347,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _resume_entry = self.session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
+
+            # resume_pending freshness uses a SECOND signal in addition to the
+            # transcript clock above.  The restart watchdog stamps the session
+            # with ``last_resume_marked_at`` at interrupt time — that is the
+            # correct "when were we interrupted" signal.  The transcript clock
+            # (_interruption_is_fresh) can be far older: an active thread you
+            # return to may have its last persisted row hours back, even though
+            # the interruption itself just happened.  Gating resume_pending on
+            # the transcript clock alone makes the recovery note silently drop,
+            # and because the startup auto-resume turn carries empty text
+            # (_schedule_resume_pending_sessions), the model then receives a
+            # blank user message and replies with confused "the message came
+            # through blank" noise.  Treat the marker as fresh when
+            # EITHER signal is fresh so the two freshness checks agree.
+            _resume_mark_is_fresh = False
+            if _resume_entry is not None and getattr(_resume_entry, "resume_pending", False):
+                _resume_mark_is_fresh = _is_fresh_gateway_interruption(
+                    getattr(_resume_entry, "last_resume_marked_at", None),
+                    window_secs=_freshness_window,
+                )
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
-                and _interruption_is_fresh
+                and (_interruption_is_fresh or _resume_mark_is_fresh)
             )
             _has_fresh_tool_tail = bool(
                 agent_history
@@ -17314,6 +17431,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _srn = _pending_notes.pop(session_key, None)
                 if _srn:
                     message = _srn + "\n\n" + message
+
+            # Safety net: a startup auto-resume event carries empty
+            # text and relies on the resume_pending branch above to supply the
+            # recovery note.  If that branch did not fire for any reason (e.g.
+            # both freshness signals disagreed, or the marker was cleared
+            # between scheduling and dispatch) we must NOT hand the model a
+            # blank user turn — it responds with confused "the message came
+            # through blank" noise.  Restricted to resume_pending sessions so
+            # legitimately empty user turns (e.g. an image with no caption,
+            # wrapped as native content below) are untouched.
+            if (
+                isinstance(message, str)
+                and not message.strip()
+                and _resume_entry is not None
+                and getattr(_resume_entry, "resume_pending", False)
+            ):
+                _sn_reason = (
+                    getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
+                )
+                _sn_reason_phrase = (
+                    "a gateway restart"
+                    if _sn_reason == "restart_timeout"
+                    else "a gateway shutdown"
+                    if _sn_reason == "shutdown_timeout"
+                    else "a gateway interruption"
+                )
+                message = (
+                    f"[System note: The previous turn was interrupted by "
+                    f"{_sn_reason_phrase}; the gateway is now back online. "
+                    f"Any restart/shutdown command in the history has already "
+                    f"run — do NOT re-execute or verify it. Report to the user "
+                    f"that the session was restored successfully and ask what "
+                    f"they would like to do next. Do NOT re-execute old tool "
+                    f"calls — skip any unfinished work from the conversation "
+                    f"history.]"
+                )
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
@@ -19294,21 +19447,76 @@ def main():
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
     
-    # start_gateway() already performs graceful teardown before returning.
-    # Force-exit afterwards so a wedged non-daemon worker thread cannot block
-    # interpreter finalization and strand the gateway half-shut down.
-    success = asyncio.run(start_gateway(config))
-    _exit_after_graceful_shutdown(success)
+    # start_gateway() performs the full graceful teardown (adapters
+    # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
+    # PID file + runtime lock released) before it returns OR raises SystemExit
+    # with an explicit code. Force-exit afterwards so a wedged non-daemon worker
+    # thread (e.g. a ThreadPoolExecutor tool/LLM call blocked with no timeout)
+    # cannot block interpreter finalization (Py_FinalizeEx joins all non-daemon
+    # threads, incl. concurrent.futures' _python_exit) and strand the gateway
+    # half-shut down with the supervisor unable to restart it (#53107).
+    #
+    # SystemExit is caught explicitly: start_gateway raises it on the
+    # clean-fatal-config (#51228), planned-restart, and service-restart paths,
+    # all of which complete teardown first. Routing those codes through the
+    # same os._exit backstop means EVERY exit path is wedge-proof, not just the
+    # boolean-return ones.
+    try:
+        success = asyncio.run(start_gateway(config))
+        exit_code = 0 if success else 1
+    except SystemExit as e:
+        # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).
+        if e.code is None:
+            exit_code = 0
+        elif isinstance(e.code, int):
+            exit_code = e.code
+        else:
+            exit_code = 1
+    _exit_after_graceful_shutdown(exit_code)
 
 
-def _exit_after_graceful_shutdown(success: bool) -> None:
-    """Flush stdio and terminate immediately after graceful shutdown."""
+def _exit_after_graceful_shutdown(exit_code: int) -> None:
+    """Flush stdio, release the PID file + runtime lock, then hard-exit.
+
+    Graceful teardown is already complete by the time this runs, so there is
+    nothing left that needs a clean interpreter shutdown. We deliberately use
+    ``os._exit`` (not ``sys.exit``): ``sys.exit`` raises ``SystemExit``, which
+    triggers ``Py_FinalizeEx`` → ``wait_for_thread_shutdown`` and joins every
+    non-daemon thread — exactly the hang (#53107) a wedged tool-worker causes.
+
+    ``os._exit`` bypasses ``atexit`` handlers, so we cannot rely on the
+    ``atexit``-registered ``remove_pid_file`` / ``release_gateway_runtime_lock``
+    (registered in ``start_gateway``) to run. The full-shutdown path releases
+    both explicitly in ``_stop_impl``, but the EARLY exit paths —
+    clean-fatal-config (#51228) and startup-aborted-before-running — raise
+    ``SystemExit`` right after ``runner.start()`` without going through
+    ``_stop_impl``, so on those paths ``atexit`` was the only thing releasing
+    them. Now that those paths are routed through this backstop (#53107),
+    release both here explicitly. Both calls are idempotent —
+    ``remove_pid_file`` only unlinks a PID file that belongs to this process,
+    and ``release_gateway_runtime_lock`` no-ops when the lock is already
+    released — so this is a no-op on the normal shutdown path and the actual
+    cleanup on the early-exit paths.
+
+    Logging is not flushed here: the gateway's handlers are synchronous
+    ``RotatingFileHandler``s that write each record immediately (no
+    ``MemoryHandler``/``QueueHandler`` buffering), so there is nothing pending.
+    Only stdio is buffered, so only stdio is flushed.
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
         except Exception:
             pass
-    os._exit(0 if success else 1)
+    # Guaranteed cleanup chokepoint: os._exit skips atexit, and the early
+    # SystemExit exit paths never run _stop_impl, so release here (idempotent).
+    try:
+        from gateway.status import remove_pid_file, release_gateway_runtime_lock
+        remove_pid_file()
+        release_gateway_runtime_lock()
+    except Exception:
+        pass
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":

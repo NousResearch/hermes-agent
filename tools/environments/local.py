@@ -265,6 +265,53 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge gateway session ContextVars into a subprocess environment dict.
+
+    ContextVars don't propagate to child processes, so the live session vars
+    (HERMES_SESSION_*) are bridged onto the child env here.
+
+    🔴 Cross-session leak guard. The session vars also have a process-global
+    os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
+    cleared). Under a concurrent multi-session host (the messaging gateway, ACP
+    adapter, API server, TUI) that global belongs to *whichever turn wrote it
+    last* — NOT necessarily this task. A subprocess spawned from a task whose
+    ContextVar is _UNSET (e.g. a sibling message task that never bound, or one
+    that inherited another session's context) would otherwise inherit the
+    FOREIGN global and act on another session's identity.
+
+    So once the session-context machinery is engaged in this process (any host
+    has called set_session_vars), the session vars are ContextVar-authoritative:
+    - ContextVar set (incl. explicitly-empty "") → that value wins, overriding
+      any stale snapshot/global value.
+    - ContextVar _UNSET → STRIP the var from the child env rather than inherit
+      the possibly-foreign process-global.
+    In a pure single-process CLI/one-shot that never engaged the session-context
+    system there is no concurrency to leak across, so the inherited fallback is
+    kept. See gateway/session_context.session_context_engaged and
+    tests/tools/test_local_env_session_leak.py.
+    """
+    try:
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_context_engaged,
+        )
+    except Exception:
+        return
+
+    _engaged = session_context_engaged()
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is not _UNSET:
+            # Explicitly bound (including "") — authoritative for this task.
+            env[var_name] = "" if value is None else str(value)
+        elif _engaged:
+            # Unset for THIS task while a concurrent host is engaged: drop any
+            # inherited global so a sibling session's value can't leak in.
+            env.pop(var_name, None)
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -297,6 +344,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
+
+    # Same cross-session leak guard as _make_run_env, for the background/PTY
+    # spawn path (process_registry.spawn_local builds env via this function).
+    _inject_session_context_env(sanitized)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
@@ -410,6 +461,16 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Active-venv markers must not clobber another project's environment.
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
+
+    # Cross-session leak guard, same as the terminal spawn paths: this helper
+    # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
+    # global under a concurrent multi-session host. A caller that re-binds the
+    # session identity explicitly (slash_worker/ACP via --session-key argv) is
+    # unaffected — bound ContextVars win here — but a caller that spawns without
+    # re-binding (e.g. tui_gateway cli.exec) would otherwise inherit a FOREIGN
+    # session's identity. Strip _UNSET session vars when engaged so that can't
+    # happen; single uniform policy across every spawn surface.
+    _inject_session_context_env(env)
 
     return env
 
@@ -700,16 +761,10 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # Bridge ContextVar-based session vars into the subprocess env (with the
+    # cross-session leak guard — strips _UNSET vars when a concurrent host is
+    # engaged so a sibling session's os.environ mirror can't leak in).
+    _inject_session_context_env(run_env)
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)

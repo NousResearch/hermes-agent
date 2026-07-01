@@ -1145,6 +1145,23 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         if _available >= 1:
             return _available
 
+    # vLLM style: both the window and the prompt are reported in TOKENS, e.g.
+    #   "This model's maximum context length is 131072 tokens. However, you
+    #    requested 65536 output tokens and your prompt contains at least 65537
+    #    input tokens, for a total of at least 131073 tokens. Please reduce
+    #    the length of the input prompt or the number of requested output
+    #    tokens."
+    # Available output = window - input. When the input alone is at or over
+    # the window this stays None, so the caller correctly falls through to
+    # compression instead of futilely shrinking the output cap.
+    _m_vllm_input = re.search(
+        r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
+    )
+    if _m_ctx_tok and _m_vllm_input:
+        _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        if _available >= 1:
+            return _available
+
     return None
 
 

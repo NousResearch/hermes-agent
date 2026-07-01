@@ -3509,10 +3509,18 @@ def _launchd_domain() -> str:
 # the target domain, so start/restart should re-bootstrap the plist and retry.
 _LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
 
-# When even a fresh bootstrap can't manage the domain, launchctl returns 5
-# ("Input/output error") or a persistent 125. On those hosts launchd cannot
-# supervise the gateway at all, so we degrade to a detached background process
-# (the documented `nohup hermes gateway run` workaround). See #23387.
+# launchctl returns 5 ("Input/output error") or a persistent 125 in two very
+# different situations, so exit 5 is NOT on its own proof the domain is broken:
+#   1. The target label is still *registered* in the domain (a stale load from
+#      an interrupted restart / a bootout that didn't settle). This is
+#      recoverable — boot the stale label out and bootstrap again. See #42914.
+#   2. The domain genuinely can't manage services (macOS 26+, neither
+#      `gui/<uid>` nor `user/<uid>` supports service management). Here launchd
+#      cannot supervise the gateway at all and we degrade to a detached
+#      background process (the `nohup hermes gateway run` workaround). See #23387.
+# `_launchctl_bootstrap()` disambiguates by trying the bootout+retry (case 1)
+# first; only when that retry ALSO returns 5/125 do callers treat the domain as
+# unsupported (case 2) via `_launchctl_domain_unsupported`.
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
@@ -3529,6 +3537,55 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     unavailable" and degrade gracefully to a detached process.
     """
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+# `launchctl bootstrap` returns this when the target label is *already*
+# registered in the domain — a stale load left by an interrupted restart or a
+# bootout that didn't fully settle. EIO here means "already loaded", which is
+# recoverable, NOT that the domain is unmanageable; only when a bootout + retry
+# also fails is the domain genuinely unsupported.
+_LAUNCHCTL_BOOTSTRAP_EIO = 5
+
+
+def _launchctl_bootstrap(
+    domain: str, plist_path, label: str, *, timeout: int = 30
+) -> None:
+    """Bootstrap a launchd job, recovering from a stale already-loaded label.
+
+    On modern macOS, ``launchctl bootstrap`` of a label that is still
+    registered in ``domain`` fails with ``5: Input/output error`` (EIO). That
+    is the *already loaded* case — distinct from the domain being unmanageable,
+    which callers handle via :func:`_launchctl_domain_unsupported`. A leftover
+    registration from an interrupted restart leaves the job
+    loaded-but-not-running, so the next bootstrap hits EIO; without this retry
+    we misclassify it as "launchd cannot manage this macOS version" and degrade
+    to a detached process, silently losing auto-start and crash-restart.
+
+    Recover by booting the stale label out and bootstrapping once more. If the
+    retry still fails, the ``CalledProcessError`` propagates so callers apply
+    their domain-unsupported fallback for a genuinely broken domain.
+    """
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            check=True,
+            timeout=timeout,
+        )
+        return
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
+            raise
+        # Stale registration — drop the leftover label and bootstrap once more.
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            check=False,
+            timeout=timeout,
+        )
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            check=True,
+            timeout=timeout,
+        )
 
 
 # ── launchd unsupported marker ─────────────────────────────────────────────
@@ -3858,10 +3915,8 @@ def launchd_install(force: bool = False):
     plist_path.write_text(new_plist)
 
     try:
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
+        _launchctl_bootstrap(
+            _launchd_domain(), plist_path, get_launchd_label(), timeout=30
         )
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
@@ -3909,11 +3964,7 @@ def launchd_start():
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(new_plist, encoding="utf-8")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
+            _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
@@ -3941,11 +3992,7 @@ def launchd_start():
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
+            _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
@@ -4094,6 +4141,11 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
+            # Restart is the one path where the job is almost always still
+            # registered (we just drained it), so a plain bootstrap would hit
+            # EIO on the common case. Boot the stale label out first — cheaper
+            # and clearer here than routing through _launchctl_bootstrap's
+            # bootstrap-first/retry-on-EIO flow. See #23387, #42914.
             subprocess.run(
                 ["launchctl", "bootout", target],
                 check=False,

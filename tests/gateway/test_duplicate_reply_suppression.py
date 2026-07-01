@@ -376,6 +376,47 @@ class TestQueuedMessageAlreadyStreamed:
 
         assert _already_streamed is False
 
+    def test_queued_path_skips_resend_when_consumer_already_sent(self):
+        """When the stream consumer already sent content (already_sent=True)
+        but final_response_sent is False (e.g. stream task was cancelled
+        after the send), the queued follow-up must NOT re-send the response.
+
+        Regression test for #55806: image delivery or cleanup can exceed the
+        5-second stream-task wait, causing the task to be cancelled after the
+        message was already delivered to the user."""
+        _sc = self._make_mock_sc(already_sent=True, final_response_sent=False)
+
+        # Original check: only final_response_sent
+        _already_streamed = bool(
+            _sc and getattr(_sc, "final_response_sent", False)
+        )
+        # Fallback: consumer already sent content
+        if (
+            not _already_streamed
+            and _sc is not None
+            and getattr(_sc, "already_sent", False)
+        ):
+            _already_streamed = True
+
+        assert _already_streamed is True
+
+    def test_queued_path_sends_when_consumer_never_sent(self):
+        """When the stream consumer never sent anything (already_sent=False
+        and final_response_sent=False), the queued follow-up must re-send."""
+        _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
+
+        _already_streamed = bool(
+            _sc and getattr(_sc, "final_response_sent", False)
+        )
+        if (
+            not _already_streamed
+            and _sc is not None
+            and getattr(_sc, "already_sent", False)
+        ):
+            _already_streamed = True
+
+        assert _already_streamed is False
+
 
 # ===================================================================
 # Test 4: stream_consumer.py — cancellation handler delivery confirmation

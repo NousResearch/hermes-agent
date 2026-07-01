@@ -18057,6 +18057,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         first_response,
                         previewed=_previewed,
                     )
+                    # Fallback: the stream consumer may have already sent the
+                    # response (already_sent=True) but _final_response_sent was
+                    # never set because the stream task was cancelled after the
+                    # send completed (e.g. image delivery or cleanup exceeded
+                    # the 5-second wait).  Treat delivery as confirmed to
+                    # prevent re-sending the response that is already visible
+                    # on the chat platform.  (#55806)
+                    if (
+                        not _already_streamed
+                        and _sc is not None
+                        and getattr(_sc, "already_sent", False)
+                    ):
+                        _already_streamed = True
+                        logger.debug(
+                            "Queued follow-up for session %s: stream consumer already_sent=True but final_response_sent=False; skipping re-send.",
+                            session_key or "?",
+                        )
                     if first_response and not _already_streamed:
                         try:
                             logger.info(

@@ -155,6 +155,32 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     )
 
 
+def test_bundled_model_provider_plugins_have_manifests():
+    """Bundled model-provider plugin dirs must be visible to PluginManager.
+
+    ``providers`` can import a provider profile directly from ``__init__.py``,
+    but the general plugin-management surface discovers directories by
+    manifest. Keep bundled model providers consistent with the rest of the
+    plugin tree so install/list/enable flows can see them.
+    """
+    missing = []
+    for provider_dir in sorted((REPO_ROOT / "plugins" / "model-providers").iterdir()):
+        if not provider_dir.is_dir():
+            continue
+        if not (provider_dir / "__init__.py").exists():
+            continue
+        if not (
+            (provider_dir / "plugin.yaml").exists()
+            or (provider_dir / "plugin.yml").exists()
+        ):
+            missing.append(provider_dir.relative_to(REPO_ROOT).as_posix())
+
+    assert not missing, (
+        "Bundled model-provider plugins with __init__.py must include "
+        f"plugin.yaml/plugin.yml manifests for PluginManager discovery: {missing}"
+    )
+
+
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
 # 1.0.1. Anything below that lets a malformed Host header desync
 # ``request.url.path`` from the dispatched ASGI path, bypassing path-based

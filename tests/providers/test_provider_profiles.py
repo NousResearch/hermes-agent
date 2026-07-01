@@ -10,6 +10,13 @@ class TestRegistry:
         assert p is not None
         assert p.name == "nvidia"
 
+    def test_wandb_provider_discovered(self):
+        p = get_provider_profile("wandb")
+        assert p is not None
+        assert p.name == "wandb"
+        assert p.base_url == "https://api.inference.wandb.ai/v1"
+        assert p.default_headers["User-Agent"] == "Mozilla/5.0"
+
     def test_alias_lookup(self):
         assert get_provider_profile("kimi").name == "kimi-coding"
         assert get_provider_profile("moonshot").name == "kimi-coding"
@@ -44,6 +51,51 @@ class TestNvidiaProfile:
     def test_billing_header_not_profile_wide(self):
         p = get_provider_profile("nvidia")
         assert p.default_headers == {}
+
+
+class TestWandbProfile:
+    def test_none_disables_thinking_with_chat_template_kwargs(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False, "effort": "none"}
+        )
+        assert eb == {"chat_template_kwargs": {"enable_thinking": False}}
+        assert tl == {}
+
+    def test_high_maps_to_top_level_high(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "high"
+
+    def test_xhigh_maps_to_top_level_max(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"}
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "max"
+
+    def test_lower_supported_efforts_map_to_lightest_glm_effort(self):
+        # W&B GLM-5.2 accepts only "high" and "max". Omitting the field for
+        # minimal/low/medium would silently select GLM's default Think Max,
+        # inverting the user's request for lighter reasoning.
+        p = get_provider_profile("wandb")
+        for effort in ("minimal", "low", "medium"):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": effort}
+            )
+            assert eb == {}
+            assert tl["reasoning_effort"] == "high"
+
+    def test_unset_or_unknown_effort_uses_provider_default(self):
+        p = get_provider_profile("wandb")
+        for cfg in ({"enabled": True}, {"enabled": True, "effort": "bogus"}):
+            eb, tl = p.build_api_kwargs_extras(reasoning_config=cfg)
+            assert eb == {}
+            assert tl == {}
 
 
 class TestKimiProfile:

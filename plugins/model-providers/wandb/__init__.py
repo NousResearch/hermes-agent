@@ -7,8 +7,10 @@ accepts:
   - A browser User-Agent is required (Cloudflare blocks urllib default)
 
 GLM-5.2 only recognises "high" and "max" for reasoning_effort; other values
-(minimal/low/medium) are silently ignored and the model defaults to Think Max.
-The z.ai "thinking" parameter is also ignored by vLLM.
+(minimal/low/medium) are silently ignored and the model defaults to Think Max,
+so this profile maps unsupported lower efforts to the lightest supported value
+("high") instead of omitting the parameter. The z.ai "thinking" parameter is
+also ignored by vLLM.
 
 This profile overrides build_api_kwargs_extras to emit the correct params.
 """
@@ -26,14 +28,15 @@ def _effort_to_glm(effort: str) -> str | None:
 
     GLM-5.2 only supports "high" and "max". Unrecognised values silently
     fall back to Think Max (the model default), so we explicitly map:
-      xhigh → "max" (GLM-5.2's deepest thinking)
+      xhigh → "max"  (GLM-5.2's deepest thinking)
       high  → "high" (lighter, ~3× faster)
-      *     → None  (omit param — let GLM-5.2 use its default Think Max)
+      low/minimal/medium → "high" (lightest supported thinking)
+      unset/unknown → None (omit param — let GLM-5.2 use its default)
     """
     e = (effort or "").strip().lower()
     if e in {"xhigh", "max"}:
         return "max"
-    if e == "high":
+    if e in {"minimal", "low", "medium", "high"}:
         return "high"
     return None
 

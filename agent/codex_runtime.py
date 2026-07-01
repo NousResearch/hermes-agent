@@ -333,6 +333,28 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+        # Persist the newly-projected assistant/tool messages ourselves.
+        # This path is an early return that bypasses conversation_loop, whose
+        # normal per-step _persist_session() calls would otherwise flush them.
+        # The inbound user turn was already flushed at turn start
+        # (turn_context.py _persist_session), and _flush_messages_to_session_db
+        # is idempotent via the intrinsic _DB_PERSISTED_MARKER — so this writes
+        # ONLY the new codex projected rows and does NOT re-write the user turn.
+        # Keeping the agent as the sole persister lets us return
+        # agent_persisted=True below, so the gateway skips its own DB write and
+        # we avoid the #860/#42039 duplicate user-message write (append_message
+        # is a raw INSERT with no dedup, so a gateway re-write would duplicate
+        # the already-flushed user turn). See gateway/run.py agent_persisted.
+        if getattr(agent, "_session_db", None) is not None:
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.debug(
+                    "codex app-server projected-message flush failed",
+                    exc_info=True,
+                )
+
+
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -394,16 +416,18 @@ def run_codex_app_server_turn(
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
-        # Signal that the codex app-server runtime did NOT self-persist
-        # its turn messages to the session DB.  The standard conversation_loop
-        # path flushes messages via _flush_messages_to_session_db(), but
-        # run_codex_app_server_turn is an early-return that bypasses that
-        # loop entirely.  Without this flag, gateway/run.py assumes
-        # self._session_db is not None → skip_db=True on every
-        # append_to_transcript call, leaving codex turns persisted nowhere
-        # (state.db gets only session_meta rows, so session_search and
-        # conversation-distill are blind to real gateway conversations).
-        "agent_persisted": False,
+        # The codex app-server runtime IS an early-return path that bypasses
+        # conversation_loop, but we flush the projected assistant/tool messages
+        # ourselves above (see the _flush_messages_to_session_db call after
+        # messages.extend). The inbound user turn was already flushed at turn
+        # start (turn_context._persist_session) and the flush dedups via
+        # _DB_PERSISTED_MARKER, so state.db ends up with each real message
+        # exactly once and session_search / conversation-distill see the full
+        # gateway conversation. Report agent_persisted=True so the gateway
+        # skips its own append_to_transcript DB write — writing again there
+        # would re-INSERT the already-flushed user turn (append_message has no
+        # dedup), reintroducing the #860 / #42039 duplicate-write bug.
+        "agent_persisted": True,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
         **usage_result,

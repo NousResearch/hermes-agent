@@ -71,6 +71,12 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_gateway_restart_notification_resolved_from_extra(self):
+        restored = PlatformConfig.from_dict(
+            {"extra": {"gateway_restart_notification": False}}
+        )
+        assert restored.gateway_restart_notification is False
+
     def test_typing_indicator_defaults_true(self):
         assert PlatformConfig().typing_indicator is True
         assert PlatformConfig.from_dict({}).typing_indicator is True
@@ -570,6 +576,48 @@ class TestLoadGatewayConfig:
             "123456789012345678",
         ]
         assert os.environ.get("DISCORD_ALLOWED_USERS") == "123456789012345678"
+
+    def test_bridges_restart_notification_channels_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  gateway_restart_notification_channels:\n"
+            "    - \"1489802072038572215\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra[
+            "gateway_restart_notification_channels"
+        ] == ["1489802072038572215"]
+
+    def test_bridges_restart_notification_channels_from_nested_gateway_config(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    discord:\n"
+            "      gateway_restart_notification_channels:\n"
+            "        - \"1489802072038572215\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra[
+            "gateway_restart_notification_channels"
+        ] == ["1489802072038572215"]
 
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

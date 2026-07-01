@@ -520,7 +520,7 @@ gateway:
 Scheduled auto-resume for N restart-interrupted session(s)
 ```
 
-无需配置。如果你不想要提示消息，在该平台上设置 `gateway_restart_notification: false`。
+无需配置。如果你不想要提示消息，在该平台上设置 `gateway_restart_notification: false`。如果只想把提示限制到某个运维频道，请设置 `gateway_restart_notification_channels` 为允许的聊天/频道 ID 列表。
 
 ### 进度气泡清理（可选启用）
 

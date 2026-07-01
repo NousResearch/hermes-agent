@@ -1250,6 +1250,48 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _restart_notification_target_allowed(platform_cfg: Any, chat_id: Any) -> bool:
+    """Return whether restart lifecycle notifications may be sent to chat_id.
+
+    ``gateway_restart_notification`` remains the coarse per-platform kill switch.
+    ``extra.gateway_restart_notification_channels`` optionally narrows delivery
+    to a small allowlist, which is useful when a platform has many active
+    sessions but only one ops channel should receive lifecycle noise.
+    """
+    if platform_cfg is not None and not getattr(platform_cfg, "gateway_restart_notification", True):
+        return False
+
+    extra = getattr(platform_cfg, "extra", None) if platform_cfg is not None else None
+    if not isinstance(extra, dict):
+        return True
+
+    raw_allowed = extra.get("gateway_restart_notification_channels")
+    if raw_allowed in (None, ""):
+        return True
+
+    if isinstance(raw_allowed, str):
+        raw_allowed_text = raw_allowed.strip()
+        if raw_allowed_text.startswith("["):
+            try:
+                parsed_allowed = json.loads(raw_allowed_text)
+            except Exception:
+                parsed_allowed = None
+            if isinstance(parsed_allowed, list):
+                allowed = {str(part).strip() for part in parsed_allowed if str(part).strip()}
+            else:
+                allowed = {part.strip().strip("'\"") for part in raw_allowed_text.split(",") if part.strip()}
+        else:
+            allowed = {part.strip() for part in raw_allowed_text.split(",") if part.strip()}
+    elif isinstance(raw_allowed, (list, tuple, set)):
+        allowed = {str(part).strip() for part in raw_allowed if str(part).strip()}
+    else:
+        allowed = {str(raw_allowed).strip()}
+
+    if not allowed:
+        return True
+    return str(chat_id) in allowed
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -5148,10 +5190,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 platform_cfg = self.config.platforms.get(platform)
-                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                if not _restart_notification_target_allowed(platform_cfg, chat_id):
                     logger.info(
-                        "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
+                        "Shutdown notification suppressed for active session: %s target %s not allowed",
                         platform_str,
+                        chat_id,
                     )
                     continue
 
@@ -5237,10 +5280,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if not _restart_notification_target_allowed(platform_cfg, home.chat_id):
                 logger.info(
-                    "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    "Shutdown notification suppressed for home channel: %s target %s not allowed",
                     platform.value,
+                    home.chat_id,
                 )
                 continue
 
@@ -13558,10 +13602,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if not _restart_notification_target_allowed(platform_cfg, chat_id):
                 logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false",
+                    "Restart notification suppressed: %s target %s not allowed",
                     platform_str,
+                    chat_id,
                 )
                 return None
 
@@ -13624,10 +13669,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if not _restart_notification_target_allowed(platform_cfg, home.chat_id):
                 logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    "Home-channel startup notification suppressed: %s target %s not allowed",
                     platform.value,
+                    home.chat_id,
                 )
                 continue
 

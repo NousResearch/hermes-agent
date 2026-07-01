@@ -577,7 +577,18 @@ gateway:
       # gateway_restart_notification omitted → defaults to true
 ```
 
-Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+Disable it on noisy or low-priority platforms while leaving it on for your primary chat. To keep restart notices enabled for a platform but limit them to an ops channel, set `gateway_restart_notification_channels` to the allowed chat/channel IDs:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      home_chat_id: "987654321"
+      gateway_restart_notification_channels:
+        - "987654321"   # only this channel receives lifecycle notices
+```
+
+When `gateway_restart_notification_channels` is omitted, the platform keeps the default behavior. The notification is sent once per restart, regardless of how many sessions were in flight.
 
 ### Typing indicators
 

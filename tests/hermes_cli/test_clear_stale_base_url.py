@@ -77,7 +77,7 @@ class TestClearStaleOpenaiBaseUrl:
         assert result == "http://localhost:11434/v1", \
             "Should not clear when provider is not configured"
 
-    def test_numeric_model_api_key_normalizes_to_empty_string(self):
+    def test_numeric_model_api_key_is_not_saved(self):
         from hermes_cli.config import _normalize_model_api_key_for_save
 
         cfg = {
@@ -90,4 +90,4 @@ class TestClearStaleOpenaiBaseUrl:
 
         result = _normalize_model_api_key_for_save(cfg)
 
-        assert result["model"]["api_key"] == ""
+        assert "api_key" not in result["model"]

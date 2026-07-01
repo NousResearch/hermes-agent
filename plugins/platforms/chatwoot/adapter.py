@@ -819,6 +819,27 @@ class ChatwootAdapter(BasePlatformAdapter):
             logger.warning("[chatwoot] update_contact %s failed: %s", contact_id, exc)
             return False
 
+    async def url_is_image(self, url: str) -> bool:
+        """Best-effort check that ``url`` actually serves an image.
+
+        The CRWD staging asset server returns its admin HTML page with HTTP
+        200 for missing files, so a status check alone isn't enough — we must
+        confirm the ``Content-Type`` is an image before pinning it as a
+        contact avatar (a broken avatar is worse than none). Headers are read
+        without consuming the body.
+        """
+        if self._session is None or not url:
+            return False
+        try:
+            async with self._session.get(url, allow_redirects=True) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                return resp.status < 400 and ctype.startswith("image/")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("[chatwoot] url_is_image %s failed: %s", url, exc)
+            return False
+
     async def add_contact_labels(
         self, account_id: str, contact_id: str, labels: List[str]
     ) -> bool:

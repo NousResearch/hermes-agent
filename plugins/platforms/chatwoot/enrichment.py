@@ -477,6 +477,13 @@ async def enrich(adapter: Any, event: Any) -> None:
 
         # --- Chatwoot: profile + labels ---
         fields = build_contact_fields(user, _asset_base_url())
+        # Validate the avatar before pinning it — staging serves an HTML page
+        # (not a 404) for missing files, which would become a broken avatar.
+        avatar = fields.pop("avatar_url", None)
+        if avatar and await adapter.url_is_image(avatar):
+            fields["avatar_url"] = avatar
+        elif avatar:
+            logger.info("[crwd-enrich] skipping avatar (not an image): %s", avatar)
         await adapter.update_contact(account_id, contact_id, fields)
         labels = build_interest_labels(interests)
         if labels:

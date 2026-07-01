@@ -9,7 +9,6 @@ Note: Tests that import ``hermes_cli.auth`` or ``hermes_cli.runtime_provider``
 require Python 3.10+ due to ``str | None`` type syntax in the import chain.
 """
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,7 +92,6 @@ class TestResolveProvider:
 
     def test_explicit_bedrock_resolves(self, monkeypatch):
         """When user explicitly requests 'bedrock', it should resolve."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
         # bedrock is in the registry, so resolve_provider should return it
         from hermes_cli.auth import resolve_provider
         result = resolve_provider("bedrock")
@@ -253,24 +251,24 @@ class TestErrorClassifierBedrock:
 # ---------------------------------------------------------------------------
 
 class TestPackaging:
-    """Verify bedrock optional dependency is declared."""
+    """Verify Bedrock remains a declared lazy optional dependency."""
 
-    def test_bedrock_extra_exists(self):
-        from pathlib import Path
-        # Read pyproject.toml to verify [bedrock] extra
-        toml_path = Path(__file__).parent.parent.parent / "pyproject.toml"
-        content = toml_path.read_text()
-        assert 'bedrock = ["boto3' in content
-
-    def test_bedrock_lazy_extra_excluded_from_all(self):
+    @staticmethod
+    def _optional_dependencies():
         import tomllib
         from pathlib import Path
 
-        data = tomllib.loads(
-            (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
-        )
-        all_extra = data["project"]["optional-dependencies"]["all"]
-        assert "hermes-agent[bedrock]" not in all_extra
+        content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
+        return tomllib.loads(content)["project"]["optional-dependencies"]
+
+    def test_bedrock_extra_exists(self):
+        extras = self._optional_dependencies()
+        assert "bedrock" in extras
+        assert any(dep.startswith("boto3==") for dep in extras["bedrock"])
+
+    def test_bedrock_is_not_eager_installed_by_all_extra(self):
+        extras = self._optional_dependencies()
+        assert "hermes-agent[bedrock]" not in extras["all"]
 
 
 # ---------------------------------------------------------------------------

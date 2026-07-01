@@ -141,6 +141,7 @@ class ProviderInfo:
 # Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
+    "novita": "novita-ai",
     "anthropic": "anthropic",
     "openai": "openai",
     "openai-codex": "openai",
@@ -157,7 +158,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "alibaba": "alibaba",
     "qwen-oauth": "alibaba",
     "copilot": "github-copilot",
-    "ai-gateway": "vercel",
     "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo",
@@ -166,6 +166,9 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "gemini": "google",
     "google": "google",
     "xai": "xai",
+    # xAI OAuth is an authentication/transport path for the same xAI model
+    # catalog, so model metadata should resolve through the xAI provider.
+    "xai-oauth": "xai",
     "xiaomi": "xiaomi",
     "nvidia": "nvidia",
     "groq": "groq",

@@ -4,24 +4,24 @@ Tests cover provider selection, config loading, validation, and transcription
 dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 """
 
-import json
 import os
 import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-def _fake_faster_whisper_module(model):
-    fake_module = MagicMock()
-    fake_module.WhisperModel = MagicMock(return_value=model)
-    return fake_module
+def _fake_faster_whisper_module(mock_model):
+    return SimpleNamespace(WhisperModel=MagicMock(return_value=mock_model))
 
 
 # ---------------------------------------------------------------------------
 # Provider selection
 # ---------------------------------------------------------------------------
+
+
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +107,6 @@ class TestValidateAudioFile:
         assert _validate_audio_file(str(f)) is None
 
     def test_too_large(self, tmp_path):
-        import stat as stat_mod
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x")
         from tools.transcription_tools import _validate_audio_file, MAX_FILE_SIZE
@@ -142,10 +141,10 @@ class TestTranscribeLocal:
 
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
-        fake_faster_whisper = _fake_faster_whisper_module(mock_model)
 
-        with patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
@@ -290,7 +289,7 @@ class TestNormalizeLocalModel:
 
     def test_local_transcribe_normalises_model(self):
         """transcribe_audio with local provider must not pass 'whisper-1' to WhisperModel."""
-        import tempfile, os
+        import os
         from unittest.mock import MagicMock, patch
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
@@ -299,20 +298,20 @@ class TestNormalizeLocalModel:
         try:
             mock_model = MagicMock()
             mock_model.transcribe.return_value = (iter([]), MagicMock(language="en", duration=1.0))
-            fake_faster_whisper = _fake_faster_whisper_module(mock_model)
-            with patch.dict("sys.modules", {"faster_whisper": fake_faster_whisper}), \
-                 patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+            with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
                  patch("tools.transcription_tools._load_stt_config", return_value={
                      "enabled": True,
                      "provider": "local",
                      "local": {"model": "whisper-1"},
                  }), \
                  patch("tools.transcription_tools._local_model", None), \
-                 patch("tools.transcription_tools._local_model_name", None):
+                 patch("tools.transcription_tools._local_model_name", None), \
+                 patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+                mock_cls = __import__("faster_whisper").WhisperModel
                 from tools.transcription_tools import transcribe_audio
                 transcribe_audio(audio_file)
                 # WhisperModel must NOT have been called with "whisper-1"
-                call_args = fake_faster_whisper.WhisperModel.call_args
+                call_args = mock_cls.call_args
                 assert call_args is not None
                 assert call_args[0][0] != "whisper-1", (
                     "WhisperModel was called with the cloud-only name 'whisper-1'"

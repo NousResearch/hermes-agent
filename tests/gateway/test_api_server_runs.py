@@ -9,10 +9,8 @@ Covers:
 """
 
 import asyncio
-import json
 import threading
-import time as _time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -24,6 +22,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from tools import approval as approval_mod
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +335,99 @@ class TestRunEvents:
                 }
 
     @pytest.mark.asyncio
+    async def test_approval_string_false_does_not_resolve_all(self, adapter):
+        """Quoted false must not fan out approval resolution across the queue."""
+        app = _create_runs_app(adapter)
+        run_id = "run_bool_parse"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = "session-123"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "all": "false"},
+                )
+
+        assert approval_resp.status == 200
+        mock_resolve.assert_called_once_with(
+            "session-123",
+            "once",
+            resolve_all=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
+        """Same client session_id must not let one run approve another run's queue."""
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
+                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
+                mock_create.side_effect = [victim_agent, attacker_agent]
+
+                victim_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "victim", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                attacker_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "attacker", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert victim_resp.status == 202
+                assert attacker_resp.status == 202
+                victim_run = (await victim_resp.json())["run_id"]
+                attacker_run = (await attacker_resp.json())["run_id"]
+
+                victim_ready.wait(timeout=3.0)
+                attacker_ready.wait(timeout=3.0)
+                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
+                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
+                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
+
+                victim_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c victim-danger",
+                    "description": "victim approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                attacker_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c attacker-danger",
+                    "description": "attacker approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[victim_run] = [victim_entry]
+                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{attacker_run}/approval",
+                    json={"choice": "always", "resolve_all": True},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                approval_data = await approval_resp.json()
+
+                assert approval_resp.status == 200
+                assert approval_data["resolved"] == 1
+                assert attacker_entry.result == "always"
+                assert attacker_entry.event.is_set()
+                assert victim_entry.result is None
+                assert not victim_entry.event.is_set()
+                with approval_mod._lock:
+                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
+                    assert victim_run in approval_mod._gateway_queues
+                    assert attacker_run not in approval_mod._gateway_queues
+
+                # Clean up the synthetic pending victim approval and unblock the
+                # slow test agents so their background run tasks can finish.
+                with approval_mod._lock:
+                    approval_mod._gateway_queues.pop(victim_run, None)
+                victim_interrupted.set()
+                attacker_interrupted.set()
+
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -446,9 +538,17 @@ class TestStopRun:
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                # Override the interrupt side_effect to raise
-                mock_agent.interrupt = MagicMock(side_effect=RuntimeError("interrupt failed"))
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+
+                # Override the interrupt side_effect to raise. Still trip
+                # ``interrupted`` so the slow_run thread unblocks at teardown
+                # — without this the agent thread blocks the full 10s
+                # timeout and the test teardown waits the same amount.
+                def _raising_interrupt(message=None):
+                    interrupted.set()
+                    raise RuntimeError("interrupt failed")
+
+                mock_agent.interrupt = MagicMock(side_effect=_raising_interrupt)
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})

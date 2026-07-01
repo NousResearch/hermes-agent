@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "Пока нечего сжимать (стенограмма всё ещё полностью является защищённым контекстом)."
     focus_line:            "Фокус: \"{topic}\""
     summary_failed:        "⚠️ Не удалось сгенерировать сводку ({error}). {count} историч. сообщений было удалено и заменено заполнителем; предыдущий контекст больше нельзя восстановить. Проверьте конфигурацию модели auxiliary.compression."
+    aborted:               "⚠️ Сжатие прервано ({error}). Сообщения не были удалены — разговор не изменился. Запустите /compress для повторной попытки, /reset для новой сессии или проверьте конфигурацию модели auxiliary.compression."
     aux_failed:            "ℹ️ Настроенная модель сжатия `{model}` дала сбой ({error}). Восстановлено с помощью основной модели — контекст не повреждён — но рекомендуется проверить `auxiliary.compression.model` в config.yaml."
     failed:                "Сжатие не удалось: {error}"
 
@@ -148,6 +149,15 @@ gateway:
     subscribed_suffix:     "(подписка оформлена — вы получите уведомление, когда {task_id} завершится или будет заблокирован)"
     truncated_suffix:      "… (сокращено; используйте `hermes kanban …` в терминале для полного вывода)"
     no_output:             "(нет вывода)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "В `{path}/config.yaml` не настроено ни одной личности"
@@ -218,12 +228,24 @@ gateway:
 
   resume:
     db_unavailable:        "База данных сеансов недоступна."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Именованных сеансов не найдено.\nИспользуйте `/title Мой сеанс`, чтобы назвать текущий сеанс, затем `/resume Мой сеанс`, чтобы вернуться к нему позже."
     list_header:           "📋 **Именованные сеансы**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nИспользование: `/resume <название сеанса>`"
+    list_footer_numbered:  "\nИспользование: `/resume <имя сеанса>` или `/resume <номер>` (например, `/resume 1` для самого недавнего)"
     list_failed:           "Не удалось получить список сеансов: {error}"
+    out_of_range:          "Индекс возобновления {index} вне диапазона.\nИспользуйте `/resume` без аргументов, чтобы увидеть доступные сеансы."
     not_found:             "Сеанс, соответствующий '**{name}**', не найден.\nИспользуйте `/resume` без аргументов, чтобы увидеть доступные сеансы."
     already_on:            "📌 Уже в сеансе **{name}**."
     switch_failed:         "Не удалось переключить сеанс."
@@ -247,10 +269,20 @@ gateway:
 
   status:
     header:                "📊 **Состояние Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID сеанса:** `{session_id}`"
     title:                 "**Название:** {title}"
     created:               "**Создано:** {timestamp}"
     last_activity:         "**Последняя активность:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Токены:** {tokens}"
     agent_running:         "**Агент активен:** {state}"
     state_yes:             "Да ⚡"
@@ -286,7 +318,8 @@ gateway:
 
   undo:
     nothing:               "Нечего отменять."
-    removed:               "↩️ Отменено сообщений: {count}.\nУдалено: «{preview}»"
+    removed:               "↩️ Отменено ходов: {turns} (сообщений: {count}).\nРезервная копия: «{preview}»\nСкопируйте/отредактируйте текст выше и отправьте его, чтобы запросить заново отсюда."
+    invalid_count:         "Недопустимое число «{arg}» — используйте /undo или /undo N."
 
   update:
     platform_not_messaging:  "✗ /update доступен только на платформах обмена сообщениями. Выполните `hermes update` в терминале."
@@ -309,11 +342,24 @@ gateway:
     label_cost_included:      "Стоимость: включено"
     label_context:            "Контекст: {used} / {total} ({pct}%)"
     label_compressions:       "Сжатий: {count}"
+    breakdown_header: "🧩 **Разбивка контекста** _(оценка)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Системный промпт"
+    breakdown_cat_tool_definitions: "Определения инструментов"
+    breakdown_cat_rules: "Правила"
+    breakdown_cat_skills: "Навыки"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Определения субагентов"
+    breakdown_cat_memory: "Память"
+    breakdown_cat_conversation: "Разговор"
     header_session_info:      "📊 **Информация о сеансе**"
     label_messages:           "Сообщений: {count}"
     label_estimated_context:  "Ориентировочный контекст: ~{count} токенов"
     detailed_after_first:     "_(Подробное использование доступно после первого ответа агента)_"
     no_data:                  "Данные об использовании для этого сеанса отсутствуют."
+
+  credits:
+    not_logged_in:            "Вы не вошли в Nous Portal. Войдите, чтобы увидеть баланс кредитов и пополнить его."
 
   verbose:
     not_enabled:           "Команда `/verbose` не включена для платформ обмена сообщениями.\n\nВключите в `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -338,6 +384,8 @@ gateway:
     label_off:             "Выкл. (только текст)"
     label_voice_only:      "Вкл. (голосовой ответ на голосовые сообщения)"
     label_all:             "TTS (голосовой ответ на все сообщения)"
+    help:                  "{toggle}\n\n**Как работает /voice**\n• `/voice on` — голосовой ответ, когда вы отправляете голосовое сообщение\n• `/voice tts` — голосовой ответ на *каждое* сообщение\n• `/voice off` — вернуться к ответам только текстом\n• `/voice status` — показать текущий режим\n• `/voice` (без аргумента) — быстрое переключение между вкл и выкл{channels}"
+    help_channels:         "\n\n**Живые голосовые каналы (Discord)**\n• Сначала зайдите в голосовой канал, затем `/voice channel` — я подключусь, буду слушать и отвечать голосом\n• `/voice leave` — отключиться от голосового канала"
 
   yolo:
     disabled:                   "⚠️ Режим YOLO для этого сеанса **ОТКЛЮЧЁН** — опасные команды потребуют одобрения."

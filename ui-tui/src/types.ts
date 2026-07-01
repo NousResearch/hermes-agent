@@ -2,6 +2,7 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
 }
 
@@ -16,6 +17,8 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
+
+export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -36,7 +39,7 @@ export interface SubagentProgress {
   parentId: null | string
   reasoningTokens?: number
   startedAt?: number
-  status: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+  status: SubagentStatus
   summary?: string
   taskCount: number
   thinking: string[]
@@ -87,6 +90,8 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  allowPermanent?: boolean
   command: string
   description: string
 }
@@ -135,6 +140,8 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
 export interface McpServerStatus {
   connected: boolean
+  disabled?: boolean
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
   name: string
   tools: number
   transport: string
@@ -146,6 +153,7 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  profile_name?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
@@ -159,6 +167,7 @@ export interface SessionInfo {
 }
 
 export interface Usage {
+  active_subagents?: number
   calls: number
   compressions?: number
   context_max?: number
@@ -166,6 +175,7 @@ export interface Usage {
   context_used?: number
   cost_status?: string
   cost_usd?: number
+  dev_credits_spent_micros?: number
   input: number
   output: number
   reasoning?: number

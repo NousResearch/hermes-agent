@@ -25,7 +25,8 @@ def clear_kittentts_cache():
 def mock_kittentts_module():
     """Inject a fake kittentts + soundfile module that return stub objects."""
     fake_model = MagicMock()
-    fake_model.generate.return_value = object()
+    # 24kHz float32 PCM at ~2s of silence
+    fake_model.generate.return_value = [0.0] * 48000
     fake_cls = MagicMock(return_value=fake_model)
     fake_kittentts = MagicMock()
     fake_kittentts.KittenTTS = fake_cls

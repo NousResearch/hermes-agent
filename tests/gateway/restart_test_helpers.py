@@ -3,7 +3,7 @@ from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -15,7 +15,7 @@ class RestartTestAdapter(BasePlatformAdapter):
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -66,9 +66,12 @@ def make_restart_runner(
     runner._background_tasks = set()
     runner._draining = False
     runner._restart_requested = False
+    runner._signal_initiated_shutdown = False
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
+    runner._detached_restart_helper_started = False
+    runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"

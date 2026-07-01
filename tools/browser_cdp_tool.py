@@ -28,9 +28,24 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# ``websockets`` is a transitive dependency of hermes-agent (via fal_client
-# and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
-# Wrap the import so a clean error surfaces if the package is ever absent.
+
+def _redact_cdp_output(value: Any) -> Any:
+    """Redact browser-originated CDP result data before returning it."""
+    from agent.redact import redact_sensitive_text
+
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, list):
+        return [_redact_cdp_output(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_cdp_output(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_cdp_output(item) for key, item in value.items()}
+    return value
+
+# ``websockets`` is a direct hermes-agent dependency because the browser CDP
+# supervisor and browser_dialog tool import it during tool discovery. Wrap the
+# import so a clean error surfaces if an environment is stale or incomplete.
 try:
     import websockets
     from websockets.exceptions import WebSocketException
@@ -257,7 +272,6 @@ def _browser_cdp_via_supervisor(
         )
 
     # Dispatch onto the supervisor's loop.
-    import asyncio as _asyncio
     loop = supervisor._loop  # type: ignore[attr-defined]
     if loop is None or not loop.is_running():
         return tool_error(
@@ -274,7 +288,13 @@ def _browser_cdp_via_supervisor(
         )
 
     try:
-        fut = _asyncio.run_coroutine_threadsafe(_do_cdp(), loop)
+        from agent.async_utils import safe_schedule_threadsafe
+        fut = safe_schedule_threadsafe(_do_cdp(), loop)
+        if fut is None:
+            return tool_error(
+                "CDP call via supervisor failed: loop unavailable",
+                cdp_docs=CDP_DOCS_URL,
+            )
         result_msg = fut.result(timeout=timeout + 2)
     except Exception as exc:
         return tool_error(
@@ -352,8 +372,9 @@ def browser_cdp(
     if not endpoint:
         return tool_error(
             "No CDP endpoint is available. Run '/browser connect' to attach "
-            "to a running Chrome, or set 'browser.cdp_url' in config.yaml. "
-            "The Camofox backend is REST-only and does not expose CDP.",
+            "to a running Chrome, Brave, Chromium, or Edge browser, or set "
+            "'browser.cdp_url' in config.yaml. The Camofox backend is REST-only "
+            "and does not expose CDP.",
             cdp_docs=CDP_DOCS_URL,
         )
 
@@ -361,8 +382,8 @@ def browser_cdp(
         return tool_error(
             f"CDP endpoint is not a WebSocket URL: {endpoint!r}. "
             "Expected ws://... or wss://... — the /browser connect "
-            "resolver should have rewritten this. Check that Chrome is "
-            "actually listening on the debug port."
+            "resolver should have rewritten this. Check that a Chromium-family "
+            "browser is actually listening on the debug port."
         )
 
     call_params: Dict[str, Any] = params or {}
@@ -406,7 +427,7 @@ def browser_cdp(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "result": result,
+        "result": _redact_cdp_output(result),
     }
     if target_id:
         payload["target_id"] = target_id
@@ -425,12 +446,12 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "browser operations not covered by browser_navigate, browser_click, "
         "browser_console, etc.\n\n"
         "**Requires a reachable CDP endpoint.** Available when the user has "
-        "run '/browser connect' to attach to a running Chrome, or when "
-        "'browser.cdp_url' is set in config.yaml. Not currently wired up for "
-        "cloud backends (Browserbase, Browser Use, Firecrawl) — those expose "
-        "CDP per session but live-session routing is a follow-up. Camofox is "
-        "REST-only and will never support CDP. If the tool is in your toolset "
-        "at all, a CDP endpoint is already reachable.\n\n"
+        "run '/browser connect' to attach to a running Chrome, Brave, Chromium, "
+        "or Edge browser, or when 'browser.cdp_url' is set in config.yaml. "
+        "Not currently wired up for cloud backends (Browserbase, Browser Use, "
+        "Firecrawl) — those expose CDP per session but live-session routing is "
+        "a follow-up. Camofox is REST-only and will never support CDP. If the "
+        "tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
         f"**CDP method reference:** {CDP_DOCS_URL} — use web_extract on a "
         "method's URL (e.g. '/tot/Page/#method-handleJavaScriptDialog') "
         "to look up parameters and return shape.\n\n"

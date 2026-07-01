@@ -2,6 +2,7 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
@@ -15,13 +16,66 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
+
+export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+
+export function handleIdleHotkeyExit(
+  actions: Pick<InputHandlerActions, 'die' | 'sys'>,
+  dashboardTuiMode = DASHBOARD_TUI_MODE,
+  requestDashboardNewSession?: () => void
+) {
+  if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
+    requestDashboardNewSession?.()
+
+    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+  }
+
+  return actions.die()
+}
+
+/**
+ * Approval / clarify / confirm overlays mount their own `useInput` handlers
+ * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
+ * input handler used to early-return for any other key while one of those
+ * overlays was up, which silently disabled transcript scrolling — the user
+ * couldn't read context above the prompt that the prompt itself was asking
+ * about.  Returns true when the key is a transcript-scroll input that should
+ * fall through to the global scroll handlers even while a prompt is active.
+ *
+ * Modifier-held wheel (precision mode) is included — a user who wants to
+ * scroll a single line at a time during a prompt expects it to work.
+ */
+export function shouldFallThroughForScroll(key: {
+  downArrow: boolean
+  pageDown: boolean
+  pageUp: boolean
+  shift: boolean
+  upArrow: boolean
+  wheelDown: boolean
+  wheelUp: boolean
+}): boolean {
+  if (key.wheelUp || key.wheelDown) {
+    return true
+  }
+
+  if (key.pageUp || key.pageDown) {
+    return true
+  }
+
+  if (key.shift && (key.upArrow || key.downArrow)) {
+    return true
+  }
+
+  return false
+}
 
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
@@ -111,16 +165,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ modelPicker: false })
     }
 
+    if (overlay.petPicker) {
+      return patchOverlayState({ petPicker: false })
+    }
+
+    if (overlay.billing) {
+      return patchOverlayState({ billing: null })
+    }
+
     if (overlay.skillsHub) {
       return patchOverlayState({ skillsHub: false })
     }
 
-    if (overlay.picker) {
-      return patchOverlayState({ picker: false })
+    if (overlay.pluginsHub) {
+      return patchOverlayState({ pluginsHub: false })
+    }
+
+    if (overlay.sessions) {
+      return patchOverlayState({ sessions: false })
     }
 
     if (overlay.agents) {
       return patchOverlayState({ agents: false })
+    }
+
+    if (overlay.journey) {
+      return patchOverlayState({ journey: false })
     }
   }
 
@@ -224,7 +294,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
       // intercept Ctrl+C here so the user can deny/dismiss — all other keys
       // fall through to the component-level handlers.
-      if (overlay.approval || overlay.clarify || overlay.confirm) {
+      //
+      // Scroll inputs (wheel / PageUp / PageDown / Shift+↑↓) are special:
+      // they must reach the transcript scroll handlers below even with a
+      // prompt up.  Long-thread context the prompt is asking about often
+      // lives above the visible viewport, and being unable to read it while
+      // answering felt like the prompt had locked the entire UI.  Explicitly
+      // skip the prompt-overlay early-return for scroll keys so they fall
+      // through to the wheel / PageUp / Shift+arrow handlers below.
+      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
+      const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
+
+      if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
         }
@@ -294,11 +375,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       if (isCtrl(key, ch, 'c')) {
         cancelOverlayFromCtrlC()
-      } else if (key.escape && overlay.picker) {
-        patchOverlayState({ picker: false })
+      } else if (key.escape && overlay.sessions) {
+        patchOverlayState({ sessions: false })
       }
 
-      return
+      // When a prompt overlay is up and the user pressed a scroll key, fall
+      // through to the global scroll handlers below instead of returning.
+      // Otherwise nothing above this comment matched, and there's nothing
+      // useful to do for an arbitrary key while blocked.
+      if (!fallThroughForScroll) {
+        return
+      }
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
@@ -426,6 +513,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return cActions.clearIn()
     }
 
+    if (isCtrl(key, ch, 'x')) {
+      return patchOverlayState({ sessions: true })
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
@@ -440,11 +531,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return actions.die()
+      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
+        gateway.gw.publishLocalEvent({
+          payload: { reason: 'idle_exit_hotkey' },
+          session_id: live.sid ?? undefined,
+          type: 'dashboard.new_session_requested'
+        })
+      })
     }
 
     if (isAction(key, ch, 'd')) {
-      return actions.die()
+      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
+        gateway.gw.publishLocalEvent({
+          payload: { reason: 'idle_exit_hotkey' },
+          session_id: live.sid ?? undefined,
+          type: 'dashboard.new_session_requested'
+        })
+      })
     }
 
     if (isAction(key, ch, 'l')) {

@@ -18,6 +18,9 @@ Setup::
     docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
 
 Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
+For Docker Camofox, optionally set ``CAMOFOX_REWRITE_LOOPBACK_URLS=true``
+so page URLs like ``http://127.0.0.1:3000`` are opened inside the
+container as ``http://host.docker.internal:3000``.
 """
 
 from __future__ import annotations
@@ -29,10 +32,11 @@ import os
 import threading
 import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
-from hermes_cli.config import cfg_get, load_config
+from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -42,10 +46,46 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+# Cached command timeout from config (resolved lazily, like browser_tool)
+_cached_cmd_timeout: Optional[int] = None
+_cmd_timeout_resolved = False
+
+
+def _get_command_timeout() -> int:
+    """Return ``browser.command_timeout`` from config, falling back to 30s.
+
+    Mirrors :func:`tools.browser_tool._get_command_timeout` so both the
+    local browser path and the Camofox path honour the same config knob.
+    Result is cached after the first call.
+    """
+    global _cached_cmd_timeout, _cmd_timeout_resolved
+    if _cmd_timeout_resolved:
+        return _cached_cmd_timeout  # type: ignore[return-value]
+
+    _cmd_timeout_resolved = True
+    result = _DEFAULT_TIMEOUT
+    try:
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "command_timeout")
+        if val is not None:
+            result = max(int(val), 5)  # floor at 5s
+    except Exception as exc:
+        logger.debug("Could not read browser.command_timeout: %s", exc)
+    _cached_cmd_timeout = result
+    return result
+
+
+def _auth_headers() -> Dict[str, str]:
+    """Return Authorization header when CAMOFOX_API_KEY is set."""
+    key = os.getenv("CAMOFOX_API_KEY", "").strip()
+    if key:
+        return {"Authorization": f"Bearer {key}"}
+    return {}
 
 
 def get_camofox_url() -> str:
@@ -53,15 +93,39 @@ def get_camofox_url() -> str:
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
+def _config_cdp_url() -> str:
+    """Persistent ``browser.cdp_url`` from config.yaml, or empty string.
+
+    Read here (instead of importing ``browser_tool._get_cdp_override`` to avoid
+    a circular import) so Camofox can yield to a config-based CDP override the
+    same way it already yields to the ``BROWSER_CDP_URL`` env override.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        browser_cfg = read_raw_config().get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
-    When the user has explicitly connected to a live Chrome instance via
-    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
-    takes priority over Camofox so the browser tools operate on the real
-    browser instead of being silently routed to the Camofox backend.
+    A CDP override takes priority over Camofox so the browser tools operate on
+    the real CDP browser (and a CDP backend is treated as non-local for SSRF
+    checks) instead of being silently routed to Camofox. The override may come
+    from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
+    persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
+    ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
+    var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
+    routed navigation through Camofox.)
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
+        return False
+    if _config_cdp_url():
         return False
     return bool(get_camofox_url())
 
@@ -157,6 +221,89 @@ def _adopt_existing_tab_enabled(camofox_cfg: Dict[str, Any]) -> bool:
     if env_value is not None:
         return env_value
     return bool(camofox_cfg.get("adopt_existing_tab"))
+
+
+def _loopback_rewrite_enabled(camofox_cfg: Dict[str, Any]) -> bool:
+    """Return whether loopback navigation URLs should be rewritten for Docker.
+
+    ``CAMOFOX_URL`` itself often points at a host-published Docker port such as
+    ``http://127.0.0.1:9377``.  That is correct for Hermes talking to the
+    Camofox control API, but a page URL like ``http://127.0.0.1:3000`` is opened
+    by the browser *inside* the Docker container.  In that context loopback
+    points at the container, not the host running the web app.
+
+    The rewrite is opt-in because non-Docker Camofox installs run the browser on
+    the host, where loopback URLs are already correct.
+    """
+    env_value = _env_flag("CAMOFOX_REWRITE_LOOPBACK_URLS")
+    if env_value is not None:
+        return env_value
+    return bool(camofox_cfg.get("rewrite_loopback_urls"))
+
+
+def _loopback_rewrite_host(camofox_cfg: Dict[str, Any]) -> str:
+    """Return the host alias used when rewriting loopback page URLs."""
+    return (
+        os.getenv("CAMOFOX_LOOPBACK_HOST_ALIAS", "").strip()
+        or str(camofox_cfg.get("loopback_host_alias") or "").strip()
+        or "host.docker.internal"
+    )
+
+
+def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+    """Return True for localhost/127.0.0.0/8/::1-style hostnames."""
+    if not hostname:
+        return False
+    host = hostname.strip().strip("[]").lower()
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str, str]]]:
+    """Rewrite loopback page URLs for Docker-hosted Camofox, if configured.
+
+    Returns ``(rewritten_url, metadata)``.  ``metadata`` is present only when a
+    rewrite happened so the tool result can disclose the change to the model.
+    """
+    camofox_cfg = _get_camofox_config()
+    if not _loopback_rewrite_enabled(camofox_cfg):
+        return url, None
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url, None
+
+    if parsed.scheme not in {"http", "https"} or not _is_loopback_hostname(parsed.hostname):
+        return url, None
+
+    alias = _loopback_rewrite_host(camofox_cfg)
+    if not alias:
+        return url, None
+
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    host_part = f"[{alias}]" if ":" in alias and not alias.startswith("[") else alias
+    port_part = f":{parsed.port}" if parsed.port else ""
+    rewritten = urlunsplit(
+        SplitResult(parsed.scheme, f"{userinfo}{host_part}{port_part}", parsed.path, parsed.query, parsed.fragment)
+    )
+    return rewritten, {
+        "from": parsed.hostname or "",
+        "to": alias,
+        "original_url": url,
+        "rewritten_url": rewritten,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +405,11 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         f"{base}/tabs",
         json={
             "userId": session["user_id"],
-            "sessionKey": session["session_key"],
+            "listItemId": session["session_key"],
             "url": url,
         },
-        timeout=_DEFAULT_TIMEOUT,
+        timeout=_get_command_timeout(),
+        headers=_auth_headers(),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -297,34 +445,42 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     """POST JSON to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     """GET from camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
+def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp
 
 
-def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
     """DELETE to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
@@ -336,23 +492,44 @@ def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> di
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
+        browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session = _get_session(task_id)
         if not session["tab_id"]:
             # Create tab with the target URL directly
-            session = _ensure_tab(task_id, url)
-            data = {"ok": True, "url": url}
+            session = _ensure_tab(task_id, browser_url)
+            data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab
-            data = _post(
-                f"/tabs/{session['tab_id']}/navigate",
-                {"userId": session["user_id"], "url": url},
-                timeout=60,
-            )
+            # Navigate existing tab — recover from stale tab 404
+            try:
+                data = _post(
+                    f"/tabs/{session['tab_id']}/navigate",
+                    {"userId": session["user_id"], "url": browser_url},
+                    timeout=60,
+                )
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    logger.warning(
+                        "Camofox tab %s returned 404 — tab was garbage collected. "
+                        "Creating a fresh tab.",
+                        session["tab_id"],
+                    )
+                    session["tab_id"] = None
+                    session = _ensure_tab(task_id, browser_url)
+                    data = {"ok": True, "url": browser_url}
+                else:
+                    raise
         result = {
             "success": True,
-            "url": data.get("url", url),
+            "url": data.get("url", browser_url),
             "title": data.get("title", ""),
         }
+        if rewrite_info:
+            result["requested_url"] = url
+            result["url_rewrite"] = rewrite_info
+            result["warning"] = (
+                "Rewrote loopback URL for Docker-hosted Camofox: "
+                f"{rewrite_info['from']} -> {rewrite_info['to']}"
+            )
         vnc = get_vnc_url()
         if vnc:
             result["vnc_url"] = vnc
@@ -467,13 +644,28 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
-        return json.dumps({
+        from agent.display import (
+            redact_browser_typed_text_for_display,
+            redact_tool_args_for_display,
+        )
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
+        response = {
             "success": True,
-            "typed": text,
+            # Match browser_tool.browser_type: run typed text through the
+            # secret-pattern redactor so API keys / tokens don't leak into
+            # tool progress or chat history.  The raw text is still typed into
+            # the page; only the returned display value is redacted.
+            "typed": display_text,
             "element": clean_ref,
-        })
+        }
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response)
     except Exception as e:
-        return tool_error(str(e), success=False)
+        from agent.display import redact_browser_typed_text_for_display
+
+        return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:

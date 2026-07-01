@@ -81,8 +81,13 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="sess-old", platform="telegram"
+    assert any(
+        c.args == ("on_session_finalize",)
+        and c.kwargs["session_id"] == "sess-old"
+        and c.kwargs["platform"] == "telegram"
+        and c.kwargs["old_session_id"] == "sess-old"
+        and c.kwargs["new_session_id"] == "sess-new"
+        for c in mock_invoke_hook.call_args_list
     )
 
 
@@ -94,8 +99,13 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id="sess-new", platform="telegram"
+    assert any(
+        c.args == ("on_session_reset",)
+        and c.kwargs["session_id"] == "sess-new"
+        and c.kwargs["platform"] == "telegram"
+        and c.kwargs["old_session_id"] == "sess-old"
+        and c.kwargs["new_session_id"] == "sess-new"
+        for c in mock_invoke_hook.call_args_list
     )
 
 
@@ -108,7 +118,7 @@ async def test_finalize_before_reset(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     calls = [c for c in mock_invoke_hook.call_args_list
-             if c[0][0] in ("on_session_finalize", "on_session_reset")]
+             if c[0][0] in {"on_session_finalize", "on_session_reset"}]
     hook_names = [c[0][0] for c in calls]
     assert hook_names == ["on_session_finalize", "on_session_reset"]
 

@@ -3518,6 +3518,18 @@ function runRenderTitleJob(rawUrl) {
   return new Promise(resolve => {
     if (!app.isReady()) return resolve('')
 
+    // Only http(s) URLs can be loaded in a hidden BrowserWindow for title
+    // extraction. Non-http protocols (e.g. bitbrowser://) would otherwise
+    // trigger the OS external protocol handler dialog as a side effect.
+    try {
+      const parsed = new URL(rawUrl)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return resolve('')
+      }
+    } catch {
+      return resolve('')
+    }
+
     const partitionSession = getLinkTitleSession()
     if (!partitionSession) return resolve('')
 

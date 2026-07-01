@@ -4153,8 +4153,10 @@ class TestCronContinuableSurfaceInChannel:
     generically from pconfig.extra; the in_channel branch is gated on the
     adapter capability flag ``supports_inchannel_continuable`` (Slack=True,
     others fail SAFE to thread). In in_channel mode the thread-open branch is
-    SKIPPED (thread_id stays None), so the existing origin-mirror seeds the
-    shared-channel session — no new seed code (G6).
+    SKIPPED (thread_id stays None), then ``_seed_cron_channel_session`` CREATES
+    the flat shared-channel session and mirrors the brief into it (the shipped
+    mirror only APPENDS to an existing session, and the flat channel row is
+    otherwise absent for a chat_postMessage delivery).
     """
 
     def _slack_cfg(self, extra):

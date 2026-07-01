@@ -1411,11 +1411,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # the origin DM session (handled after delivery). Cf. _process_handoff.
         #
         # in_channel surface (D2): SKIP thread creation entirely — leave
-        # thread_id=None so the delivery posts flat, and let the existing
-        # origin-mirror (below) seed the shared-channel session (F5: for a
-        # channel-origin job with thread_id=None, _target_matches_origin matches
-        # and _maybe_mirror_cron_delivery seeds (platform, chat_id, None)). No
-        # new seed call is needed.
+        # thread_id=None so the delivery posts flat, then
+        # ``_seed_cron_channel_session`` (below) CREATES the shared-channel
+        # session and mirrors the brief into it. The shipped mirror alone is
+        # NOT enough here: ``mirror_to_session`` only APPENDS to an existing
+        # session and a flat ``(platform, chat_id, None)`` row is otherwise
+        # absent for a ``chat_postMessage`` delivery, so the seed must create
+        # the row first (F5).
         thread_seeded = False
         opened_thread_id: Optional[str] = None
         if (

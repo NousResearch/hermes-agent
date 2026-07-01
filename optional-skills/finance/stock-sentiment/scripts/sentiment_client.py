@@ -39,7 +39,10 @@ def get(path, **params):
         hint = f" (Retry-After: {retry}s)" if retry else ""
         sys.exit(f"HTTP {e.code} on {path}{hint}")
     except urllib.error.URLError as e:
-        sys.exit(f"network error on {path}: {e.reason}")
+        hint = ("  (CA certs missing: common on macOS python.org installs. Run the bundled "
+                "'Install Certificates.command', or use the system python3, or plain curl.)"
+                if "CERTIFICATE_VERIFY_FAILED" in str(e.reason) else "")
+        sys.exit(f"network error on {path}: {e.reason}{hint}")
 
 
 def rows(raw):
@@ -79,8 +82,17 @@ def cmd_mood(_a):
     m = get("/api/v2/market-mood")
     market = m.get("market", {})
     sectors = m.get("sectors", {})
-    # sectors is a dict with overlapping GICS labels; keep the first of each score.
-    ranked = sorted(sectors.items(), key=lambda kv: kv[1].get("currentScore", 0), reverse=True)
+    # Dedupe overlapping GICS labels (e.g. "Health Care" vs "Healthcare",
+    # "Information Technology" vs "Technology"), keeping the highest-scoring
+    # variant, before ranking top/bottom.
+    alias = {"information technology": "technology", "health care": "healthcare"}
+    canon = lambda s: alias.get(s.strip().lower(), s.strip().lower())
+    best = {}
+    for label, v in sectors.items():
+        k = canon(label)
+        if k not in best or v.get("currentScore", 0) > best[k][1].get("currentScore", 0):
+            best[k] = (label, v)
+    ranked = sorted(best.values(), key=lambda kv: kv[1].get("currentScore", 0), reverse=True)
     out({"score": market.get("currentScore"), "phase": market.get("phase"),
          "weeklyChange": market.get("weeklyChange"),
          "signals": market.get("signals", []),

@@ -39,7 +39,7 @@ Do not use it for order entry, portfolio management, or personalized advice. It 
 
 ## Prerequisites
 
-- Python 3.8+ using only the standard library (`urllib`, `json`); no third-party packages required. Any HTTP client or plain `curl` works too.
+- Python 3.8+ using only the standard library (`urllib`, `json`); no third-party packages required. Any HTTP client or plain `curl` works too. On macOS python.org installs the client can raise `CERTIFICATE_VERIFY_FAILED` (missing CA certs): run the bundled `Install Certificates.command`, use the system `/usr/bin/python3`, or use `curl` (which uses the system trust store).
 - A free `SENTISENSE_API_KEY`. Generate one from the Developer Console at https://app.sentisense.ai/settings/developer. The key is required on every call; anonymous requests return `401 api_key_required`.
 - Network access to `https://app.sentisense.ai`.
 - Read-only scope. Every endpoint here is a GET. Nothing this skill does can place a trade, move money, or modify account state.
@@ -141,10 +141,10 @@ SMART MONEY  (wrapped in {isPreview, previewReason, data}; free key returns a pr
   GET /api/v1/politicians/member/{slug}                   Member profile (data.recentTrades[]).
   GET /api/v1/institutional/quarters                      Call FIRST; bare array, [0].reportDate is latest.
   GET /api/v1/institutional/holders/{T}?reportDate={Q}    Top 13F holders (data.holders[], largest first).
-  GET /api/v1/analyst/{T}/consensus                       Price-target band (consensus.consensusLabel).
+  GET /api/v1/analyst/{T}/consensus                       Price-target band; data IS the consensus object (data.consensusLabel).
   GET /api/v1/analyst/{T}/actions?lookbackDays=N          Recent rating changes for one ticker.
-  GET /api/v1/analyst/{T}/estimates                       EPS band (estimateLow/Mean/High,
-                                                          numberOfAnalysts) + surprises[]; no revenue.
+  GET /api/v1/analyst/{T}/estimates                       EPS band at data.estimates[0].{estimateLow/Mean/High,
+                                                          numberOfAnalysts} + data.surprises[]; no revenue.
   GET /api/v1/analyst/activity?lookbackDays=N             Market-wide actions (filter actionType client-side).
 
 AI INSIGHTS  (wrapped; batch, carry generatedAt)
@@ -161,11 +161,11 @@ NEWS & STORIES
   GET /api/v1/documents/search?query=...            Topical document search.
 
 SUPPORTING  (price, prices, chart are real-time; profile, popular, calendar, market-summary are reference or batch)
-  GET /api/v1/stocks/price?ticker={T}                       price.currentPrice, price.changePercent.
+  GET /api/v1/stocks/price?ticker={T}                       Flat (no wrapper): currentPrice, changePercent at root.
   GET /api/v1/stocks/prices?tickers=A,B,C                   Batch quotes.
   GET /api/v1/stocks/{T}/profile                            profile.name, sector, industry.
   GET /api/v1/stocks/chart?ticker={T}&timeframe=1D|5D|1W|1M|3M|6M|1Y|ALL   Bars; read each point's timestamp (Unix ms).
-  GET /api/v1/stocks/popular                                Candidate universe for screens.
+  GET /api/v1/stocks/popular                                Bare array of ~75 ticker strings (screen universe).
   GET /api/v1/calendar/earnings?ticker={T}                  data.earnings[]; next date + consensus EPS + confirmed.
   GET /api/v1/market-summary                                Market-wide narrative headline.
 ```
@@ -193,7 +193,7 @@ Answer "what is the overall market mood today."
 
 1. `GET /api/v2/market-mood`.
 
-The response is flat, but the composite is nested under `market`, not the root: `market.currentScore`, `market.phase` (for example Greed or Fear), `market.weeklyChange`, and `market.signals[]` (each sub-gauge with its value and change). Per-sector readings live at `sectors.{SectorName}.{ currentScore, phase, weeklyChange }`; `sectors` is a string-keyed dict, not an array, and has overlapping GICS labels (`Technology` and `Information Technology`, `Healthcare` and `Health Care`), so dedupe those before ranking top and bottom sectors. Report as context: "Market mood 62 (Greed), +4 over the week. Greed leaders: Technology, Communications. Fear: Energy, Utilities." Optionally pair with `GET /api/v1/market-summary` for the narrative headline and `GET /api/v1/insights/market` for the top market-wide signals.
+The response is flat, but the composite is nested under `market`, not the root: `market.currentScore`, `market.phase` (e.g. Fear, Neutral, Optimism, Greed), `market.weeklyChange`, and `market.signals[]` (each sub-gauge with its value and change). Per-sector readings live at `sectors.{SectorName}.{ currentScore, phase, weeklyChange }`; `sectors` is a string-keyed dict, not an array, and has overlapping GICS labels (`Technology` and `Information Technology`, `Healthcare` and `Health Care`), so dedupe those before ranking top and bottom sectors. Report as context: "Market mood 62 (Greed), +4 over the week. Greed leaders: Technology, Communications. Fear: Energy, Utilities." Optionally pair with `GET /api/v1/market-summary` for the narrative headline and `GET /api/v1/insights/market` for the top market-wide signals.
 
 ### 3. Smart-money convergence screen
 

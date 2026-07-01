@@ -363,7 +363,7 @@ def check_for_updates() -> Optional[int]:
     try:
         cache_file.write_text(
             json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
-        )
+, encoding="utf-8")
     except Exception:
         pass
 

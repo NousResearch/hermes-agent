@@ -87,7 +87,7 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                config_path.write_text(new_content)
+                config_path.write_text(new_content, encoding="utf-8")
                 removed_from.append(config_path)
                 
         except Exception as e:

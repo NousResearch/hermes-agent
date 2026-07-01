@@ -4045,7 +4045,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(new_plist)
+    plist_path.write_text(new_plist, encoding="utf-8")
 
     try:
         _launchctl_bootstrap(

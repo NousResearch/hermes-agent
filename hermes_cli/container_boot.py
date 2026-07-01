@@ -224,7 +224,7 @@ def _maybe_migrate_legacy_gateway_run_state(
             "desired_state": "running",
             "timestamp": int(time.time()),
             "migrated_from": "legacy-container-cmd",
-        }) + "\n")
+        }) + "\n", encoding="utf-8")
     return "running"
 
 
@@ -438,7 +438,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     tmp_dir.mkdir(parents=True)
 
     try:
-        (tmp_dir / "type").write_text("longrun\n")
+        (tmp_dir / "type").write_text("longrun\n", encoding="utf-8")
 
         # Reuse the manager's run-script rendering — single source of
         # truth so register_profile_gateway and reconcile_profile_gateways
@@ -446,18 +446,18 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         # per-profile env can set it via the profile's config.yaml
         # (which the gateway itself loads).
         run = tmp_dir / "run"
-        run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
+        run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}), encoding="utf-8")
         run.chmod(0o755)
 
         finish = tmp_dir / "finish"
-        finish.write_text(S6ServiceManager._render_finish_script())
+        finish.write_text(S6ServiceManager._render_finish_script(), encoding="utf-8")
         finish.chmod(0o755)
 
         # Persistent log rotation (OQ8-C).
         log_subdir = tmp_dir / "log"
         log_subdir.mkdir()
         log_run = log_subdir / "run"
-        log_run.write_text(S6ServiceManager._render_log_run(profile))
+        log_run.write_text(S6ServiceManager._render_log_run(profile), encoding="utf-8")
         log_run.chmod(0o755)
 
         # The presence of a `down` file tells s6-supervise to NOT

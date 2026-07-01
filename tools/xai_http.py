@@ -215,7 +215,7 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
         marker = marker_dir / f"{section_name}_xai_storage_notice_seen"
         if marker.exists():
             return None
-        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n")
+        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n", encoding="utf-8")
         return notice
     except Exception:
         return notice

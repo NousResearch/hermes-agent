@@ -131,19 +131,16 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
 # so we accept that community forks inheriting the same prefix are
 # treated as reasoning models (a reasonable default — the upstream
 # gateway timing is the same).
-_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _get_pattern(slug: str) -> re.Pattern[str]:
-    compiled = _PATTERN_CACHE.get(slug)
-    if compiled is None:
-        compiled = re.compile(
-            r"^"
-            + re.escape(slug)
-            + r"(?:$|[\-._])"
-        )
-        _PATTERN_CACHE[slug] = compiled
-    return compiled
+# Pre-compile all patterns at module load time to avoid per-call regex
+# compilation and thread-safety issues with the mutable _PATTERN_CACHE.
+# Tuples are immutable after creation, so this is safe for free-threaded
+# Python 3.13+ without any locking.
+_SORTED_REASONING_FLOORS: list[tuple[str, float, re.Pattern[str]]] = [
+    (slug, floor, re.compile(r"^" + re.escape(slug) + r"(?:$|[\-._])"))
+    for slug, floor in sorted(
+        _REASONING_STALE_TIMEOUT_FLOORS, key=lambda kv: -len(kv[0])
+    )
+]
 
 
 def _match_any(model_lower: str) -> Optional[float]:
@@ -154,13 +151,8 @@ def _match_any(model_lower: str) -> Optional[float]:
     order is irrelevant: longest slug wins (so ``o3-mini`` beats
     ``o3`` on a model like ``openai/o3-mini``).
     """
-    # Sort by slug length descending so longer / more-specific slugs
-    # win on shared prefixes (o3-mini beats o3).
-    sorted_floors = sorted(
-        _REASONING_STALE_TIMEOUT_FLOORS, key=lambda kv: -len(kv[0])
-    )
-    for slug, floor in sorted_floors:
-        if _get_pattern(slug).search(model_lower):
+    for _slug, floor, pattern in _SORTED_REASONING_FLOORS:
+        if pattern.search(model_lower):
             return float(floor)
     return None
 

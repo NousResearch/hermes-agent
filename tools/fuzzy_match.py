@@ -349,7 +349,12 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Advance past the whole match, not just one char, so self-overlapping
+        # patterns (e.g. "aa" in "aaaa") produce non-overlapping spans matching
+        # str.replace() semantics. Advancing by 1 yielded overlapping matches
+        # that corrupt the file under replace_all=True (reverse-order apply on
+        # stale offsets).
+        start = pos + len(pattern)
     return matches
 
 

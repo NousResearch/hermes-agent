@@ -336,6 +336,7 @@ class CDPSupervisor:
         self._next_call_id = 1
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
+        self._page_target_id: Optional[str] = None
         self._page_session_id: Optional[str] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
@@ -604,6 +605,22 @@ class CDPSupervisor:
 
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def resolve_target_session(self, target_id: str) -> Optional[str]:
+        """Return the live supervisor session for a known CDP target id."""
+        if not target_id:
+            return None
+        with self._state_lock:
+            if target_id == self._page_target_id and self._page_session_id:
+                return self._page_session_id
+            frame = self._frames.get(target_id)
+            if frame and frame.cdp_session_id:
+                return frame.cdp_session_id
+            for session_id, meta in self._child_sessions.items():
+                info = meta.get("info") if isinstance(meta, dict) else None
+                if isinstance(info, dict) and info.get("targetId") == target_id:
+                    return session_id
+        return None
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:
@@ -674,6 +691,7 @@ class CDPSupervisor:
             try:
                 # Reset per-connection session state so stale ids don't hang
                 # around after a reconnect.
+                self._page_target_id = None
                 self._page_session_id = None
                 self._child_sessions.clear()
                 # We deliberately keep `_pending_dialogs` and `_frames` —
@@ -748,6 +766,7 @@ class CDPSupervisor:
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
         )
+        self._page_target_id = target_id
         self._page_session_id = attach["result"]["sessionId"]
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)

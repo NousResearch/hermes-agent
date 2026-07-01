@@ -428,6 +428,29 @@ def test_browser_cdp_frame_id_routes_via_supervisor(chrome_cdp, supervisor_regis
     assert value == 2, f"expected 2, got {value!r}"
 
 
+def test_browser_cdp_target_id_routes_via_supervisor(chrome_cdp, supervisor_registry):
+    """browser_cdp(target_id=...) reuses the live supervisor session."""
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(task_id="target-id-test", cdp_url=cdp_url)
+    assert sv.snapshot().active
+    assert sv._page_target_id
+
+    from tools.browser_cdp_tool import browser_cdp
+
+    result = browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "1 + 2", "returnByValue": True},
+        target_id=sv._page_target_id,
+        task_id="target-id-test",
+    )
+    r = json.loads(result)
+    assert r.get("success") is True, f"expected success, got: {r}"
+    assert r.get("target_id") == sv._page_target_id
+    assert r.get("session_id") == sv._page_session_id
+    value = r.get("result", {}).get("result", {}).get("value")
+    assert value == 3, f"expected 3, got {value!r}"
+
+
 def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     """Document that real-OOPIF E2E was manually verified — see PR #14540.
 

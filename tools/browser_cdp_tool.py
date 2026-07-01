@@ -312,6 +312,71 @@ def _browser_cdp_via_supervisor(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _browser_cdp_target_via_supervisor(
+    task_id: str,
+    target_id: str,
+    method: str,
+    params: Optional[Dict[str, Any]],
+    timeout: float,
+) -> Optional[str]:
+    """Route a target-scoped CDP call through a live supervisor session.
+
+    Returns ``None`` when no suitable live supervisor/session exists so the
+    caller can fall back to the legacy stateless attach flow.
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+    except Exception:
+        return None
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return None
+
+    session_id = supervisor.resolve_target_session(target_id)
+    if not session_id:
+        return None
+
+    loop = supervisor._loop  # type: ignore[attr-defined]
+    if loop is None or not loop.is_running():
+        return None
+
+    async def _do_cdp():
+        return await supervisor._cdp(  # type: ignore[attr-defined]
+            method,
+            params or {},
+            session_id=session_id,
+            timeout=timeout,
+        )
+
+    try:
+        from agent.async_utils import safe_schedule_threadsafe
+
+        fut = safe_schedule_threadsafe(_do_cdp(), loop)
+        if fut is None:
+            return tool_error(
+                "CDP call via supervisor failed: loop unavailable",
+                cdp_docs=CDP_DOCS_URL,
+            )
+        result_msg = fut.result(timeout=timeout + 2)
+    except Exception as exc:
+        return tool_error(
+            f"CDP call via supervisor failed: {type(exc).__name__}: {exc}",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    return json.dumps(
+        {
+            "success": True,
+            "method": method,
+            "target_id": target_id,
+            "session_id": session_id,
+            "result": result_msg.get("result", {}),
+        },
+        ensure_ascii=False,
+    )
+
+
 def browser_cdp(
     method: str,
     params: Optional[Dict[str, Any]] = None,
@@ -354,6 +419,16 @@ def browser_cdp(
             params=params,
             timeout=timeout,
         )
+    if target_id:
+        routed = _browser_cdp_target_via_supervisor(
+            task_id=task_id or "default",
+            target_id=target_id,
+            method=method,
+            params=params,
+            timeout=timeout,
+        )
+        if routed is not None:
+            return routed
     del task_id  # stateless path below
 
     if not method or not isinstance(method, str):
@@ -471,6 +546,10 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "target_id and frame_id.\n"
         "- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*, "
         "Network.* scoped to a tab): pass target_id from Target.getTargets.\n"
+        "- When the requested target_id belongs to the live browser "
+        "supervisor session, Hermes reuses that persistent CDP WebSocket "
+        "automatically; otherwise it falls back to a fresh stateless "
+        "attach for backward compatibility.\n"
         "- **Cross-origin iframe scope** (Runtime.evaluate inside an OOPIF, "
         "Page.* targeting a frame target, etc.): pass frame_id from the "
         "browser_snapshot frame_tree output. This routes through the CDP "

@@ -204,6 +204,61 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
+# Distinctive opening shared by both background-review harness prompts
+# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
+# Matched case-sensitively against the leading content of a user/system message.
+_REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above and update the skill library",
+    "Review the conversation above and consider saving to memory",
+)
+
+
+def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
+    """True when ``msg`` is a persisted background-review harness prompt.
+
+    These are user/system turns the forked skill/memory review agent wrote into
+    a real session in older builds (before the ``_persist_disabled`` isolation
+    fix). They instruct the agent to act as the curator under a hard tool
+    restriction, so replaying them as live history hijacks the session.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("role") not in {"user", "system"}:
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    head = content.lstrip()
+    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
+
+
+def _strip_background_review_harness(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Drop background-review harness messages and the curator-mode assistant
+    reply that immediately followed each one.
+
+    Walk the list once; when a harness user/system message is found, skip it and
+    also skip the next message if it is the assistant turn that answered it.
+    Everything else passes through untouched and in order.
+    """
+    if not messages:
+        return messages
+    out: List[Dict[str, Any]] = []
+    skip_next_assistant = False
+    for msg in messages:
+        if _is_background_review_harness_message(msg):
+            skip_next_assistant = True
+            continue
+        if skip_next_assistant:
+            skip_next_assistant = False
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                # The curator-mode reply to the harness prompt — drop it.
+                continue
+        out.append(msg)
+    return out
+
+
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
     """Format a user-facing 'session DB unavailable' message with cause.
 
@@ -3721,6 +3776,17 @@ class SessionDB:
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)
+        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
+        # skill/memory review that (in older builds, before the _persist_disabled
+        # fix) shared the parent's session_id wrote its harness turn into this
+        # real session. The harness is a user/system message instructing the
+        # agent to "Review the conversation above and update the skill library /
+        # save to memory" under a hard tool restriction; re-loading it as live
+        # history makes the agent adopt the curator role and refuse the user's
+        # actual task. Strip any such harness message AND the curator-mode
+        # assistant reply immediately following it, so a polluted session
+        # resumes clean even if stray rows exist.
+        messages = _strip_background_review_harness(messages)
         return messages
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:

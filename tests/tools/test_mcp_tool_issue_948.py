@@ -80,6 +80,44 @@ def test_resolve_stdio_command_respects_explicit_empty_path():
     assert seen_paths == [""]
 
 
+def test_resolve_stdio_command_respects_env_pathext_on_windows(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cmd_path = bin_dir / "demo.cmd"
+    cmd_path.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr("tools.mcp_tool.sys.platform", "win32")
+    monkeypatch.setattr("tools.mcp_tool.shutil.which", lambda _cmd, path=None: None)
+
+    command, env = _resolve_stdio_command(
+        "demo",
+        {"PATH": str(bin_dir), "PATHEXT": ".CMD"},
+    )
+
+    assert os.path.normcase(command) == os.path.normcase(str(cmd_path))
+    assert env["PATH"].split(os.pathsep)[0] == str(bin_dir)
+
+
+def test_resolve_stdio_command_preserves_windows_path_key_casing(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cmd_path = bin_dir / "demo.cmd"
+    cmd_path.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr("tools.mcp_tool.sys.platform", "win32")
+    monkeypatch.setattr("tools.mcp_tool.shutil.which", lambda _cmd, path=None: None)
+
+    command, env = _resolve_stdio_command(
+        "demo",
+        {"Path": str(bin_dir), "Pathext": ".CMD"},
+    )
+
+    assert os.path.normcase(command) == os.path.normcase(str(cmd_path))
+    assert "Path" in env
+    assert "PATH" not in env
+    assert env["Path"].split(os.pathsep)[0] == str(bin_dir)
+
+
 def test_format_connect_error_unwraps_exception_group():
     error = ExceptionGroup(
         "unhandled errors in a TaskGroup",

@@ -501,18 +501,63 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     return findings
 
 
+def _env_key(env: dict, key: str) -> str | None:
+    """Return the real env key matching *key*."""
+    if key in env:
+        return key
+    if sys.platform == "win32":
+        lowered = key.lower()
+        for candidate in env:
+            if str(candidate).lower() == lowered:
+                return candidate
+    return None
+
+
+def _env_get(env: dict, key: str) -> str | None:
+    """Return *key* from env, honoring Windows' case-insensitive names."""
+    real_key = _env_key(env, key)
+    return env[real_key] if real_key is not None else None
+
+
 def _prepend_path(env: dict, directory: str) -> dict:
     """Prepend *directory* to env PATH if it is not already present."""
     updated = dict(env or {})
     if not directory:
         return updated
 
-    existing = updated.get("PATH", "")
+    path_key = _env_key(updated, "PATH") or "PATH"
+    existing = updated.get(path_key, "")
     parts = [part for part in existing.split(os.pathsep) if part]
     if directory not in parts:
         parts = [directory, *parts]
-    updated["PATH"] = os.pathsep.join(parts) if parts else directory
+    updated[path_key] = os.pathsep.join(parts) if parts else directory
     return updated
+
+
+def _which_in_env(command: str, env: dict) -> str | None:
+    """Resolve *command* against the same env passed to the MCP process."""
+    path_arg = _env_get(env, "PATH")
+    pathext = _env_get(env, "PATHEXT")
+
+    if sys.platform != "win32" or pathext is None:
+        return shutil.which(command, path=path_arg)
+
+    # shutil.which(path=...) still reads PATHEXT from os.environ on Windows.
+    # MCP stdio configs can override PATH and PATHEXT together, so honor both
+    # from the target subprocess env without mutating global process state.
+    paths = (path_arg if path_arg is not None else os.environ.get("PATH", "")).split(os.pathsep)
+    raw_exts = [part for part in str(pathext).split(os.pathsep) if part]
+    extensions = [part if part.startswith(".") else f".{part}" for part in raw_exts]
+
+    _, command_ext = os.path.splitext(command)
+    candidates = [command] if command_ext else [f"{command}{suffix}" for suffix in extensions]
+    for directory in paths:
+        directory = directory or os.curdir
+        for candidate_name in candidates:
+            candidate = os.path.join(directory, candidate_name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
@@ -525,8 +570,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     resolved_env = dict(env or {})
 
     if os.sep not in resolved_command:
-        path_arg = resolved_env["PATH"] if "PATH" in resolved_env else None
-        which_hit = shutil.which(resolved_command, path=path_arg)
+        which_hit = _which_in_env(resolved_command, resolved_env)
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:

@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   authenticateTelegram,
   fetchApprovalsSnapshot,
@@ -24,13 +24,26 @@ import {
   type QuickAction,
   type SessionPreview,
 } from "./mockData";
-import { configureTelegramBackButton, configureTelegramMainButton, getTelegramRuntime, prepareTelegramViewport } from "./telegram";
+import { configureTelegramBackButton, configureTelegramMainButton, getTelegramRuntime, prepareTelegramViewport, triggerTelegramRefreshHaptic } from "./telegram";
 
 const riskLabels: Record<QuickAction["risk"], string> = {
   safe: "безопасно",
   read_only: "только чтение",
   disabled: "отключено",
   critical: "критично",
+};
+
+const POLL_INTERVAL_MS = 15_000;
+const STALE_AFTER_MS = 45_000;
+
+type FreshnessState = "mock" | "fresh" | "refreshing" | "stale" | "offline";
+
+const refreshLabels: Record<FreshnessState, string> = {
+  mock: "локальное превью",
+  fresh: "данные свежие",
+  refreshing: "обновляю",
+  stale: "данные устарели",
+  offline: "сервис недоступен",
 };
 
 const navTitles: Record<NavKey, string> = {
@@ -59,6 +72,23 @@ function gatewayMeta(snapshot: StatusSnapshot | null) {
   if (!snapshot) return "локальное превью";
   if (snapshot.gateway.busy) return "агенты работают";
   return snapshot.gateway.state || "стабильно";
+}
+
+function formatRefreshTime(timestamp: number | null) {
+  if (!timestamp) return "ещё не обновлялось";
+  return new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(timestamp);
+}
+
+function freshnessState(apiState: "mock" | "connecting" | "connected" | "offline", isRefreshing: boolean, lastSuccessAt: number | null, now: number): FreshnessState {
+  if (apiState === "mock") return "mock";
+  if (isRefreshing || apiState === "connecting") return "refreshing";
+  if (apiState === "offline") return lastSuccessAt ? "stale" : "offline";
+  if (lastSuccessAt && now - lastSuccessAt > STALE_AFTER_MS) return "stale";
+  return "fresh";
 }
 
 function actionValue(snapshot: StatusSnapshot | null) {
@@ -103,17 +133,40 @@ function mapServerLog(item: LogPreviewItem): LogLine {
   };
 }
 
-function SectionIntro({ activeTab, onOpenPalette }: { activeTab: NavKey; onOpenPalette: () => void }) {
+function SectionIntro({
+  activeTab,
+  freshness,
+  isRefreshEnabled,
+  lastRefreshText,
+  onOpenPalette,
+  onRefresh,
+}: {
+  activeTab: NavKey;
+  freshness: FreshnessState;
+  isRefreshEnabled: boolean;
+  lastRefreshText: string;
+  onOpenPalette: () => void;
+  onRefresh: () => void;
+}) {
   return (
     <section className="section-intro glass-card" aria-label="Текущий раздел">
       <div>
-        <p className="mono-label">M4 / APP SHELL</p>
+        <p className="mono-label">M7 / LIVE READ-ONLY</p>
         <h2>{navTitles[activeTab]}</h2>
-        <p>Навигация уже живая. Исполнение команд остаётся выключенным до серверного контура одобрений.</p>
+        <p>Данные обновляются только чтением. Ручное обновление не запускает команды и не меняет состояние Hermes.</p>
+        <div className="freshness-row" data-state={freshness}>
+          <span>{refreshLabels[freshness]}</span>
+          <small>{lastRefreshText}</small>
+        </div>
       </div>
-      <button className="palette-button tap" type="button" onClick={onOpenPalette}>
-        Палитра
-      </button>
+      <div className="section-actions">
+        <button className="refresh-button tap" type="button" disabled={!isRefreshEnabled || freshness === "refreshing"} onClick={onRefresh}>
+          {freshness === "refreshing" ? "Обновляю" : "Обновить"}
+        </button>
+        <button className="palette-button tap" type="button" onClick={onOpenPalette}>
+          Палитра
+        </button>
+      </div>
     </section>
   );
 }
@@ -174,7 +227,21 @@ function StatusSection({
   );
 }
 
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return (
+    <section className="empty-state glass-card" aria-label={title}>
+      <p className="mono-label">ПУСТОЙ SERVER SNAPSHOT</p>
+      <h2>{title}</h2>
+      <p>{text}</p>
+    </section>
+  );
+}
+
 function SessionsSection({ sessions }: { sessions: SessionPreview[] }) {
+  if (sessions.length === 0) {
+    return <EmptyState title="Сессий нет" text="Сервер ответил пустым списком. Локальные mock-данные не подмешиваются после успешного обновления." />;
+  }
+
   return (
     <section className="stack-list" aria-label="Сессии агентов">
       {sessions.map((session) => (
@@ -192,6 +259,10 @@ function SessionsSection({ sessions }: { sessions: SessionPreview[] }) {
 }
 
 function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: ApprovalPreview[]; selectedId: string; onSelect: (approval: ApprovalPreview) => void }) {
+  if (approvals.length === 0) {
+    return <EmptyState title="Очередь одобрений пуста" text="Сервер вернул пустую очередь. Это считается валидным live-состоянием, а не поводом показывать mock-запросы." />;
+  }
+
   const selected = approvals.find((approval) => approval.id === selectedId) ?? approvals[0];
 
   return (
@@ -236,6 +307,10 @@ function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: Appr
 }
 
 function LogsSection({ logs }: { logs: LogLine[] }) {
+  if (logs.length === 0) {
+    return <EmptyState title="Журнал пуст" text="Серверный журнал сейчас пуст. После live-ответа локальные демонстрационные события скрыты." />;
+  }
+
   return (
     <section className="mini-panel glass-card full-panel" aria-label="Журнал событий">
       <div className="section-heading compact">
@@ -316,6 +391,11 @@ export function App() {
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
   const [isPaletteOpen, setPaletteOpen] = useState(false);
+  const [isRefreshing, setRefreshing] = useState(false);
+  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const refreshRequestId = useRef(0);
+  const activeRefreshes = useRef(0);
 
   useEffect(() => {
     prepareTelegramViewport();
@@ -337,51 +417,100 @@ export function App() {
   useEffect(() => configureTelegramMainButton("Только чтение", () => undefined), []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const refreshSnapshots = useCallback(
+    async ({ manual = false }: { manual?: boolean } = {}) => {
+      if (!telegram.isTelegram || !telegram.initData || !apiConfigured) return;
+
+      const requestId = refreshRequestId.current + 1;
+      refreshRequestId.current = requestId;
+      activeRefreshes.current += 1;
+      if (manual) triggerTelegramRefreshHaptic("start");
+      setRefreshing(true);
+      setApiState((current) => (current === "connected" ? current : "connecting"));
+
+      try {
+        const [status, approvals, sessions, logs] = await Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot(), fetchSessionsSnapshot(), fetchLogsSnapshot()]);
+        if (requestId !== refreshRequestId.current) return;
+
+        setSnapshot(status);
+        const mappedApprovals = approvals.items.map(mapServerApproval);
+        setServerApprovals(mappedApprovals);
+        setServerSessions(sessions.items.map(mapServerSession));
+        setServerLogs(logs.items.map(mapServerLog));
+        setSelectedApprovalId((current) => {
+          if (mappedApprovals.some((approval) => approval.id === current)) return current;
+          return mappedApprovals[0]?.id ?? "";
+        });
+        const refreshedAt = Date.now();
+        setLastSuccessAt(refreshedAt);
+        setNow(refreshedAt);
+        setApiState("connected");
+        if (manual) triggerTelegramRefreshHaptic("success");
+      } catch {
+        if (requestId === refreshRequestId.current) {
+          setApiState("offline");
+          if (manual) triggerTelegramRefreshHaptic("warning");
+        }
+      } finally {
+        activeRefreshes.current = Math.max(0, activeRefreshes.current - 1);
+        if (activeRefreshes.current === 0) setRefreshing(false);
+      }
+    },
+    [apiConfigured, telegram.initData, telegram.isTelegram],
+  );
+
+  useEffect(() => {
     if (!telegram.isTelegram || !telegram.initData || !apiConfigured) {
       setApiState("mock");
       setSnapshot(null);
       setServerApprovals([]);
       setServerSessions([]);
       setServerLogs([]);
+      setLastSuccessAt(null);
+      setRefreshing(false);
       return;
     }
 
     let cancelled = false;
     setApiState("connecting");
-    authenticateTelegram(telegram.initData)
-      .then(() => Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot(), fetchSessionsSnapshot(), fetchLogsSnapshot()]))
-      .then(([status, approvals, sessions, logs]) => {
-        if (!cancelled) {
-          setSnapshot(status);
-          const mappedApprovals = approvals.items.map(mapServerApproval);
-          setServerApprovals(mappedApprovals);
-          setServerSessions(sessions.items.map(mapServerSession));
-          setServerLogs(logs.items.map(mapServerLog));
-          if (mappedApprovals[0]) setSelectedApprovalId(mappedApprovals[0].id);
-          setApiState("connected");
-        }
+    setRefreshing(true);
+    void authenticateTelegram(telegram.initData)
+      .then(() => {
+        if (!cancelled) return refreshSnapshots();
+        return undefined;
       })
       .catch(() => {
         if (!cancelled) {
-          setSnapshot(null);
-          setServerApprovals([]);
-          setServerSessions([]);
-          setServerLogs([]);
           setApiState("offline");
+          setRefreshing(false);
         }
       });
+
     return () => {
       cancelled = true;
     };
-  }, [apiConfigured, telegram.initData, telegram.isTelegram]);
+  }, [apiConfigured, refreshSnapshots, telegram.initData, telegram.isTelegram]);
+
+  useEffect(() => {
+    if (!telegram.isTelegram || !telegram.initData || !apiConfigured) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshSnapshots();
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [apiConfigured, refreshSnapshots, telegram.initData, telegram.isTelegram]);
 
   const displayName = telegram.user?.username
     ? `@${telegram.user.username}`
     : telegram.user?.first_name ?? "локальное превью";
 
-  const approvals = serverApprovals.length > 0 ? serverApprovals : approvalPreviews;
-  const sessions = serverSessions.length > 0 ? serverSessions : sessionPreviews;
-  const logs = serverLogs.length > 0 ? serverLogs : recentLogs;
+  const hasServerSnapshot = lastSuccessAt !== null;
+  const approvals = hasServerSnapshot ? serverApprovals : approvalPreviews;
+  const sessions = hasServerSnapshot ? serverSessions : sessionPreviews;
+  const logs = hasServerSnapshot ? serverLogs : recentLogs;
 
   const cards = useMemo(() => {
     if (!snapshot) return statusCards;
@@ -430,6 +559,9 @@ export function App() {
     ? "Сервер сообщил о включённых действиях. Перед любым запуском нужен контур одобрений."
     : "Ничего не будет выполнено без вашего явного одобрения.";
   const approvalCount = approvals.length;
+  const currentFreshness = freshnessState(apiState, isRefreshing, lastSuccessAt, now);
+  const lastRefreshText = lastSuccessAt ? `последнее обновление ${formatRefreshTime(lastSuccessAt)}` : formatRefreshTime(lastSuccessAt);
+  const refreshEnabled = telegram.isTelegram && Boolean(telegram.initData) && apiConfigured;
 
   return (
     <main className="screen" data-mode={telegram.colorScheme}>
@@ -461,7 +593,14 @@ export function App() {
         </aside>
       </section>
 
-      <SectionIntro activeTab={activeTab} onOpenPalette={() => setPaletteOpen(true)} />
+      <SectionIntro
+        activeTab={activeTab}
+        freshness={currentFreshness}
+        isRefreshEnabled={refreshEnabled}
+        lastRefreshText={lastRefreshText}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onRefresh={() => void refreshSnapshots({ manual: true })}
+      />
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
       {activeTab === "sessions" ? <SessionsSection sessions={sessions} /> : null}

@@ -50,6 +50,11 @@ type TelegramWebApp = {
   viewportStableHeight?: number;
   BackButton?: TelegramButton;
   MainButton?: TelegramMainButton;
+  HapticFeedback?: {
+    impactOccurred?: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
+    notificationOccurred?: (type: "error" | "success" | "warning") => void;
+    selectionChanged?: () => void;
+  };
   ready?: () => void;
   expand?: () => void;
 };
@@ -107,6 +112,18 @@ export function configureTelegramMainButton(text: string, onClick: () => void): 
     mainButton.offClick(onClick);
     mainButton.hide();
   };
+}
+
+export function triggerTelegramRefreshHaptic(type: "start" | "success" | "warning"): void {
+  const haptic = window.Telegram?.WebApp?.HapticFeedback;
+  if (!haptic) return;
+
+  if (type === "start") {
+    haptic.selectionChanged?.();
+    return;
+  }
+
+  haptic.notificationOccurred?.(type === "success" ? "success" : "warning");
 }
 
 export function getTelegramRuntime(): TelegramRuntime {

@@ -628,3 +628,67 @@ class TestCompressionToolPairIntegrity:
             {"from": "tool", "value": "<tool_response>a</tool_response>"},
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryCompressor — compression must never increase the token count
+# ---------------------------------------------------------------------------
+
+
+class TestCompressionNetSavingsGuard:
+    """When the compressible middle is no larger than the summary that would
+    replace it, compression cannot help — it must be skipped rather than grow
+    the trajectory (and burn a summarization call)."""
+
+    def _tiny_middle_trajectory(self):
+        # Large protected head (system+human), tiny compressible middle.
+        big = "w " * 400  # ~200 tokens each (1 token / 4 chars)
+        small = "ok " * 2
+        return [
+            {"from": "system", "value": big},  # protected (first_system)
+            {"from": "human", "value": big},  # protected (first_human)
+            {"from": "gpt", "value": small},  # protected (first_gpt)
+            {"from": "tool", "value": small},  # protected (first_tool)
+            {"from": "gpt", "value": small},  # compressible middle
+            {"from": "tool", "value": small},  # compressible middle
+            {"from": "gpt", "value": small},  # protected (last 2)
+            {"from": "human", "value": small},  # protected (last 2)
+        ]
+
+    def _config(self):
+        config = CompressionConfig()
+        config.protect_last_n_turns = 2
+        config.summary_target_tokens = 20
+        config.target_max_tokens = 100  # trajectory is far over this
+        return config
+
+    def test_sync_skips_compression_when_middle_smaller_than_summary(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary = MagicMock(
+            return_value="[CONTEXT SUMMARY]: " + "blah " * 30
+        )
+        trajectory = self._tiny_middle_trajectory()
+        before = sum(tc.count_turn_tokens(trajectory))
+
+        compressed, metrics = tc.compress_trajectory(trajectory)
+
+        assert metrics.was_compressed is False
+        assert compressed == trajectory
+        assert sum(tc.count_turn_tokens(compressed)) == before
+        tc._generate_summary.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_skips_compression_when_middle_smaller_than_summary(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary_async = AsyncMock(
+            return_value="[CONTEXT SUMMARY]: " + "blah " * 30
+        )
+        trajectory = self._tiny_middle_trajectory()
+        before = sum(tc.count_turn_tokens(trajectory))
+
+        compressed, metrics = await tc.compress_trajectory_async(trajectory)
+
+        assert metrics.was_compressed is False
+        assert compressed == trajectory
+        assert sum(tc.count_turn_tokens(compressed)) == before
+        tc._generate_summary_async.assert_not_called()

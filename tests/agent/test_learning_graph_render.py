@@ -175,6 +175,25 @@ def test_format_date_handles_missing():
     assert render.format_date(1_700_000_000) != "unknown"
 
 
+def test_date_labels_avoid_platform_specific_strftime(monkeypatch):
+    class FakeDate:
+        day = 5
+
+        def strftime(self, fmt):
+            if "%-d" in fmt:
+                raise ValueError("Invalid format string")
+            return {"%b": "Jan", "%b %Y": "Jan 2024", "%Y": "2024"}[fmt]
+
+    class FakeDateTime:
+        @classmethod
+        def fromtimestamp(cls, ts, tz=None):
+            return FakeDate()
+
+    monkeypatch.setattr(render, "datetime", FakeDateTime)
+
+    assert render.format_date(1_704_412_800) == "5 Jan 2024"
+    assert render._period_label(1_704_412_800, "day") == "5 Jan"
+
 def test_derive_palette_distinct_memory_hue():
     pal = render.derive_palette("#FFD700", dark=True)
     assert pal["skill"].startswith("#") and pal["memory"].startswith("#")

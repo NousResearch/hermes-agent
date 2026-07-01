@@ -45,6 +45,8 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "carlitosdiazplaza@gmail.com": "talmax1124",  # upstream salvage — mapped during 2026-07-01 upstream parity sync
+    "janrenz@Mac.fritz.box": "janrenz",  # upstream contrib (local-hostname git email) — mapped during 2026-07-01 upstream parity sync
     "joeykerp@gmail.com": "spjoes",  # PR salvage (dashboard_auth allow-any-host fix) — mapped during 2026-06-30 upstream parity sync
     "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",  # bare-noreply (no +id prefix → not auto-resolved) — mapped during 2026-06-29 upstream parity sync
     "SJWATTS89@OUTLOOK.COM": "lEWFkRAD",  # PR #45610 (harden Windows gateway scheduled task) — mapped during 2026-06-29 upstream parity sync

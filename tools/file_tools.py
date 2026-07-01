@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -506,6 +507,30 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _is_within_active_tempdir(candidate: str) -> bool:
+    """Allow writes under the current process temp dir, even on macOS.
+
+    macOS temp paths resolve under /private/var/folders/... which would
+    otherwise trip the /private/var entry in _SENSITIVE_PATH_PREFIXES even for
+    harmless test/work files written into the OS temp directory.
+    """
+    try:
+        temp_roots = {
+            os.path.normpath(os.path.expanduser(tempfile.gettempdir())),
+            os.path.normpath(os.path.realpath(tempfile.gettempdir())),
+        }
+        candidate_norm = os.path.normpath(candidate)
+        candidate_real = os.path.normpath(os.path.realpath(candidate))
+        for root in temp_roots:
+            if candidate_norm == root or candidate_real == root:
+                return True
+            if candidate_norm.startswith(root + os.sep) or candidate_real.startswith(root + os.sep):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -517,6 +542,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    if _is_within_active_tempdir(resolved) or _is_within_active_tempdir(normalized):
+        return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

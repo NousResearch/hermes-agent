@@ -13,10 +13,7 @@ import pytest
 import hermes_logging
 # Use whatever RotatingFileHandler class hermes_logging actually resolved so
 # the autouse fixture's isinstance checks (which strip rotating handlers
-# between tests) match the real handlers on every platform. hermes_logging
-# aliases concurrent-log-handler's ConcurrentRotatingFileHandler on Windows
-# (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
-# the name from the module under test keeps the two in lockstep.
+# between tests) match the real handlers on every platform.
 from hermes_logging import RotatingFileHandler
 
 
@@ -817,85 +814,35 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    def test_rollover_permission_error_keeps_logging(self, tmp_path):
+        log_path = tmp_path / "rollover-permission.log"
+        logger = logging.getLogger("_test_rotating_rollover_permission")
+        formatter = logging.Formatter("%(message)s")
 
-class TestWindowsConcurrentLogLockTimeout:
-    """Windows concurrent-log-handler lock timeouts stay inside logging."""
-
-    def _make_logger_and_handler(self, log_path: Path):
-        logger = logging.getLogger(f"_test_concurrent_lock_timeout_{log_path.stem}")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(logging.INFO)
-
-        handler = hermes_logging._ManagedRotatingFileHandler(
-            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
+        hermes_logging._add_rotating_handler(
+            logger, log_path,
+            level=logging.INFO, max_bytes=1, backup_count=1,
+            formatter=formatter,
         )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-        return logger, handler
-
-    def test_helper_only_matches_windows_concurrent_lock_timeout(self):
-        with patch.object(hermes_logging.sys, "platform", "win32"):
-            assert hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("Cannot acquire lock after 20 attempts")
-            )
-            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("some other logging failure")
-            )
-
-        with patch.object(hermes_logging.sys, "platform", "linux"):
-            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-                RuntimeError("Cannot acquire lock after 20 attempts")
-            )
-
-    def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
-        """Mirror CLH's real control flow.
-
-        ``concurrent-log-handler``'s ``emit()`` wraps its whole body in
-        ``try/except Exception: self.handleError(record)``, so the lock
-        RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
-        to ``handleError`` with the exception live in ``sys.exc_info()``.  We
-        invoke ``handleError`` the same way CLH would and assert no traceback
-        reaches stderr (the slash-worker surface)."""
-        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
-        record = logger.makeRecord(
-            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
+        handler = next(
+            h for h in logger.handlers if isinstance(h, RotatingFileHandler)
         )
-        try:
-            with patch.object(hermes_logging.sys, "platform", "win32"):
-                try:
-                    raise RuntimeError("Cannot acquire lock after 20 attempts")
-                except RuntimeError:
-                    handler.handleError(record)
 
-            captured = capsys.readouterr()
-            assert "Cannot acquire lock after 20 attempts" not in captured.err
-            assert "--- Logging error ---" not in captured.err
-        finally:
-            logger.removeHandler(handler)
-            handler.close()
+        with patch.object(
+            RotatingFileHandler,
+            "doRollover",
+            side_effect=PermissionError("[WinError 32] file is busy"),
+        ):
+            logger.info("still writes after skipped rollover")
+            handler.flush()
 
-    def test_other_errors_routed_to_handle_error_still_print(self, tmp_path, capsys):
-        """An unrelated failure routed through ``handleError`` must still emit the
-        normal stdlib logging-error output — only the known CLH timeout is silent."""
-        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
-        record = logger.makeRecord(
-            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
-        )
-        try:
-            with patch.object(hermes_logging.sys, "platform", "win32"):
-                try:
-                    raise RuntimeError("unexpected logging failure")
-                except RuntimeError:
-                    handler.handleError(record)
+        assert log_path.exists()
+        assert "still writes after skipped rollover" in log_path.read_text()
 
-            captured = capsys.readouterr()
-            assert "unexpected logging failure" in captured.err
-            assert "--- Logging error ---" in captured.err
-        finally:
-            logger.removeHandler(handler)
-            handler.close()
-
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
 
 class TestReadLoggingConfig:
     """_read_logging_config() reads from config.yaml."""

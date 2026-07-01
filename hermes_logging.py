@@ -32,38 +32,9 @@ import logging
 import os
 import sys
 import threading
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
-
-# On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
-# ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
-# another process holds an append-mode handle on ``agent.log`` — which is
-# essentially always in Hermes (TUI, gateway, ``hy_memory`` server, MCP
-# servers, and on-demand CLI commands all log from separate processes),
-# pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
-# a traceback on every emit. ``concurrent-log-handler`` wraps the rename in a
-# cross-process file lock (via ``portalocker``: pywin32 on Windows) so only
-# one process rotates at a time and the others wait their turn.
-#
-# This swap is Windows-ONLY and deliberately so:
-#   * The bug (WinError 32 on rename-while-open) is specific to Windows file
-#     locking semantics — POSIX renames an open file fine, so stdlib already
-#     works correctly on Linux/macOS.
-#   * On POSIX, managed-mode (NixOS) relies on the exact ``_open()`` /
-#     ``doRollover()`` lifecycle of stdlib ``RotatingFileHandler`` (the
-#     ``_ManagedRotatingFileHandler`` subclass chmods 0660 after each). CLH
-#     opens lazily and rotates differently, which breaks the group-writable
-#     guarantee and the eager file-creation those paths depend on.
-# Aliasing keeps every existing ``RotatingFileHandler`` reference in this
-# module (class declaration, ``isinstance`` checks, docstring) working
-# unchanged. See #44873.
-if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
-else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
-
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -114,26 +85,6 @@ def _safe_stderr():  # type: ignore[return]
         pass
     # Best-effort: if wrapping fails, return the original stream.
     return stream
-
-
-_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
-
-
-def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
-    """Return True for concurrent-log-handler's Windows lock timeout.
-
-    On Windows Desktop, slash-command workers and the gateway can all write to
-    the same rotating log files. ``concurrent-log-handler`` serializes rollover
-    with a cross-process lock, but when another process holds that lock too
-    long it raises this RuntimeError. Logging failures should not escape into
-    Desktop chat output.
-    """
-    return (
-        sys.platform == "win32"
-        and isinstance(exc, RuntimeError)
-        and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
-    )
-
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
@@ -514,33 +465,28 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_if_externally_rotated()
         super().emit(record)
 
-    def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress the known Windows ``concurrent-log-handler`` lock timeout
-        instead of printing a traceback.
-
-        CLH's own ``emit()`` wraps its body in ``try/except Exception:
-        self.handleError(record)``, so the ``"Cannot acquire lock after N
-        attempts"`` RuntimeError raised in ``_do_lock()`` is caught inside CLH
-        and routed here — it never propagates out of ``super().emit()``.  This
-        override is the single point where that timeout can be silenced before
-        the stdlib handler prints it to stderr (which, under the Desktop
-        slash-worker, is captured and surfaced into chat output)."""
-        exc = sys.exc_info()[1]
-        if _is_windows_concurrent_log_lock_timeout(exc):
-            return
-        super().handleError(record)
-
     def _open(self):
         stream = super()._open()
         self._chmod_if_managed()
         return stream
 
     def doRollover(self):
-        super().doRollover()
-        self._chmod_if_managed()
-        # Our own rollover writes a new baseFilename; refresh the snapshot
-        # so the next emit doesn't mistake it for external rotation.
-        self._record_stream_stat()
+        try:
+            super().doRollover()
+        except PermissionError:
+            # On Windows another Hermes process may still hold the active log
+            # file open during rotation. Skip this rollover and keep logging
+            # to the current file instead of wedging the caller on logging.
+            if self.stream is None and not self.delay:
+                try:
+                    self.stream = self._open()
+                except OSError:
+                    pass
+        else:
+            self._chmod_if_managed()
+            # Our own rollover writes a new baseFilename; refresh the snapshot
+            # so the next emit doesn't mistake it for external rotation.
+            self._record_stream_stat()
 
 
 def _add_rotating_handler(

@@ -768,6 +768,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
             finally:
+                # On abandon (interrupt or deadline) we intentionally do NOT
+                # join hung workers: wait=False returns immediately and
+                # cancel_futures drops queued-but-unstarted work. A wedged tool
+                # thread is left running detached — the deliberate tradeoff vs.
+                # deadlocking the whole batch. Normal completion joins (wait=True).
                 executor.shutdown(
                     wait=not abandon_executor,
                     cancel_futures=abandon_executor,
@@ -783,7 +788,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
-        if i in timed_out_indices:
+        # A worker can finish and write results[i] in the window between the
+        # deadline snapshot (timed_out_indices, taken from not_done) and this
+        # loop. Prefer that real result over a fabricated timeout message — the
+        # tool genuinely succeeded, just slightly late.
+        if i in timed_out_indices and r is None:
             suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
             function_result = f"Error executing tool '{name}': timed out after {suffix}"
             _emit_terminal_post_tool_call(

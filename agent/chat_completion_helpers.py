@@ -1708,6 +1708,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         logger.warning(f"Failed to get summary response: {e}")
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
+    if (
+        messages
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("content") == summary_request
+    ):
+        messages.append({"role": "assistant", "content": final_response})
+
     return final_response
 
 

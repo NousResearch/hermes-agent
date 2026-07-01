@@ -1967,10 +1967,20 @@ def run_conversation(
                     # Flush the full-turn MoA trace (references + aggregator I/O)
                     # to disk when moa.save_traces is on. No-op otherwise and
                     # for non-MoA clients. Uses the live session_id so traces
-                    # land in the right per-session file.
+                    # land in the right per-session file. On the streaming path
+                    # the aggregator's output wasn't captured inline (its raw
+                    # token stream went to the live consumer), so pass the
+                    # resolved streamed acting text as a fallback — makes the
+                    # trace self-contained instead of only pointing at state.db.
                     if _moa_client is not None and hasattr(_moa_client, "consume_and_save_trace"):
                         try:
-                            _moa_client.consume_and_save_trace(agent.session_id)
+                            _agg_streamed_text = (
+                                getattr(agent, "_current_streamed_assistant_text", "") or ""
+                            )
+                            _moa_client.consume_and_save_trace(
+                                agent.session_id,
+                                aggregator_output_fallback=_agg_streamed_text or None,
+                            )
                         except Exception as _moa_trace_exc:  # pragma: no cover - defensive
                             logger.debug("MoA trace flush failed: %s", _moa_trace_exc)
                     prompt_tokens = canonical_usage.prompt_tokens

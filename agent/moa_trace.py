@@ -112,11 +112,13 @@ def save_moa_turn(
     Best-effort: any failure is logged at debug and swallowed — tracing must
     never break a live turn. Called once per turn on a reference cache MISS.
 
-    ``aggregator_output`` is the aggregator's synthesized text when it was
-    captured inline (non-streaming path — the eval / quiet-mode path). When the
-    aggregator streamed to a live consumer, ``aggregator_streamed`` is True and
-    the output is delivered as the turn's assistant message in the session
-    store instead; the trace records the full aggregator INPUT either way.
+    ``aggregator_output`` is the aggregator's synthesized text. On the
+    non-streaming path (eval / quiet-mode / subagents) it was captured inline
+    at call time. On the streaming path it is captured after the fact from the
+    caller's resolved assistant text (``aggregator_output_fallback`` in
+    ``consume_and_save_trace``) so the trace is self-contained either way; if
+    that resolved text was unavailable, it falls back to None and the record
+    points at the session store via ``output_location``.
     """
     base = _traces_enabled_and_dir()
     if base is None:
@@ -124,6 +126,16 @@ def save_moa_turn(
     try:
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
+        # output_location tells an offline reader where the acting text lives:
+        # embedded here when we have it (both non-streaming inline capture and
+        # streaming after-the-fact capture), else the session-db assistant row.
+        _have_output = bool(aggregator_output)
+        if not aggregator_streamed:
+            _output_location = "inline"
+        elif _have_output:
+            _output_location = "inline_from_stream"
+        else:
+            _output_location = "assistant_message_in_session_db"
         record = {
             "ts": time.time(),
             "session_id": session_id,
@@ -140,11 +152,13 @@ def save_moa_turn(
                 "input_messages": aggregator_input_messages,
                 "output": aggregator_output,
                 "streamed": aggregator_streamed,
-                # When streamed, the aggregator's acting output is persisted as
-                # the turn's assistant message in state.db (see the session
-                # store); it is not duplicated here.
-                "output_location": "assistant_message_in_session_db"
-                if aggregator_streamed else "inline",
+                # Where the aggregator's acting output lives for this record.
+                # "inline"             — non-streaming inline capture
+                # "inline_from_stream" — streamed, then captured from the
+                #                        caller's resolved assistant text
+                # "assistant_message_in_session_db" — streamed and the resolved
+                #                        text was unavailable at flush time
+                "output_location": _output_location,
             },
         }
         with path.open("a", encoding="utf-8") as f:

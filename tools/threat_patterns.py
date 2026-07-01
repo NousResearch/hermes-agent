@@ -55,6 +55,16 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div", "all"),
+    # EchoLeak / CVE-2025-32711: img tag with external URL + query params used
+    # for 0-click exfiltration from markdown-rendered agent output.  Matches
+    # both HTML <img src> and markdown ![...](url?q=) forms.  The ?/= suffix
+    # distinguishes exfil beacons from innocent inline images.
+    (r'<\s*img\s[^>]*src\s*=\s*["\']?https?://[^\s"\']+[?&][^\s"\']*["\']?', "img_src_exfil", "all"),
+    (r'!\[[^\]]*\]\(https?://[^\s)]+[?&][^\s)]*\)', "img_src_exfil_md", "all"),
+    # CSS visibility concealment — Unit 42 documented: visibility:hidden and
+    # opacity:0 used to hide injected payloads in rendered HTML alongside
+    # display:none (already covered by hidden_div above).
+    (r'style\s*=\s*["\'][^"\']*(?:visibility\s*:\s*hidden|opacity\s*:\s*0)', "css_visibility_hidden", "all"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide", "all"),
 
@@ -106,9 +116,45 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Exfiltration via curl/wget/cat with secrets (applies everywhere) ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc|\.aws/credentials|\.config/hermes)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (r'(include|output|print|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
+    # Base64-encoded payload delivery — common obfuscation over any of the above.
+    # "echo ... | base64 -d | sh/bash/python" is the canonical form; also catches
+    # exec() variants.  Near-zero false positive: legitimate scripts decode b64 to
+    # files, not directly to a shell interpreter.
+    (r'base64\s+(?:-d|--decode|/d)\s*\|?\s*(?:sh|bash|python\d?|perl|ruby|node)', "b64_pipe_exec", "all"),
+    (r'echo\s+[A-Za-z0-9+/=]{20,}\s*\|\s*base64\s+(?:-d|--decode)', "b64_echo_decode", "all"),
+    # mkfifo + nc / bash -i reverse-shell — near-zero legitimate use inside an agent
+    (r'mkfifo\s+', "mkfifo_backdoor", "context"),
+    (r'bash\s+-i\s+>&?\s*/dev/(tcp|udp)/', "reverse_shell", "all"),
+    (r'nc\s+(?:-e|-c)\s+(?:/bin/)?(?:bash|sh)', "nc_shell", "all"),
+
+    # ── Shell-pipe installer patterns (applies everywhere) ───────────
+    # "curl url | bash" and "wget -O- url | bash" are the canonical
+    # supply-chain attack vector.  Anchored on the pipe-to-interpreter
+    # suffix so legitimate curl-to-file downloads don't trigger.
+    (r'curl\s+[^\n|]*\|\s*(?:bash|sh|python\d?|perl|ruby|node)', "curl_bash_pipe", "all"),
+    (r'wget\s+[^\n|]*\|\s*(?:bash|sh|python\d?|perl|ruby|node)', "wget_bash_pipe", "all"),
+
+    # ── Jailbreak patterns (strict scope — memory + skills) ──────────
+    # DAN/Developer Mode are well-known jailbreak families.  Scoped
+    # to strict because they appear in security-research blog posts and
+    # tutorial web pages that a user might legitimately browse; blocking
+    # them only when the agent is about to write to memory or install a
+    # skill is the right tradeoff.
+    (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "strict"),
+    (r'\bdeveloper\s+mode\b.*\benabled?\b', "jailbreak_dev_mode", "strict"),
+    # Hypothetical framing + bypass verb — context scope because the
+    # combination is suspicious in scraped pages and tool results too.
+    (r'hypothetical\s+scenario.*(?:ignore|bypass|override)', "hypothetical_bypass", "context"),
+    # "for educational purposes only" pretext — strict only; very common
+    # in legitimate documentation and README files.
+    (r'for\s+educational\s+purposes?\s+only', "educational_pretext", "strict"),
+    # Fake policy announcement — social engineering that claims new rules
+    # have been issued to make the agent comply.  Context scope: this
+    # phrasing appears in poisoned web pages and MCP tool results.
+    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions', "fake_policy", "context"),
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),

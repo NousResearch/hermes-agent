@@ -86,6 +86,22 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_clear_provider_cache_resets_openrouter_catalog_cache(self, monkeypatch):
+        cached = [("cached/model", "recommended")]
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", cached)
+
+        _models_mod.clear_provider_models_cache("openrouter")
+
+        assert _models_mod._openrouter_catalog_cache is None
+
+    def test_clear_all_provider_caches_resets_openrouter_catalog_cache(self, monkeypatch):
+        cached = [("cached/model", "recommended")]
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", cached)
+
+        _models_mod.clear_provider_models_cache()
+
+        assert _models_mod._openrouter_catalog_cache is None
+
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
 

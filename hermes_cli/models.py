@@ -2662,14 +2662,23 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     entry is removed. Used by ``/model --refresh`` and
     ``hermes model --refresh``.
     """
+    global _openrouter_catalog_cache
+
     try:
+        normalized = normalize_provider(provider) if provider is not None else None
+        if provider is None or normalized == "openrouter":
+            # fetch_openrouter_models() keeps a process-local curated catalog cache
+            # in addition to the provider-id disk cache. A refresh must clear both
+            # so long-lived CLI/gateway processes see edited catalog overrides.
+            _openrouter_catalog_cache = None
+
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
             return
         cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
+        normalized = normalized or provider or ""
         if normalized in cache:
             del cache[normalized]
             _save_provider_models_cache(cache)

@@ -73,17 +73,22 @@ class TestOAuthUserAgentPrefix:
         )
 
     def test_token_refresh_ua_prefix(self):
-        """_refresh_oauth_token_raw must not send claude-cli/ UA."""
+        """refresh_anthropic_oauth_pure must not send claude-cli/ UA."""
         import inspect
         import agent.anthropic_adapter as mod
 
-        # Find the function that does the actual refresh HTTP call
-        for name in ("_refresh_oauth_token_raw", "_do_token_refresh", "_refresh_oauth_token"):
-            func = getattr(mod, name, None)
-            if func and callable(func):
-                source = inspect.getsource(func)
-                if "urllib.request.Request" in source:
-                    assert "claude-cli/" not in source, (
-                        f"{name} still uses claude-cli/ UA"
-                    )
-                    break
+        func = getattr(mod, "refresh_anthropic_oauth_pure", None)
+        if func is None or not callable(func):
+            pytest.skip("refresh_anthropic_oauth_pure not found")
+        source = inspect.getsource(func)
+
+        # Header-scoped check (comments referencing claude-cli/ are allowed).
+        for i, line in enumerate(source.split("\n"), 1):
+            stripped = line.strip()
+            if "claude-cli/" in stripped and ("User-Agent" in stripped or "user-agent" in stripped):
+                pytest.fail(
+                    f"Line {i}: refresh_anthropic_oauth_pure still uses claude-cli/ UA header: {stripped}"
+                )
+        assert "claude-code/" in source, (
+            "refresh_anthropic_oauth_pure should use claude-code/ UA"
+        )

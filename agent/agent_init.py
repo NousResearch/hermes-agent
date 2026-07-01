@@ -1167,6 +1167,11 @@ def init_agent(
     # continuation row that must remain open after the helper is torn down;
     # those callers explicitly set this flag to False.
     agent._end_session_on_close = True
+    # When True, this agent NEVER persists to the canonical session store
+    # (state.db) or the JSON snapshot, regardless of session_id. Set on the
+    # background skill/memory review fork so its harness turn can't leak into
+    # the user's real session and hijack the next live turn. Default False.
+    agent._persist_disabled = False
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,

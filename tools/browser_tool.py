@@ -65,11 +65,7 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
-from agent.redact import (
-    redact_sensitive_text,
-    _redact_url_query_params,
-    _redact_url_userinfo,
-)
+from agent.redact import redact_cdp_url
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -118,11 +114,13 @@ try:
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
+        sensitive_query_param_name as _sensitive_query_param_name,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
+    _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -244,21 +242,13 @@ _command_timeout_resolved = False
 def _sanitize_url_for_logs(value: object) -> str:
     """Mask secrets in logged browser endpoint URLs and URL-like errors.
 
-    The global ``redact_sensitive_text`` deliberately passes web-URL query
-    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
-    magic-link / pre-signed URLs the agent is meant to follow — see the
-    web-URL note in ``agent/redact.py``). CDP discovery endpoints are NOT
-    such a workflow: their query-string tokens and userinfo passwords are
-    pure credentials that must never reach the logs. So at these log sites
-    we opt INTO the URL redactors that the global pass leaves off, reusing
-    the shared ``redact.py`` helpers rather than a second regex.
+    Thin wrapper over :func:`agent.redact.redact_cdp_url`, which is the single
+    source of truth for CDP-URL log redaction. Kept as a local name because
+    several browser-tool log sites reference it; the redaction policy itself
+    lives once in ``redact.py`` so the browser tool and the CDP supervisor
+    cannot drift apart.
     """
-    text = redact_sensitive_text(value)
-    if not text:
-        return text
-    text = _redact_url_query_params(text)
-    text = _redact_url_userinfo(text)
-    return text
+    return redact_cdp_url(value)
 
 
 def _get_command_timeout() -> int:
@@ -810,6 +800,20 @@ def _is_local_backend() -> bool:
     that the terminal cannot.  In this case, SSRF protection should be
     enabled even though the browser is technically "local".
     """
+    # A CDP override points the browser at a separate Chrome process whose
+    # network position is not guaranteed to match the terminal (it may live
+    # off-host). Don't treat it as a trusted local backend — otherwise a
+    # model-driven navigate could reach internal/metadata services reachable
+    # from the CDP host but not the terminal. This MUST be checked before the
+    # camofox short-circuit below so a Camofox backend combined with a CDP
+    # override still fails the local check instead of returning local and
+    # skipping the private/internal SSRF gate. The override is honored from
+    # either the BROWSER_CDP_URL env var or a persistent `browser.cdp_url`
+    # config (both via _get_cdp_override(), and both now suppress camofox in
+    # browser_camofox.py). _is_local_mode() already treats any CDP override as
+    # non-local; keep the two helpers in agreement.
+    if _get_cdp_override():
+        return False
     if _is_camofox_mode():
         return True
     if _get_cloud_provider() is not None:
@@ -1284,17 +1288,56 @@ def _is_local_sidecar_key(session_key: str) -> bool:
     return session_key.endswith(_LOCAL_SUFFIX)
 
 
-def _last_session_key(task_id: str) -> str:
-    """Return the session key to use for a non-nav browser tool call.
+def _bare_task_id_for_session_key(session_key: str) -> str:
+    """Return the owning bare task id for an opaque browser session key."""
+    if _is_local_sidecar_key(session_key):
+        return session_key[: -len(_LOCAL_SUFFIX)]
+    return session_key
 
-    If a previous ``browser_navigate`` on this task_id set a last-active key,
-    use it so snapshot/click/fill/etc. hit the same session.  Otherwise fall
-    back to the bare task_id (matches original behavior for tasks that never
-    triggered hybrid routing).
+
+def _session_info_owned_by_task(session_info: Dict[str, Any], task_id: str, session_key: str) -> bool:
+    """Return whether ``session_info`` still belongs to ``task_id``/``session_key``.
+
+    Sessions created by current code carry explicit ownership metadata. Treat
+    older in-memory entries without those fields as valid for hot-reload/test
+    compatibility, but reject any explicit mismatch before a non-navigation
+    tool can act on the wrong tab/session.
+    """
+    owner = session_info.get("owner_task_id")
+    key = session_info.get("session_key")
+    if owner is not None and owner != task_id:
+        return False
+    if key is not None and key != session_key:
+        return False
+    return True
+
+
+def _last_session_key(task_id: str) -> str:
+    """Return the live session key to use for a non-nav browser tool call.
+
+    ``browser_navigate`` records which concrete session key served a task's
+    most recent successful navigation. Non-navigation tools must reuse that key
+    so click/fill/snapshot land in the same browser. If the recorded owner was
+    later cleaned up or ownership metadata no longer matches, fail closed by
+    dropping the stale binding instead of silently recreating or mutating the
+    wrong browser.
     """
     if task_id is None:
         task_id = "default"
-    return _last_active_session_key.get(task_id, task_id)
+    recorded_key = _last_active_session_key.get(task_id)
+    if not recorded_key:
+        return task_id
+    with _cleanup_lock:
+        session_info = _active_sessions.get(recorded_key)
+        if session_info and _session_info_owned_by_task(session_info, task_id, recorded_key):
+            return recorded_key
+        _last_active_session_key.pop(task_id, None)
+    logger.debug(
+        "browser session ownership: dropping stale/mismatched last-active binding %s -> %s",
+        task_id,
+        recorded_key,
+    )
+    return task_id
 
 
 def _allow_private_urls() -> bool:
@@ -1348,7 +1391,7 @@ def _socket_safe_tmpdir() -> str:
 # cleanup_browser code paths — the key is opaque to those internals.
 #
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
-_active_sessions: Dict[str, Dict[str, str]] = {}  # session_key -> {session_name, ...}
+_active_sessions: Dict[str, Dict[str, Any]] = {}  # session_key -> {session_name, ...}
 _recording_sessions: set = set()  # session_keys with active recordings
 
 # Tracks the most recent session_key used per task_id. Set by browser_navigate()
@@ -1945,7 +1988,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     import uuid
     session_name = f"cdp_{uuid.uuid4().hex[:10]}"
     logger.info("Created CDP browser session %s → %s for task %s",
-                session_name, cdp_url, task_id)
+                session_name, _sanitize_url_for_logs(cdp_url), task_id)
     return {
         "session_name": session_name,
         "bb_session_id": None,
@@ -1954,7 +1997,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
+def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
 
@@ -2041,6 +2084,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         # orphan cloud sessions.
         if task_id in _active_sessions:
             return _active_sessions[task_id]
+        session_info = dict(session_info)
+        session_info.setdefault("session_key", task_id)
+        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
         _active_sessions[task_id] = session_info
 
     # Lazy-start the CDP supervisor now that the session exists (if the
@@ -2620,6 +2666,27 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     return '\n'.join(result)
 
 
+def _redact_browser_output(value: Any) -> Any:
+    """Redact secrets from browser-originated data before returning to the model.
+
+    Browser snapshots, console messages, JS exceptions, and eval results can
+    contain page-rendered API keys, cookies, bearer tokens, or pasted secrets.
+    Tool output is a model boundary, so force redaction here even if global log
+    redaction is disabled for debugging.
+    """
+    from agent.redact import redact_sensitive_text
+
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, list):
+        return [_redact_browser_output(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_browser_output(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_browser_output(item) for key, item in value.items()}
+    return value
+
+
 # ============================================================================
 # Browser Tool Functions
 # ============================================================================
@@ -2669,13 +2736,28 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
+    sensitive_query_key = _sensitive_query_param_name(url)
+    if sensitive_query_key and not _is_local_backend() and not auto_local_this_nav:
+        return json.dumps({
+            "success": False,
+            "error": (
+                "Blocked: URL contains a credential-like query parameter "
+                f"({sensitive_query_key}). Cloud browser backends are third-party "
+                "readers; use a local browser/CDP session or remove the sensitive "
+                "query parameter before navigating."
+            ),
+        })
+
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied
     # regardless of backend, hybrid routing, or allow_private_urls.
     # There's no legitimate agent use case for navigating to
     # 169.254.169.254 / metadata.google.internal / ECS task metadata
     # via a browser, and routing those to a local Chromium sidecar
     # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    # The floor is UNCONDITIONAL — it must fire for every backend,
+    # including the pure-local headless Chromium and off-host CDP cases
+    # (a local Chromium on a cloud VM still reaches the host IMDS).
+    if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a cloud metadata endpoint",
@@ -2732,11 +2814,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         timeout=_get_open_command_timeout(first_open=is_first_nav),
     )
 
-    # Remember which session served this nav so snapshot/click/fill/...
-    # on the same task_id hit it (critical when hybrid routing has both a
-    # cloud session and a local sidecar alive concurrently).
-    _last_active_session_key[effective_task_id] = nav_session_key
-
     if result.get("success"):
         data = result.get("data", {})
         title = data.get("title", "")
@@ -2748,12 +2825,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Skipped for local backends (same rationale as the pre-nav check),
         # and for the hybrid local sidecar (we're already on a local browser
         # hitting a private URL by design).
-        # Always-blocked floor (cloud metadata / IMDS) is enforced even
-        # when auto_local_this_nav is true — see pre-nav check for
-        # rationale (#16234).
+        # Always-blocked floor (cloud metadata / IMDS) is enforced for every
+        # backend and even when auto_local_this_nav is true — see pre-nav
+        # check for rationale (#16234).
         if (
-            not _is_local_backend()
-            and final_url
+            final_url
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
@@ -2781,6 +2857,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "url": final_url,
             "title": title
         }
+        # Remember only a successful, non-blocked navigation as the task owner.
+        # Failed opens and blocked redirects must not retarget follow-up clicks
+        # or snapshots to a newly-created but irrelevant session.
+        _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
 
         # Detect common "blocked" page patterns from title/url
@@ -2822,7 +2902,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 refs = snap_data.get("refs", {})
                 if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
                     snapshot_text = _truncate_snapshot(snapshot_text)
-                response["snapshot"] = snapshot_text
+                response["snapshot"] = _redact_browser_output(snapshot_text)
                 response["element_count"] = len(refs) if refs else 0
                 if snap_result.get("fallback_warning") and not response.get("fallback_warning"):
                     _copy_fallback_warning(response, snap_result)
@@ -2910,7 +2990,7 @@ def browser_snapshot(
 
         response = {
             "success": True,
-            "snapshot": snapshot_text,
+            "snapshot": _redact_browser_output(snapshot_text),
             "element_count": len(refs) if refs else 0
         }
         _copy_fallback_warning(response, result)
@@ -2924,7 +3004,7 @@ def browser_snapshot(
             if _supervisor is not None:
                 _sv_snap = _supervisor.snapshot()
                 if _sv_snap.active:
-                    response.update(_sv_snap.to_dict())
+                    response.update(_redact_browser_output(_sv_snap.to_dict()))
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
 
@@ -2953,6 +3033,9 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         return camofox_click(ref, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "click")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -2991,6 +3074,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return camofox_type(ref, text, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "type")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -3126,6 +3212,9 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return camofox_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "press")
+    if blocked is not None:
+        return blocked
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
@@ -3142,7 +3231,21 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-
+def _blocked_private_page_action(effective_task_id: str, action: str) -> Optional[str]:
+    """Return a blocked payload when an unsafe cloud page would receive input."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Refusing to {action} on this page in this "
+            "browser mode."
+        ),
+    }, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
@@ -3162,6 +3265,9 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     """
     # --- JS evaluation mode ---
     if expression is not None:
+        policy_error = _enforce_browser_eval_policy(expression)
+        if policy_error:
+            return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
@@ -3170,6 +3276,18 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         return camofox_console(clear, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    if _eval_ssrf_guard_active(effective_task_id):
+        _blocked_url = _current_page_private_url(effective_task_id)
+        if _blocked_url:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: page URL targets a private or internal address "
+                    f"({_blocked_url}). This may have been caused by a "
+                    "JavaScript navigation via browser_console."
+                ),
+            }, ensure_ascii=False)
 
     console_args = ["--clear"] if clear else []
     error_args = ["--clear"] if clear else []
@@ -3182,7 +3300,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         for msg in console_result.get("data", {}).get("messages", []):
             messages.append({
                 "type": msg.get("type", "log"),
-                "text": msg.get("text", ""),
+                "text": _redact_browser_output(msg.get("text", "")),
                 "source": "console",
             })
 
@@ -3190,7 +3308,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     if errors_result.get("success"):
         for err in errors_result.get("data", {}).get("errors", []):
             errors.append({
-                "message": err.get("message", ""),
+                "message": _redact_browser_output(err.get("message", "")),
                 "source": "exception",
             })
 
@@ -3275,6 +3393,128 @@ def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     return None
 
 
+_RISKY_BROWSER_EVAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bdocument\s*\.\s*cookie\b", re.I), "document.cookie"),
+    (re.compile(r"\b(?:localStorage|sessionStorage)\b", re.I), "web storage"),
+    (re.compile(r"\bindexedDB\b", re.I), "IndexedDB"),
+    (re.compile(r"\bcaches\s*\.\s*(?:open|match|keys)\b", re.I), "Cache Storage"),
+    (re.compile(r"\bnavigator\s*\.\s*(?:clipboard|credentials|serviceWorker)\b", re.I), "navigator sensitive API"),
+    (re.compile(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", re.I), "network request"),
+    (re.compile(r"\bnavigator\s*\.\s*sendBeacon\s*\(", re.I), "network beacon"),
+    (re.compile(r"\bdocument\s*\.\s*forms\b.*\bvalue\b", re.I | re.S), "form value extraction"),
+    (re.compile(r"\bquerySelector(?:All)?\s*\([^)]*(?:input|textarea|password)[^)]*\).*\bvalue\b", re.I | re.S), "form value extraction"),
+)
+_JS_STRING_LITERAL_RE = re.compile(
+    r"""'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`""",
+    re.S,
+)
+_SENSITIVE_BROWSER_EVAL_TOKENS: tuple[tuple[str, str], ...] = (
+    ("cookie", "document.cookie"),
+    ("localStorage", "web storage"),
+    ("sessionStorage", "web storage"),
+    ("indexedDB", "IndexedDB"),
+    ("caches", "Cache Storage"),
+    ("clipboard", "navigator sensitive API"),
+    ("credentials", "navigator sensitive API"),
+    ("serviceWorker", "navigator sensitive API"),
+    ("fetch", "network request"),
+    ("XMLHttpRequest", "network request"),
+    ("WebSocket", "network request"),
+    ("EventSource", "network request"),
+    ("sendBeacon", "network beacon"),
+)
+
+
+def _allow_unsafe_browser_evaluate() -> bool:
+    """Return whether sensitive browser JS evaluation is explicitly allowed.
+
+    ``browser_console(expression=...)`` is useful for read-only DOM inspection,
+    but a malicious page or prompt injection can try to steer the agent into
+    evaluating code that reads cookies/storage/form values or performs network
+    exfiltration.  Keep harmless expressions (``document.title`` etc.) working,
+    while requiring a config opt-in for the dangerous primitives.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        return is_truthy_value(cfg_get(cfg, "browser", "allow_unsafe_evaluate"), default=False)
+    except Exception as e:
+        logger.debug("Could not read browser.allow_unsafe_evaluate from config: %s", e)
+        return False
+
+
+def _decode_js_string_literal(literal: str) -> str:
+    """Best-effort decode of a JavaScript string literal for policy checks.
+
+    This is not a JS parser.  It only normalizes common escaped property names
+    such as ``document["co\\x6fkie"]`` before the fail-closed sensitive-token
+    check below.
+    """
+    if len(literal) < 2:
+        return literal
+    body = literal[1:-1]
+    try:
+        return bytes(body, "utf-8").decode("unicode_escape")
+    except Exception:
+        return body
+
+
+def _decoded_js_string_literals(expression: str) -> list[str]:
+    return [_decode_js_string_literal(match.group(0)) for match in _JS_STRING_LITERAL_RE.finditer(expression)]
+
+
+def _sensitive_browser_eval_token_reason(expression: str) -> Optional[str]:
+    """Return a risk reason for direct or quoted sensitive browser primitives.
+
+    ``browser_console(expression=...)`` executes in the page origin.  A denylist
+    that only searches direct spellings like ``document.cookie`` and ``fetch(``
+    misses equivalent JavaScript property access such as ``document["cookie"]``
+    or ``globalThis["fetch"](...)``.  Treat sensitive primitive names as risky
+    whether they appear as identifiers or decoded string-literal property names.
+    Concatenating all string literals catches simple obfuscations like
+    ``document["coo" + "kie"]`` while the config opt-in preserves the escape
+    hatch for trusted pages.
+    """
+    string_literals = _decoded_js_string_literals(expression)
+    concatenated_literals = "".join(string_literals).lower()
+    for token, reason in _SENSITIVE_BROWSER_EVAL_TOKENS:
+        if re.search(rf"\b{re.escape(token)}\b", expression, re.I):
+            return reason
+        token_lower = token.lower()
+        if any(token_lower in literal.lower() for literal in string_literals):
+            return reason
+        if token_lower in concatenated_literals:
+            return reason
+    return None
+
+
+def _risky_browser_eval_reason(expression: str) -> Optional[str]:
+    """Return a human-readable reason if a JS expression uses risky primitives."""
+    if not expression:
+        return None
+    for pattern, reason in _RISKY_BROWSER_EVAL_PATTERNS:
+        if pattern.search(expression):
+            return reason
+    return _sensitive_browser_eval_token_reason(expression)
+
+
+def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
+    """Fail closed for sensitive browser JS evaluation unless config opts in."""
+    if _allow_unsafe_browser_evaluate():
+        return None
+    reason = _risky_browser_eval_reason(expression)
+    if not reason:
+        return None
+    return (
+        "Blocked: browser_console(expression=...) tried to use sensitive browser "
+        f"JavaScript primitive ({reason}). Use browser_snapshot/browser_get_images/"
+        "browser_console without expression for normal inspection, or set "
+        "browser.allow_unsafe_evaluate: true in config.yaml only for trusted pages "
+        "when this access is explicitly required."
+    )
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     if _is_camofox_mode():
@@ -3340,7 +3580,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         }, ensure_ascii=False)
                 response = {
                     "success": True,
-                    "result": parsed,
+                    "result": _redact_browser_output(parsed),
                     "result_type": type(parsed).__name__,
                     "method": "cdp_supervisor",
                 }
@@ -3410,7 +3650,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
     response = {
         "success": True,
-        "result": parsed,
+        "result": _redact_browser_output(parsed),
         "result_type": type(parsed).__name__,
     }
     # Post-eval page-URL recheck: if this (or a prior) eval navigated the page
@@ -3448,7 +3688,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
         return json.dumps({
             "success": True,
-            "result": parsed,
+            "result": _redact_browser_output(parsed),
             "result_type": type(parsed).__name__,
         }, ensure_ascii=False, default=str)
     except Exception as e:
@@ -3566,7 +3806,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
 
             response = {
                 "success": True,
-                "images": images,
+                "images": _redact_browser_output(images),
                 "count": len(images)
             }
             return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
@@ -3972,9 +4212,14 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
 
-    # Drop the last-active pointer only when the bare task is being cleaned
-    # (i.e. not when we're only reaping a sidecar mid-task).
-    if not _is_local_sidecar_key(task_id):
+    # Drop stale last-active ownership. Cleaning a bare task drops its binding;
+    # cleaning a sidecar drops the binding only if that sidecar was still the
+    # recorded owner. This prevents a later click/snapshot from resurrecting a
+    # cleaned sidecar on about:blank while preserving a primary-session binding.
+    if _is_local_sidecar_key(task_id):
+        if _last_active_session_key.get(bare_task_id) == task_id:
+            _last_active_session_key.pop(bare_task_id, None)
+    else:
         _last_active_session_key.pop(bare_task_id, None)
 
 

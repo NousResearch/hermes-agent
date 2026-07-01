@@ -225,6 +225,7 @@ acp = ["agent-client-protocol==0.9.0"]
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
+vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.

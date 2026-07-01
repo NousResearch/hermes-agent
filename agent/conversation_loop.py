@@ -2600,6 +2600,16 @@ def run_conversation(
                         continue
                 if (
                     agent.api_mode == "chat_completions"
+                    and agent.provider == "vertex"
+                    and status_code == 401
+                    and not _retry.vertex_auth_retry_attempted
+                ):
+                    _retry.vertex_auth_retry_attempted = True
+                    if agent._try_refresh_vertex_client_credentials():
+                        agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
+                        continue
+                if (
+                    agent.api_mode == "chat_completions"
                     and agent.provider == "nous"
                     and status_code == 401
                     and not _retry.nous_auth_retry_attempted

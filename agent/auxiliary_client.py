@@ -4506,6 +4506,42 @@ def resolve_provider_client(
                          "directly supported", provider)
         return None, None
 
+    elif pconfig.auth_type == "vertex":
+        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
+        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a fresh
+        # token; no custom SDK or message translation needed.
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not mint token / resolve project")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
         # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).

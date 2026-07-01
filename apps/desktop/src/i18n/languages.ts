@@ -26,6 +26,72 @@ export const LOCALE_OPTIONS = [
     name: '日本語',
     englishName: 'Japanese',
     configValue: 'ja'
+  },
+  {
+    id: 'ko',
+    name: '한국어',
+    englishName: 'Korean',
+    configValue: 'ko'
+  },
+  {
+    id: 'de',
+    name: 'Deutsch',
+    englishName: 'German',
+    configValue: 'de'
+  },
+  {
+    id: 'es',
+    name: 'Español',
+    englishName: 'Spanish',
+    configValue: 'es'
+  },
+  {
+    id: 'fr',
+    name: 'Français',
+    englishName: 'French',
+    configValue: 'fr'
+  },
+  {
+    id: 'pt-br',
+    name: 'Português (Brasil)',
+    englishName: 'Portuguese (Brazil)',
+    configValue: 'pt-br'
+  },
+  {
+    id: 'ar',
+    name: 'العربية',
+    englishName: 'Arabic',
+    configValue: 'ar'
+  },
+  {
+    id: 'hi',
+    name: 'हिन्दी',
+    englishName: 'Hindi',
+    configValue: 'hi'
+  },
+  {
+    id: 'th',
+    name: 'ภาษาไทย',
+    englishName: 'Thai',
+    configValue: 'th'
+  },
+  {
+    id: 'vi',
+    name: 'Tiếng Việt',
+    englishName: 'Vietnamese',
+    configValue: 'vi'
+  },
+  {
+    id: 'it',
+    name: 'Italiano',
+    englishName: 'Italian',
+    configValue: 'it'
+  },
+  {
+    id: 'ru',
+    name: 'Русский',
+    englishName: 'Russian',
+    configValue: 'ru'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -62,7 +128,51 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   zh_hant_hk: 'zh-hant',
   ja: 'ja',
   'ja-jp': 'ja',
-  ja_jp: 'ja'
+  ja_jp: 'ja',
+  ko: 'ko',
+  'ko-kr': 'ko',
+  ko_kr: 'ko',
+  de: 'de',
+  'de-de': 'de',
+  de_de: 'de',
+  'de-at': 'de',
+  'de-ch': 'de',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-mx': 'es',
+  'es-ar': 'es',
+  fr: 'fr',
+  'fr-fr': 'fr',
+  fr_fr: 'fr',
+  'fr-ca': 'fr',
+  'fr-ch': 'fr',
+  'fr-be': 'fr',
+  'pt-br': 'pt-br',
+  pt_br: 'pt-br',
+  'pt-pt': 'pt-br',
+  pt_pt: 'pt-br',
+  ar: 'ar',
+  'ar-sa': 'ar',
+  ar_sa: 'ar',
+  'ar-eg': 'ar',
+  'ar-ae': 'ar',
+  hi: 'hi',
+  'hi-in': 'hi',
+  hi_in: 'hi',
+  th: 'th',
+  'th-th': 'th',
+  th_th: 'th',
+  vi: 'vi',
+  'vi-vn': 'vi',
+  vi_vn: 'vi',
+  it: 'it',
+  'it-it': 'it',
+  it_it: 'it',
+  'it-ch': 'it',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru'
 }
 
 export function isLocale(value: unknown): value is Locale {

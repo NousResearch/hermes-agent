@@ -5,6 +5,7 @@ import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
+const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
@@ -13,7 +14,7 @@ vi.mock('@/hermes', () => ({
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
-  notifyError: vi.fn()
+  notifyError: (err: unknown, fallback: string) => notifyError(err, fallback)
 }))
 
 function hindsightSchema(overrides: Partial<MemoryProviderConfig['fields'][number]>[] = []): MemoryProviderConfig {
@@ -147,5 +148,15 @@ describe('ProviderConfigPanel', () => {
 
     await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin'))
     expect(container.querySelector('section')).toBeNull()
+  })
+
+  it('silently hides provider settings when an older backend lacks the config endpoint', async () => {
+    getMemoryProviderConfig.mockRejectedValue(new Error('No such API endpoint: /api/memory/providers/mnemosyne/config'))
+
+    const { container } = await renderPanel('mnemosyne')
+
+    await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('mnemosyne'))
+    expect(container.querySelector('section')).toBeNull()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

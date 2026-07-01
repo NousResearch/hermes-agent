@@ -18,6 +18,15 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   return Object.fromEntries(config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value]))
 }
 
+function isProviderConfigEndpointUnavailable(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
+
+  return (
+    /no such api endpoint|endpoint is likely missing/i.test(message) ||
+    (/\b404\b/.test(message) && /\/api\/memory\/providers\/[^/]+\/config/.test(message))
+  )
+}
+
 function FieldControl({
   field,
   value,
@@ -93,6 +102,15 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       setConfig(next)
       setValues(seedValues(next))
     } catch (err) {
+      if (isProviderConfigEndpointUnavailable(err)) {
+        // Older/remote Hermes backends may not expose the generic config API yet.
+        // Treat that the same as a provider with no declared config surface.
+        setConfig({ name: provider, label: provider, fields: [] })
+        setValues({})
+
+        return
+      }
+
       notifyError(err, 'Memory provider settings failed to load')
       setConfig(null)
     }

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import {
+  getMemoryProviderConfig,
+  getSessionMessages,
+  listAllProfileSessions,
+  listSessions,
+  setApiRequestProfile
+} from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -21,6 +27,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -55,6 +62,18 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('tags memory provider config reads for the selected profile backend', async () => {
+    api.mockResolvedValue({ name: 'mnemosyne', label: 'mnemosyne', fields: [] })
+    setApiRequestProfile('work')
+
+    await getMemoryProviderConfig('mnemosyne')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/memory/providers/mnemosyne/config',
+      profile: 'work'
     })
   })
 })

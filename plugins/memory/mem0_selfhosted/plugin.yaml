@@ -1,0 +1,4 @@
+name: mem0_selfhosted
+version: 1.0.0
+description: "Mem0 Self-Hosted — REST API client for the self-hosted Mem0 FastAPI server (uses X-API-Key header + /memories + /search endpoints, not the cloud SDK)."
+pip_dependencies: []

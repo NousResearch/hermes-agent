@@ -417,10 +417,17 @@ class GatewayAuthorizationMixin:
         if getattr(source, "role_authorized", False) is True:
             return True
 
-        # Check pairing store (always checked, regardless of allowlists)
+        # Pairing store membership. Recorded here but NOT returned yet: if an
+        # allowlist is configured, a previously-paired user must STILL be in
+        # that allowlist to be honored. Otherwise a user who tapped "Always" on
+        # an approval button could permanently bypass TELEGRAM_ALLOWED_USERS (or
+        # equivalent) via the pairing store even after being removed from the
+        # allowlist (issue #23778). When no allowlist is configured, pairing is
+        # the intended access path and is honored in the no-allowlist branch
+        # below; when an allowlist IS configured, the pairing entry only counts
+        # if the user is also in it (folded into the final membership check).
         platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
-            return True
+        is_paired = self.pairing_store.is_approved(platform_name, user_id)
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
@@ -432,6 +439,11 @@ class GatewayAuthorizationMixin:
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+            # No env allowlist configured. A pairing-store entry is the intended
+            # access path here (the user completed the pairing handshake), so
+            # honor it — there is no allowlist to re-validate against.
+            if is_paired:
+                return True
             # No env allowlist configured. Adapters that own their own
             # config-driven access policy (dm_policy / group_policy /
             # allow_from / group_allow_from) gate access at intake, so for those

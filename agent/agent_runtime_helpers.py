@@ -2379,6 +2379,25 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
+
+    # 3. Normalise null-content messages to empty string.
+    #    Several providers (Xiaomi MiMo, DeepSeek, Kimi, Qwen) reject
+    #    messages where content is null.  OpenAI silently accepts null,
+    #    but empty string is universally safe and prevents HTTP 400
+    #    "text is not set" / "Invalid assistant message" errors.
+    #    Only mutates the wire copy — session DB keeps the original.
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant":
+            # assistant: only normalise when no tool_calls or reasoning
+            if msg.get("content") is None:
+                if not msg.get("tool_calls") and not msg.get("reasoning_content"):
+                    msg["content"] = ""
+        elif role in ("tool", "user"):
+            # tool/user: any null content -> empty string
+            if msg.get("content") is None:
+                msg["content"] = ""
+
     return messages
 
 

@@ -549,10 +549,22 @@ def classify_api_error(
                         pass
         if not _body_msg:
             _body_msg = str(body.get("message") or "").lower()
+    # Include the ``param`` field — some providers (Xiaomi MiMo) put the
+    # actionable error detail in ``param`` rather than ``message``:
+    #   {"message": "Param Incorrect", "param": "`text` is not set"}
+    # Without this, patterns like "text is not set" never match and the
+    # error is misclassified as a non-retryable format_error.
+    _param_msg = ""
+    if isinstance(body, dict):
+        # Strip backticks — Xiaomi wraps field names in backticks
+        # (e.g. "`text` is not set") which breaks substring matching.
+        _param_msg = str(body.get("param") or "").lower().replace("`", "")
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
         parts.append(_body_msg)
+    if _param_msg and _param_msg not in _raw_msg and _param_msg not in _body_msg:
+        parts.append(_param_msg)
     if _metadata_msg and _metadata_msg not in _raw_msg and _metadata_msg not in _body_msg:
         parts.append(_metadata_msg)
     error_msg = " ".join(parts)

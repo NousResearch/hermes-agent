@@ -41,22 +41,13 @@ def _fake_aux_response(content: str):
     return resp
 
 
-def _mock_client_returning(content: str):
-    client = MagicMock()
-    client.chat.completions.create = MagicMock(return_value=_fake_aux_response(content))
-    return client
-
-
-def _patch_aux_client(content: str, *, model: str = "test-model"):
-    """Patch get_text_auxiliary_client at its source + at the module that
-    imported it lazily inside specify_task. Both patches are needed
-    because kanban_specify imports the function inside the function body.
-    """
-    client = _mock_client_returning(content)
-    return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, model),
-    ), client
+def _patch_call_llm(content: str):
+    call_llm_mock = MagicMock(return_value=_fake_aux_response(content))
+    patcher = patch(
+        "agent.auxiliary_client.call_llm",
+        side_effect=call_llm_mock,
+    )
+    return patcher, call_llm_mock
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +87,7 @@ def test_specify_task_happy_path(kanban_home):
         "title": "Refined rough",
         "body": "**Goal**\nA concrete goal.",
     })
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         outcome = spec.specify_task(tid, author="ace")
 
@@ -112,13 +103,27 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_task_uses_unified_call_llm_slot(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    content = jsonlib.dumps({"title": "Refined rough", "body": "Body"})
+    patcher, call_llm_mock = _patch_call_llm(content)
+    with patcher:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    call_llm_mock.assert_called_once()
+    assert call_llm_mock.call_args.kwargs["task"] == "triage_specifier"
+
+
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="keep title", triage=True)
 
     # Model returned plain markdown, no JSON object.
     content = "Goal: Do a thing.\nApproach: Steps here."
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         outcome = spec.specify_task(tid)
 
@@ -135,23 +140,23 @@ def test_specify_task_rejects_non_triage_task(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ready task")
 
-    p, client = _patch_aux_client("unused")
+    p, client = _patch_call_llm("unused")
     with p:
         outcome = spec.specify_task(tid)
 
     assert outcome.ok is False
     assert "not in triage" in outcome.reason
     # LLM must not be invoked for a non-triage task — fail cheap.
-    assert client.chat.completions.create.call_count == 0
+    assert client.call_count == 0
 
 
 def test_specify_task_unknown_id(kanban_home):
-    p, client = _patch_aux_client("unused")
+    p, client = _patch_call_llm("unused")
     with p:
         outcome = spec.specify_task("t_nope")
     assert outcome.ok is False
     assert "unknown task" in outcome.reason
-    assert client.chat.completions.create.call_count == 0
+    assert client.call_count == 0
 
 
 def test_specify_task_no_aux_client_configured(kanban_home):
@@ -159,8 +164,8 @@ def test_specify_task_no_aux_client_configured(kanban_home):
         tid = kb.create_task(conn, title="rough", triage=True)
 
     with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(None, ""),
+        "agent.auxiliary_client.call_llm",
+        side_effect=RuntimeError("No LLM provider configured"),
     ):
         outcome = spec.specify_task(tid)
 
@@ -176,11 +181,8 @@ def test_specify_task_llm_api_error_keeps_task_in_triage(kanban_home):
         tid = kb.create_task(conn, title="rough", triage=True)
 
     client = MagicMock()
-    client.chat.completions.create = MagicMock(side_effect=RuntimeError("429 rate limited"))
-    with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, "test-model"),
-    ):
+    client = MagicMock(side_effect=RuntimeError("429 rate limited"))
+    with patch("agent.auxiliary_client.call_llm", side_effect=client):
         outcome = spec.specify_task(tid)
 
     assert outcome.ok is False
@@ -193,7 +195,7 @@ def test_specify_task_empty_llm_response(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="rough", triage=True)
 
-    p, _ = _patch_aux_client("")
+    p, _ = _patch_call_llm("")
     with p:
         outcome = spec.specify_task(tid)
 
@@ -248,7 +250,7 @@ def test_cli_specify_single_id_success(kanban_home, capsys):
         tid = kb.create_task(conn, title="rough", triage=True)
 
     content = jsonlib.dumps({"title": "clean", "body": "body"})
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         rc = _run_cli("specify", tid)
     assert rc == 0
@@ -263,7 +265,7 @@ def test_cli_specify_all_success_and_json(kanban_home, capsys):
         b = kb.create_task(conn, title="b", triage=True)
 
     content = jsonlib.dumps({"title": "spec", "body": "body"})
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         rc = _run_cli("specify", "--all", "--json")
     assert rc == 0
@@ -288,8 +290,8 @@ def test_cli_specify_all_returns_1_when_every_task_fails(kanban_home, capsys):
         kb.create_task(conn, title="b", triage=True)
 
     with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(None, ""),  # no aux client → every task fails
+        "agent.auxiliary_client.call_llm",
+        side_effect=RuntimeError("No LLM provider configured"),  # no aux client → every task fails
     ):
         rc = _run_cli("specify", "--all")
 
@@ -304,7 +306,7 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
         )
 
     content = jsonlib.dumps({"title": "spec", "body": "body"})
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         rc = _run_cli("specify", "--all", "--tenant", "proj-a", "--json")
     assert rc == 0
@@ -328,7 +330,7 @@ def test_cli_specify_author_passed_through(kanban_home, capsys):
         tid = kb.create_task(conn, title="rough", triage=True)
 
     content = jsonlib.dumps({"title": "fresh title", "body": "fresh body"})
-    p, _ = _patch_aux_client(content)
+    p, _ = _patch_call_llm(content)
     with p:
         rc = _run_cli("specify", tid, "--author", "custom-agent")
     assert rc == 0

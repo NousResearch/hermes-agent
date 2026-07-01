@@ -132,6 +132,55 @@ def finalize_turn(
         )
     )
 
+    # Kanban worker safety bridge: a worker can produce a normal text answer
+    # and exit rc=0 without calling kanban_complete/kanban_block. From the
+    # caller's perspective that looks "completed", but the task is still
+    # running in the board and the dispatcher later records a protocol
+    # violation. Record the failure before process exit so the task lands in a
+    # clear blocked state instead of a clean-exit respawn loop.
+    if completed and not interrupted:
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+        if _kanban_task:
+            try:
+                from hermes_cli import kanban_db as _kb
+                _conn = _kb.connect()
+                try:
+                    _task = _kb.get_task(_conn, _kanban_task)
+                    if _task is not None and _task.status == "running":
+                        _kb._record_task_failure(
+                            _conn,
+                            _kanban_task,
+                            error=(
+                                "Kanban worker returned a normal text response "
+                                "but did not call kanban_complete or "
+                                "kanban_block before exiting."
+                            ),
+                            outcome="protocol_violation",
+                            failure_limit=1,
+                            release_claim=True,
+                            end_run=True,
+                            event_payload_extra={
+                                "exit_reason": _turn_exit_reason,
+                                "response_len": len(final_response or ""),
+                            },
+                        )
+                        completed = False
+                        logger.info(
+                            "recorded clean-text protocol failure for task %s",
+                            _kanban_task,
+                        )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+            except Exception:
+                logger.warning(
+                    "Failed to record clean-text protocol failure for task %s",
+                    _kanban_task,
+                    exc_info=True,
+                )
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote

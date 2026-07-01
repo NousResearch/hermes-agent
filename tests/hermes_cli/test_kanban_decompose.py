@@ -34,25 +34,12 @@ def _fake_aux_response(content: str):
     return resp
 
 
-def _mock_client_returning(content: str):
-    client = MagicMock()
-    client.chat.completions.create = MagicMock(return_value=_fake_aux_response(content))
-    return client
-
-
-def _patch_aux_client(content: str, *, model: str = "test-model"):
-    client = _mock_client_returning(content)
+def _patch_call_llm(content: str):
+    mocked = MagicMock(return_value=_fake_aux_response(content))
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, model),
-    )
-
-
-def _patch_extra_body():
-    return patch(
-        "agent.auxiliary_client.get_auxiliary_extra_body",
-        return_value={},
-    )
+        "agent.auxiliary_client.call_llm",
+        side_effect=mocked,
+    ), mocked
 
 
 def _patch_list_profiles(names: list[str]):
@@ -91,8 +78,11 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body():
+        patcher, call_llm_mock = _patch_call_llm(llm_payload)
+        with patcher:
             outcome = decomp.decompose_task(tid, author="me")
+        call_llm_mock.assert_called_once()
+        assert call_llm_mock.call_args.kwargs["task"] == "kanban_decomposer"
     finally:
         for p in patches:
             p.stop()
@@ -112,6 +102,343 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_fanout_children_inherit_goal_mode(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship a goal-mode feature",
+            triage=True,
+            goal_mode=True,
+            goal_max_turns=3,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        patcher, call_llm_mock = _patch_call_llm(llm_payload)
+        with patcher:
+            outcome = decomp.decompose_task(tid, author="me")
+        call_llm_mock.assert_called_once()
+        assert call_llm_mock.call_args.kwargs["task"] == "kanban_decomposer"
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+        rows = [
+            conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created'",
+                (child_id,),
+            ).fetchone()
+            for child_id in outcome.child_ids
+        ]
+
+    assert all(child is not None for child in children)
+    assert all(child.goal_mode is True for child in children)
+    assert all(child.goal_max_turns == 3 for child in children)
+    assert all(jsonlib.loads(row["payload"])["goal_mode"] is True for row in rows)
+
+
+def test_decompose_fanout_children_inherit_original_hard_constraints(kanban_home):
+    body = (
+        "Repo: /Users/yuxiansheng/dev/devrun-smoke. "
+        "This is read-only; do not modify files; final verdict only."
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="verify isolated board routing",
+            body=body,
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "inspect route", "body": "Check the board.", "assignee": "researcher", "parents": []},
+            {"title": "write verdict", "body": "Summarize outcome.", "assignee": "engineer", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_call_llm(llm_payload)[0]:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+
+    for child in children:
+        assert child is not None
+        assert "Inherited hard constraints" in child.body
+        assert "read-only" in child.body
+        assert "do not modify files" in child.body
+        assert "final verdict only" in child.body
+        assert "/Users/yuxiansheng/dev/devrun-smoke" in child.body
+
+
+def test_decompose_stabilizes_closure_graph_dependencies(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Post-patch final closure",
+            body=(
+                "Verify Budget Gate Evidence, isolated-board routing, and "
+                "worker terminal states; read-only; do not modify files; "
+                "final verdict only."
+            ),
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "Verify Budget Gate Evidence",
+                "body": "Check the current Kanban card body.",
+                "assignee": "reviewer",
+                "parents": [],
+            },
+            {
+                "title": "Verify isolated-board routing",
+                "body": "Check the target board.",
+                "assignee": "ops",
+                "parents": [],
+            },
+            {
+                "title": "Verify Kanban workers reach terminal states",
+                "body": "Inspect done/blocked states.",
+                "assignee": "reviewer",
+                "parents": [],
+            },
+            {
+                "title": "Cross-check closure evidence files",
+                "body": "Compare closure_verdict.md against the current run.",
+                "assignee": "researcher",
+                "parents": [],
+            },
+            {
+                "title": "Synthesize final post-patch closure verdict",
+                "body": "Produce PASS, NEEDS_CHANGES, or BLOCKED.",
+                "assignee": "reviewer",
+                "parents": [0],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "reviewer", "ops", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_call_llm(llm_payload)[0]:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 5
+
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+
+    terminal = children[2]
+    closure_files = children[3]
+    synthesis = children[4]
+
+    assert terminal.status == "todo"
+    assert "Terminal-state timing guard" in terminal.body
+    assert "do not return FAIL" in terminal.body
+    assert closure_files.status == "ready"
+    assert "Current-run evidence guard" in closure_files.body
+    assert synthesis.status == "todo"
+    assert "Final synthesis evidence guard" in synthesis.body
+
+    with kb.connect() as conn:
+        terminal_parent_ids = {
+            row["parent_id"]
+            for row in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?",
+                (terminal.id,),
+            ).fetchall()
+        }
+        synthesis_parent_ids = {
+            row["parent_id"]
+            for row in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?",
+                (synthesis.id,),
+            ).fetchall()
+        }
+
+    assert terminal_parent_ids == {children[0].id, children[1].id, children[3].id}
+    assert synthesis_parent_ids == {child.id for child in children[:4]}
+
+
+def test_decompose_does_not_gate_synthesis_on_root_terminal_child(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Final closure without root self-deadlock",
+            body=(
+                "Verify all workers/root reach done or blocked; read-only; "
+                "do not modify files; final verdict only."
+            ),
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "Verify evidence worker completed",
+                "body": "Check the evidence worker handoff.",
+                "assignee": "reviewer",
+                "parents": [],
+            },
+            {
+                "title": "Verify all workers and root reach done or blocked",
+                "body": "Confirm root reaches done or blocked.",
+                "assignee": "ops",
+                "parents": [],
+            },
+            {
+                "title": "Verify terminal-state verifier waits for siblings",
+                "body": "Inspect terminal-state verifier wiring.",
+                "assignee": "ops",
+                "parents": [],
+            },
+            {
+                "title": "Synthesize final closure verdict from live Kanban evidence",
+                "body": "Produce the final verdict.",
+                "assignee": "reviewer",
+                "parents": [0, 1, 2],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "reviewer", "ops"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_call_llm(llm_payload)[0]:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 4
+
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+        terminal_parent_ids = {
+            row["parent_id"]
+            for row in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?",
+                (children[2].id,),
+            ).fetchall()
+        }
+        synthesis_parent_ids = {
+            row["parent_id"]
+            for row in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?",
+                (children[3].id,),
+            ).fetchall()
+        }
+
+    assert "Root-status self-reference guard" in children[1].body
+    assert "root cannot close until its children close" in children[1].body
+    assert terminal_parent_ids == {children[0].id}
+    assert synthesis_parent_ids == {children[0].id, children[2].id}
+    assert children[1].id not in synthesis_parent_ids
+
+
+def test_decompose_live_closure_uses_deterministic_fallback_on_empty_response(kanban_home):
+    body = (
+        "Final no-regret closure test after root self-deadlock fix: verify "
+        "Budget Gate Evidence appears in the Kanban card body, Current live "
+        "verification scope appears in the card body, isolated-board routing "
+        "works, terminal-state verifier waits for sibling workers instead of "
+        "premature FAIL, final synthesis uses current live Kanban evidence over "
+        "stale closure files, and the Kanban graph can close without any child "
+        "requiring the root to already be done before children finish; read-only; "
+        "do not modify files; final verdict only"
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Final no-regret closure",
+            body=body,
+            triage=True,
+            goal_mode=True,
+            goal_max_turns=3,
+        )
+
+    patches = _patch_list_profiles(["orchestrator", "reviewer", "ops"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_call_llm("")[0]:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 5
+    assert "deterministic closure fallback" in outcome.reason
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+        synthesis = children[-1]
+        synthesis_parent_ids = {
+            row["parent_id"]
+            for row in conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?",
+                (synthesis.id,),
+            ).fetchall()
+        }
+
+    assert root.status == "todo"
+    assert root.assignee == "orchestrator"
+    assert all(child.goal_mode is True for child in children)
+    assert all(child.goal_max_turns == 3 for child in children)
+    assert "Verify Budget Gate Evidence" in children[0].title
+    assert "Verify Current live verification scope" in children[1].title
+    assert "Verify isolated-board routing" in children[2].title
+    assert "Verify terminal-state verifier waits" in children[3].title
+    assert "Synthesize final closure verdict" in children[4].title
+    assert synthesis_parent_ids == {child.id for child in children[:4]}
+    assert all("root reach done" not in child.title.lower() for child in children)
+    assert all("root to already be done" not in child.title.lower() for child in children)
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
@@ -127,7 +454,7 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_call_llm(llm_payload)[0], patch(
             "hermes_cli.kanban_decompose._load_config",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
@@ -169,7 +496,7 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_call_llm(llm_payload)[0], patch(
             "hermes_cli.kanban_decompose._load_config",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
@@ -202,7 +529,7 @@ def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_call_llm(llm_payload)[0], patch(
             "hermes_cli.kanban_decompose._load_config",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
@@ -234,7 +561,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+        with _patch_call_llm(llm_payload)[0], patch(
             "hermes_cli.kanban_decompose._load_config",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
@@ -269,7 +596,7 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
     try:
         with patch.dict(
             "os.environ", {}, clear=False,
-        ), _patch_aux_client(llm_payload), _patch_extra_body(), \
+        ), _patch_call_llm(llm_payload)[0], \
             patch(
                 "hermes_cli.kanban_decompose._load_config",
                 return_value={
@@ -292,22 +619,39 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
     assert child.assignee == "fallback"
 
 
-def test_decompose_handles_malformed_llm_json(kanban_home):
+def test_decompose_malformed_llm_json_promotes_guarded_single_task(kanban_home):
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="x", triage=True)
+        tid = kb.create_task(
+            conn,
+            title="verify safely",
+            body="read-only; do not modify files; final verdict only",
+            triage=True,
+        )
 
-    patches = _patch_list_profiles(["orchestrator"])
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client("not json at all, sorry"), _patch_extra_body():
+        with _patch_call_llm("not json at all, sorry")[0], patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
         for p in patches:
             p.stop()
 
-    assert outcome.ok is False
-    assert "malformed JSON" in outcome.reason
+    assert outcome.ok is True
+    assert outcome.fanout is False
+    assert "malformed JSON fallback" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "ready"
+    assert task.assignee == "fallback"
+    assert "decomposer returned malformed JSON" in task.body
+    assert "read-only" in task.body
+    assert "do not modify files" in task.body
+    assert "final verdict only" in task.body
 
 
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
@@ -335,8 +679,8 @@ def test_decompose_no_aux_client_configured(kanban_home):
         p.start()
     try:
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, ""),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:

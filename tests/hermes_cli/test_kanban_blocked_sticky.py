@@ -170,6 +170,43 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_protocol_violation_gave_up_uses_recorded_limit(
+    kanban_home: Path,
+) -> None:
+    """A protocol-violation gave-up event with effective_limit=1 is terminal.
+
+    Live dispatch can discover this path after a worker subprocess exits rc=0
+    without calling kanban_complete/kanban_block.  The task was already flipped
+    to blocked by _record_task_failure, so recompute_ready must honor the
+    recorded one-shot limit and avoid respawning it on the next dispatcher tick.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
+
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+            "WHERE id=?",
+            (child,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', ?, ?)",
+            (
+                child,
+                '{"failures":1,"effective_limit":1,'
+                '"trigger_outcome":"protocol_violation"}',
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # unblock_task clears the sticky state
 # ---------------------------------------------------------------------------

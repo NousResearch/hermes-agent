@@ -4766,6 +4766,42 @@ class TestListCronJobRuns:
         assert "idx_sessions_source" in detail, detail
 
 
+def test_gateway_session_peer_preserves_creation_source_on_resume(db):
+    db.create_session(
+        "cross-platform-session",
+        "tui",
+        user_id="user-1",
+        session_key="agent:main:tui:dm:local",
+        chat_id="local",
+        chat_type="dm",
+    )
+    db.append_message("cross-platform-session", "user", "started in tui")
+
+    db.record_gateway_session_peer(
+        "cross-platform-session",
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-99",
+        chat_id="chat-99",
+        chat_type="dm",
+    )
+
+    row = db.get_session("cross-platform-session")
+    assert row["source"] == "tui"
+    assert row["session_key"] == "agent:main:telegram:dm:chat-99"
+    assert row["chat_id"] == "chat-99"
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-99",
+        chat_id="chat-99",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "cross-platform-session"
+    assert recovered["source"] == "tui"
+
+
 def test_gateway_session_peer_round_trip_and_recovery(db):
     db.create_session(
         "gw-session",

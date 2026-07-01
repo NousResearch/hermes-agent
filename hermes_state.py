@@ -1648,23 +1648,30 @@ class SessionDB:
         chat_type: str = None,
         thread_id: str = None,
     ) -> None:
-        """Persist the gateway routing peer for an existing session row."""
+        """Persist the gateway routing peer for an existing session row.
+
+        ``source`` records where the conversation was *created* (billing,
+        analytics, memory scoping). Gateway ``/resume`` and cross-platform
+        routing may update ``session_key``/chat metadata without overwriting
+        that creation source.
+        """
         if not session_id or not session_key:
             return
 
         def _do(conn):
             conn.execute(
                 """UPDATE sessions
-                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?
+                   SET session_key = ?, user_id = ?, chat_id = ?,
+                       chat_type = ?, thread_id = ?,
+                       source = COALESCE(source, ?)
                    WHERE id = ?""",
                 (
                     session_key,
-                    source,
                     user_id,
                     chat_id,
                     chat_type,
                     thread_id,
+                    source,
                     session_id,
                 ),
             )
@@ -1693,20 +1700,24 @@ class SessionDB:
         """
         if not session_key:
             return None
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT * FROM sessions
-                WHERE session_key = ?
-                  AND source = ?
+        recoverable_clause = """
                   AND (ended_at IS NULL OR end_reason = 'agent_close')
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
-                  ))
+                  ))"""
+        with self._lock:
+            # ``session_key`` is the durable routing index. After cross-platform
+            # ``/resume`` the creation ``source`` may differ from the resuming
+            # platform, so key-based lookup must not filter on ``source``.
+            row = self._conn.execute(
+                f"""
+                SELECT * FROM sessions
+                WHERE session_key = ?
+                {recoverable_clause}
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (session_key, source),
+                (session_key,),
             ).fetchone()
             if row is not None:
                 return dict(row)

@@ -920,6 +920,14 @@ platform_toolsets:
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#
+#   # Optional: try providers in order, falling through to the next one on
+#   # any failure (timeout, missing package, API error). Omit "router"
+#   # entirely to keep the single-provider behavior above -- fallback is
+#   # opt-in, never automatic. Each name must be a builtin ("edge",
+#   # "elevenlabs", ...) or a tts.providers.<name> command/plugin entry.
+#   router:
+#     providers: ["home-gpu", "elevenlabs", "edge"]
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

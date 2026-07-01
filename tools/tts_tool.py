@@ -2140,6 +2140,11 @@ def text_to_speech_tool(
     Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
     The model sends text; the user configures voice and provider.
 
+    When ``tts.router.providers`` lists more than one provider, each is
+    tried in order until one succeeds -- see
+    ``SpeechRouter.resolve_provider_chain()``. Without that config key,
+    exactly one provider is tried (unchanged pre-Router behavior).
+
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
     by the send pipeline and delivered as a native voice message.
     In CLI mode, the file is saved to ~/voice-memos/.
@@ -2155,8 +2160,37 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     from tools.speech.router import SpeechRouter
-    provider, tts_config = SpeechRouter().resolve_provider()
+    provider_chain, tts_config = SpeechRouter().resolve_provider_chain()
 
+    result_json = tool_error("No speech provider configured", success=False)
+    for index, provider in enumerate(provider_chain):
+        result_json = _synthesize_with_provider(text, output_path, provider, tts_config)
+        try:
+            result = json.loads(result_json)
+        except (TypeError, ValueError):
+            result = {}
+        if result.get("success"):
+            return result_json
+        remaining = len(provider_chain) - index - 1
+        logger.warning(
+            "Speech provider '%s' failed (%d fallback(s) remaining): %s",
+            provider, remaining, result.get("error", "unknown error"),
+        )
+
+    return result_json
+
+
+def _synthesize_with_provider(
+    text: str,
+    output_path: Optional[str],
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> str:
+    """Attempt a single synthesis with *provider*. Returns a JSON result
+    string (success or error) -- never raises. text_to_speech_tool() loops
+    this over the provider chain from SpeechRouter and stops at the first
+    success.
+    """
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
     # so a user's ``tts.providers.openai.command`` can't override the real
@@ -2440,6 +2474,7 @@ def text_to_speech_tool(
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
+
 
 
 # ===========================================================================

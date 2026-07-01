@@ -95,6 +95,10 @@ AUTH_TYPE_API_KEY = "api_key"
 SOURCE_MANUAL = "manual"
 SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
 
+# Prefix for env-var-referenced credentials stored in auth.json.
+# Stored as "env://NVIDIA_API_KEY_2" instead of the plaintext key.
+ENV_VAR_PREFIX = "env://"
+
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
@@ -203,12 +207,23 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
+        # Resolve env://VAR_NAME references at runtime instead of storing plaintext
+        raw_token = self.access_token or ""
+        if isinstance(raw_token, str) and raw_token.startswith(ENV_VAR_PREFIX):
+            var_name = raw_token[len(ENV_VAR_PREFIX):]
+            # Use get_env_value to check .env first, then os.environ
+            from hermes_cli.config import get_env_value
+            resolved = get_env_value(var_name)
+            if resolved:
+                return resolved
+            # Fallback to plain os.environ for already-resolved values
+            return os.environ.get(var_name, "")
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
             # compatibility. It must be a NAS invoke JWT.
             for token, expires_at in (
                 (self.agent_key, self.agent_key_expires_at),
-                (self.access_token, self.expires_at),
+                (raw_token, self.expires_at),
             ):
                 if (
                     isinstance(token, str)
@@ -221,7 +236,7 @@ class PooledCredential:
                 ):
                     return token.strip()
             return ""
-        return str(self.access_token or "")
+        return str(raw_token)
 
     @property
     def runtime_base_url(self) -> Optional[str]:

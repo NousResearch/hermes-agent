@@ -299,6 +299,7 @@ from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.skill_stats import build_skill_stats_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -12344,6 +12345,10 @@ def cmd_tools(args):
         from hermes_cli.tools_config import run_post_setup_command
 
         sys.exit(run_post_setup_command(args))
+    elif action == "diagnose":
+        from hermes_cli.tools_diagnose import tools_diagnose_command
+
+        tools_diagnose_command(args)
     else:
         _require_tty("tools")
         from hermes_cli.tools_config import tools_command
@@ -12757,6 +12762,11 @@ def main():
     # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+
+    # =========================================================================
+    # skill-stats command  (parser built in hermes_cli/subcommands/skill_stats.py)
+    # =========================================================================
+    build_skill_stats_parser(subparsers)
 
     # =========================================================================
     # bundles command — skill bundles (alias /<name> for multiple skills)

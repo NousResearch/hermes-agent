@@ -1574,7 +1574,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""),
+            ssl_ca_cert=client_kwargs.get("ssl_ca_cert"),
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,

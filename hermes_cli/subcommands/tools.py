@@ -92,4 +92,27 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         metavar="KEY",
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
     )
+
+    # hermes tools diagnose [--platform cli] [--json]
+    tools_diagnose_p = tools_sub.add_parser(
+        "diagnose",
+        help="Diagnose tool and toolset health for a platform",
+        description=(
+            "Inspect which toolsets and tools are enabled, available, and\n"
+            "visible for a platform. Diagnoses configuration problems such as\n"
+            "missing dependencies, filtered tools, and tool conflicts.\n\n"
+            "Run 'hermes tools diagnose --json' for machine-readable output."
+        ),
+    )
+    tools_diagnose_p.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to diagnose (default: cli)",
+    )
+    tools_diagnose_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Output machine-readable JSON",
+    )
+
     tools_parser.set_defaults(func=cmd_tools)

@@ -152,6 +152,14 @@ BOARD_COLUMNS: list[str] = [
 ]
 
 
+# Known valid column names that may appear in ``dashboard.kanban.hidden_columns``.
+# Kept as a module-level constant so the POST /config handler can validate user
+# input without re-deriving the list from BOARD_COLUMNS (which would silently
+# also surface ``archived`` and any future internal columns the user is not
+# meant to toggle).
+_HIDDEN_COLUMNS_ALLOWED = frozenset(BOARD_COLUMNS)
+
+
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
@@ -1703,12 +1711,92 @@ def get_config():
     dash_cfg = (cfg.get("dashboard") or {})
     # dashboard.kanban may itself be a dict; fall back to {}.
     k_cfg = dash_cfg.get("kanban") or {}
+    hidden = k_cfg.get("hidden_columns") or []
+    # Defensive sanitisation: only allow known column names, drop the rest.
+    if not isinstance(hidden, list):
+        hidden = []
+    hidden = [c for c in hidden if isinstance(c, str) and c in _HIDDEN_COLUMNS_ALLOWED]
     return {
         "default_tenant": k_cfg.get("default_tenant") or "",
         "lane_by_profile": bool(k_cfg.get("lane_by_profile", True)),
         "include_archived_by_default": bool(k_cfg.get("include_archived_by_default", False)),
         "render_markdown": bool(k_cfg.get("render_markdown", True)),
+        "hidden_columns": hidden,
     }
+
+
+class _ConfigUpdate(BaseModel):
+    """Subset of dashboard.kanban fields the UI may update.
+
+    All fields are optional so the UI can send a partial update (e.g. only
+    toggle one column).  Unknown fields are rejected by the model to avoid
+    typos silently writing garbage into config.yaml.
+    """
+
+    hidden_columns: Optional[list[str]] = Field(
+        default=None,
+        description="Column names to hide from the dashboard. Empty list shows all.",
+    )
+
+
+@router.post("/config")
+def update_config(update: _ConfigUpdate):
+    """Persist dashboard.kanban settings back to config.yaml.
+
+    Only the fields present in ``update`` are touched; everything else in
+    ``dashboard.kanban`` (and the rest of the config) is left intact.  This
+    is the round-trip half of the GET /config handler — together they make
+    ``hidden_columns`` a first-class per-board UI preference.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+    except Exception as exc:  # pragma: no cover - import guard
+        raise HTTPException(http_status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
+
+    try:
+        cfg = load_config() or {}
+    except Exception as exc:
+        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
+
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    dash_cfg = cfg.get("dashboard")
+    if not isinstance(dash_cfg, dict):
+        dash_cfg = {}
+    k_cfg = dash_cfg.get("kanban")
+    if not isinstance(k_cfg, dict):
+        k_cfg = {}
+
+    if update.hidden_columns is not None:
+        # Validate: only known columns, only strings, no duplicates.
+        cleaned = []
+        seen = set()
+        for c in update.hidden_columns:
+            if not isinstance(c, str):
+                raise HTTPException(
+                    http_status.HTTP_400_BAD_REQUEST,
+                    f"hidden_columns entries must be strings, got {type(c).__name__}",
+                )
+            if c not in _HIDDEN_COLUMNS_ALLOWED:
+                raise HTTPException(
+                    http_status.HTTP_400_BAD_REQUEST,
+                    f"unknown column {c!r}; allowed: {sorted(_HIDDEN_COLUMNS_ALLOWED)}",
+                )
+            if c not in seen:
+                seen.add(c)
+                cleaned.append(c)
+        k_cfg["hidden_columns"] = cleaned
+
+    dash_cfg["kanban"] = k_cfg
+    cfg["dashboard"] = dash_cfg
+
+    try:
+        save_config(cfg)
+    except Exception as exc:
+        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
+
+    return get_config()
 
 
 # ---------------------------------------------------------------------------

@@ -255,6 +255,15 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
+        # Webhook monitors often receive high-volume ignored events (for example
+        # GitHub pull_request opened/synchronize/edited). Let route prompts
+        # suppress user-facing delivery by returning exactly [SILENT], matching
+        # the gateway-wide intentional-silence contract while still logging
+        # locally for auditability.
+        if content.strip() == "[SILENT]":
+            logger.info("[webhook] Suppressed [SILENT] response for %s", chat_id)
+            return SendResult(success=True)
+
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)

@@ -845,6 +845,51 @@ class TestDeliveryCleanup:
         assert chat_id in adapter._delivery_info
 
     @pytest.mark.asyncio
+    async def test_exact_silent_response_suppresses_all_webhook_delivery(self):
+        """Webhook [SILENT] must not leak to user-facing delivery targets."""
+        adapter = _make_adapter()
+        chat_id = "webhook:test:d-silent"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "github_comment",
+            "deliver_extra": {},
+            "payload": {"action": "synchronize"},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        with patch.object(
+            adapter,
+            "_deliver_github_comment",
+            new=AsyncMock(return_value=SendResult(success=True)),
+        ) as deliver_github_comment:
+            result = await adapter.send(chat_id, "  [SILENT]  ")
+
+        assert result.success is True
+        deliver_github_comment.assert_not_awaited()
+        assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_prose_silent_token_still_delivers_webhook_response(self):
+        """Only an exact [SILENT] response is suppressed."""
+        adapter = _make_adapter()
+        chat_id = "webhook:test:d-prose"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "github_comment",
+            "deliver_extra": {},
+            "payload": {"action": "closed"},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        with patch.object(
+            adapter,
+            "_deliver_github_comment",
+            new=AsyncMock(return_value=SendResult(success=True)),
+        ) as deliver_github_comment:
+            result = await adapter.send(chat_id, "Use [SILENT] for ignored events.")
+
+        assert result.success is True
+        deliver_github_comment.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_delivery_info_pruned_via_ttl(self):
         """Stale delivery_info entries are dropped on the next POST."""
         adapter = _make_adapter()

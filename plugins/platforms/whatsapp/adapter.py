@@ -406,6 +406,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        # Passive (read-only) mode: inbound messages are appended to the
+        # session transcript as observed context (observed=True, the same
+        # mechanism used for un-mentioned group chatter) but never dispatched
+        # to the agent — no replies, no model spend. Outbound paths (cron
+        # deliveries, `hermes send`) are unaffected. Useful for note-to-self
+        # capture inboxes where the user wants ingestion without responses.
+        self._passive_mode = str(
+            config.extra.get("passive_mode")
+            or os.getenv("WHATSAPP_PASSIVE_MODE", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
@@ -1251,7 +1261,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
-                                if event.message_type == MessageType.TEXT:
+                                if self._passive_mode:
+                                    await self._observe_passive(event)
+                                elif event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
@@ -1266,6 +1278,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _observe_passive(self, event: MessageEvent) -> None:
+        """Record an inbound message as observed context without an agent turn.
+
+        Mirrors the observed-group-chatter pattern: the message lands in the
+        session transcript (and SQLite history) with ``observed: True`` so it
+        stays searchable and available as context, but the agent is never
+        invoked and no reply is sent.
+        """
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            from datetime import datetime, timezone
+
+            session_entry = store.get_or_create_session(event.source)
+            entry: Dict[str, Any] = {
+                "role": "user",
+                "content": event.text or "",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = event.message_id
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.debug(
+                "[%s] passive mode: message observed, not dispatched", self.name
+            )
+        except Exception as exc:
+            logger.warning("[%s] passive observe failed: %s", self.name, exc)
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1727,6 +1769,8 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+    if "passive_mode" in whatsapp_cfg and not os.getenv("WHATSAPP_PASSIVE_MODE"):
+        os.environ["WHATSAPP_PASSIVE_MODE"] = str(whatsapp_cfg["passive_mode"]).lower()
     if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
         os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
     af = whatsapp_cfg.get("allow_from")

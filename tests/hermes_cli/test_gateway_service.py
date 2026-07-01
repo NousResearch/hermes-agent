@@ -447,6 +447,48 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
+    def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Regression for the multi-profile gateway restart-loop flap (#48700):
+        # ~/.local/bin/node is often a symlink into a *specific* profile's node
+        # install. The generated unit's PATH must contain the symlink's own
+        # directory (~/.local/bin), NOT the resolved profile target — otherwise
+        # one profile's node path leaks into every profile's unit, making
+        # systemd_unit_is_current() perpetually false and forcing a
+        # daemon-reload restart loop on every boot.
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert str(local_bin) in unit
+        assert str(profile_node_bin) not in unit
+
+    def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
+        # Same #48700 regression for the macOS twin generate_launchd_plist().
+        local_bin = tmp_path / ".local" / "bin"
+        profile_node_bin = tmp_path / ".hermes" / "profiles" / "jarvis" / "node" / "bin"
+        local_bin.mkdir(parents=True)
+        profile_node_bin.mkdir(parents=True)
+        real_node = profile_node_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+        link_node = local_bin / "node"
+        link_node.symlink_to(real_node)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(link_node) if cmd == "node" else None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(local_bin) in plist
+        assert str(profile_node_bin) not in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

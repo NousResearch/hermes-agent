@@ -987,7 +987,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         try:
             function_args = json.loads(tool_call.function.arguments)
         except json.JSONDecodeError as e:
-            logger.warning(f"Unexpected JSON error after validation: {e}")
+            logger.warning("Unexpected JSON error after validation: %s", e)
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}

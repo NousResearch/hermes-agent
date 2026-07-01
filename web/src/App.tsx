@@ -36,8 +36,6 @@ import {
   Menu,
   MessageSquare,
   Package,
-  PanelLeftClose,
-  PanelLeftOpen,
   Plug,
   Puzzle,
   Radio,
@@ -344,34 +342,49 @@ function buildRoutes(
   return routes;
 }
 
-const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+const SIDEBAR_OPEN_KEY = "hermes-sidebar-open";
+/** @deprecated Replaced by SIDEBAR_OPEN_KEY — read once for migration. */
+const LEGACY_SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+
+function readSidebarOpenFromStorage(): boolean {
+  try {
+    const storedOpen = localStorage.getItem(SIDEBAR_OPEN_KEY);
+    if (storedOpen !== null) return storedOpen !== "false";
+
+    const legacyCollapsed = localStorage.getItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
+    if (legacyCollapsed !== null) {
+      // Old "collapsed" was a narrow icon rail; the new model is open (w-64)
+      // or fully closed — never a rail. Treat legacy collapsed=true as closed.
+      const open = legacyCollapsed !== "true";
+      localStorage.setItem(SIDEBAR_OPEN_KEY, open ? "true" : "false");
+      localStorage.removeItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
+      return open;
+    }
+  } catch {
+    /* localStorage may be unavailable in private browsing */
+  }
+  return true;
+}
 
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const closeMobile = useCallback(() => setMobileOpen(false), []);
-
-  const [collapsed, setCollapsed] = useState(() => {
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpenFromStorage);
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false);
     try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      } catch { /* localStorage may be unavailable in private browsing */ }
-      return next;
-    });
+      localStorage.setItem(SIDEBAR_OPEN_KEY, "false");
+    } catch { /* localStorage may be unavailable in private browsing */ }
+  }, []);
+  const openSidebar = useCallback(() => {
+    setSidebarOpen(true);
+    try {
+      localStorage.setItem(SIDEBAR_OPEN_KEY, "true");
+    } catch { /* localStorage may be unavailable in private browsing */ }
   }, []);
   const isMobile = useBelowBreakpoint(1024);
-  const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
@@ -457,9 +470,9 @@ export default function App() {
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
-    if (!mobileOpen) return;
+    if (!sidebarOpen || !isMobile) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMobileOpen(false);
+      if (e.key === "Escape") closeSidebar();
     };
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -468,16 +481,7 @@ export default function App() {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [mobileOpen]);
-
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1024px)");
-    const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobileOpen(false);
-    };
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
+  }, [closeSidebar, isMobile, sidebarOpen]);
 
   return (
     <ProfileProvider>
@@ -510,9 +514,9 @@ export default function App() {
         <Button
           ghost
           size="icon"
-          onClick={() => setMobileOpen(true)}
+          onClick={openSidebar}
           aria-label={t.app.openNavigation}
-          aria-expanded={mobileOpen}
+          aria-expanded={sidebarOpen}
           aria-controls="app-sidebar"
           className="text-text-secondary hover:text-midground"
         >
@@ -524,11 +528,11 @@ export default function App() {
         </Typography>
       </header>
 
-      {mobileOpen && (
+      {sidebarOpen && isMobile && (
         <Button
           ghost
           aria-label={t.app.closeNavigation}
-          onClick={closeMobile}
+          onClick={closeSidebar}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
             "bg-black/70",
@@ -541,18 +545,22 @@ export default function App() {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
+          {(isMobile || sidebarOpen) && (
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            aria-hidden={!sidebarOpen}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+              "flex h-dvh max-h-dvh min-h-0 flex-col font-sans",
               "border-r border-current/20",
               "bg-background-base",
-              "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-              "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
-              collapsed && "lg:w-14",
+              isMobile
+                ? cn(
+                    "fixed top-0 left-0 z-50 w-64",
+                    "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                    sidebarOpen ? "translate-x-0" : "-translate-x-full",
+                  )
+                : "sticky top-0 z-50 w-64 min-w-64 max-w-64 shrink-0 overflow-hidden",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -564,15 +572,10 @@ export default function App() {
               className={cn(
                 "flex h-14 shrink-0 items-center gap-2",
                 "border-b border-current/20",
-                collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
+                "px-4 justify-between",
               )}
             >
-              <div
-                className={cn(
-                  "flex items-center gap-2",
-                  collapsed && "lg:hidden",
-                )}
-              >
+              <div className="flex items-center gap-2">
                 <PluginSlot name="header-left" />
 
                 <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
@@ -585,31 +588,15 @@ export default function App() {
               <Button
                 ghost
                 size="icon"
-                onClick={closeMobile}
+                onClick={closeSidebar}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
+                className="text-text-secondary hover:text-midground"
               >
                 <X />
               </Button>
-
-              <Button
-                ghost
-                size="icon"
-                onClick={toggleCollapsed}
-                aria-label={
-                  collapsed ? t.common.expand : t.common.collapse
-                }
-                className="hidden lg:flex text-text-secondary hover:text-midground"
-              >
-                {collapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-              </Button>
             </div>
 
-            <ProfileSwitcher collapsed={isDesktopCollapsed} />
+            <ProfileSwitcher collapsed={false} />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -618,8 +605,8 @@ export default function App() {
               <ul className="flex flex-col">
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
+                    closeMobile={isMobile ? closeSidebar : undefined}
+                    collapsed={false}
                     item={item}
                     key={item.path}
                     t={t}
@@ -638,7 +625,6 @@ export default function App() {
                     className={cn(
                       "px-5 pt-2.5 pb-1",
                       "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "lg:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -648,8 +634,8 @@ export default function App() {
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
+                        closeMobile={isMobile ? closeSidebar : undefined}
+                        collapsed={false}
                         item={item}
                         key={item.path}
                         t={t}
@@ -662,8 +648,8 @@ export default function App() {
             </nav>
 
             <SidebarSystemActions
-              collapsed={isDesktopCollapsed}
-              onNavigate={closeMobile}
+              collapsed={false}
+              onNavigate={isMobile ? closeSidebar : undefined}
               status={sidebarStatus}
               tooltipWarmRef={tooltipWarmRef}
             />
@@ -673,47 +659,57 @@ export default function App() {
                 "flex shrink-0 items-center gap-2",
                 "px-3 py-2",
                 "border-t border-current/20",
-                isDesktopCollapsed
-                  ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
-                  : "justify-between",
+                "justify-between",
               )}
             >
-              <div
-                className={cn(
-                  "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "lg:flex-col lg:items-start",
-                )}
-              >
+              <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-right" />
 
                 <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
+                  collapsed={false}
                   label={t.theme?.switchTheme ?? "Switch theme"}
                   tooltipWarmRef={tooltipWarmRef}
                 >
-                  <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  <ThemeSwitcher collapsed={false} dropUp />
                 </SidebarIconWithTooltip>
 
                 <SidebarIconWithTooltip
-                  collapsed={isDesktopCollapsed}
+                  collapsed={false}
                   label={t.language.switchTo}
                   tooltipWarmRef={tooltipWarmRef}
                 >
-                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  <LanguageSwitcher collapsed={false} dropUp />
                 </SidebarIconWithTooltip>
               </div>
             </div>
 
-            <div
-              className={cn(
-                "flex shrink-0 flex-col",
-                isDesktopCollapsed && "lg:hidden",
-              )}
-            >
+            <div className="flex shrink-0 flex-col">
               <AuthWidget />
               <SidebarFooter status={sidebarStatus} />
             </div>
           </aside>
+          )}
+
+          {!isMobile && !sidebarOpen ? (
+            <div
+              className={cn(
+                "shrink-0 border-b border-current/20",
+                "bg-background-base px-3 py-2 sm:px-6",
+              )}
+              style={{ backgroundColor: "var(--background-base)" }}
+            >
+              <Button
+                ghost
+                size="icon"
+                onClick={openSidebar}
+                aria-label={t.app.openNavigation}
+                aria-controls="app-sidebar"
+                className="text-text-secondary hover:text-midground"
+              >
+                <Menu />
+              </Button>
+            </div>
+          ) : null}
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
@@ -836,7 +832,7 @@ function SidebarNavLink({
       <NavLink
         to={path}
         end={path === "/sessions"}
-        onClick={closeMobile}
+        onClick={() => closeMobile?.()}
         aria-label={collapsed ? navLabel : undefined}
         onFocus={collapsed ? showTooltip : undefined}
         onBlur={collapsed ? hideTooltip : undefined}
@@ -975,21 +971,21 @@ function SidebarSystemActions({
     }
     void runAction(action);
     navigate("/sessions");
-    onNavigate();
+    onNavigate?.();
   };
 
   const confirmRestart = () => {
     setRestartConfirmOpen(false);
     void runAction("restart");
     navigate("/sessions");
-    onNavigate();
+    onNavigate?.();
   };
 
   const confirmUpdate = () => {
     setUpdateConfirmOpen(false);
     void runAction("update");
     navigate("/sessions");
-    onNavigate();
+    onNavigate?.();
   };
 
   return (
@@ -1317,7 +1313,7 @@ interface SidebarIconWithTooltipProps {
 }
 
 interface SidebarNavLinkProps {
-  closeMobile: () => void;
+  closeMobile?: () => void;
   collapsed: boolean;
   item: NavItem;
   t: Translations;
@@ -1326,7 +1322,7 @@ interface SidebarNavLinkProps {
 
 interface SidebarSystemActionsProps {
   collapsed: boolean;
-  onNavigate: () => void;
+  onNavigate?: () => void;
   status: StatusResponse | null;
   tooltipWarmRef: TooltipWarmRef;
 }

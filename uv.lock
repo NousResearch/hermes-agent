@@ -2298,6 +2298,7 @@ version = "0.0.0"
 source = { editable = "." }
 default-groups = []
 dependencies = [
+    { name = "aiohttp" },
     { name = "browser-harness" },
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
@@ -2610,6 +2611,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "aiohttp", marker = "python_full_version >= '3.14'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.5" },

@@ -2947,6 +2947,19 @@ class MatrixAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
+            # Abandoned rooms (no current members) surface as "no servers
+            # in the room have been provided" or "room not found". The
+            # pending invite keeps retrying every startup unless we
+            # explicitly leave it. The match is narrow enough that
+            # transient failures still leave the invite untouched for the
+            # next try.
+            msg = str(exc).lower()
+            if ("no servers" in msg) or ("room not found" in msg):
+                try:
+                    await self._client.leave_room(RoomID(room_id))
+                    logger.info("Matrix: declined dead invite to %s", room_id)
+                except Exception:
+                    pass
             return False
 
     def _schedule_invite_join(

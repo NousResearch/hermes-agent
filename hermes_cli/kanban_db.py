@@ -2448,6 +2448,24 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if workspace_path is not None:
+        workspace_path = str(workspace_path).strip() or None
+    if workspace_path and workspace_kind in {"dir", "worktree"}:
+        # Validate persistent workspace paths before writing the task row.
+        # Waiting until dispatch time leaves an unspawnable task in the DB;
+        # quoted absolute paths like '"/tmp/work"' are especially confusing
+        # because the human-visible value looks absolute while Path sees the
+        # leading quote and treats it as relative.
+        if workspace_path[0] in {'"', "'"} or workspace_path[-1] in {'"', "'"}:
+            raise ValueError(
+                "workspace_path must be an absolute, unquoted path "
+                f"for {workspace_kind} workspaces; got {workspace_path!r}"
+            )
+        if not Path(workspace_path).expanduser().is_absolute():
+            raise ValueError(
+                "workspace_path must be absolute for "
+                f"{workspace_kind} workspaces; got {workspace_path!r}"
+            )
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch

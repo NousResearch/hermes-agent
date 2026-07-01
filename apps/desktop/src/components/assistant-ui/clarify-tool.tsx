@@ -261,7 +261,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const selectionSummary = selectedSummary || selectedChoice || customSummary
   const selectedChoiceCount = selectedChoices.length
   const canSubmitSelected = multiSelect && selectedChoiceCount > 0 && selectedChoiceCount >= minSelections
-  const canSkip = minSelections <= 0
+  const canSkip = minSelections <= 0 && (multiSelect || !hasChoices || allowOther)
 
   const selectChoice = useCallback(
     (choice: string) => {

@@ -274,6 +274,17 @@ class TestClarifyMultiSelect:
         assert result["user_response"] == "Beta"
         assert result["selected_choices"] == ["Beta"]
 
+    def test_single_select_rejects_empty_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one of the listed choices" in result["error"]
+
     def test_invalid_multi_select_bounds_return_error(self):
         result = json.loads(clarify_tool(
             "Pick",

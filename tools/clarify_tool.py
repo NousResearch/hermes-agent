@@ -198,6 +198,8 @@ def clarify_tool(
             return tool_error(f"Select at least {min_selections} choices.")
         elif user_response_text and not allow_other:
             return tool_error("Reply with one or more listed choices.")
+    elif choices and not allow_other and not selected_choices:
+        return tool_error("Reply with one of the listed choices.")
 
     return json.dumps({
         "question": question,

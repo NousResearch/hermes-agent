@@ -4142,3 +4142,328 @@ class TestCronDeliveryMirror:
             )
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
+
+
+class TestCronContinuableSurfaceInChannel:
+    """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
+    into a channel (no dedicated thread), so a plain channel reply continues the
+    job via the shared-channel session (platform, chat_id, None).
+
+    Design: decisions.md D1/D2/D6 + F5. The scheduler reads the per-platform key
+    generically from pconfig.extra; the in_channel branch is gated on the
+    adapter capability flag ``supports_inchannel_continuable`` (Slack=True,
+    others fail SAFE to thread). In in_channel mode the thread-open branch is
+    SKIPPED (thread_id stays None), then ``_seed_cron_channel_session`` CREATES
+    the flat shared-channel session and mirrors the brief into it (the shipped
+    mirror only APPENDS to an existing session, and the flat channel row is
+    otherwise absent for a chat_postMessage delivery).
+    """
+
+    def _slack_cfg(self, extra):
+        """A mock GatewayConfig with a Slack pconfig carrying ``extra``."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = extra
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        return mock_cfg
+
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+        """Drive _deliver_result down the live-adapter path for a Slack
+        channel-origin job with the given ``extra`` config. Returns the
+        _open_continuable_cron_thread mock and the mirror_to_session mock."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        mock_cfg = self._slack_cfg(extra)
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                import asyncio as _asyncio
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "name": "Daily Brief",
+            "deliver": "origin",
+            # Channel origin: no thread_id (flat channel message scheduled it).
+            # Carries the scheduling user's id — the in_channel seed must key
+            # the flat channel session to THIS user (see build_session_key).
+            "origin": origin or {"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN"},
+            # Opt into the continuable mirror.
+            "attach_to_session": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+        return open_thread_mock, mirror_mock
+
+    def _slack_adapter(self, supports_inchannel=True, with_store=True):
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        # Capability flag read via getattr in the scheduler.
+        adapter.supports_inchannel_continuable = supports_inchannel
+        # A live session store so the in_channel seed can CREATE the flat row
+        # (the real bug: without a create step the mirror no-ops on a missing
+        # session and the brief is lost). Use a plain MagicMock store.
+        if with_store:
+            adapter._session_store = MagicMock()
+        return adapter
+
+    def test_in_channel_skips_thread_open(self):
+        """G2: in_channel mode must NOT open a handoff thread."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        open_thread_mock.assert_not_called()
+
+    def test_in_channel_seeds_shared_channel_session_flat(self):
+        """G3 (the real fix): in_channel CREATES the flat channel session row
+        (thread_id=None) via the adapter's live store AND mirrors the brief into
+        it. The prior implementation relied on the bare mirror, which no-ops
+        when the flat row doesn't already exist — so the brief was silently lost
+        (verified live). This asserts the create-then-mirror handoff."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # The flat session row must be CREATED (this is what was missing).
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None, "seed must be flat (thread_id=None)"
+        assert seeded.chat_type == "group", "a channel (non-D) keys as group"
+        assert str(seeded.chat_id) == "C123"
+        assert str(seeded.user_id) == "U_HUMAN", (
+            "channel session key embeds user_id — the seed MUST use the origin "
+            "user's id or the inbound reply keys to a different session"
+        )
+        # Brief mirrored flat into that row.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args[0][0] == "slack"
+        assert mirror_mock.call_args[0][1] == "C123"
+        assert "Here is today's brief." in mirror_mock.call_args[0][2]
+
+    def test_in_channel_dm_seeds_dm_session(self):
+        """1:1 DM (chat_id starts with 'D'): the flat session is created with
+        chat_type='dm'. The DM session key does NOT embed user_id, so any
+        user_id resolves to the same session — but chat_type must be 'dm' so the
+        key prefix matches the inbound DM reply's key."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={"platform": "slack", "chat_id": "D999", "user_id": "U_HUMAN"},
+        )
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.chat_type == "dm", "a DM (chat_id starts with 'D') keys as dm"
+        assert seeded.thread_id is None
+        assert str(seeded.chat_id) == "D999"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_thread_mode_default_still_opens_thread(self):
+        """G1 regression: the default (thread) mode is byte-identical — the
+        thread-open branch still fires when no surface key is set."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery({}, adapter)
+        open_thread_mock.assert_called_once()
+
+    def test_explicit_thread_value_opens_thread(self):
+        """An explicit cron_continuable_surface: thread is the default path."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "thread"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    def test_in_channel_on_unsupported_platform_fails_safe_to_thread(self):
+        """D6 fail-safe: in_channel on an adapter WITHOUT the capability flag
+        falls back to the thread path (a threaded continuation ≈ today), never
+        a dropped continuation."""
+        adapter = self._slack_adapter(supports_inchannel=False)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # Capability absent → treated as thread → thread-open still attempted.
+        open_thread_mock.assert_called_once()
+
+    def test_unrecognised_surface_value_coerces_to_thread(self):
+        """Any non-'in_channel' value is the default thread path (fail safe)."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "bogus"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    # --- _seed_cron_channel_session: the create-then-mirror unit + the
+    #     KEY-MATCH invariant (seed key must equal the inbound reply's key) ---
+
+    def test_seed_channel_session_key_matches_inbound_channel_reply(self):
+        """The whole point: the flat session the seed CREATES must be keyed
+        identically to what a plain inbound channel reply resolves to. Assert
+        the invariant directly via build_session_key, not just call args."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1", "name": "Brief"}, adapter, "slack", "C123",
+                "Daily brief", is_dm=False, user_id="U_HUMAN", chat_name="ops",
+            )
+        assert ok is True
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        seed_key = build_session_key(seeded_source)
+
+        # What a plain top-level channel reply (reply_in_thread:false → thread
+        # None) from the same user resolves to:
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="group",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert seed_key == build_session_key(inbound), (
+            f"seed key {seed_key} != inbound reply key {build_session_key(inbound)} "
+            "— the reply would NOT continue the seeded session"
+        )
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_seed_channel_session_key_matches_inbound_dm_reply(self):
+        """DM case: seeded key (chat_type=dm) equals the inbound DM reply key.
+        The DM key ignores user_id, so a system id would also match — but
+        chat_type MUST be 'dm' so the prefix aligns."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True):
+            _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "D999", "Daily brief",
+                is_dm=True, user_id="U_HUMAN",
+            )
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="D999", chat_type="dm",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert build_session_key(seeded_source) == build_session_key(inbound)
+        assert seeded_source.chat_type == "dm"
+
+    def test_seed_channel_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_channel_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "C123", "   ",
+                is_dm=False, user_id="U_HUMAN",
+            )
+        assert ok is False
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()
+
+
+class TestMultiTargetDeliveryContinuesOnFailure:
+    """When delivery to one target fails inside the standalone thread-pool
+    fallback, the loop must continue to the remaining targets (#47163).
+
+    The fallback runs inside the `except RuntimeError` block of
+    `_deliver_result`. Before the fix, an exception raised there (SMTP
+    ConnectionError, future.result timeout) escaped the function entirely —
+    it is NOT caught by the sibling `except Exception` — crashing the loop
+    and silently dropping every subsequent target.
+    """
+
+    def _email_cfg(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+        return mock_cfg
+
+    def test_first_target_failure_does_not_crash_loop(self):
+        """First email target fails in the fallback; the second is still attempted."""
+        job = {
+            "id": "multi-email-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("SMTP connection refused")
+            ok_future = MagicMock()
+            ok_future.result.return_value = {"success": True}
+            mock_pool.submit.side_effect = [fail_future, ok_future]
+
+            result = _deliver_result(job, "Report content")
+
+        # Both targets attempted — the loop did not crash after the first failure.
+        assert mock_pool.submit.call_count == 2, (
+            f"expected 2 delivery attempts, got {mock_pool.submit.call_count}"
+        )
+        # First target's failure is surfaced in the returned error string.
+        assert result is not None
+        assert "a@example.com" in result
+        assert "SMTP connection refused" in result
+
+    def test_all_targets_fail_returns_combined_errors(self):
+        """When every target fails, the result reports all of them."""
+        job = {
+            "id": "all-fail-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("connection refused")
+            mock_pool.submit.return_value = fail_future
+
+            result = _deliver_result(job, "Report content")
+
+        assert result is not None
+        assert "a@example.com" in result
+        assert "b@example.com" in result
+        assert mock_pool.submit.call_count == 2

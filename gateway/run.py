@@ -5932,6 +5932,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
 
+        # Deduplicate: keep only the most recent session per (platform, chat_id).
+        # When multiple threads in the same channel are auto-resumed
+        # simultaneously (e.g. after a gateway crash), responses from one
+        # thread can leak into another — the user sees a message about
+        # an unrelated topic appearing in their current thread.
+        _per_chat: dict = {}
+        for entry in candidates:
+            key = (entry.origin.platform, entry.origin.chat_id)
+            existing = _per_chat.get(key)
+            if (
+                existing is None
+                or (
+                    entry.updated_at
+                    and existing.updated_at
+                    and entry.updated_at > existing.updated_at
+                )
+            ):
+                _per_chat[key] = entry
+        candidates = list(_per_chat.values())
+
         now = datetime.now()
         scheduled = 0
         for entry in candidates:

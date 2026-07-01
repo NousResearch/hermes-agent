@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -46,7 +46,7 @@ import httpx
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
+NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
 NOUS_DEVICE_CODE_SOURCE = "device_code"
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
@@ -103,7 +104,12 @@ XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:acces
 XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"
 XAI_OAUTH_REDIRECT_PORT = 56121
 XAI_OAUTH_REDIRECT_PATH = "/callback"
-XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
+# current SuperGrok flows). A two-minute refresh window is too narrow for
+# gateway/cron workloads that may only touch the provider every 30 minutes,
+# leaving brief but noisy credential-expiry gaps. Refresh up to one hour
+# early so ordinary runtime calls keep the token warm without user reauth.
+XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -131,10 +137,6 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
 }
-
-# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
-DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
-GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 
 # LM Studio's default no-auth mode still requires *some* non-empty bearer for
 # the API-key code paths (auxiliary_client, runtime resolver) to treat the
@@ -199,12 +201,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Qwen OAuth",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
-    ),
-    "google-gemini-cli": ProviderConfig(
-        id="google-gemini-cli",
-        name="Google Gemini (OAuth)",
-        auth_type="oauth_external",
-        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
@@ -483,16 +479,18 @@ except Exception:
 def get_anthropic_key() -> str:
     """Return the first usable Anthropic credential, or ``""``.
 
-    Checks both the ``.env`` file (via ``get_env_value``) and the process
-    environment (``os.getenv``).  The fallback order mirrors the
-    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
+    Checks both the ``.env`` file and the process environment, preferring
+    ``~/.hermes/.env`` so a deliberate key rotation isn't shadowed by a stale
+    shell export (matches the api-key resolution path — see #20591).  The
+    order mirrors the ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``
+    tuple:
 
         ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
     """
-    from hermes_cli.config import get_env_value
+    from hermes_cli.config import get_env_value_prefer_dotenv
 
     for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
-        value = get_env_value(var) or os.getenv(var, "")
+        value = get_env_value_prefer_dotenv(var) or ""
         if value:
             return value
     return ""
@@ -570,17 +568,20 @@ def _resolve_api_key_provider_secret(
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
-                return get_copilot_api_token(token), source
+                api_token, _base_url = get_copilot_api_token(token)
+                return api_token, source
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
         return "", ""
 
-    from hermes_cli.config import get_env_value
+    from hermes_cli.config import get_env_value_prefer_dotenv
     for env_var in pconfig.api_key_env_vars:
-        # Check both os.environ and ~/.hermes/.env file
-        val = (get_env_value(env_var) or "").strip()
+        # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation
+        # in the user's .env file isn't shadowed by a stale shell export
+        # inherited from a parent process (Codex CLI, test runners, etc.).
+        val = (get_env_value_prefer_dotenv(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
 
@@ -706,6 +707,22 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 
     logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
     return default_url
+
+
+def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
+    """Return the OpenAI-compatible LM Studio runtime base URL.
+
+    LM Studio's native management API lives under ``/api/v1`` while its
+    OpenAI-compatible chat endpoint lives under ``/v1``. Users often paste
+    either form into ``LM_BASE_URL`` or ``model.base_url``; normalize before
+    the OpenAI SDK appends ``/chat/completions``.
+    """
+    root = str(base_url or "").strip().rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return (root or "http://127.0.0.1:1234") + "/v1"
 
 
 # =============================================================================
@@ -1079,8 +1096,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    # target_path=None preserves the existing contract (write the active
+    # store at _auth_file_path()). An explicit path lets callers persist a
+    # specific store — e.g. the global-root write-through for rotating xAI
+    # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
+    # write so the root auth.json gets the same TOCTOU-safe treatment.
+    auth_file = target_path if target_path is not None else _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -1259,24 +1281,54 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
-def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
+def write_credential_pool(
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Iterable[str]] = None,
+) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     This is the final disk-boundary guard for borrowed/reference-only
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
+
+    Re-read the on-disk pool under the same lock and merge entries present on
+    disk but missing from ``entries``. Those were added by another process after
+    the caller loaded its in-memory snapshot; without this merge a later
+    rotation/exhaustion rewrite drops the concurrent credential.
+
+    Pass ``removed_ids`` for entries the caller intentionally removed, so the
+    merge does not resurrect them from the on-disk copy.
     """
+    removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = [
+        sanitized_entries = [
             sanitize_borrowed_credential_payload(entry, provider_id)
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
+        existing = pool.get(provider_id)
+        existing_list = existing if isinstance(existing, list) else []
+        new_ids = {
+            entry.get("id")
+            for entry in sanitized_entries
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        merged: List[Dict[str, Any]] = list(sanitized_entries)
+        for disk_entry in existing_list:
+            if not isinstance(disk_entry, dict):
+                continue
+            disk_id = disk_entry.get("id")
+            if not disk_id or disk_id in new_ids or disk_id in removed:
+                continue
+            merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        pool[provider_id] = merged
         return _save_auth_store(auth_store)
 
 
@@ -1488,12 +1540,16 @@ def resolve_provider(
     """
     Determine which inference provider to use.
 
-    Priority (when requested="auto" or None):
-    1. active_provider in auth.json with valid credentials
-    2. Explicit CLI api_key/base_url -> "openrouter"
-    3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
-    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
-    5. Fallback: "openrouter"
+    Priority (when requested="auto" or None) — explicit user intent wins over a
+    stale logged-in OAuth provider (#29285):
+    1. Explicit CLI api_key/base_url -> "openrouter"
+    2. config.yaml `model.provider`
+    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
+    4. OpenRouter credential pool
+    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
+    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
+    7. AWS Bedrock credential chain
+    8. Error (no provider configured)
     """
     normalized = (requested or "auto").strip().lower()
 
@@ -1518,7 +1574,7 @@ def resolve_provider(
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
@@ -1565,16 +1621,26 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
+    # Provider precedence for the auto-path (#29285): explicit user intent must
+    # win over a stale logged-in OAuth `active_provider`. Order matches the
+    # docstring: 1. explicit CLI creds  2. config.yaml `model.provider`
+    # 3. OPENAI/OPENROUTER env keys  4. OpenRouter pool  5. provider-specific
+    # env keys  6. auth.json `active_provider` (OAuth)  7. Bedrock  8. error.
+    # The normal chat/gateway path resolves config.provider upstream in
+    # resolve_requested_provider() before ever reaching "auto"; this duplicate
+    # check is the safety net for the lone direct caller (main.py resolve_provider
+    # ("auto")) and any future bypass of that stage.
+    _model_cfg: Any = None
     try:
-        auth_store = _load_auth_store()
-        active = auth_store.get("active_provider")
-        if active and active in PROVIDER_REGISTRY:
-            status = get_auth_status(active)
-            if status.get("logged_in"):
-                return active
+        from hermes_cli.config import load_config
+
+        _model_cfg = (load_config() or {}).get("model")
+        if isinstance(_model_cfg, dict):
+            _cfg_provider = _model_cfg.get("provider")
+            if isinstance(_cfg_provider, str) and _cfg_provider.strip().lower() in PROVIDER_REGISTRY:
+                return _cfg_provider.strip().lower()
     except Exception as e:
-        logger.debug("Could not detect active auth provider: %s", e)
+        logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
@@ -1594,6 +1660,18 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not check OpenRouter credential pool: %s", e)
 
+    # Determine the logged-in OAuth provider up front so the env-key loop below
+    # can WARN when an exported API key preempts it (#29285 transparency). The
+    # actual OAuth fallback (tier 6) still happens later if nothing else matches.
+    _oauth_active: Optional[str] = None
+    try:
+        _store = _load_auth_store()
+        _maybe = _store.get("active_provider")
+        if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
+            _oauth_active = _maybe
+    except Exception as e:
+        logger.debug("Could not pre-read active auth provider: %s", e)
+
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
@@ -1608,7 +1686,36 @@ def resolve_provider(
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
+                # An exported API key now wins over a logged-in OAuth provider
+                # (the #29285 fix). Surface that so a user who deliberately uses
+                # OAuth but has a stale key in ~/.hermes/.env isn't silently
+                # switched without knowing why.
+                if _oauth_active and _oauth_active != pid:
+                    logger.warning(
+                        "Provider resolved to %r via %s, preempting your "
+                        "logged-in OAuth provider %r. If you meant to use the "
+                        "OAuth login, unset %s or set `model.provider` "
+                        "explicitly.",
+                        pid, env_var, _oauth_active, env_var,
+                    )
                 return pid
+
+    # Logged-in OAuth provider (auth.json `active_provider`) — a LAST-RESORT
+    # fallback, chosen only when the user expressed no other preference above.
+    # Previously this sat ABOVE the env-var/config checks, so a stale OAuth
+    # login silently overrode an explicit `model.provider` or an exported API
+    # key (#29285). Demoted here so explicit intent always wins.
+    if _oauth_active:
+        # Surface the silent-override case the issue reported: a populated
+        # `model` config that lacks a `provider` key falls through to OAuth.
+        if isinstance(_model_cfg, dict) and _model_cfg and not _model_cfg.get("provider"):
+            logger.warning(
+                "Provider resolved to logged-in OAuth provider %r because "
+                "config.yaml `model` has no `provider` key. If you meant a "
+                "different provider, set `model.provider` explicitly.",
+                _oauth_active,
+            )
+        return _oauth_active
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
@@ -1728,6 +1835,19 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         )
         return None
     return cleaned.rstrip("/")
+
+
+def _nous_inference_env_override() -> Optional[str]:
+    """Return the user-set ``NOUS_INFERENCE_BASE_URL`` override, if any.
+
+    This is the documented dev/staging escape hatch. The env source is
+    trusted (the OS user set it themselves), so it is intentionally NOT
+    gated by the network host allowlist — unlike Portal-returned URLs.
+
+    Returns a trailing-slash-stripped non-empty string, or ``None`` when
+    the env var is unset/blank.
+    """
+    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
@@ -2144,97 +2264,6 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 
 
 # =============================================================================
-# Google Gemini OAuth (google-gemini-cli) — PKCE flow + Cloud Code Assist.
-#
-# Tokens live in ~/.hermes/auth/google_oauth.json (managed by agent.google_oauth).
-# The `base_url` here is the marker "cloudcode-pa://google" that run_agent.py
-# uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
-# Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
-# =============================================================================
-
-def _mark_google_gemini_cli_active(creds: Dict[str, Any]) -> None:
-    """Set active_provider to google-gemini-cli in auth.json.
-
-    The actual OAuth tokens live in the Google credential file managed by
-    agent.google_oauth. This function only writes a minimal provider-state
-    entry (email for display) and sets active_provider so that
-    get_active_provider() and _model_section_has_credentials() detect the
-    provider for the setup wizard and status commands.
-    """
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state: Dict[str, Any] = {}
-        if creds.get("email"):
-            state["email"] = str(creds["email"])
-        _save_provider_state(auth_store, "google-gemini-cli", state)
-        _save_auth_store(auth_store)
-
-
-def resolve_gemini_oauth_runtime_credentials(
-    *,
-    force_refresh: bool = False,
-) -> Dict[str, Any]:
-    """Resolve runtime OAuth creds for google-gemini-cli."""
-    try:
-        from agent.google_oauth import (
-            GoogleOAuthError,
-            _credentials_path,
-            get_valid_access_token,
-            load_credentials,
-        )
-    except ImportError as exc:
-        raise AuthError(
-            f"agent.google_oauth is not importable: {exc}",
-            provider="google-gemini-cli",
-            code="google_oauth_module_missing",
-        ) from exc
-
-    try:
-        access_token = get_valid_access_token(force_refresh=force_refresh)
-    except GoogleOAuthError as exc:
-        raise AuthError(
-            str(exc),
-            provider="google-gemini-cli",
-            code=exc.code,
-        ) from exc
-
-    creds = load_credentials()
-    base_url = DEFAULT_GEMINI_CLOUDCODE_BASE_URL
-    return {
-        "provider": "google-gemini-cli",
-        "base_url": base_url,
-        "api_key": access_token,
-        "source": "google-oauth",
-        "expires_at_ms": (creds.expires_ms if creds else None),
-        "auth_file": str(_credentials_path()),
-        "email": (creds.email if creds else "") or "",
-        "project_id": (creds.project_id if creds else "") or "",
-    }
-
-
-def get_gemini_oauth_auth_status() -> Dict[str, Any]:
-    """Return a status dict for `hermes auth list` / `hermes status`."""
-    try:
-        from agent.google_oauth import _credentials_path, load_credentials
-    except ImportError:
-        return {"logged_in": False, "error": "agent.google_oauth unavailable"}
-    auth_path = _credentials_path()
-    creds = load_credentials()
-    if creds is None or not creds.access_token:
-        return {
-            "logged_in": False,
-            "auth_file": str(auth_path),
-            "error": "not logged in",
-        }
-    return {
-        "logged_in": True,
-        "auth_file": str(auth_path),
-        "source": "google-oauth",
-        "api_key": creds.access_token,
-        "expires_at_ms": creds.expires_ms,
-        "email": creds.email,
-        "project_id": creds.project_id,
-    }
 # Spotify auth — PKCE tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
@@ -2888,9 +2917,31 @@ def resolve_spotify_runtime_credentials(
         if not should_refresh and refresh_if_expiring:
             should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
         if should_refresh:
-            state = _refresh_spotify_oauth_state(state)
-            _store_provider_state(auth_store, "spotify", state, set_active=False)
-            _save_auth_store(auth_store)
+            try:
+                state = _refresh_spotify_oauth_state(state)
+                _store_provider_state(auth_store, "spotify", state, set_active=False)
+                _save_auth_store(auth_store)
+            except AuthError as exc:
+                if exc.relogin_required and state.get("refresh_token"):
+                    # Terminal refresh failure — clear dead tokens from auth.json
+                    # so subsequent calls fail fast without a network retry.
+                    # Mirrors the Nous / xAI-OAuth / Codex-OAuth / MiniMax pattern.
+                    for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+                        state.pop(_k, None)
+                    state["last_auth_error"] = {
+                        "provider": "spotify",
+                        "code": exc.code or "refresh_failed",
+                        "message": str(exc),
+                        "reason": "runtime_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    try:
+                        _store_provider_state(auth_store, "spotify", state, set_active=False)
+                        _save_auth_store(auth_store)
+                    except Exception as _save_exc:
+                        logger.debug("Spotify OAuth: failed to persist quarantined state: %s", _save_exc)
+                raise
 
     access_token = str(state.get("access_token", "") or "").strip()
     if not access_token:
@@ -3796,6 +3847,26 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
+        pool_rate_limit = _codex_pool_rate_limit_status()
+        if pool_rate_limit:
+            reset_at = pool_rate_limit.get("reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                remaining = int(reset_at - time.time())
+                message = (
+                    f"Codex provider quota exhausted (429); retry after {remaining}s. "
+                    "Credentials are still valid."
+                )
+            else:
+                message = (
+                    "Codex provider quota exhausted (429). Credentials are still valid; "
+                    "retry after the usage limit resets."
+                )
+            raise AuthError(
+                message,
+                provider="openai-codex",
+                code=CODEX_RATE_LIMITED_CODE,
+                relogin_required=False,
+            )
         if read_error is not None:
             raise read_error
         raise AuthError(
@@ -3807,7 +3878,7 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -3840,6 +3911,79 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
+    """Return metadata for a pool-only Codex credential in quota cooldown."""
+    def _parse_reset_at(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None
+            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                numeric = None
+            if numeric is not None:
+                return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
+
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return None
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return None
+        now = time.time()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            if entry.get("last_status") != "exhausted":
+                continue
+            code = entry.get("last_error_code")
+            reason = str(entry.get("last_error_reason") or "").lower()
+            message = str(entry.get("last_error_message") or "").lower()
+            is_rate_limited = (
+                code == 429
+                or "rate_limit" in reason
+                or "usage_limit" in reason
+                or "quota" in reason
+                or "rate limit" in message
+                or "usage limit" in message
+                or "quota" in message
+            )
+            if not is_rate_limited:
+                continue
+            reset_at = _parse_reset_at(entry.get("last_error_reset_at"))
+            if reset_at is not None and reset_at <= now:
+                continue
+            return {
+                "label": entry.get("label"),
+                "last_refresh": entry.get("last_refresh"),
+                "reset_at": reset_at,
+                "reason": entry.get("last_error_reason"),
+                "message": entry.get("last_error_message"),
+            }
+    except Exception:
+        logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
+    return None
 
 
 def _pool_codex_access_token() -> str:
@@ -3886,13 +4030,64 @@ def _pool_codex_access_token() -> str:
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
+def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return usable xAI OAuth state from provider state or credential pool."""
+    state = _load_provider_state(auth_store, "xai-oauth")
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    if isinstance(tokens, dict):
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if access_token and refresh_token:
+            return state
+
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("xai-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            access_token = str(entry.get("access_token", "") or "").strip()
+            refresh_token = str(entry.get("refresh_token", "") or "").strip()
+            if not access_token or not refresh_token:
+                continue
+            merged = dict(state or {})
+            merged["tokens"] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": str(entry.get("token_type") or "Bearer"),
+            }
+            if entry.get("last_refresh"):
+                merged["last_refresh"] = entry.get("last_refresh")
+            merged.setdefault("auth_mode", "oauth_pkce")
+            return merged
+
+    return state if isinstance(state, dict) else None
+
+
+def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token", "") or "").strip())
+        and bool(str(tokens.get("refresh_token", "") or "").strip())
+    )
+
+
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "xai-oauth")
+    state = _xai_oauth_state_from_store(auth_store)
+    if not _xai_oauth_state_has_usable_tokens(state):
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+        if _xai_oauth_state_has_usable_tokens(global_state):
+            state = global_state
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -3932,6 +4127,62 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
+    """True when this store has its OWN ``providers.xai-oauth`` block.
+
+    Distinguishes a profile that genuinely shadows the root xAI grant from
+    one that only *reads* root via ``_load_provider_state``'s fallback. Only
+    the latter needs the refresh write-through below.
+    """
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict)
+
+
+def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Persist a rotated xAI OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard (#43589):
+    xAI rotates the refresh_token on every refresh, so when a profile session
+    refreshes a grant it resolved from the root fallback, the rotated chain
+    must land back in root. Otherwise root keeps a now-revoked refresh token
+    and every other profile reading the stale root grant dies with
+    ``invalid_grant`` once its access token expires.
+
+    Only updates ``providers.xai-oauth`` in the root store; never touches the
+    profile store (the caller already saved that). Swallows all errors — a
+    failed write-through degrades to the pre-existing behavior (root stale),
+    it must never break the profile's own successful save.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the read-side guard in _load_global_auth_store). Uses the
+    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        if global_path.exists():
+            global_store = _load_auth_store(global_path)
+        else:
+            global_store = {}
+        if not isinstance(global_store, dict):
+            return
+        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
+        _save_auth_store(global_store, global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -3943,6 +4194,11 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
+        # A profile that lacks its own xai-oauth block is reading the root
+        # grant through _load_provider_state's fallback. When such a profile
+        # refreshes the (rotating) grant, we must write the rotated chain back
+        # to root too, or root is left holding a revoked refresh token (#43589).
+        write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -3953,6 +4209,8 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
+        if write_through_to_root:
+            _write_through_xai_oauth_to_global_root(state)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -4257,7 +4515,7 @@ def resolve_xai_oauth_runtime_credentials(
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     discovery = dict(data.get("discovery") or {})
     token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
     redirect_uri = str(data.get("redirect_uri", "") or "").strip()
@@ -5212,9 +5470,15 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token_value
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
+            # Heal a poisoned stored value: when the Portal-returned URL is
+            # rejected by the allowlist (returns None), reset to the production
+            # default instead of leaving a previously-persisted bad host (e.g. a
+            # stale staging URL) in place. Without this reset, an auth.json that
+            # was poisoned before the allowlist existed keeps re-validating to
+            # None on every refresh and silently re-uses the dead endpoint —
+            # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-            if refreshed_url:
-                state["inference_base_url"] = refreshed_url
+            state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
@@ -5362,11 +5626,24 @@ def resolve_nous_runtime_credentials(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
-        inference_base_url = (
-            _optional_base_url(state.get("inference_base_url"))
-            or os.getenv("NOUS_INFERENCE_BASE_URL")
+        # Persisted value: validated network-provenance only. The stored
+        # inference_base_url is re-validated on read so a poisoned/stale
+        # staging host (persisted before the allowlist existed) heals to the
+        # production default on the no-refresh read path — this is what gets
+        # written back to auth.json. The env override is deliberately NOT
+        # folded in here: it must never be persisted (it's a runtime overlay).
+        stored_inference_base_url = (
+            _validate_nous_inference_url_from_network(
+                _optional_base_url(state.get("inference_base_url"))
+            )
             or DEFAULT_NOUS_INFERENCE_URL
-        ).rstrip("/")
+        )
+        # Effective value used to build the client / returned to callers:
+        # the NOUS_INFERENCE_BASE_URL env override wins (documented dev/staging
+        # escape hatch), else the validated stored value.
+        inference_base_url = (
+            _nous_inference_env_override() or stored_inference_base_url
+        )
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
 
         def _persist_state(reason: str) -> None:
@@ -5487,9 +5764,18 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
+                        # Heal a poisoned stored value (see refresh_nous_oauth_pure):
+                        # reject → reset to production default, don't keep a stale
+                        # staging host that re-validates to None every refresh.
+                        # This (validated, network-provenance) value is what gets
+                        # persisted to auth.json below. The NOUS_INFERENCE_BASE_URL
+                        # env override is layered on for the client/return value
+                        # only (see below) — it is never persisted.
                         refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                        if refreshed_url:
-                            inference_base_url = refreshed_url
+                        stored_inference_base_url = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
+                        inference_base_url = (
+                            _nous_inference_env_override() or stored_inference_base_url
+                        )
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(
@@ -5518,8 +5804,11 @@ def resolve_nous_runtime_credentials(
             )
 
             # Persist routing and TLS metadata for non-interactive refresh.
+            # Persist the validated, network-provenance URL — NEVER the env
+            # override (which is a runtime-only overlay; persisting it would
+            # leak a dev/staging host into auth.json and survive unsetting it).
             state["portal_base_url"] = portal_base_url
-            state["inference_base_url"] = inference_base_url
+            state["inference_base_url"] = stored_inference_base_url
             state["client_id"] = client_id
             state["tls"] = {
                 "insecure": verify is False,
@@ -5639,18 +5928,24 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
 # was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
 # single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# mtime so that `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+# path + mtime so that profile switches do not share a process memo and
+# `hermes auth login/logout/add/remove` invalidate naturally on the next call.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
 
-def _auth_file_mtime() -> Optional[float]:
+def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
+    auth_file = _auth_file_path()
     try:
-        return _auth_file_path().stat().st_mtime
-    except FileNotFoundError:
-        return None
+        auth_file_key = str(auth_file.resolve(strict=False))
     except Exception:
-        return None
+        auth_file_key = str(auth_file)
+    try:
+        return auth_file_key, auth_file.stat().st_mtime
+    except FileNotFoundError:
+        return auth_file_key, None
+    except Exception:
+        return auth_file_key, None
 
 
 def invalidate_nous_auth_status_cache() -> None:
@@ -5682,18 +5977,19 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """
     global _nous_auth_status_cache
     now = time.monotonic()
-    mtime = _auth_file_mtime()
+    auth_file_key, mtime = _auth_file_cache_key()
     cached = _nous_auth_status_cache
     if cached is not None:
-        cached_at, cached_mtime, cached_status = cached
+        cached_at, cached_auth_file_key, cached_mtime, cached_status = cached
         if (
-            cached_mtime == mtime
+            cached_auth_file_key == auth_file_key
+            and cached_mtime == mtime
             and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
         ):
             return dict(cached_status)
 
     status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, mtime, dict(status))
+    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
     return status
 
 
@@ -5776,6 +6072,22 @@ def get_codex_auth_status() -> Dict[str, Any]:
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
                     }
+            rate_limit = _codex_pool_rate_limit_status()
+            if rate_limit:
+                return {
+                    "logged_in": True,
+                    "auth_store": str(_auth_file_path()),
+                    "last_refresh": rate_limit.get("last_refresh"),
+                    "auth_mode": "chatgpt",
+                    "source": f"pool:{rate_limit.get('label') or 'unknown'}",
+                    "rate_limited": True,
+                    "error_code": CODEX_RATE_LIMITED_CODE,
+                    "error": (
+                        rate_limit.get("message")
+                        or "Codex provider quota exhausted; retry after the usage limit resets."
+                    ),
+                    "reset_at": rate_limit.get("reset_at"),
+                }
     except Exception:
         pass
 
@@ -5916,8 +6228,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_xai_oauth_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
-    if target == "google-gemini-cli":
-        return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
@@ -5955,7 +6265,7 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     """
     info: Dict[str, Any] = {"provider": "azure-foundry"}
     try:
-        from hermes_cli.config import load_config, get_env_value
+        from hermes_cli.config import load_config, get_env_value_prefer_dotenv
         cfg = load_config()
     except Exception:
         cfg = {}
@@ -6008,7 +6318,7 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
 
     # api_key mode (default)
     try:
-        api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or os.getenv("AZURE_FOUNDRY_API_KEY", "")
+        api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
     except Exception:
         api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "")
     info["logged_in"] = has_usable_secret(api_key)
@@ -6047,9 +6357,38 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "copilot":
+        # Resolve the Copilot API base URL from the token-exchange response
+        # (endpoints.api, with a proxy-ep fallback), which is authoritative
+        # for Enterprise / proxied accounts. Falls back to the registry
+        # default and is guarded non-empty below so chat inference never
+        # resolves an empty base URL (#50252).
+        base_url = env_url.rstrip("/") if env_url else pconfig.inference_base_url
+        try:
+            from hermes_cli.copilot_auth import (
+                resolve_copilot_token,
+                get_copilot_api_token,
+            )
+            raw_token, _ = resolve_copilot_token()
+            if raw_token:
+                _, resolved = get_copilot_api_token(raw_token)
+                resolved = (resolved or "").strip()
+                if resolved:
+                    base_url = resolved
+        except Exception as exc:
+            logger.debug("Copilot base URL resolution fell back to default: %s", exc)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
+        base_url = pconfig.inference_base_url
+
+    if provider_id == "lmstudio":
+        base_url = _normalize_lmstudio_runtime_base_url(base_url)
+
+    # Last-resort guard: an API-key provider must never hand back an empty
+    # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
+    # otherwise wedges chat inference — #50252).
+    if not (isinstance(base_url, str) and base_url.strip()):
         base_url = pconfig.inference_base_url
 
     return {
@@ -6145,16 +6484,12 @@ def _update_config_for_provider(
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
-    # Clear stale api_key/api_mode left over from a previous custom provider.
-    # When the user switches from e.g. a MiniMax custom endpoint
-    # (api_mode=anthropic_messages, api_key=mxp-...) to a built-in provider
-    # (e.g. OpenRouter), the stale api_key/api_mode would override the new
-    # provider's credentials and transport choice.  Built-in providers that
-    # need a specific api_mode (copilot, xai) set it at request-resolution
-    # time via `_copilot_runtime_api_mode` / `_detect_api_mode_for_url`, so
-    # removing the persisted value here is safe.
-    model_cfg.pop("api_key", None)
-    model_cfg.pop("api_mode", None)
+    # Clear stale endpoint credentials left over from a previous custom provider.
+    # Built-in providers resolve credentials from env/auth state, not inline
+    # model.api_key.
+    from hermes_cli.config import clear_model_endpoint_credentials
+
+    clear_model_endpoint_credentials(model_cfg)
 
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
@@ -6991,23 +7326,61 @@ def _codex_device_code_login() -> Dict[str, Any]:
     issuer = "https://auth.openai.com"
     client_id = CODEX_OAUTH_CLIENT_ID
 
-    # Step 1: Request device code
-    try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            resp = client.post(
-                f"{issuer}/api/accounts/deviceauth/usercode",
-                json={"client_id": client_id},
-                headers={"Content-Type": "application/json"},
+    # Step 1: Request device code. OpenAI's auth endpoint rate-limits this
+    # request (HTTP 429) when login is attempted too often from the same
+    # IP/account — retry with capped backoff (honoring ``Retry-After``)
+    # before surfacing a clear, actionable message instead of a bare status.
+    resp = None
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+                resp = client.post(
+                    f"{issuer}/api/accounts/deviceauth/usercode",
+                    json={"client_id": client_id},
+                    headers={"Content-Type": "application/json"},
+                )
+        except Exception as exc:
+            raise AuthError(
+                f"Failed to request device code: {exc}",
+                provider="openai-codex", code="device_code_request_failed",
             )
-    except Exception as exc:
+
+        if resp.status_code != 429:
+            break
+
+        if attempt < max_attempts:
+            retry_after = _parse_retry_after_seconds(
+                getattr(resp, "headers", None)
+            )
+            # Exponential backoff (2s, 4s, 8s) capped, preferring the
+            # server-provided Retry-After when present.
+            delay = retry_after if retry_after is not None else 2 ** attempt
+            delay = max(1, min(int(delay), 60))
+            print(
+                "OpenAI is rate-limiting login requests "
+                f"(429); retrying in {delay}s..."
+            )
+            _time.sleep(delay)
+
+    if resp is not None and resp.status_code == 429:
+        retry_after = _parse_retry_after_seconds(getattr(resp, "headers", None))
+        wait_hint = (
+            f" Try again in about {retry_after}s."
+            if retry_after is not None
+            else " Wait a minute and run the login again."
+        )
         raise AuthError(
-            f"Failed to request device code: {exc}",
-            provider="openai-codex", code="device_code_request_failed",
+            "OpenAI is rate-limiting Codex login requests (HTTP 429). "
+            "This is a temporary throttle on OpenAI's side, not a credential "
+            f"problem.{wait_hint}",
+            provider="openai-codex", code=CODEX_RATE_LIMITED_CODE,
         )
 
-    if resp.status_code != 200:
+    if resp is None or resp.status_code != 200:
+        status = resp.status_code if resp is not None else "unknown"
         raise AuthError(
-            f"Device code request returned status {resp.status_code}.",
+            f"Device code request returned status {status}.",
             provider="openai-codex", code="device_code_request_error",
         )
 
@@ -7093,6 +7466,22 @@ def _codex_device_code_login() -> Dict[str, Any]:
         raise AuthError(
             f"Token exchange failed: {exc}",
             provider="openai-codex", code="token_exchange_failed",
+        )
+
+    if token_resp.status_code == 429:
+        retry_after = _parse_retry_after_seconds(
+            getattr(token_resp, "headers", None)
+        )
+        wait_hint = (
+            f" Try again in about {retry_after}s."
+            if retry_after is not None
+            else " Wait a minute and run the login again."
+        )
+        raise AuthError(
+            "OpenAI is rate-limiting Codex login requests (HTTP 429) during "
+            "token exchange. This is a temporary throttle on OpenAI's side, "
+            f"not a credential problem.{wait_hint}",
+            provider="openai-codex", code=CODEX_RATE_LIMITED_CODE,
         )
 
     if token_resp.status_code != 200:
@@ -7571,6 +7960,7 @@ def _nous_device_code_login(
     timeout_seconds: float = 15.0,
     insecure: bool = False,
     ca_bundle: Optional[str] = None,
+    on_verification: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     pconfig = PROVIDER_REGISTRY["nous"]
@@ -7624,6 +8014,16 @@ def _nous_device_code_login(
                 print("  (Opened browser for verification)")
             else:
                 print("  Could not open browser automatically — use the URL above.")
+
+        # Surface the verification URL/code to an out-of-band consumer (e.g. the
+        # TUI gateway, whose stdout is a JSON-RPC pipe — a plain print() there is
+        # dropped). Fired AFTER the print/browser block and BEFORE polling blocks,
+        # so the consumer can render the link while we wait. Best-effort.
+        if on_verification is not None:
+            try:
+                on_verification(verification_url, user_code)
+            except Exception:
+                pass
 
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
         print(f"Waiting for approval (polling every {effective_interval}s)...")
@@ -7688,6 +8088,91 @@ def _nous_device_code_login(
             print("After subscribing, run `hermes model` again to finish setup.")
             raise SystemExit(1)
         raise
+
+
+def nous_token_has_billing_scope() -> bool:
+    """Return True if the currently-held Nous token carries ``billing:manage``.
+
+    Reads the persisted ``scope`` string saved at login (``_save_provider_state``
+    stores ``token_data.get("scope") or scope``). A space-delimited match. Used by
+    the lazy step-up: if False, the first billing call will 403 ``insufficient_scope``
+    anyway, but checking up front lets a surface skip a doomed round-trip.
+    """
+    try:
+        state = get_provider_auth_state("nous") or {}
+    except Exception:
+        return False
+    scope = state.get("scope")
+    if not isinstance(scope, str):
+        return False
+    return NOUS_BILLING_MANAGE_SCOPE in scope.split()
+
+
+def step_up_nous_billing_scope(
+    *,
+    open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+    on_verification: Optional[Callable[[str, str], None]] = None,
+) -> bool:
+    """Re-run the device flow requesting ``billing:manage`` and persist the result.
+
+    The lazy step-up (plan D-A): triggered when a billing endpoint returns
+    ``403 insufficient_scope``. Runs a fresh device-connect with
+    ``inference:invoke tool:invoke billing:manage`` on the scope. The user must be
+    an ADMIN/OWNER and tick "Allow terminal billing" in the portal for the minted
+    token to actually carry the scope; otherwise the server silently downscopes and this
+    returns False.
+
+    Reuses the held credential's portal/inference URLs + client_id so the step-up
+    targets the same deployment (incl. a preview via ``HERMES_PORTAL_BASE_URL`` set
+    at the original login). Persists to the auth store + shared store + pool, exactly
+    like ``_login_nous`` — but WITHOUT the model picker (this is a scope upgrade, not
+    a fresh login).
+
+    Returns True iff the new token carries ``billing:manage``.
+    """
+    prior = get_provider_auth_state("nous") or {}
+    pconfig = PROVIDER_REGISTRY["nous"]
+
+    # Build the step-up scope: existing scopes (if any) + billing:manage, deduped,
+    # order-stable. Fall back to the standard inference+tool+billing set.
+    _raw_scope = prior.get("scope")
+    prior_scope = _raw_scope if isinstance(_raw_scope, str) else ""
+    requested: list[str] = []
+    for tok in (prior_scope.split() or [NOUS_INFERENCE_INVOKE_SCOPE, "tool:invoke"]):
+        if tok and tok not in requested:
+            requested.append(tok)
+    if NOUS_BILLING_MANAGE_SCOPE not in requested:
+        requested.append(NOUS_BILLING_MANAGE_SCOPE)
+    scope = " ".join(requested)
+
+    auth_state = _nous_device_code_login(
+        portal_base_url=prior.get("portal_base_url") or None,
+        inference_base_url=prior.get("inference_base_url") or None,
+        client_id=prior.get("client_id") or pconfig.client_id,
+        scope=scope,
+        open_browser=open_browser,
+        timeout_seconds=timeout_seconds,
+        on_verification=on_verification,
+    )
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "nous", auth_state)
+        _save_auth_store(auth_store)
+
+    # Mirror to shared store + reseed the pool (best-effort), same as _login_nous.
+    try:
+        _write_shared_nous_state(auth_state)
+    except Exception:
+        pass
+    try:
+        _sync_nous_pool_from_auth_store()
+    except Exception:
+        pass
+
+    granted = auth_state.get("scope")
+    return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:

@@ -71,6 +71,25 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_typing_indicator_defaults_true(self):
+        assert PlatformConfig().typing_indicator is True
+        assert PlatformConfig.from_dict({}).typing_indicator is True
+
+    def test_typing_indicator_roundtrip_false(self):
+        pc = PlatformConfig(enabled=True, typing_indicator=False)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_coerces_quoted_false(self):
+        restored = PlatformConfig.from_dict({"typing_indicator": "false"})
+        assert restored.typing_indicator is False
+
+    def test_typing_indicator_resolved_from_extra(self):
+        # The shared-key loop in load_gateway_config bridges the flag into
+        # extra; from_dict must honor it there too (mirrors _grn fallback).
+        restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
+        assert restored.typing_indicator is False
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -138,26 +157,31 @@ class TestGetConnectedPlatforms:
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
-        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)
+        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
+                                    bg_process_max_age_hours=48)
         d = policy.to_dict()
         restored = SessionResetPolicy.from_dict(d)
         assert restored.mode == "idle"
         assert restored.at_hour == 6
         assert restored.idle_minutes == 120
+        assert restored.bg_process_max_age_hours == 48
 
     def test_defaults(self):
         policy = SessionResetPolicy()
         assert policy.mode == "both"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
+        assert policy.bg_process_max_age_hours == 24
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None}
+            {"mode": None, "at_hour": None, "idle_minutes": None,
+             "bg_process_max_age_hours": None}
         )
         assert restored.mode == "both"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
+        assert restored.bg_process_max_age_hours == 24
 
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
@@ -267,6 +291,25 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+        )
+
+        assert config.get_unauthorized_dm_behavior(Platform.EMAIL) == "ignore"
+
+    def test_email_can_opt_into_pairing_for_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.EMAIL: PlatformConfig(
+                    enabled=True,
+                    extra={"unauthorized_dm_behavior": "pair"},
+                ),
+            },
+        )
+
+        assert config.get_unauthorized_dm_behavior(Platform.EMAIL) == "pair"
+
     def test_from_dict_coerces_quoted_false_always_log_local(self):
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
@@ -310,6 +353,55 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
+        """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
+        start_gateway()'s connect loop actually dials the connector. Registering
+        the adapter in the platform_registry is NOT enough — the connect loop
+        iterates config.platforms, so an un-enabled RELAY never connects (the
+        'relay registered but no inbound' bug)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay/")
+
+        config = load_gateway_config()
+
+        assert Platform.RELAY in config.platforms
+        relay = config.platforms[Platform.RELAY]
+        assert relay.enabled is True
+        # Trailing slash stripped; mirrored into extra for the connected-checker.
+        assert relay.extra.get("relay_url") == "https://connector.example/relay"
+        assert Platform.RELAY in config.get_connected_platforms()
+
+    def test_relay_platform_absent_when_url_unset(self, tmp_path, monkeypatch):
+        """No relay URL -> no RELAY platform, so direct/single-tenant gateways
+        are unaffected."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+
+        config = load_gateway_config()
+
+        assert Platform.RELAY not in config.platforms
+
+    def test_relay_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
+        """gateway.relay_url in config.yaml also enables RELAY (env-less path)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  platforms:\n    relay:\n      extra:\n        relay_url: https://connector.example/relay\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+
+        config = load_gateway_config()
+
+        assert Platform.RELAY in config.platforms
+        assert config.platforms[Platform.RELAY].enabled is True
 
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -618,7 +710,7 @@ class TestLoadGatewayConfig:
 
         telegram = config.platforms[Platform.TELEGRAM]
         assert telegram.extra.get("allow_from") == ["777888999"], (
-            "allow_from configured under gateway.platforms.telegram must be "
+            "allow_from configured under plugins.platforms.telegram.adapter must be "
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
         assert telegram.extra.get("require_mention") is False
@@ -767,6 +859,38 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_bridges_telegram_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n  allow_bots: mentions\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_ALLOW_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_ALLOW_BOTS") == "mentions"
+
+    def test_telegram_allow_bots_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_ALLOW_BOTS") == "none"
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -832,7 +956,26 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
-    def test_load_config_default_disables_telegram_rich_messages(self, tmp_path, monkeypatch):
+    def test_loads_telegram_rich_drafts_from_gateway_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      extra:\n"
+            "        rich_drafts: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["rich_drafts"] is True
+
+    def test_load_config_default_keeps_telegram_rich_messages_opt_in(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
 
@@ -843,6 +986,7 @@ class TestLoadGatewayConfig:
         config = load_config()
 
         assert config["telegram"]["extra"]["rich_messages"] is False
+        assert config["telegram"]["extra"]["rich_drafts"] is False
 
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -53,6 +53,10 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("fal_abc123def456ghi789jkl")
         assert "abc123def456" not in result
 
+    def test_notion_internal_integration_token(self):
+        result = redact_sensitive_text("ntn_abc123def456ghi789jkl")
+        assert "abc123def456" not in result
+
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
@@ -142,6 +146,67 @@ class TestAuthHeaders:
         text = "authorization: bearer mytoken123456789012345678"
         result = redact_sensitive_text(text)
         assert "mytoken12345" not in result
+
+    def test_basic_auth_credentials_masked(self):
+        # base64 of "user:longpassword1234" — leaks user:pass if not redacted.
+        text = "Authorization: Basic dXNlcjpsb25ncGFzc3dvcmQxMjM0"
+        result = redact_sensitive_text(text)
+        assert "Authorization: Basic" in result
+        assert "dXNlcjpsb25ncGFzc3dvcmQxMjM0" not in result
+
+    def test_token_scheme_masked(self):
+        text = "Authorization: token opaque-credential-1234567890"
+        result = redact_sensitive_text(text)
+        assert "Authorization: token" in result
+        assert "opaque-credential" not in result
+
+    def test_proxy_authorization_masked(self):
+        text = "Proxy-Authorization: Basic dXNlcjpzdXBlcnNlY3JldDEyMzQ="
+        result = redact_sensitive_text(text)
+        assert "dXNlcjpzdXBlcnNlY3JldDEyMzQ=" not in result
+
+    def test_authorization_prose_unchanged(self):
+        # "authorization" without a colon-delimited value is plain prose.
+        text = "the authorization model is fully open"
+        assert redact_sensitive_text(text) == text
+
+    def test_token_flush_against_double_quote_preserves_quote(self):
+        # Regression for #43083: a token sitting flush against a closing
+        # double quote must NOT pull that quote into the mask. Greedy \S+
+        # used to eat it, turning value corruption into syntax corruption
+        # (unterminated quote → shell EOF).
+        text = 'curl -H "Authorization: Bearer sk-abcdef1234567890"'
+        result = redact_sensitive_text(text)
+        assert "sk-abcdef1234567890" not in result
+        assert result.count('"') == 2, result  # both quotes survive
+        assert result.endswith('"'), result
+
+    def test_token_flush_against_single_quote_preserves_quote(self):
+        # Regression for #43083: same as above with single quotes (Python
+        # f-string context). The closing ' must survive the mask.
+        text = "auth = f'Authorization: Bearer {placeholder}'"
+        result = redact_sensitive_text(text)
+        assert result.count("'") == 2, result
+        assert result.endswith("'"), result
+
+
+class TestApiKeyHeaders:
+    def test_x_api_key_header_masked(self):
+        text = "x-api-key: opaque-provider-key-1234567890"
+        result = redact_sensitive_text(text)
+        assert "x-api-key:" in result
+        assert "opaque-provider-key" not in result
+
+    def test_x_api_key_in_curl_command_masked(self):
+        text = 'curl -H "x-api-key: sk-local-VERYsecret-999888" https://api.example.com'
+        result = redact_sensitive_text(text)
+        assert "VERYsecret" not in result
+        assert "https://api.example.com" in result
+
+    def test_api_key_header_masked(self):
+        text = "api-key: anotherOpaqueSecret1234567"
+        result = redact_sensitive_text(text)
+        assert "anotherOpaqueSecret" not in result
 
 
 class TestTelegramTokens:
@@ -427,6 +492,79 @@ class TestWebUrlsNotRedacted:
         assert "dbpass" not in result
 
 
+class TestBareTokenUserinfoRedaction:
+    """Regression tests for #6396 — a bare credential in URL userinfo
+    (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the
+    git-remote-with-embedded-password shape. The colon form ``user:pass@`` and
+    query-string tokens are deliberately left to pass through (#34029) so
+    magic-link / OAuth round-trip skills keep working — see
+    TestWebUrlsNotRedacted for those invariants.
+    """
+
+    def test_git_remote_bare_password_redacted(self):
+        """Exact bug scenario: password in a git remote URL."""
+        text = (
+            "git remote set-url origin "
+            "https://MYPASSWORDWASDISLAYEDHERE@github.com/unclehowell/FCUK.git"
+        )
+        result = redact_sensitive_text(text)
+        assert "MYPASSWORDWASDISLAYEDHERE" not in result
+        assert "@github.com" in result
+        assert "unclehowell/FCUK.git" in result
+
+    def test_ssh_bare_token_redacted(self):
+        text = "ssh://longtoken1234567@gitlab.com/project.git"
+        result = redact_sensitive_text(text)
+        assert "longtoken1234567" not in result
+        assert "@gitlab.com" in result
+
+    def test_ftp_bare_token_redacted(self):
+        text = "ftp://ftptoken123456@ftp.example.com/files"
+        result = redact_sensitive_text(text)
+        assert "ftptoken123456" not in result
+
+    def test_bare_token_with_query_redacts_token_only(self):
+        text = "https://abcdef1234567@host.com/path?foo=bar"
+        result = redact_sensitive_text(text)
+        assert "abcdef1234567" not in result
+        assert "?foo=bar" in result
+
+    def test_user_pass_form_still_passes_through(self):
+        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+        text = "URL: https://user:supersecretpw@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+    def test_short_username_not_redacted(self):
+        """Short userinfo (git, admin, deploy) below the 8-char floor passes."""
+        for text in (
+            "https://git@github.com/user/repo.git",
+            "https://admin@example.com/x",
+            "https://deploy@host.com/y",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_email_in_path_not_redacted(self):
+        """An ``@`` in a path/query is not userinfo — the token class stops at
+        ``/``, so emails after the first slash are never treated as a credential."""
+        for text in (
+            "https://example.com/search?q=user@example.com",
+            "https://example.com/users/john@doe.com/profile",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_plain_url_unchanged(self):
+        text = "https://github.com/user/repo.git"
+        assert redact_sensitive_text(text) == text
+
+    def test_long_bare_token_preserves_head_tail(self):
+        token = "abcdef" + "x" * 20 + "wxyz"
+        text = f"https://{token}@github.com/u/r.git"
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert "abcdef" in result  # head preserved
+        assert "wxyz" in result    # tail preserved
+
+
 class TestFormBodyRedaction:
     """Form-urlencoded body redaction (k=v&k=v with no other text)."""
 
@@ -458,6 +596,81 @@ class TestFormBodyRedaction:
         assert "first=1" in redact_sensitive_text(text)
 
 
+class TestLowercaseDottedConfigKeys:
+    """Issue #16413 — config-file passwords in lowercase/dotted/colon keys
+    must be redacted. The uppercase _ENV_ASSIGN_RE missed these, leaking
+    `spring.datasource.password=...` and `password: ...` from `cat`'d config
+    files. Carve-outs: prose, code (#4367), and web URLs are left untouched.
+    """
+
+    def test_spring_dotted_password_assignment(self):
+        text = "spring.datasource.password=Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "spring.datasource.password=" in result
+
+    def test_dotted_api_key_split_keyword(self):
+        # 'api.key' splits the keyword across a dot — must still match.
+        text = "app.api.key=ak_live_998877"
+        result = redact_sensitive_text(text)
+        assert "ak_live_998877" not in result
+        assert "app.api.key=" in result
+
+    def test_bare_lowercase_password_at_line_start(self):
+        text = "password=mysecretvalue123"
+        result = redact_sensitive_text(text)
+        assert "mysecretvalue123" not in result
+
+    def test_quoted_lowercase_value(self):
+        text = "password='mysecretvalue123'"
+        result = redact_sensitive_text(text)
+        assert "mysecretvalue123" not in result
+
+    def test_yaml_unquoted_password(self):
+        text = "password: Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "password:" in result
+
+    def test_yaml_indented_dotted(self):
+        text = "spring:\n  datasource:\n    password: hunter2pass"
+        result = redact_sensitive_text(text)
+        assert "hunter2pass" not in result
+
+    def test_properties_file_dump(self):
+        text = (
+            "server.port=8080\n"
+            "spring.datasource.username=admin\n"
+            "spring.datasource.password=Sup3rS3cret!\n"
+            "logging.level.root=INFO"
+        )
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "server.port=8080" in result  # non-secret keys preserved
+        assert "username=admin" in result
+
+    # --- carve-outs: must NOT redact ---
+
+    def test_prose_mid_sentence_password_unchanged(self):
+        # Not line-anchored, not dotted → conversational text, leave alone.
+        text = "I have password=foo and other things"
+        assert redact_sensitive_text(text) == text
+
+    def test_lowercase_code_assignment_unchanged(self):
+        # #4367 regression — spaces around '=' in code.
+        text = "const secret = await fetchSecret();"
+        assert redact_sensitive_text(text) == text
+
+    def test_url_query_param_passes_through(self):
+        # Web URLs are intentionally hands-off (documented design).
+        text = "https://example.com/api?password=opaqueval123&format=json"
+        assert redact_sensitive_text(text) == text
+
+    def test_prose_keyword_in_value_unchanged(self):
+        text = "note: secret meeting at noon"
+        assert redact_sensitive_text(text) == text
+
+
 class TestXaiToken:
     KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
 
@@ -482,3 +695,216 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestDbConnstrCodeOutput:
+    """Regression tests for issue #33801 — _DB_CONNSTR_RE corrupting code output.
+
+    Two distinct flaws, both confined to displayed tool OUTPUT (read_file /
+    terminal / execute_code), never the on-disk content:
+
+    1. The password group ``[^@]+`` was greedy across newlines, so on a
+       multi-line block it scanned past the DSN line to the next stray ``@``
+       (e.g. a Python ``@decorator``), replacing everything in between with
+       ``***`` — dropping lines and concatenating the next one.
+    2. An f-string DSN template (``f"postgresql://{user}:{pass}@{host}"``) is
+       not a live credential, but was redacted anyway. Under ``code_file=True``
+       a pure ``{...}`` brace password is now preserved.
+    """
+
+    MULTILINE = (
+        '            return f"postgresql://{auth}@{self.pg_host}:'
+        '{self.pg_port}/{self.pg_database}"\n'
+        "\n"
+        '    @model_validator(mode="after")\n'
+        '    def _validate_critical_settings(self) -> "Settings":'
+    )
+
+    def test_multiline_block_not_corrupted(self):
+        """The newline bound stops the greedy match from swallowing the
+        decorator line. Original exact repro from the issue thread."""
+        result = redact_sensitive_text(self.MULTILINE, code_file=True, force=True)
+        assert result == self.MULTILINE
+        # No line dropped, no concatenation onto the f-string line.
+        assert "@model_validator" in result
+        assert "_validate_critical_settings" in result
+        assert result.count("\n") == self.MULTILINE.count("\n")
+
+    def test_multiline_block_no_corruption_without_code_file(self):
+        """Even without code_file, the newline bound alone prevents the
+        catastrophic line-dropping. The single-line template's {pass} group
+        is still masked here (code_file=False), but lines stay intact."""
+        result = redact_sensitive_text(self.MULTILINE, force=True)
+        assert "@model_validator" in result
+        assert "_validate_critical_settings" in result
+        assert result.count("\n") == self.MULTILINE.count("\n")
+
+    def test_fstring_template_preserved_with_code_file(self):
+        """A single-line DSN f-string template is preserved under code_file."""
+        text = 'return f"postgresql://{user}:{password}@{host}:{port}/{db}"'
+        assert redact_sensitive_text(text, code_file=True, force=True) == text
+
+    def test_fstring_template_self_attr_preserved(self):
+        text = 'dsn = f"postgresql://{u}:{self.db_pass}@{h}:{p}/{d}"'
+        assert redact_sensitive_text(text, code_file=True, force=True) == text
+
+    def test_literal_connstr_still_redacted_with_code_file(self):
+        """A real password in a literal DSN is still masked under code_file."""
+        text = "postgresql://admin:realpassword@db.internal:5432/app"
+        result = redact_sensitive_text(text, code_file=True, force=True)
+        assert "realpassword" not in result
+        assert "***" in result
+
+    def test_literal_connstr_redacted_all_schemes(self):
+        for scheme, secret in [
+            ("postgres", "pgsecret1234"),
+            ("mysql", "mysqlsecret99"),
+            ("redis", "redissecret77"),
+            ("mongodb+srv", "mongosecret55"),
+            ("amqp", "amqpsecret33"),
+        ]:
+            text = f"{scheme}://user:{secret}@host:1234/db"
+            result = redact_sensitive_text(text, code_file=True, force=True)
+            assert secret not in result, scheme
+
+    def test_literal_connstr_in_log_line_redacted(self):
+        text = "connected via postgres://user:s3cr3tpw@host:5432/db ok"
+        result = redact_sensitive_text(text, force=True)
+        assert "s3cr3tpw" not in result
+
+
+class TestTerminalOutputRedaction:
+    """is_env_dump_command + redact_terminal_output — issue #43025.
+
+    Terminal/process stdout must be redacted on every surface (foreground
+    `terminal` AND background `process(poll/log/wait)`). Env-dump commands get
+    the ENV-assignment pass so opaque tokens (no vendor prefix) are masked;
+    other commands stay on the code_file path to avoid false positives.
+    """
+
+    def test_is_env_dump_command_detection(self):
+        from agent.redact import is_env_dump_command
+        assert is_env_dump_command("printenv")
+        assert is_env_dump_command("env")
+        assert is_env_dump_command("env | grep API")
+        assert is_env_dump_command("set")
+        assert is_env_dump_command("export")
+        assert is_env_dump_command("declare -x")
+        assert is_env_dump_command("cat /tmp/x && printenv")
+        assert not is_env_dump_command("python app.py")
+        assert not is_env_dump_command("cat config.py")
+        assert not is_env_dump_command("printf 'TOKEN=x'")
+        assert not is_env_dump_command("")
+        assert not is_env_dump_command(None)
+
+    def test_env_dump_masks_opaque_token(self):
+        from agent.redact import redact_terminal_output
+        out = "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u"
+        red = redact_terminal_output(out, "printenv")
+        assert "abc123randomopaquetokenvalue999" not in red
+        assert "HOME=/home/u" in red
+
+    def test_non_env_command_preserves_source_false_positives(self):
+        from agent.redact import redact_terminal_output
+        # code_file path: MAX_TOKENS=100 is source, must survive; real sk- masked.
+        out = "MAX_TOKENS=100\nOPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012"
+        red = redact_terminal_output(out, "cat config.py")
+        assert "MAX_TOKENS=100" in red
+        assert "abc123def456" not in red
+
+    def test_unknown_command_uses_safe_code_file_path(self):
+        from agent.redact import redact_terminal_output
+        # No command → code_file=True; opaque non-prefix token NOT masked
+        # (safe default avoids mangling arbitrary output), prefix still masked.
+        out = "OPAQUE=plainvalue123\nKEY=sk-proj-abc123def456ghi789jkl012"
+        red = redact_terminal_output(out, None)
+        assert "abc123def456" not in red
+
+    def test_disabled_passes_through(self, monkeypatch):
+        from agent.redact import redact_terminal_output
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        red = redact_terminal_output(out, "printenv")
+        assert "zzzopaque1234567890abcdef" in red
+
+
+class TestFileReadNonReusableRedaction:
+    """#35519: prefix-matched credentials in FILE CONTENT (read_file /
+    search_files / cat) must be redacted to a NON-REUSABLE sentinel — not a
+    head/tail mask that looks like a real-but-truncated key and gets written
+    back to config (corrupting the credential -> 401)."""
+
+    GHP = "ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T"  # realistic GitHub PAT shape
+    SK = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+
+    def test_file_read_uses_nonreusable_sentinel(self):
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True, file_read=True)
+        # The sentinel marker is present and obviously a redaction...
+        assert "«redacted:ghp_…»" in out, out
+        # ...and the head/tail-preserving mask shape is NOT produced.
+        assert "..." not in out
+        # The agent can still tell which vendor credential is present.
+        assert "ghp_" in out
+
+    def test_file_read_does_not_leak_secret_body(self):
+        """Crucial: file_read must NOT expose the real key (no un-redact)."""
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True, file_read=True)
+        # No run of the secret body survives.
+        assert "S1abcdefghij" not in out
+        assert self.GHP not in out
+        assert "Pn2T" not in out  # not even the tail (the old mask kept it)
+
+    def test_file_read_sentinel_is_not_a_plausible_key(self):
+        """The sentinel can't be mistaken for / written back as a usable key:
+        the old mask was a 13-char `ghp_S1...Pn2T` that broke GitHub auth when
+        an agent re-saved it. The sentinel is syntactically invalid as a token
+        (contains « » … and ':'), so it can't round-trip into a dead key."""
+        out = redact_sensitive_text(f"GITHUB_PERSONAL_ACCESS_TOKEN: {self.GHP}",
+                                    force=True, file_read=True)
+        masked = out.split(": ", 1)[1].strip()
+        # Not a bare token: contains the sentinel delimiters.
+        assert masked.startswith("«") and masked.endswith("»")
+        assert "…" in masked
+
+    def test_default_mode_unchanged_keeps_headtail_mask(self):
+        """Regression guard: NON-file_read (logs/display) keeps the existing
+        head/tail mask shape — only file content gets the sentinel. Uses a
+        bare-token context (no ``key:`` prefix) so this isolates the prefix
+        pass: a ``token: <key>`` line would additionally hit the YAML config
+        pass and collapse to ``***``, which is unrelated to this guard."""
+        out = redact_sensitive_text(f"see {self.GHP} here", force=True)
+        assert "«redacted" not in out          # no sentinel in log mode
+        assert "ghp_" in out and "..." in out   # head/tail mask preserved
+
+    def test_file_read_implies_code_file_no_env_falsepos(self):
+        """file_read should skip the source-code ENV/JSON false-positive paths
+        (it's config/data). A bare ``MAX_TOKENS=8000`` must pass through."""
+        out = redact_sensitive_text("MAX_TOKENS=8000", force=True, file_read=True)
+        assert out == "MAX_TOKENS=8000"
+
+    def test_sk_prefix_also_sentinelized(self):
+        out = redact_sensitive_text(f"key: {self.SK}", force=True, file_read=True)
+        assert "«redacted:sk-…»" in out
+        assert self.SK not in out
+
+
+class TestFireworksToken:
+    KEY = "fw_" + "A" * 40
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "fw_AA" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"FIREWORKS_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "fw_tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("fw_AA")

@@ -13,7 +13,7 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
-  #   "nous"         - Nous Portal OAuth (requires: hermes login)
+  #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
@@ -98,7 +98,9 @@ model:
 # ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
 # wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
-# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+# HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
+# implicit non-stream stale detector is auto-disabled for local endpoints
+# and can scale upward for very large contexts.
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -164,6 +166,16 @@ model:
 #
 # worktree: true    # Always create a worktree when in a git repo
 # worktree: false   # Default — only create when -w flag is passed
+#
+# By default a new worktree branches from the freshly-fetched remote tip
+# (the current branch's upstream, else the remote's default branch) so it
+# starts current with the project instead of from the local clone's
+# (possibly stale) HEAD. Set worktree_sync: false to branch from local HEAD
+# instead — useful when offline or when you deliberately want the clone's
+# exact current state as the base.
+#
+# worktree_sync: true   # Default — branch from the fetched remote tip
+# worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -439,7 +451,7 @@ prompt_caching:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "nous"       - Force Nous Portal (requires: hermes auth add nous)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
@@ -483,6 +495,10 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#                           # Some vLLM/Qwen deployments expect this nested:
+#                           # extra_body:
+#                           #   chat_template_kwargs:
+#                           #     enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -610,10 +626,10 @@ agent:
   # gateway_timeout_warning: 900
 
   # Graceful drain timeout for gateway stop/restart (seconds).
-  # The gateway stops accepting new work, waits for in-flight agents to
-  # finish, then interrupts anything still running after this timeout.
-  # 0 = no drain, interrupt immediately.
-  # restart_drain_timeout: 60
+  # Default 0 = no drain: a restart interrupts in-flight agents immediately,
+  # cleans up, and exits. Set a positive value only if you want a grace
+  # window on /restart, and keep it well under systemd's TimeoutStopSec.
+  # restart_drain_timeout: 0
 
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
@@ -621,7 +637,34 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # After the agent edits code without fresh passing verification, nudge it to
+  # verify before finishing. The default "auto" enables it on interactive
+  # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
+  # it on conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # verification summary would reach a human as chat noise. Set true or false to
+  # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
+  # verify_on_stop: auto
+
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
+
   # Enable verbose logging
   verbose: false
   
@@ -724,7 +767,19 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
+#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
+#       command_menu:
+#         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
+#         # all built-in commands plus common skill commands stay visible
+#         # while remaining under Telegram's payload-size limit. Clamped 1..100.
+#         max_commands: 60
+#         # prepend = user priority first, then Hermes defaults
+#         # append  = Hermes defaults first, then user priority
+#         # replace = only the list below defines priority
+#         priority_mode: prepend
+#         priority:
+#           - my_plugin_command
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -755,7 +810,6 @@ platform_toolsets:
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
-#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
@@ -770,7 +824,7 @@ platform_toolsets:
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 #   all          - Everything available
 #
 #   web          - Web search and content extraction (web_search, web_extract)
@@ -781,7 +835,6 @@ platform_toolsets:
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)
-#   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
@@ -790,7 +843,7 @@ platform_toolsets:
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 
 # NOTE: The top-level "toolsets" key is deprecated and ignored.
 # Tool configuration is managed per-platform via platform_toolsets above.
@@ -803,7 +856,7 @@ platform_toolsets:
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.
 # Each server's tools are automatically discovered and registered.
-# See docs/mcp.md for full documentation.
+# See website/docs/user-guide/features/mcp.md for full documentation.
 #
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run
@@ -817,6 +870,10 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
+#   keepalive_interval: liveness ping cadence in seconds (default: 180).
+#     Lower it below the server's session TTL for servers that expire idle
+#     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
+#     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
 #
 # mcp_servers:
 #   time:
@@ -1238,3 +1295,33 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#
+# -----------------------------------------------------------------------------
+# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
+# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
+# nous block above when gating the dashboard with your own identity provider.
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#
+# dashboard:
+#   oauth:
+#     provider: self-hosted
+#     self_hosted:
+#       issuer: "https://auth.example.com/application/o/hermes/"  # required
+#       client_id: "hermes-dashboard"                             # required
+#       scopes: "openid profile email"                            # optional
+#
+#       # OPTIONAL — set ONLY if your IDP registered the client as
+#       # *confidential* (Authentik / Keycloak often default to this). When
+#       # set, Hermes authenticates the client at the token endpoint
+#       # (client_secret_basic or client_secret_post, auto-selected from the
+#       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
+#       # (PKCE-only) client — the common case.
+#       #
+#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#       # in ~/.hermes/.env over putting it here in config.yaml.
+#       #   client_secret: ""

@@ -761,8 +761,48 @@ class TestNonStringContent:
         assert "Do NOT respond" not in prompt
         assert "DIFFERENT assistant" not in prompt
         assert "different assistant" not in prompt
+        assert "refactor the auth module" not in prompt
+        assert "JWT instead of sessions" not in prompt
         assert "Treat the conversation turns below as source material" in prompt
         assert "structured checkpoint summary" in prompt
+
+    def test_summary_task_snapshot_is_grounded_to_latest_user_turn(self):
+        """Regression for a copied prompt example becoming the active task.
+
+        A real #26 run showed the summarizer emitting the old template example
+        "Now refactor the auth module to use JWT instead of sessions". The
+        compacted turns did not contain that request, so the summary must
+        replace it with the deterministic latest user turn before the handoff
+        becomes live context.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = """## Historical Task Snapshot
+User asked: 'Now refactor the auth module to use JWT instead of sessions'
+
+## Goal
+Continue the task.
+
+## Completed Actions
+None.
+"""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        latest = "RUN_LONG_REAL_26_SCORE_V3B_WITH_FACTUALITY_SMOKE"
+        messages = [
+            {"role": "user", "content": latest},
+            {"role": "assistant", "content": "I will inspect the loop harness."},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert "refactor the auth module" not in summary
+        assert "JWT instead of sessions" not in summary
+        assert latest in summary
+        assert "deterministic, from compacted turns" in summary
 
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()

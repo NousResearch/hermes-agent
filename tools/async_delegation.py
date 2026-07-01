@@ -42,7 +42,7 @@ import time
 import uuid
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures.thread import _worker
+from concurrent.futures.thread import _threads_queues, _worker
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.thread_context import propagate_context_to_thread
@@ -69,19 +69,31 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
-            t = threading.Thread(
-                name=thread_name,
-                target=_worker,
-                args=(
+            worker_args: tuple[Any, ...]
+            if hasattr(self, "_create_worker_context"):
+                # Python 3.14 changed ThreadPoolExecutor worker internals from
+                # (queue, initializer, initargs) to a WorkerContext object.
+                worker_args = (
+                    weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
+                    self._work_queue,
+                )
+            else:
+                worker_args = (
                     weakref.ref(self, weakref_cb),
                     self._work_queue,
                     self._initializer,
                     self._initargs,
-                ),
+                )
+            t = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                args=worker_args,
                 daemon=True,
             )
             t.start()
             self._threads.add(t)
+            _threads_queues[t] = self._work_queue  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------

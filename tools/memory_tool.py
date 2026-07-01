@@ -701,11 +701,16 @@ class MemoryStore:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
+    # A parsed entry with this many internal newlines reads as several
+    # undelimited statements squashed together rather than one legitimate
+    # multiline entry — see signal 3 in _detect_external_drift.
+    _SQUASHED_ENTRY_NEWLINES = 4
+
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
 
         The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
+        wrote, joined by §. Detect drift via three signals:
 
         1. Round-trip mismatch — re-parsing and re-serializing the file
            doesn't produce identical bytes (rare; would catch oddly-encoded
@@ -718,6 +723,15 @@ class MemoryStore:
            free-form content into what the tool will treat as one entry.
            Flushing would then truncate that entry to the model's new
            content, discarding the appended bytes — issue #26045.
+        3. Squashed-entry blob — a parsed entry with many internal newlines
+           and no § inside it. Signal 2 only catches this when the blob
+           exceeds the whole-store limit, but a file that predates the §
+           delimiter (or was hand-edited outside the tool) can easily stay
+           UNDER the limit while still being dozens of statements with no
+           delimiter between them. Because replace()/remove() match by
+           substring, such a blob can be matched by ANY one of the
+           statements it absorbed and then overwritten/removed as a whole —
+           destroying every other statement in one call — issue #56464.
 
         Returns the absolute path of the .bak file when drift was found and
         backed up; returns None when the file looks tool-shaped.
@@ -740,8 +754,15 @@ class MemoryStore:
 
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
+        has_squashed_entry = any(
+            e.count("\n") >= self._SQUASHED_ENTRY_NEWLINES for e in parsed
+        )
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = (
+            (raw.strip() != roundtrip)
+            or (max_entry_len > char_limit)
+            or has_squashed_entry
+        )
         if not drift_detected:
             return None
 

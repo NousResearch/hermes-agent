@@ -17398,6 +17398,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _approval_result = _approval_fut.result(timeout=15)
                         if _approval_result.success:
                             return
+                        # Flood-aware fallback short-circuit (fix 5 in
+                        # t_dbcec280).  When the button send failed
+                        # because the chat is in a flood window, the
+                        # plain-text fallback would also be rejected
+                        # within the same retry-after interval — and
+                        # the inner retry layer in adapter.send would
+                        # add 3 more doomed sends.  Skip the fallback
+                        # so the outer retry layer (which already
+                        # honors retry_after) can handle backoff.  The
+                        # user will see no approval bubble until the
+                        # throttle lifts, which is the same outcome as
+                        # a successful fallback that gets re-flooded
+                        # and silently dropped anyway.
+                        _approval_err = (_approval_result.error or "").lower()
+                        if (
+                            "flood" in _approval_err
+                            or "retry_after" in _approval_err
+                            or "retry after" in _approval_err
+                        ):
+                            logger.warning(
+                                "Button-based approval deferred (chat in flood window), "
+                                "letting outer retry handle it: %s",
+                                _approval_result.error,
+                            )
+                            return
                         logger.warning(
                             "Button-based approval failed (send returned error), falling back to text: %s",
                             _approval_result.error,

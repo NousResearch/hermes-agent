@@ -1,0 +1,14 @@
+{
+  "name": "startup-recovery",
+  "label": "Startup Recovery",
+  "description": "LOCAL GSSAI gateway/tmux health — read-only and secret-free",
+  "icon": "Activity",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/startup-recovery",
+    "position": "end"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

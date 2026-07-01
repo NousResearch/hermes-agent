@@ -1,0 +1,14 @@
+{
+  "name": "profile-manager",
+  "label": "Profiles (GSSAI)",
+  "description": "LOCAL GSSAI profile inventory — read-only and secret-free",
+  "icon": "Users",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/profile-manager",
+    "position": "end"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

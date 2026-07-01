@@ -6717,6 +6717,7 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
             self._selected_provider: str = ""
             self._pending_expensive_model: str = ""
+            self._model_page: int = 0
 
             self._build_provider_select()
 
@@ -6767,8 +6768,11 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
+            page = self._model_page
+            start = page * 25
+            end = start + 25
             options = []
-            for model_id in models[:25]:
+            for model_id in models[start:end]:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
                 options.append(
                     discord.SelectOption(
@@ -6798,6 +6802,24 @@ def _define_discord_view_classes() -> None:
             )
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
+
+            # Pagination: show Prev/Next when models exceed 25
+            total_pages = (len(models) + 24) // 25
+            if total_pages > 1:
+                if page > 0:
+                    prev_btn = discord.ui.Button(
+                        label="◀ Prev", style=discord.ButtonStyle.grey,
+                        custom_id="model_prev_page",
+                    )
+                    prev_btn.callback = self._on_prev_models
+                    self.add_item(prev_btn)
+                if end < len(models):
+                    next_btn = discord.ui.Button(
+                        label="Next ▶", style=discord.ButtonStyle.grey,
+                        custom_id="model_next_page",
+                    )
+                    next_btn.callback = self._on_next_models
+                    self.add_item(next_btn)
 
         def _build_expensive_confirm(self, model_id: str):
             """Build confirmation buttons for unusually expensive models."""
@@ -6843,6 +6865,7 @@ def _define_discord_view_classes() -> None:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
+            self._model_page = 0
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
@@ -6851,13 +6874,14 @@ def _define_discord_view_classes() -> None:
             self._build_model_select(provider_slug)
 
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+            models = provider.get("models", []) if provider else []
+            total_pages = (len(models) + 24) // 25
+            page_info = f" (page 1/{total_pages})" if total_pages > 1 else ""
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    description=f"Provider: **{pname}**\nSelect a model{page_info}:",
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -6952,6 +6976,56 @@ def _define_discord_view_classes() -> None:
                 self._pending_expensive_model,
             )
 
+        async def _on_next_models(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self._model_page += 1
+            self._build_model_select(self._selected_provider)
+            provider = next(
+                (p for p in self.providers if p["slug"] == self._selected_provider), None
+            )
+            models = provider.get("models", []) if provider else []
+            total_pages = (len(models) + 24) // 25
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=(
+                        f"Provider: **{provider.get('name', self._selected_provider) if provider else self._selected_provider}**\n"
+                        f"Select a model (page {self._model_page + 1}/{total_pages}):"
+                    ),
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_prev_models(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            self._model_page = max(0, self._model_page - 1)
+            self._build_model_select(self._selected_provider)
+            provider = next(
+                (p for p in self.providers if p["slug"] == self._selected_provider), None
+            )
+            models = provider.get("models", []) if provider else []
+            total_pages = (len(models) + 24) // 25
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=(
+                        f"Provider: **{provider.get('name', self._selected_provider) if provider else self._selected_provider}**\n"
+                        f"Select a model (page {self._model_page + 1}/{total_pages}):"
+                    ),
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -6959,6 +7033,7 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
+            self._model_page = 0
             self._build_provider_select()
 
             try:

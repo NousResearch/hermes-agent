@@ -143,6 +143,11 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
 )
+_RATE_LIMIT_RESUME_REASON = "rate_limit_reset"
+_RATE_LIMIT_RESUME_FAILURE_REASONS = frozenset(
+    {"rate_limit", "billing", "upstream_rate_limit"}
+)
+_RATE_LIMIT_RESUME_SAFETY_MARGIN_SECS = 15.0
 
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
@@ -612,6 +617,46 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _rate_limit_resume_epoch_from_agent_result(
+    agent_result: Any,
+    *,
+    now: Optional[float] = None,
+    safety_margin: float = _RATE_LIMIT_RESUME_SAFETY_MARGIN_SECS,
+) -> Optional[float]:
+    """Return the epoch time when a provider-limit failed turn may resume.
+
+    The agent's normal retry loop handles short transient throttles. This path
+    is for quota/usage-limit walls that expose an authoritative reset timestamp
+    and should be durably resumed by the gateway after that time.
+    """
+    if not isinstance(agent_result, dict) or not agent_result.get("failed"):
+        return None
+
+    failure_reason = str(agent_result.get("failure_reason") or "").strip()
+    error_text = str(agent_result.get("error") or "")
+    if (
+        failure_reason not in _RATE_LIMIT_RESUME_FAILURE_REASONS
+        and not _GATEWAY_RATE_LIMIT_RE.search(error_text)
+    ):
+        return None
+
+    error_context = agent_result.get("error_context") or {}
+    if not isinstance(error_context, dict):
+        error_context = {}
+    reset_at = (
+        error_context.get("reset_at")
+        or error_context.get("resets_at")
+        or agent_result.get("reset_at")
+        or agent_result.get("resets_at")
+    )
+    reset_epoch = _coerce_gateway_timestamp(reset_at)
+    if reset_epoch is None:
+        return None
+
+    base_now = time.time() if now is None else float(now)
+    return max(reset_epoch, base_now) + max(float(safety_margin), 0.0)
 
 
 def _auto_continue_freshness_window() -> float:
@@ -1670,6 +1715,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionEntry,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -2664,6 +2710,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._delayed_resume_tasks: Dict[str, asyncio.Task] = {}
+        self._rate_limit_resume_lock = asyncio.Lock()
         self._active_session_leases: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
@@ -5799,10 +5847,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
-    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
-    # we killed it" — eligible for startup auto-resume.
+    # .clean_shutdown marker).  Provider-limit resumes are set when the agent
+    # exhausts short retries but exposes an authoritative reset timestamp.
     _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+        {"restart_timeout", "shutdown_timeout", "restart_interrupted", _RATE_LIMIT_RESUME_REASON}
     )
 
     async def _run_startup_resume_event(
@@ -5833,6 +5881,115 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # otherwise the real run's normal cleanup owns the slot.
             if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
+
+    def _resume_delay_seconds(self, entry: SessionEntry, *, now: Optional[float] = None) -> float:
+        if getattr(entry, "resume_reason", None) != _RATE_LIMIT_RESUME_REASON:
+            return 0.0
+        resume_epoch = _coerce_gateway_timestamp(getattr(entry, "resume_not_before", None))
+        if resume_epoch is None:
+            return 0.0
+        base_now = time.time() if now is None else float(now)
+        return max(0.0, resume_epoch - base_now)
+
+    def _claim_resume_session_slot(self, session_key: str) -> bool:
+        if session_key in self._running_agents:
+            return False
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        self._persist_active_agents()
+        return True
+
+    def _build_resume_event(self, source: SessionSource) -> MessageEvent:
+        # Empty-text internal event — the _is_resume_pending branch in
+        # _handle_message_with_agent prepends the proper reason-aware system
+        # note before the turn runs.
+        return MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+
+    def _load_due_resume_entry(self, session_key: str) -> Optional[SessionEntry]:
+        try:
+            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+        except Exception as exc:
+            logger.debug("Delayed resume lookup failed for %s: %s", session_key, exc)
+            return None
+        if entry is None or not entry.resume_pending or entry.suspended or entry.origin is None:
+            return None
+        if entry.resume_reason not in self._AUTO_RESUME_REASONS:
+            return None
+        if self._resume_delay_seconds(entry) > 0:
+            return None
+        return entry
+
+    async def _run_due_resume_entry(self, entry: SessionEntry) -> None:
+        session_key = entry.session_key
+        if not self._claim_resume_session_slot(session_key):
+            return
+        origin = entry.origin
+        if origin is None:
+            self._release_running_agent_state(session_key)
+            return
+        adapter = self.adapters.get(origin.platform)
+        if adapter is None:
+            self._release_running_agent_state(session_key)
+            logger.debug(
+                "Skipping delayed auto-resume for %s: adapter not ready for %s",
+                session_key,
+                getattr(origin, "platform", None),
+            )
+            return
+        await self._run_startup_resume_event(
+            adapter,
+            self._build_resume_event(origin),
+            session_key,
+        )
+
+    async def _run_delayed_resume_event(self, session_key: str, delay_seconds: float) -> None:
+        try:
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+            if self._startup_should_abort():
+                return
+            entry = self._load_due_resume_entry(session_key)
+            if entry is None:
+                return
+            if entry.resume_reason == _RATE_LIMIT_RESUME_REASON:
+                # Provider quota resumes often share one account/license.  Hold
+                # a gateway-level drain lock while the resumed turn runs so due
+                # entries execute FIFO instead of stampeding at reset_at.
+                async with self._rate_limit_resume_lock:
+                    locked_entry = self._load_due_resume_entry(session_key)
+                    if locked_entry is None:
+                        return
+                    await self._run_due_resume_entry(locked_entry)
+                return
+            await self._run_due_resume_entry(entry)
+        finally:
+            tasks = getattr(self, "_delayed_resume_tasks", None)
+            if isinstance(tasks, dict) and tasks.get(session_key) is asyncio.current_task():
+                tasks.pop(session_key, None)
+
+    def _schedule_delayed_resume(self, entry: SessionEntry, delay_seconds: float) -> bool:
+        tasks = getattr(self, "_delayed_resume_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._delayed_resume_tasks = tasks
+        existing = tasks.get(entry.session_key)
+        current = asyncio.current_task()
+        if existing is not None and existing is not current and not existing.done():
+            existing.cancel()
+        task = asyncio.create_task(
+            self._run_delayed_resume_event(entry.session_key, delay_seconds)
+        )
+        tasks[entry.session_key] = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return True
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
         queue = getattr(self, "_startup_restore_queue", None)
@@ -5932,19 +6089,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
 
+        def _resume_order(entry: SessionEntry) -> tuple[float, float, str]:
+            marker_epoch = _coerce_gateway_timestamp(
+                entry.last_resume_marked_at or entry.updated_at or entry.created_at
+            )
+            resume_epoch = _coerce_gateway_timestamp(entry.resume_not_before)
+            return (
+                resume_epoch if resume_epoch is not None else 0.0,
+                marker_epoch if marker_epoch is not None else 0.0,
+                entry.session_key,
+            )
+
+        candidates.sort(key=_resume_order)
+
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
-            marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
-                continue
-
-            # Already being resumed (e.g. scheduled at startup and still
-            # in-flight) — don't synthesize a second continuation turn.
-            if entry.session_key in self._running_agents:
-                continue
+            is_rate_limit_resume = entry.resume_reason == _RATE_LIMIT_RESUME_REASON
+            delay_seconds = self._resume_delay_seconds(entry)
+            if not is_rate_limit_resume:
+                marker = entry.last_resume_marked_at or entry.updated_at
+                if marker is not None and (now - marker).total_seconds() > window:
+                    continue
 
             source = entry.origin
+            if source is None:
+                continue
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
@@ -5954,30 +6124,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
-            # Claim the session slot *before* spawning the task so that an
-            # inbound message arriving between task creation and the task's
-            # first await (where _process_message_background sets the real
-            # sentinel) sees the slot as occupied and queues behind it
-            # instead of spinning up a duplicate AIAgent (#45456).
-            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
-            self._running_agents_ts[entry.session_key] = time.time()
-            self._persist_active_agents()
+            # Provider-limit resumes always go through the delayed-resume
+            # worker, even when already due, so the account-level drain lock
+            # serializes FIFO execution across sessions.
+            if is_rate_limit_resume:
+                if self._schedule_delayed_resume(entry, delay_seconds):
+                    scheduled += 1
+                continue
 
-            # Empty-text internal event — the _is_resume_pending branch in
-            # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
-            event = MessageEvent(
-                text="",
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
+            # Already being resumed (e.g. scheduled at startup and still
+            # in-flight) — don't synthesize a second continuation turn.
+            if entry.session_key in self._running_agents:
+                continue
+
+            if not self._claim_resume_session_slot(entry.session_key):
+                continue
+
             task = asyncio.create_task(
-                self._run_startup_resume_event(adapter, event, entry.session_key)
+                self._run_startup_resume_event(
+                    adapter,
+                    self._build_resume_event(source),
+                    entry.session_key,
+                )
             )
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
-            if getattr(self, "_startup_restore_in_progress", False):
+            if getattr(self, "_startup_restore_in_progress", False) and not is_rate_limit_resume:
                 tasks = getattr(self, "_startup_restore_tasks", None)
                 if tasks is None:
                     tasks = []
@@ -5986,10 +6158,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             scheduled += 1
         if scheduled:
             logger.info(
-                "Scheduled auto-resume for %d restart-interrupted session(s)",
+                "Scheduled auto-resume for %d pending session(s)",
                 scheduled,
             )
         return scheduled
+
+    def _format_rate_limit_resume_notice(self, resume_epoch: float) -> str:
+        resume_dt = datetime.fromtimestamp(resume_epoch)
+        reset_text = resume_dt.strftime("%Y-%m-%d %H:%M:%S")
+        wait_seconds = max(0, int(resume_epoch - time.time()))
+        if wait_seconds >= 3600:
+            wait_text = f"~{max(1, round(wait_seconds / 3600))}h"
+        elif wait_seconds >= 60:
+            wait_text = f"~{max(1, round(wait_seconds / 60))}m"
+        else:
+            wait_text = f"{wait_seconds}s"
+        return (
+            "⏱️ The model provider is rate-limiting requests. "
+            f"I'll automatically retry this session after the reset window "
+            f"({reset_text}, in {wait_text})."
+        )
+
+    def _maybe_schedule_provider_limit_resume(
+        self,
+        agent_result: Dict[str, Any],
+        *,
+        session_key: Optional[str],
+        source: SessionSource,
+    ) -> Optional[str]:
+        if not session_key:
+            return None
+        resume_epoch = _rate_limit_resume_epoch_from_agent_result(agent_result)
+        if resume_epoch is None:
+            return None
+        resume_not_before = datetime.fromtimestamp(resume_epoch)
+        try:
+            marked = self.session_store.mark_resume_pending(
+                session_key,
+                reason=_RATE_LIMIT_RESUME_REASON,
+                resume_not_before=resume_not_before,
+            )
+        except Exception as exc:
+            logger.debug("mark rate-limit resume pending failed for %s: %s", session_key, exc)
+            return None
+        if not marked:
+            return None
+        try:
+            self._schedule_resume_pending_sessions(platform=source.platform)
+        except Exception as exc:
+            logger.debug("schedule rate-limit resume failed for %s: %s", session_key, exc)
+        logger.info(
+            "Scheduled provider-limit auto-resume for %s at %s",
+            session_key,
+            resume_not_before.isoformat(),
+        )
+        return self._format_rate_limit_resume_notice(resume_epoch)
 
     def _startup_should_abort(self) -> bool:
         return (
@@ -10609,6 +10832,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response,
                 )
             except Exception:
+                _intentional_silence = False
+
+            _rate_limit_resume_notice = self._maybe_schedule_provider_limit_resume(
+                agent_result,
+                session_key=session_key,
+                source=source,
+            )
+            if _rate_limit_resume_notice:
+                response = _rate_limit_resume_notice
                 _intentional_silence = False
 
             # Convert the agent's internal "(empty)" sentinel into a
@@ -17065,10 +17297,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _resume_entry = self.session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
+            _resume_reason = (
+                getattr(_resume_entry, "resume_reason", None)
+                if _resume_entry is not None
+                else None
+            )
+            _is_rate_limit_resume = _resume_reason == _RATE_LIMIT_RESUME_REASON
+            _rate_limit_resume_due = (
+                not _is_rate_limit_resume
+                or (_resume_entry is not None and self._resume_delay_seconds(_resume_entry) <= 0)
+            )
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
-                and _interruption_is_fresh
+                and (_interruption_is_fresh or _is_rate_limit_resume)
+                and _rate_limit_resume_due
             )
             _has_fresh_tool_tail = bool(
                 agent_history
@@ -17083,28 +17326,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _reason == "restart_timeout"
                     else "a gateway shutdown"
                     if _reason == "shutdown_timeout"
+                    else "a provider rate limit"
+                    if _reason == _RATE_LIMIT_RESUME_REASON
                     else "a gateway interruption"
                 )
                 _persist_user_message_override = message
-                # The empty-message case is the auto-resume startup turn
-                # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address, so tell the model to report
-                # recovery instead of the (nonexistent) "new message".
+                # The empty-message case is a synthetic auto-resume turn.  For
+                # restart recovery there is no pending user request to re-run;
+                # for provider-limit recovery the pending request is precisely
+                # what should continue after the reset timestamp.
                 if message:
                     _resume_guidance = (
                         "Address the user's NEW message below FIRST and focus "
                         "on what the user is asking now."
+                    )
+                elif _reason == _RATE_LIMIT_RESUME_REASON:
+                    _resume_guidance = (
+                        "Continue the pending user request from the conversation "
+                        "history now that the provider limit reset time has passed."
                     )
                 else:
                     _resume_guidance = (
                         "Report to the user that the session was restored "
                         "successfully and ask what they would like to do next."
                     )
+                _restart_guard = (
+                    "Any restart/shutdown command in the history has already "
+                    "run — do NOT re-execute or verify it. "
+                    if _reason != _RATE_LIMIT_RESUME_REASON
+                    else "Do NOT repeat completed external side effects; verify state before any irreversible action. "
+                )
                 message = (
                     f"[System note: The previous turn was interrupted by "
                     f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
+                    f"{_restart_guard}{_resume_guidance} "
                     f"Do NOT re-execute old tool calls — skip any unfinished "
                     f"work from the conversation history.]"
                     + (f"\n\n{message}" if message else "")
@@ -17297,6 +17552,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "interrupted": result.get("interrupted", False),
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
+                    "failure_reason": result.get("failure_reason"),
+                    "error_context": result.get("error_context"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
@@ -17395,6 +17652,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
+                "failed": result_holder[0].get("failed", False) if result_holder[0] else False,
+                "failure_reason": result_holder[0].get("failure_reason") if result_holder[0] else None,
+                "error_context": result_holder[0].get("error_context") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,

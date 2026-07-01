@@ -40,6 +40,7 @@ from gateway.run import (
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _rate_limit_resume_epoch_from_agent_result,
     _should_clear_resume_pending_after_turn,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -133,10 +134,23 @@ def _simulate_note_injection(
     )
 
     message = user_message
+    reason = getattr(resume_entry, "resume_reason", None) if resume_entry is not None else None
+    is_rate_limit_resume = reason == "rate_limit_reset"
+    resume_not_before = (
+        _coerce_gateway_timestamp(getattr(resume_entry, "resume_not_before", None))
+        if resume_entry is not None
+        else None
+    )
+    rate_limit_resume_due = (
+        not is_rate_limit_resume
+        or resume_not_before is None
+        or resume_not_before <= time.time()
+    )
     is_resume_pending = bool(
         resume_entry is not None
         and getattr(resume_entry, "resume_pending", False)
-        and interruption_is_fresh
+        and (interruption_is_fresh or is_rate_limit_resume)
+        and rate_limit_resume_due
     )
     has_fresh_tool_tail = bool(
         agent_history
@@ -151,6 +165,8 @@ def _simulate_note_injection(
             if reason == "restart_timeout"
             else "a gateway shutdown"
             if reason == "shutdown_timeout"
+            else "a provider rate limit"
+            if reason == "rate_limit_reset"
             else "a gateway interruption"
         )
         if message:
@@ -158,16 +174,26 @@ def _simulate_note_injection(
                 "Address the user's NEW message below FIRST and focus "
                 "on what the user is asking now."
             )
+        elif reason == "rate_limit_reset":
+            resume_guidance = (
+                "Continue the pending user request from the conversation "
+                "history now that the provider limit reset time has passed."
+            )
         else:
             resume_guidance = (
                 "Report to the user that the session was restored "
                 "successfully and ask what they would like to do next."
             )
+        restart_guard = (
+            "Any restart/shutdown command in the history has already "
+            "run — do NOT re-execute or verify it. "
+            if reason != "rate_limit_reset"
+            else "Do NOT repeat completed external side effects; verify state before any irreversible action. "
+        )
         message = (
             f"[System note: The previous turn was interrupted by "
             f"{reason_phrase}; the gateway is now back online. "
-            f"Any restart/shutdown command in the history has already "
-            f"run — do NOT re-execute or verify it. {resume_guidance} "
+            f"{restart_guard}{resume_guidance} "
             f"Do NOT re-execute old tool calls — skip any unfinished "
             f"work from the conversation history.]"
             + (f"\n\n{message}" if message else "")
@@ -200,9 +226,11 @@ class TestSessionEntryResumeFields:
         assert entry.resume_pending is False
         assert entry.resume_reason is None
         assert entry.last_resume_marked_at is None
+        assert entry.resume_not_before is None
 
     def test_roundtrip_with_resume_fields(self):
         now = datetime(2026, 4, 18, 12, 0, 0)
+        resume_not_before = now + timedelta(hours=6)
         entry = SessionEntry(
             session_key="agent:main:telegram:dm:1",
             session_id="sid",
@@ -211,11 +239,13 @@ class TestSessionEntryResumeFields:
             resume_pending=True,
             resume_reason="restart_timeout",
             last_resume_marked_at=now,
+            resume_not_before=resume_not_before,
         )
         restored = SessionEntry.from_dict(entry.to_dict())
         assert restored.resume_pending is True
         assert restored.resume_reason == "restart_timeout"
         assert restored.last_resume_marked_at == now
+        assert restored.resume_not_before == resume_not_before
 
     def test_from_dict_legacy_without_resume_fields(self):
         """Old sessions.json without the new fields deserialize cleanly."""
@@ -231,6 +261,7 @@ class TestSessionEntryResumeFields:
         assert restored.resume_pending is False
         assert restored.resume_reason is None
         assert restored.last_resume_marked_at is None
+        assert restored.resume_not_before is None
 
     def test_malformed_timestamp_is_tolerated(self):
         now = datetime.now()
@@ -242,12 +273,14 @@ class TestSessionEntryResumeFields:
             "resume_pending": True,
             "resume_reason": "restart_timeout",
             "last_resume_marked_at": "not-a-timestamp",
+            "resume_not_before": "also-not-a-timestamp",
         }
         restored = SessionEntry.from_dict(data)
-        # resume_pending still honoured, only the broken timestamp drops
+        # resume_pending still honoured, only the broken timestamps drop
         assert restored.resume_pending is True
         assert restored.resume_reason == "restart_timeout"
         assert restored.last_resume_marked_at is None
+        assert restored.resume_not_before is None
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +299,7 @@ class TestMarkResumePending:
         assert refreshed.resume_pending is True
         assert refreshed.resume_reason == "restart_timeout"
         assert refreshed.last_resume_marked_at is not None
+        assert refreshed.resume_not_before is None
 
     def test_custom_reason_persists(self, tmp_path):
         store = _make_store(tmp_path)
@@ -274,6 +308,23 @@ class TestMarkResumePending:
 
         store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
         assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
+
+    def test_resume_not_before_persists(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        resume_not_before = datetime.now() + timedelta(hours=6)
+
+        store.mark_resume_pending(
+            entry.session_key,
+            reason="rate_limit_reset",
+            resume_not_before=resume_not_before,
+        )
+
+        refreshed = store._entries[entry.session_key]
+        assert refreshed.resume_pending is True
+        assert refreshed.resume_reason == "rate_limit_reset"
+        assert refreshed.resume_not_before == resume_not_before
 
     def test_returns_false_for_unknown_key(self, tmp_path):
         store = _make_store(tmp_path)
@@ -317,6 +368,7 @@ class TestClearResumePending:
         assert e.resume_pending is False
         assert e.resume_reason is None
         assert e.last_resume_marked_at is None
+        assert e.resume_not_before is None
 
     def test_returns_false_when_not_pending(self, tmp_path):
         store = _make_store(tmp_path)
@@ -705,6 +757,43 @@ class TestResumePendingSystemNote:
         # Nothing appended after the closing bracket (no empty user text).
         assert result.rstrip().endswith("]")
 
+    def test_rate_limit_empty_message_continues_pending_request_after_stale_delay(self):
+        """Provider-limit delayed resumes may be hours old, so they bypass the
+        restart freshness window and tell the model to continue the pending user
+        request rather than merely report restart recovery.
+        """
+        entry = self._pending_entry(reason="rate_limit_reset")
+        entry.last_resume_marked_at = datetime.now() - timedelta(hours=6)
+        entry.resume_not_before = datetime.now() - timedelta(seconds=1)
+
+        result = _simulate_note_injection(
+            history=[
+                {"role": "user", "content": "finish the PR", "timestamp": time.time() - 6 * 3600},
+            ],
+            user_message="",
+            resume_entry=entry,
+            window_secs=1800,
+        )
+
+        assert "provider rate limit" in result
+        assert "Continue the pending user request" in result
+        assert "Do NOT repeat completed external side effects" in result
+        assert "ask what they would like to do next" not in result
+
+    def test_rate_limit_resume_not_before_blocks_early_note(self):
+        entry = self._pending_entry(reason="rate_limit_reset")
+        entry.resume_not_before = datetime.now() + timedelta(hours=1)
+
+        result = _simulate_note_injection(
+            history=[
+                {"role": "user", "content": "finish the PR", "timestamp": time.time()},
+            ],
+            user_message="",
+            resume_entry=entry,
+        )
+
+        assert result == ""
+
 
 # ---------------------------------------------------------------------------
 # Freshness helpers
@@ -812,6 +901,62 @@ class TestFreshnessHelpers:
     def test_auto_continue_freshness_window_empty_falls_back(self, monkeypatch):
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "")
         assert _auto_continue_freshness_window() == 3600.0
+
+
+class TestRateLimitResumeEpoch:
+    def test_uses_rate_limit_reset_at_with_fixed_safety_margin(self):
+        reset_at = datetime(2026, 4, 18, 12, 0, 0).timestamp()
+        result = _rate_limit_resume_epoch_from_agent_result(
+            {
+                "failed": True,
+                "failure_reason": "rate_limit",
+                "error_context": {"reset_at": reset_at},
+            },
+            now=reset_at - 60,
+        )
+
+        assert result == reset_at + 15.0
+
+    def test_parses_iso_reset_at(self):
+        expected = datetime.fromisoformat("2026-04-18T12:00:00+00:00").timestamp()
+        result = _rate_limit_resume_epoch_from_agent_result(
+            {
+                "failed": True,
+                "failure_reason": "upstream_rate_limit",
+                "error_context": {"reset_at": "2026-04-18T12:00:00Z"},
+            },
+            now=expected - 60,
+        )
+
+        assert result == expected + 15.0
+
+    def test_past_reset_at_clamps_to_now_plus_safety(self):
+        result = _rate_limit_resume_epoch_from_agent_result(
+            {
+                "failed": True,
+                "failure_reason": "billing",
+                "error_context": {"reset_at": 900.0},
+            },
+            now=1_000.0,
+        )
+
+        assert result == 1_015.0
+
+    def test_ignores_non_rate_limit_failures(self):
+        assert _rate_limit_resume_epoch_from_agent_result(
+            {
+                "failed": True,
+                "failure_reason": "context_length",
+                "error_context": {"reset_at": 2_000.0},
+            },
+            now=1_000.0,
+        ) is None
+
+    def test_ignores_rate_limit_without_reset_time(self):
+        assert _rate_limit_resume_epoch_from_agent_result(
+            {"failed": True, "failure_reason": "rate_limit", "error_context": {}},
+            now=1_000.0,
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1163,141 @@ async def test_startup_auto_resume_skips_stale_entries():
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_auto_resume_waits_until_resume_not_before_without_claiming():
+    """Future provider-limit resumes are durable timers, not active sessions.
+
+    The gateway must not occupy the session's running-agent slot for hours while
+    waiting for a Codex/Claude-Code quota reset.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="rate-limit-chat")
+    future = datetime.now() + timedelta(hours=6)
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:rate-limit-chat",
+        session_id="sid",
+        created_at=datetime.now() - timedelta(hours=1),
+        updated_at=datetime.now() - timedelta(hours=1),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="rate_limit_reset",
+        last_resume_marked_at=datetime.now(),
+        resume_not_before=future,
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._delayed_resume_tasks = {}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    assert pending_entry.session_key not in runner._running_agents
+    adapter.handle_message.assert_not_called()
+    task = runner._delayed_resume_tasks.pop(pending_entry.session_key)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_auto_resume_due_entry_ignores_restart_freshness_window():
+    """Quota resets can be hours later; once due, they should resume even if
+    the normal restart-interruption freshness gate would treat them as stale.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="rate-limit-due-chat")
+    stale_marker = datetime.now() - timedelta(hours=6)
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:rate-limit-due-chat",
+        session_id="sid",
+        created_at=stale_marker,
+        updated_at=stale_marker,
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="rate_limit_reset",
+        last_resume_marked_at=stale_marker,
+        resume_not_before=datetime.now() - timedelta(seconds=1),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    assert pending_entry.session_key not in runner._delayed_resume_tasks
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_auto_resume_serializes_due_entries_fifo():
+    """Due provider-limit resumes are drained one at a time in reset order."""
+    runner, _adapter = make_restart_runner()
+    now = datetime.now()
+    first_source = make_restart_source(chat_id="rate-limit-fifo-1")
+    second_source = make_restart_source(chat_id="rate-limit-fifo-2")
+    first = SessionEntry(
+        session_key="agent:main:telegram:dm:rate-limit-fifo-1",
+        session_id="sid-1",
+        created_at=now,
+        updated_at=now,
+        origin=first_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="rate_limit_reset",
+        last_resume_marked_at=now,
+        resume_not_before=now - timedelta(seconds=10),
+    )
+    second = SessionEntry(
+        session_key="agent:main:telegram:dm:rate-limit-fifo-2",
+        session_id="sid-2",
+        created_at=now,
+        updated_at=now,
+        origin=second_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="rate_limit_reset",
+        last_resume_marked_at=now,
+        resume_not_before=now - timedelta(seconds=5),
+    )
+    # Insert in reverse order to prove scheduler sorting, not dict order.
+    runner.session_store._entries = {
+        second.session_key: second,
+        first.session_key: first,
+    }
+
+    active = 0
+    max_active = 0
+    order: list[str] = []
+
+    async def fake_run_startup_resume_event(_adapter, _event, session_key):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        order.append(session_key)
+        await asyncio.sleep(0.01)
+        runner._release_running_agent_state(session_key)
+        active -= 1
+
+    setattr(runner, "_run_startup_resume_event", fake_run_startup_resume_event)
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    tasks = list(runner._delayed_resume_tasks.values())
+    await asyncio.gather(*tasks)
+
+    assert scheduled == 2
+    assert max_active == 1
+    assert order == [first.session_key, second.session_key]
+    assert runner._delayed_resume_tasks == {}
 
 
 @pytest.mark.asyncio

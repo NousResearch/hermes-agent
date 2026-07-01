@@ -3804,6 +3804,7 @@ def run_conversation(
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
+                        "error_context": error_context,
                     }
 
                 # For rate limits, respect the Retry-After header if present

@@ -5637,6 +5637,47 @@ class TestCredentialPoolRecovery:
         assert context["reason"] == "GoUsageLimitError"
         assert context["reset_at"] == 1_000.0 + (6 * 60 * 60) + (29 * 60)
 
+    def test_extract_api_error_context_uses_resets_in_seconds_payload(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Plan usage limit reached.",
+                    "resets_in_seconds": 7_200,
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "usage_limit_reached"
+        assert context["reset_at"] == 8_200.0
+
+    def test_extract_api_error_context_uses_quota_reset_delay_payload(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "code": "quota_exceeded",
+                    "message": "Quota reset delay provided in payload.",
+                    "quotaResetDelay": 90_000,
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "quota_exceeded"
+        # Large bare quotaResetDelay values are treated as milliseconds.
+        assert context["reset_at"] == 1_090.0
+
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
         captured = {}

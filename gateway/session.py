@@ -614,6 +614,10 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    # Earliest wall-clock time a synthetic resume may run.  Used for provider
+    # rate/usage limits where the API reports an authoritative reset time that
+    # can be much longer than the gateway's short in-process retry window.
+    resume_not_before: Optional[datetime] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -639,6 +643,11 @@ class SessionEntry:
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
+                else None
+            ),
+            "resume_not_before": (
+                self.resume_not_before.isoformat()
+                if self.resume_not_before
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
@@ -670,6 +679,14 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+
+        resume_not_before = None
+        _rnb = data.get("resume_not_before")
+        if _rnb:
+            try:
+                resume_not_before = datetime.fromisoformat(_rnb)
+            except (TypeError, ValueError):
+                resume_not_before = None
 
         session_key = data["session_key"]
         session_id = data["session_id"]
@@ -703,6 +720,7 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            resume_not_before=resume_not_before,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1451,6 +1469,7 @@ class SessionStore:
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        resume_not_before: Optional[datetime] = None,
     ) -> bool:
         """Mark a session as resumable after a restart interruption.
 
@@ -1472,6 +1491,7 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
+                entry.resume_not_before = resume_not_before
                 self._save()
                 return True
         return False
@@ -1493,6 +1513,7 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            entry.resume_not_before = None
             self._save()
             return True
 

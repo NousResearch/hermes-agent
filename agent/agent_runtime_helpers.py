@@ -2772,12 +2772,31 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             if value not in {None, ""}:
                 context["reset_at"] = value
                 break
-        retry_after = payload.get("retry_after")
-        if retry_after not in {None, ""} and "reset_at" not in context:
+        for key in ("resets_in_seconds", "reset_in_seconds", "retry_after"):
+            retry_after = payload.get(key)
+            if retry_after in {None, ""} or "reset_at" in context:
+                continue
             try:
                 context["reset_at"] = time.time() + float(retry_after)
             except (TypeError, ValueError):
                 pass
+        if "reset_at" not in context:
+            quota_reset_delay = (
+                payload.get("quotaResetDelay")
+                if "quotaResetDelay" in payload
+                else payload.get("quota_reset_delay")
+            )
+            if quota_reset_delay is not None and quota_reset_delay != "":
+                try:
+                    seconds = float(str(quota_reset_delay))
+                    # Codex-style quotaResetDelay values are commonly surfaced
+                    # as millisecond durations.  Keep small values as seconds so
+                    # plain JSON from other providers remains useful.
+                    if seconds > 10_000:
+                        seconds = seconds / 1000.0
+                    context["reset_at"] = time.time() + seconds
+                except (TypeError, ValueError):
+                    pass
 
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)

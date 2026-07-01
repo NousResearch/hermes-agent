@@ -693,6 +693,144 @@ def _collect_pre_llm_call_context(
         return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "Early turn-start session persistence failed for session=%s",
+            agent.session_id or "none",
+            exc_info=True,
+        )
+
+    # ── Preflight context compression ──
+    # Gate the (expensive) full token estimate behind a cheap pre-check.
+    # See ``_should_run_preflight_estimate`` for the OR semantics that fix
+    # issue #27405 (a few very large messages slipping past the count gate).
+    if agent.compression_enabled and _should_run_preflight_estimate(
+        messages,
+        agent.context_compressor.protect_first_n,
+        agent.context_compressor.protect_last_n,
+        agent.context_compressor.threshold_tokens,
+    ):
+        _preflight_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=active_system_prompt or "",
+            tools=agent.tools or None,
+        )
+        _compressor = agent.context_compressor
+        _defer_preflight = getattr(
+            _compressor,
+            "should_defer_preflight_to_real_usage",
+            lambda _tokens: False,
+        )
+        _preflight_deferred = _defer_preflight(_preflight_tokens)
+
+        # Hard message-count safety valve: when the session has more messages
+        # than the configured hard limit, force compression regardless of
+        # deferral, cooldown, or anti-thrashing.  This mirrors the gateway
+        # hygiene layer (gateway/run.py, #2153/#4750) and breaks the death
+        # spiral where token-based checks fail to fire — e.g. when
+        # should_defer_preflight_to_real_usage() keeps deferring because the
+        # last successful API call's prompt_tokens were below threshold, even
+        # though the session has since grown past it.  Without this valve a
+        # TUI session can grow until the provider starts disconnecting, at
+        # which point no usage data is returned to update the compressor and
+        # the session becomes unrecoverable.
+        _hard_limit = getattr(_compressor, "hygiene_hard_message_limit", 0)
+        _hard_limit_breached = (
+            _hard_limit > 0 and len(messages) >= _hard_limit
+        )
+
+        if not _preflight_deferred or _hard_limit_breached:
+            _last = _compressor.last_prompt_tokens
+            # Do NOT overwrite the -1 sentinel (#36718).
+            if _last >= 0 and _preflight_tokens > _last:
+                _compressor.last_prompt_tokens = _preflight_tokens
+
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+
+        if _preflight_deferred and not _hard_limit_breached:
+            logger.info(
+                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "but last real provider prompt was %s after compression",
+                f"{_preflight_tokens:,}",
+                f"{_compressor.threshold_tokens:,}",
+                f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compression_cooldown and not _hard_limit_breached:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
+            )
+        elif _hard_limit_breached or _compressor.should_compress(
+            _preflight_tokens, force=_hard_limit_breached,
+        ):
+            if _hard_limit_breached:
+                logger.info(
+                    "Preflight compression: hard message limit %d reached "
+                    "(%d messages, ~%s tokens, model %s, ctx %s)",
+                    _hard_limit, len(messages),
+                    f"{_preflight_tokens:,}", agent.model,
+                    f"{_compressor.context_length:,}",
+                )
+                agent._emit_status(
+                    f"📦 Preflight compression: {len(messages)} messages "
+                    f">= hard limit {_hard_limit}. "
+                    "This may take a moment."
+                )
+            else:
+                logger.info(
+                    "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                    f"{_preflight_tokens:,}",
+                    f"{_compressor.threshold_tokens:,}",
+                    agent.model,
+                    f"{_compressor.context_length:,}",
+                )
+                agent._emit_status(
+                    f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                    f">= {_compressor.threshold_tokens:,} threshold. "
+                    "This may take a moment."
+                )
+            for _pass in range(3):
+                _orig_len = len(messages)
+                _orig_tokens = _preflight_tokens
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message, approx_tokens=_preflight_tokens,
+                    task_id=effective_task_id,
+                )
+                # Re-estimate now so size-only compression (same row count,
+                # lower token count — e.g. summarising tool outputs) is
+                # recognised as progress instead of being misread as
+                # "Cannot compress further". Fixes #39548.
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                if not _compression_made_progress(
+                    _orig_len, len(messages), _orig_tokens, _preflight_tokens
+                ):
+                    break  # Cannot compress further: neither rows nor tokens moved
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
+                agent._empty_content_retries = 0
+                agent._thinking_prefill_retries = 0
+                agent._last_content_with_tools = None
+                agent._last_content_tools_all_housekeeping = False
+                agent._mute_post_response = False
+                if not _compressor.should_compress(_preflight_tokens):
+                    break
+
+    # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
+    plugin_user_context = ""
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,

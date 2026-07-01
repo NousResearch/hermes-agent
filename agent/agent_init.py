@@ -1531,6 +1531,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        # Hard message-count safety valve (mirrors gateway hygiene, #2153/#4750):
+        # >0 force-compresses at this message count regardless of token estimates.
+        hard_message_limit=int(_compression_cfg.get("hygiene_hard_message_limit", 0) or 0),
     )
 
 
@@ -1896,6 +1899,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            hygiene_hard_message_limit=cs.hard_message_limit,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

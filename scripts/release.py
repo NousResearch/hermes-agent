@@ -217,6 +217,8 @@ AUTHOR_MAP = {
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "13277570+justin-cyhuang@users.noreply.github.com": "justin-cyhuang",
+    "agent@tranquil-flow.dev": "Tranquil-Flow",
+    "jason@hermes-jc": "jcjc81",
     "290862769+friendshipisover@users.noreply.github.com": "friendshipisover",
     "51421+MattKotsenas@users.noreply.github.com": "MattKotsenas",
     "92324143+ypwcharles@users.noreply.github.com": "ypwcharles",

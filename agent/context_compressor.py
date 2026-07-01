@@ -31,6 +31,7 @@ from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
+from agent.runtime_evidence import current_runtime_evidence, update_runtime_evidence
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -2858,6 +2859,17 @@ This compaction should PRIORITISE preserving all information related to the focu
                 turns_to_summarize,
                 reason=self._last_summary_error,
             )
+
+        try:
+            latest_user_request = (current_runtime_evidence() or {}).get("latest_user_request")
+            update_runtime_evidence(
+                compaction_summary_active=True,
+                compaction_summary_text=summary,
+                compaction_handoff_active=True,
+                compaction_handoff_task=latest_user_request,
+            )
+        except Exception:
+            pass
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

@@ -32,6 +32,10 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call, clear_lifecycle_state, finalize_protected_write_result
+from agent.latest_user_task_guard import (
+    enforce_latest_user_request_authority,
+    record_latest_user_request_from_dispatch,
+)
 from agent.no_progress_loop import (
     preflight_no_progress_block,
     record_no_progress_block,
@@ -957,7 +961,7 @@ def handle_function_call(
     _user_task = user_task if user_task is not None else _current_user_task.get()
     _user_task_token = _current_user_task.set(_user_task)
     if _user_task is not None:
-        update_runtime_evidence(latest_user_request=_user_task)
+        record_latest_user_request_from_dispatch(_user_task)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         # ── Tool Search bridge dispatch ──────────────────────────────────
@@ -1101,6 +1105,35 @@ def handle_function_call(
                     task_id=task_id,
                 )
                 return result
+
+        latest_user_task_block = enforce_latest_user_request_authority(
+            function_name=function_name,
+            function_args=function_args,
+            user_task=_user_task,
+        )
+        if latest_user_task_block is not None:
+            result = json.dumps({"error": latest_user_task_block}, ensure_ascii=False)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="latest_user_request_block",
+                error_message=latest_user_task_block,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            return result
 
         no_progress_block_message = preflight_no_progress_block(
             function_name=function_name,

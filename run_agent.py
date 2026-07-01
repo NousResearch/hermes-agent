@@ -213,6 +213,28 @@ from agent.tool_dispatch_helpers import (
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
+# Internal flags that mark a message as ephemeral empty-response/prefill
+# recovery scaffolding: the synthetic assistant "(empty)" turn and user nudge
+# injected after an empty response, the terminal "(empty)" sentinel, and the
+# thinking-only prefill placeholder. These exist only to drive the next API
+# retry; the in-memory loop pops them before appending the real response.
+# Persistence must mirror that, otherwise an append-only flush can commit them
+# to the session store and a resumed session replays synthetic "(empty)"/nudge
+# turns as if they were genuine context.
+_EPHEMERAL_SCAFFOLDING_FLAGS = (
+    "_empty_recovery_synthetic",
+    "_empty_terminal_sentinel",
+    "_thinking_prefill",
+)
+
+
+def _is_ephemeral_scaffolding(msg: Any) -> bool:
+    """Return True when ``msg`` is internal recovery scaffolding that must never
+    be persisted to the durable transcript (SQLite session store or JSON log)."""
+    return isinstance(msg, dict) and any(
+        msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS
+    )
+
 
 _MAX_TOOL_WORKERS = 8
 
@@ -1706,6 +1728,17 @@ class AIAgent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
+                # Never write ephemeral recovery scaffolding to the session
+                # store. The flush is append-only (it only advances
+                # _last_flushed_db_idx via identity tracking), so a synthetic
+                # message committed by a mid-turn persist cannot be un-written
+                # when the end-of-turn drop removes it from the in-memory list —
+                # the resumed transcript would then replay synthetic
+                # "(empty)"/nudge/thinking-prefill turns as if they were genuine
+                # context. Skip regardless of position: an answered nudge leaves
+                # the synthetic pair buried mid-list, not just at the tail.
+                if _is_ephemeral_scaffolding(msg):
+                    continue
                 msg_id = id(msg)
                 if msg_id in flushed_ids:
                     continue
@@ -2430,6 +2463,10 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
+                # Mirror the SQLite flush: ephemeral recovery scaffolding is
+                # internal retry state, never durable transcript content.
+                if _is_ephemeral_scaffolding(msg):
+                    continue
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])

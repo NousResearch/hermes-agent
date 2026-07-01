@@ -563,3 +563,43 @@ def test_pid_exists_zombie_via_proc_fallback_returns_false(monkeypatch):
 
     assert status._pid_exists(4242) is False
     kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_timeout_marks_self_initiated_session_interrupted(tmp_path, monkeypatch):
+    """INTEGRATION call-site gate (spec AC-1, pass-3 RC#1/#2): drive the REAL
+    stop() through the drain-TIMEOUT branch for a self-initiated-restart session
+    that stays in _running_agents, and assert it is stamped
+    restart_consumed_interrupted — proving the post-timeout mark site actually
+    passes interrupted=True. A build that regressed that call site (interrupted=
+    False) would stamp bare restart_consumed and FAIL this test.
+    """
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionSource, SessionStore
+
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    runner.session_store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    runner._restart_drain_timeout = 0.01  # force the timeout branch
+
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="777", user_id="u1")
+    entry = runner.session_store.get_or_create_session(src)
+    sk = entry.session_key
+
+    # Session is self-initiated AND still running (never drains) → timeout branch.
+    runner._session_initiated_restart[sk] = True
+    runner._running_agents = {sk: MagicMock()}
+
+    import tools.process_registry as _pr
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
+
+    async def _disconnect():
+        return None
+    adapter.disconnect = _disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert runner.session_store._entries[sk].resume_reason == "restart_consumed_interrupted"
+    # And it WOULD auto-resume on the next boot (proactive surface-and-wait).
+    assert "restart_consumed_interrupted" in runner._AUTO_RESUME_REASONS

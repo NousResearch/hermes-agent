@@ -692,6 +692,7 @@ def _resume_reason_phrase(reason: Optional[str]) -> str:
         "restart_timeout": "a gateway restart",
         "shutdown_timeout": "a gateway shutdown",
         "reboot_interrupted": "a machine reboot",
+        _REASON_RESTART_CONSUMED_INTERRUPTED: "a gateway restart",
     }
     return _phrases.get(reason, "a gateway interruption")
 
@@ -935,6 +936,20 @@ def _command_invokes_safe_restart(cmd: str) -> bool:
 # A change to any of these MUST land in both repos together or a conformance test
 # reddens. Full mechanism: spec 2026-06-22_f2-initiator-detection-authoritative-breadcrumb.md.
 _RESTART_INITIATED_DIRNAME = ".restart_initiated"
+
+# Resume reason for a session that self-initiated a restart AND was still running
+# when the drain timed out (genuinely interrupted). Distinct from the bare
+# "restart_consumed" (a CLEAN self-restart, excluded from auto-resume to break the
+# F1/F2 cascade): this variant IS auto-resumed (surface-and-prompt) but still
+# records the F2 replay-mark. Named because it couples 4 sites that must agree:
+# the phrase map, the discriminator, _AUTO_RESUME_REASONS, and the prior-reason
+# self-initiated check. See spec 2026-07-01_restart-reboot-continuity.
+_REASON_RESTART_CONSUMED_INTERRUPTED = "restart_consumed_interrupted"
+# The CLEAN self-restart marker (F1/F2 cascade guard): a session that initiated
+# its own restart but was NOT drain-interrupted. Deliberately EXCLUDED from
+# _AUTO_RESUME_REASONS so it does not auto-wake (breaks restart→resume→restart).
+# Named alongside its interrupted twin so the cascade-guard pair moves together.
+_REASON_RESTART_CONSUMED = "restart_consumed"
 
 
 def _restart_initiated_filename(session_key: str) -> str:
@@ -5461,19 +5476,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
-    def _resume_reason_for_shutdown_mark(self, session_key: str) -> str:
-        if getattr(self, "_session_initiated_restart", {}).get(session_key):
-            return "restart_consumed"
-        try:
-            entry = self.session_store._entries.get(session_key)
-            if entry and getattr(entry, "resume_reason", None) == "restart_consumed":
-                return "restart_consumed"
-        except Exception:
-            pass
+    def _resume_reason_for_shutdown_mark(
+        self, session_key: str, *, interrupted: bool = False
+    ) -> str:
+        """Pick the resume_reason to stamp for a session at shutdown.
+
+        ``interrupted`` is True ONLY from the post-drain-TIMEOUT mark site
+        (a session still running when the 180s drain expired = genuinely
+        interrupted in-flight work). Combined with a self-initiated restart it
+        yields ``restart_consumed_interrupted`` — which, UNLIKE the bare
+        ``restart_consumed`` the F1/F2 cascade-breaker stamps for a *clean*
+        self-restart, IS in ``_AUTO_RESUME_REASONS`` so startup auto-resume
+        proactively surfaces the interrupted work (#136 preserve-and-prompt).
+        The F2 replay-mark still records for it (see
+        ``_mark_resume_pending_for_shutdown``), so a genuine restart→resume→
+        restart loop is still bounded/suspended.
+
+        A ``restart_consumed`` already on the entry is a *clean* self-restart
+        marker (from a prior turn/pass) — only upgrade it to the interrupted
+        variant if THIS mark is a real drain-timeout interruption.
+        """
+
+        def _self_initiated() -> bool:
+            if getattr(self, "_session_initiated_restart", {}).get(session_key):
+                return True
+            try:
+                entry = self.session_store._entries.get(session_key)
+                prior = getattr(entry, "resume_reason", None) if entry else None
+                if prior in (_REASON_RESTART_CONSUMED, _REASON_RESTART_CONSUMED_INTERRUPTED):
+                    return True
+            except Exception:
+                pass
+            return False
+
+        if _self_initiated():
+            return _REASON_RESTART_CONSUMED_INTERRUPTED if interrupted else _REASON_RESTART_CONSUMED
         return "restart_timeout" if self._restart_requested else "shutdown_timeout"
 
-    def _mark_resume_pending_for_shutdown(self, session_key: str) -> tuple[bool, str, bool]:
-        reason = self._resume_reason_for_shutdown_mark(session_key)
+    def _mark_resume_pending_for_shutdown(
+        self, session_key: str, *, interrupted: bool = False
+    ) -> tuple[bool, str, bool]:
+        reason = self._resume_reason_for_shutdown_mark(
+            session_key, interrupted=interrupted
+        )
         alert = False
         marked_this_stop = getattr(self, "_replay_marked_during_stop", set())
         if (
@@ -5486,6 +5531,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         marked = self.session_store.mark_resume_pending(session_key, reason)
+        # PHASE observability (spec 2026-07-01 restart-reboot-continuity, INV-6):
+        # make the per-session mark DECISION visible — the reason chosen, whether
+        # this pass counted as an interrupted-turn mark, and whether a replay-mark
+        # was recorded. Session key + flags only, NO transcript content (INV-6).
+        # FAIL-OPEN (INV-3): a broken/blocking-then-raising log sink must NEVER
+        # abort the resume-mark (losing the mark = losing the interrupted work).
+        # Single line, no fan-out — same shape as the sibling "Shutdown phase:"
+        # logs already in stop(). LEVEL: an INTERRUPTED mark (or a replay-marked
+        # one) is the diagnostic case an operator greps when a restart goes wrong,
+        # so it logs at WARNING (survives a raised gateway.run threshold, matching
+        # the sibling drain-timeout warning); a routine clean mark stays INFO.
+        try:
+            _lvl = logging.WARNING if (interrupted or alert) else logging.INFO
+            logger.log(
+                _lvl,
+                "PHASE=shutdown_mark key=%s reason=%s interrupted=%s "
+                "replay_marked=%s marked=%s",
+                session_key, reason, interrupted, alert, marked,
+            )
+        except Exception:
+            pass
         return marked, reason, alert
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
@@ -6574,6 +6640,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "shutdown_timeout",
             "restart_interrupted",
             "reboot_interrupted",
+            # A session that self-initiated a restart AND was still running when the
+            # drain timed out (genuinely interrupted). UNLIKE bare "restart_consumed"
+            # (a CLEAN self-restart, deliberately excluded to break the F1/F2
+            # restart→resume→restart cascade), this one auto-resumes so #136
+            # preserve-and-prompt surfaces the interrupted work — while still
+            # recording the F2 replay-mark, so a genuine loop is bounded/suspended.
+            _REASON_RESTART_CONSUMED_INTERRUPTED,
         }
     )
 
@@ -6758,6 +6831,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
             self._running_agents_ts[entry.session_key] = time.time()
             self._persist_active_agents()
+
+            # PHASE observability (spec 2026-07-01): a session PROACTIVELY resumed
+            # at boot (surface-and-wait) — reason + origin platform, no content.
+            # WARNING level: this is the restart-continuity audit breadcrumb an
+            # operator greps when diagnosing a bad restart, so it must survive a
+            # raised gateway.run log threshold. Fail-open (INV-3): a broken log
+            # sink must not abort the resume.
+            try:
+                logger.warning(
+                    "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s",
+                    entry.session_key,
+                    getattr(entry, "resume_reason", None),
+                    getattr(getattr(source, "platform", None), "value", None),
+                )
+            except Exception:
+                pass
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -8222,7 +8311,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        _marked, _reason, _alert = self._mark_resume_pending_for_shutdown(_sk)
+                        # interrupted=True: this session was still running when the
+                        # 180s drain timed out — genuinely interrupted in-flight work.
+                        # A self-initiated restart here becomes restart_consumed_interrupted
+                        # (auto-surfaces on boot) instead of restart_consumed (silent).
+                        _marked, _reason, _alert = self._mark_resume_pending_for_shutdown(
+                            _sk, interrupted=True
+                        )
                         if _alert:
                             await self._notify_restart_loop_suspended(_sk)
                     except Exception as _e:

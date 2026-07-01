@@ -89,11 +89,17 @@ def test_reboot_interrupted_in_auto_resume_reasons():
 
 
 def test_existing_reasons_unchanged_superset():
-    # INV-2: the three pre-existing reasons remain recognized; the change is
-    # purely additive (a strict superset of the old set).
-    old = {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+    # INV-2: the pre-existing reasons remain recognized; every change to the set
+    # is purely ADDITIVE (a strict superset of the old set). Asserted as an
+    # invariant (superset + no removals), NOT a frozen exact-set snapshot, so a
+    # future additive reason doesn't force a change-detector edit here.
+    old = {"restart_timeout", "shutdown_timeout", "restart_interrupted", "reboot_interrupted"}
     assert old <= GatewayRunner._AUTO_RESUME_REASONS
-    assert GatewayRunner._AUTO_RESUME_REASONS == old | {"reboot_interrupted"}
+    # restart_consumed_interrupted was added (self-initiated-restart-then-drain-
+    # interrupted → auto-surface; spec 2026-07-01 restart-reboot-continuity).
+    assert "restart_consumed_interrupted" in GatewayRunner._AUTO_RESUME_REASONS
+    # The bare (clean) restart_consumed is STILL excluded — the cascade guard.
+    assert "restart_consumed" not in GatewayRunner._AUTO_RESUME_REASONS
 
 
 # ---------------------------------------------------------------------------
@@ -300,3 +306,51 @@ async def test_stale_reboot_age_past_window_does_not_schedule(tmp_path, monkeypa
     assert runner._schedule_resume_pending_sessions() == 0
     # Still resume_pending (recoverable on next message), just not auto-woken.
     assert runner.session_store._entries[entry.session_key].resume_pending is True
+
+
+# ---------------------------------------------------------------------------
+# AC-5 (Task C, spec 2026-07-01 restart-reboot-continuity) — REBOOT PARITY
+# proof-not-code: a self-initiated *reboot* is NOT affected by the
+# restart_consumed silent-skip seam, so it needs no Task-A fix. A reboot never
+# sets _session_initiated_restart (that flag is only set for `safe-restart.py`
+# / in-process /restart), so a drain-interrupted reboot marks shutdown_timeout
+# (already auto-resumes), NOT restart_consumed / restart_consumed_interrupted.
+# ---------------------------------------------------------------------------
+
+
+def test_reboot_interrupted_session_marks_shutdown_timeout_not_consumed(tmp_path, monkeypatch):
+    """A reboot does not set the self-initiator flag, so even a genuinely
+    drain-interrupted session on a reboot resolves shutdown_timeout — which is
+    already in the allow-list. The restart_consumed seam is restart-only."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    entry = runner.session_store.get_or_create_session(_source("reboot1"))
+    sk = entry.session_key
+
+    # Reboot path: _session_initiated_restart is EMPTY (safe-reboot never sets it),
+    # _restart_requested is False (a reboot is a shutdown, not a /restart).
+    assert sk not in runner._session_initiated_restart
+    assert runner._restart_requested is False
+
+    # Even flagged as interrupted (still-running at drain timeout), the reason is
+    # shutdown_timeout — NOT restart_consumed*, because the session is not a
+    # self-initiator.
+    reason = runner._resume_reason_for_shutdown_mark(sk, interrupted=True)
+    assert reason == "shutdown_timeout"
+    assert reason in runner._AUTO_RESUME_REASONS  # already auto-surfaces
+    assert reason not in ("restart_consumed", "restart_consumed_interrupted")
+
+
+def test_command_detector_ignores_safe_reboot_py(tmp_path, monkeypatch):
+    """Ground-truth Task-C's load-bearing fact: the self-initiator command
+    detector matches `safe-restart.py` but NOT `safe-reboot.py` — so firing the
+    reboot tool never tags the session as a restart-initiator."""
+    from gateway.run import _command_invokes_safe_restart
+
+    assert _command_invokes_safe_restart(
+        "python3 ~/.hermes/skills-shared/general/safe-gateway-restart/scripts/safe-restart.py --handoff x"
+    ) is True
+    assert _command_invokes_safe_restart(
+        "python3 ~/.hermes/skills-shared/general/safe-reboot/scripts/safe-reboot.py --handoff x"
+    ) is False
+    # a bare inspection of the restart script is also not an invocation
+    assert _command_invokes_safe_restart("cat safe-restart.py") is False

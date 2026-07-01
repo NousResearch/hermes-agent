@@ -702,7 +702,7 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, provider=agent.provider)
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}

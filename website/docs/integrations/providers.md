@@ -1196,6 +1196,40 @@ extra_body:
     enable_thinking: false
 ```
 
+#### Custom request headers (`default_headers`)
+
+Some endpoints need extra HTTP headers on every request — cache-control /
+attribution headers (e.g. Requesty's `X-Requesty-*`), or a `User-Agent`
+override to get past a gateway/WAF that rejects the SDK's default identifying
+headers. Add a `default_headers` map to the custom provider:
+
+```yaml
+custom_providers:
+  - name: requesty
+    base_url: https://router.requesty.ai/v1
+    key_env: REQUESTY_API_KEY
+    api_mode: chat_completions
+    default_headers:
+      X-Requesty-Cache: "true"
+      X-Title: Hermes
+```
+
+These headers are sent on **every** request to that provider and are honored on
+both wire formats — `chat_completions` (merged into the OpenAI client's
+`default_headers`) and `anthropic_messages` (merged into the Anthropic client,
+layered over Hermes' own `anthropic-beta` / identity headers). Your values win
+on collision.
+
+You can also set a global `model.default_headers` block that applies to the
+active endpoint regardless of provider name; when both are present the
+`model.default_headers` value wins for any shared key:
+
+```yaml
+model:
+  default_headers:
+    User-Agent: curl/8.7.1   # get past a WAF that blocks "OpenAI/Python ..."
+```
+
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

@@ -4430,7 +4430,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "default_headers",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4536,6 +4536,17 @@ def _normalize_custom_provider_entry(
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
+
+    # Custom HTTP headers to send on every request to this provider (e.g.
+    # Requesty cache-control / attribution headers). Applied to both the
+    # OpenAI-wire client (via default_headers) and the Anthropic-wire client,
+    # merged over any headers Hermes sets itself. Values are stringified so a
+    # YAML bare `true`/number can't reach the SDK as a non-str header value.
+    default_headers = entry.get("default_headers")
+    if isinstance(default_headers, dict) and default_headers:
+        normalized["default_headers"] = {
+            str(k): str(v) for k, v in default_headers.items()
+        }
 
     return normalized
 

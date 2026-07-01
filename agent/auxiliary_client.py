@@ -1692,6 +1692,20 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
+def _prefer_dotenv_env(key: str) -> Optional[str]:
+    """Resolve a credential env var, preferring ``~/.hermes/.env`` over a stale
+    value inherited from the parent shell.
+
+    Auxiliary tasks must honour a deliberate key rotation the same way the main
+    request path does — mirrors ``get_env_value_prefer_dotenv`` (see
+    #55528/#20591). Reading ``os.getenv`` directly serves the stale shell export
+    that shadows a freshly-rotated ``.env`` key, producing persistent 401s.
+    """
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    return get_env_value_prefer_dotenv(key)
+
+
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
@@ -1705,7 +1719,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         # the OPENROUTER_API_KEY env-var path rather than failing outright.
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    or_key = explicit_api_key or _prefer_dotenv_env("OPENROUTER_API_KEY")
     if not or_key:
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
@@ -1722,7 +1736,7 @@ def _describe_openrouter_unavailable() -> str:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
         if not _pool_runtime_api_key(entry):
             return "OpenRouter credential pool entry is missing a runtime API key"
-    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
+    if not str(_prefer_dotenv_env("OPENROUTER_API_KEY") or "").strip():
         return "OPENROUTER_API_KEY not set"
     return "no usable OpenRouter credentials found"
 
@@ -1972,7 +1986,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 
     if not isinstance(runtime, dict):
         openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        openai_key = (_prefer_dotenv_env("OPENAI_API_KEY") or "").strip()
         if not openai_base:
             return None, None, None
         runtime = {
@@ -4109,7 +4123,7 @@ def resolve_provider_client(
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
+                or (_prefer_dotenv_env("OPENAI_API_KEY") or "").strip()
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -1022,6 +1023,27 @@ class TestExplicitProviderRouting:
         assert model is None
         mock_openai.assert_not_called()
         mock_mark.assert_called_once_with("openrouter", ttl=60)
+
+    def test_try_openrouter_prefers_rotated_dotenv_over_stale_shell_export(self, tmp_path, monkeypatch):
+        """#55528 parity: a key rotated in ~/.hermes/.env must beat a stale
+        shell export for the auxiliary OpenRouter path, as it now does for the
+        main request path — otherwise auxiliary tasks keep 401-ing on the old key.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Stale value still exported in the parent shell (the OLD key):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-stale-shell")
+        # User rotated the key in ~/.hermes/.env (the NEW key):
+        (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-fresh-rotated\n")
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock(name="openrouter_client")
+            _try_openrouter()
+
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-or-fresh-rotated"
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""

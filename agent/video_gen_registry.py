@@ -95,6 +95,13 @@ def get_active_provider() -> Optional[VideoGenProvider]:
     with _lock:
         snapshot = dict(_providers)
 
+    def _is_available_safe(p: VideoGenProvider) -> bool:
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
@@ -104,9 +111,12 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             configured,
         )
 
-    # Fallback: single-provider case
-    if len(snapshot) == 1:
-        return next(iter(snapshot.values()))
+    # Fallback: single-provider case, but only when that provider is actually
+    # configured enough to service calls. Explicit config above still wins so
+    # the dispatcher can surface a provider-specific setup error.
+    available = [p for p in snapshot.values() if _is_available_safe(p)]
+    if len(available) == 1:
+        return available[0]
 
     return None
 

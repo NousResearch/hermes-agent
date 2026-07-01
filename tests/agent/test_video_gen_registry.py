@@ -74,6 +74,11 @@ class TestGetActiveProvider:
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "solo"
 
+    def test_single_unavailable_provider_is_not_autoresolved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("solo", available=False))
+        assert video_gen_registry.get_active_provider() is None
+
     def test_no_provider_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert video_gen_registry.get_active_provider() is None
@@ -97,6 +102,17 @@ class TestGetActiveProvider:
         )
         video_gen_registry.register_provider(_FakeProvider("xai"))
         video_gen_registry.register_provider(_FakeProvider("fal"))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
+
+    def test_config_selects_unavailable_provider_for_specific_error(self, tmp_path, monkeypatch):
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"video_gen": {"provider": "fal"}})
+        )
+        video_gen_registry.register_provider(_FakeProvider("fal", available=False))
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "fal"
 

@@ -29,7 +29,7 @@ import pytest
 
 import gateway.session_context as sc
 from gateway.session_context import _VAR_MAP, clear_session_vars, set_session_vars
-from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+from tools.environments.local import _make_run_env, _sanitize_subprocess_env, hermes_subprocess_env
 
 # The full set of session vars the bridge owns.
 SESSION_VARS = list(_VAR_MAP.keys())
@@ -252,3 +252,53 @@ def test_sanitize_subprocess_env_unengaged_preserves_fallback(monkeypatch):
     sanitized = _sanitize_subprocess_env(stale_base)
 
     assert sanitized.get("HERMES_SESSION_KEY") == "cli-bg-key"
+
+
+# --------------------------------------------------------------------------- #
+# Non-terminal spawn surface (hermes_subprocess_env) — sibling path
+# --------------------------------------------------------------------------- #
+
+def test_hermes_subprocess_env_strips_foreign_session_key_when_engaged(monkeypatch):
+    """hermes_subprocess_env (browser/ACP/CLI/TUI-host spawns) must not leak a
+    foreign session key either. cli.exec spawns via this helper WITHOUT re-binding
+    the session identity, so an UNSET ContextVar under an engaged host must strip
+    the inherited global rather than hand the child another session's identity.
+    """
+    _engage()
+    monkeypatch.setenv(
+        "HERMES_SESSION_KEY",
+        "agent:main:discord:thread:FOREIGN_CONCURRENT:FOREIGN_CONCURRENT",
+    )
+
+    env = hermes_subprocess_env()
+
+    assert "HERMES_SESSION_KEY" not in env, (
+        "Foreign concurrent session key leaked into non-terminal spawn env: "
+        f"{env.get('HERMES_SESSION_KEY')!r}"
+    )
+
+
+def test_hermes_subprocess_env_bound_contextvar_wins(monkeypatch):
+    """A caller that binds the session identity keeps it through this helper."""
+    monkeypatch.setenv(
+        "HERMES_SESSION_KEY",
+        "agent:main:discord:thread:FOREIGN:FOREIGN",
+    )
+    tokens = set_session_vars(
+        session_key="agent:main:discord:group:MINE:111",
+        platform="discord",
+        chat_id="MINE",
+    )
+    try:
+        env = hermes_subprocess_env()
+        assert env.get("HERMES_SESSION_KEY") == "agent:main:discord:group:MINE:111"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_hermes_subprocess_env_unengaged_preserves_fallback(monkeypatch):
+    """A pure single-process CLI (never engaged) keeps the inherited fallback."""
+    monkeypatch.setenv("HERMES_SESSION_KEY", "cli-fallback-key")
+    # not engaged (autouse fixture leaves _session_context_engaged False)
+    env = hermes_subprocess_env()
+    assert env.get("HERMES_SESSION_KEY") == "cli-fallback-key"

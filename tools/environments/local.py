@@ -462,6 +462,16 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
 
+    # Cross-session leak guard, same as the terminal spawn paths: this helper
+    # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
+    # global under a concurrent multi-session host. A caller that re-binds the
+    # session identity explicitly (slash_worker/ACP via --session-key argv) is
+    # unaffected — bound ContextVars win here — but a caller that spawns without
+    # re-binding (e.g. tui_gateway cli.exec) would otherwise inherit a FOREIGN
+    # session's identity. Strip _UNSET session vars when engaged so that can't
+    # happen; single uniform policy across every spawn surface.
+    _inject_session_context_env(env)
+
     return env
 
 

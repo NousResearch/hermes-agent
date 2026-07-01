@@ -894,6 +894,14 @@ def _tool_wait_kind(function_name: str, function_args: Dict[str, Any], command_c
         if action in {"poll", "log", "list"}:
             return "poll"
         return None
+    if function_name == "browser_navigate":
+        return "browser_navigation"
+    if function_name in {"browser_snapshot", "browser_vision"}:
+        return "browser_render_wait"
+    if function_name == "mcp_android_phone_android_wait":
+        return "android_wait"
+    if function_name == "mcp_android_phone_android_shell":
+        return "android_shell"
     return None
 
 
@@ -937,6 +945,33 @@ def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) ->
         wait_kind = _tool_wait_kind(function_name, function_args, "process")
         if wait_kind:
             metadata["wait_kind"] = wait_kind
+        return metadata
+    if function_name.startswith("browser_"):
+        metadata = {"command_class": "browser"}
+        wait_kind = _tool_wait_kind(function_name, function_args, "browser")
+        if wait_kind:
+            metadata["wait_kind"] = wait_kind
+        return metadata
+    if function_name.startswith("mcp_android_phone_android_"):
+        metadata = {"command_class": "android"}
+        if function_name == "mcp_android_phone_android_wait":
+            timeout = function_args.get("seconds")
+        else:
+            timeout = function_args.get("timeout_seconds")
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        wait_kind = _tool_wait_kind(function_name, function_args, "android")
+        if wait_kind:
+            metadata["wait_kind"] = wait_kind
+        try:
+            from tools.mcp_tool import get_mcp_tool_metadata
+
+            mcp_metadata = get_mcp_tool_metadata(function_name)
+        except Exception:
+            mcp_metadata = {}
+        if mcp_metadata:
+            metadata.update(mcp_metadata)
+        metadata["tool_type"] = "mcp"
         return metadata
     if function_name.startswith("mcp_"):
         try:

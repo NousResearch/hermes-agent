@@ -54,6 +54,28 @@ class TestHandleFunctionCall:
             "timeout_seconds": 60,
             "wait_kind": "background_wait",
         }
+        assert _tool_command_metadata("browser_navigate", {
+            "url": "https://example.com",
+        }) == {
+            "command_class": "browser",
+            "wait_kind": "browser_navigation",
+        }
+        android_wait_metadata = _tool_command_metadata("mcp_android_phone_android_wait", {
+            "seconds": 5,
+        })
+        assert android_wait_metadata["command_class"] == "android"
+        assert android_wait_metadata["timeout_seconds"] == 5
+        assert android_wait_metadata["wait_kind"] == "android_wait"
+        assert android_wait_metadata["tool_type"] == "mcp"
+
+        android_shell_metadata = _tool_command_metadata("mcp_android_phone_android_shell", {
+            "command": "input keyevent HOME",
+            "timeout_seconds": 20,
+        })
+        assert android_shell_metadata["command_class"] == "android"
+        assert android_shell_metadata["timeout_seconds"] == 20
+        assert android_shell_metadata["wait_kind"] == "android_shell"
+        assert android_shell_metadata["tool_type"] == "mcp"
 
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:

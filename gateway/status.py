@@ -20,7 +20,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
 
@@ -62,12 +62,27 @@ def _get_runtime_status_path() -> Path:
 
 
 def _get_lock_dir() -> Path:
-    """Return the machine-local directory for token-scoped gateway locks."""
+    """Return the machine-local directory for token-scoped gateway locks.
+
+    Prefer XDG_STATE_HOME when the operator configured it.  Otherwise avoid
+    blindly using ``$HOME/.local/state`` when HOME is inherited from a root-owned
+    container init context: non-root gateway services cannot create files there,
+    which disables token-scoped platform locks.  In that case, fall back to the
+    writable Hermes root (``HERMES_HOME`` / profile root in Docker installs).
+    """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "hermes" / _LOCKS_DIRNAME
+
+    xdg_state_home = os.getenv("XDG_STATE_HOME")
+    if xdg_state_home:
+        return Path(xdg_state_home) / "hermes" / _LOCKS_DIRNAME
+
+    home = Path.home()
+    if home.exists() and os.access(home, os.W_OK):
+        return home / ".local" / "state" / "hermes" / _LOCKS_DIRNAME
+
+    return get_default_hermes_root() / _LOCKS_DIRNAME
 
 
 def _utc_now_iso() -> str:

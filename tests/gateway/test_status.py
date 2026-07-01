@@ -9,6 +9,28 @@ from types import SimpleNamespace
 from gateway import status
 
 
+class TestGatewayLockDir:
+    def test_lock_dir_falls_back_to_hermes_root_when_home_unwritable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "data"
+        root_home = tmp_path / "root"
+        hermes_home.mkdir()
+        root_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+        monkeypatch.setattr(status.os, "access", lambda path, mode: False)
+
+        assert status._get_lock_dir() == hermes_home / "gateway-locks"
+
+    def test_lock_dir_honors_xdg_state_home(self, tmp_path, monkeypatch):
+        state_home = tmp_path / "state"
+        monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+
+        assert status._get_lock_dir() == state_home / "hermes" / "gateway-locks"
+
+
 class TestGatewayPidState:
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

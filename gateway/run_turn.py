@@ -429,14 +429,30 @@ class GatewayTurnMixin:
         turn_sidecar_notes.append(context_note)
 
         try:
-            should_notify = reset_reason == "suspended"
+            policy = self.session_store.config.get_reset_policy(
+                platform=source.platform,
+                session_type=getattr(source, "chat_type", "dm"),
+            )
+            platform_name = source.platform.value if source.platform else ""
+            had_activity = getattr(session_entry, "reset_had_activity", False)
+            should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
+                policy.notify
+                and had_activity
+                and platform_name not in policy.notify_exclude_platforms
+            )
             adapter = self._adapter_for_source(source) if should_notify else None
             if adapter:
-                notice = (
-                    "◐ Session reset after being stopped. "
-                    f"Conversation history cleared.\n"
-                    f"Use /resume to browse and restore a previous session.\n"
-                )
+                if reset_reason == "suspended":
+                    reason_text = t("gateway.session_reset_reason_suspended")
+                elif reset_reason == "resume_pending_expired":
+                    reason_text = t("gateway.session_reset_reason_resume_pending_expired")
+                elif reset_reason == "daily":
+                    reason_text = t("gateway.session_reset_reason_daily", hour=policy.at_hour)
+                else:
+                    hours, mins = divmod(policy.idle_minutes, 60)
+                    duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
+                    reason_text = t("gateway.session_reset_reason_idle", duration=duration)
+                notice = t("gateway.session_reset_notice", reason=reason_text)
                 with suppress(Exception):
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:

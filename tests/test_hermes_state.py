@@ -4881,3 +4881,61 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+class TestSessionPreview:
+    """The session-list preview must decode multimodal first-user messages
+    and pick the opening turn by insertion id, not by (non-monotonic) time.
+    """
+
+    def test_preview_plain_text_first_user_message(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", "user", content="hello there, please fix the bug")
+        rows = db.list_sessions_rich()
+        assert rows[0]["preview"] == "hello there, please fix the bug"
+
+    def test_preview_multimodal_first_user_message_is_not_blank(self, db):
+        # Regression: multimodal content is stored with the sentinel NUL
+        # prefix, so a SQL SUBSTR preview came back empty (SQLite text
+        # functions stop at the NUL). The caption must survive.
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            "user",
+            content=[
+                {"type": "text", "text": "analyze this chart please"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        )
+        rows = db.list_sessions_rich()
+        assert rows[0]["preview"] == "analyze this chart please"
+
+    def test_preview_multimodal_without_text_falls_back(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            "user",
+            content=[{"type": "image_url", "image_url": {"url": "x"}}],
+        )
+        rows = db.list_sessions_rich()
+        assert rows[0]["preview"] == "[multimodal content]"
+
+    def test_preview_uses_first_user_message_by_id_not_timestamp(self, db):
+        # Non-monotonic wall clock (WSL2 / NTP step / VM resume): the truly
+        # first message can carry a LATER timestamp than a later one. The
+        # preview must follow insertion id, matching get_messages() et al.
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", "user", content="FIRST question", timestamp=1000.0)
+        db.append_message("s1", "user", content="second question", timestamp=1.0)
+        rows = db.list_sessions_rich()
+        assert rows[0]["preview"] == "FIRST question"
+
+    def test_get_session_rich_row_preview_decodes_multimodal(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            "user",
+            content=[{"type": "text", "text": "caption on an image"}],
+        )
+        row = db._get_session_rich_row("s1")
+        assert row["preview"] == "caption on an image"

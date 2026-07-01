@@ -117,6 +117,37 @@ def test_gated_html_redirects_to_login(gated_app):
     assert r.headers["location"].startswith("/auth/login?provider=stub")
 
 
+def test_password_only_provider_skips_auto_sso(gated_app):
+    """A password-only provider (basic) must NOT trigger auto-SSO redirect
+    to /auth/login — it should fall through to /login which renders the
+    password form.  Regression for #56130.
+    """
+    import secrets
+
+    import plugins.dashboard_auth.basic as basic_mod
+
+    clear_providers()
+    register_provider(
+        basic_mod.BasicAuthProvider(
+            username="admin",
+            password_hash=basic_mod.hash_password("pw"),
+            secret=secrets.token_bytes(32),
+        )
+    )
+    try:
+        r = gated_app.get("/", follow_redirects=False)
+        # Should redirect to /login (the password form), not /auth/login
+        assert r.status_code == 302
+        location = r.headers.get("location", "")
+        assert "/auth/login" not in location, (
+            f"password-only provider should not auto-SSO to {location}"
+        )
+        assert "/login" in location
+    finally:
+        clear_providers()
+        register_provider(StubAuthProvider())
+
+
 def test_gated_auth_providers_is_public(gated_app):
     r = gated_app.get("/api/auth/providers")
     assert r.status_code == 200

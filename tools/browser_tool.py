@@ -3151,9 +3151,6 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-
-
-
 def _blocked_private_page_action(effective_task_id: str, action: str) -> Optional[str]:
     """Return a blocked payload when an unsafe cloud page would receive input."""
     if not _eval_ssrf_guard_active(effective_task_id):

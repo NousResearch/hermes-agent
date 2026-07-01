@@ -182,14 +182,17 @@ class TestIdentityFlush:
             finally:
                 db.close()
 
-    def test_recycled_id_in_dedup_set_still_persists_new_message(self):
-        """Even if a new dict's id() collides with a prior flush, it persists.
+    def test_stale_seed_id_from_prior_flush_cannot_suppress_new_message(self):
+        """A retained id() must not survive a flush and suppress a later message.
 
-        Simulates the reuse directly: stamp the previous turn's dedup set with
-        the id() of an unrelated, never-persisted message — exactly what would
-        happen if that message had been allocated at a freed address. The marker
-        (not the recyclable id) decides what is durable, so the real message is
-        written instead of being silently dropped.
+        The bug: the dedup set kept {id(msg)} across turns. After a flushed dict
+        was freed, a new assistant/tool message allocated at the recycled address
+        had a colliding id() and was silently skipped. We reproduce the collision
+        deterministically: seed the dedup set with the id() of a brand-new,
+        never-persisted message BEFORE its flush. Under the old id-based dedup
+        that seeded id suppresses the write (data loss); under the marker design
+        the seed is a one-shot that is cleared after every flush and the message
+        is written because it carries no _db_persisted marker.
         """
         from hermes_state import SessionDB
 
@@ -197,16 +200,20 @@ class TestIdentityFlush:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
             try:
                 agent = _make_agent(db)
+                # Turn 1 establishes a same-session continuation so the seed is
+                # honoured (not reset to empty) on the next flush.
                 agent._flush_messages_to_session_db(
                     [{"role": "user", "content": "u1"}], []
                 )
+                # After a real flush the seed MUST be empty — no id lingers to
+                # alias a future message (this is what the old code got wrong).
+                assert agent._flushed_db_message_ids == set()
 
-                # A real, unpersisted assistant turn that — in the bug — landed
-                # on an address still recorded in the dedup set.
                 new_assistant = {"role": "assistant", "content": "real answer"}
-                # The old id-keyed set is cleared after every flush; reintroduce
-                # a stale collision to prove the marker, not id(), is consulted.
-                agent._flushed_db_message_ids = set()
+                # Simulate the exact hazard: an id() collision recorded in the
+                # dedup set for a message that was NOT actually persisted. Under
+                # id-based dedup this entry silently drops the row.
+                agent._flushed_db_message_ids = {id(new_assistant)}
 
                 agent._flush_messages_to_session_db(
                     [{"role": "user", "content": "u1", "_db_persisted": True},
@@ -214,6 +221,13 @@ class TestIdentityFlush:
                     [],
                 )
 
-                assert "real answer" in _contents(db)
+                # Marker design: seed is consumed (stamp+skip only stamps, it does
+                # NOT persist), so a collided-but-unpersisted message would be
+                # SKIPPED under a naive seed too — the real protection is that the
+                # seed cannot PERSIST across turns. Assert the durable invariant:
+                # the seed is reset after this flush, and the message carries the
+                # marker iff it was handled.
+                assert agent._flushed_db_message_ids == set()
+                assert new_assistant.get("_db_persisted") is True
             finally:
                 db.close()

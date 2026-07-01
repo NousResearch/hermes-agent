@@ -116,14 +116,16 @@ def agent():
         return a
 
 
-def test_persist_user_message_override_rewrites_text_turns(agent):
-    messages = [{"role": "user", "content": "API-only synthetic prefix\nhello"}]
+def test_persist_user_message_override_is_non_mutating(agent):
+    """Override seam must not rewrite the live list — flush owns DB values (#56303)."""
+    original = "API-only synthetic prefix\nhello"
+    messages = [{"role": "user", "content": original}]
     agent._persist_user_message_idx = 0
     agent._persist_user_message_override = "hello"
 
     agent._apply_persist_user_message_override(messages)
 
-    assert messages == [{"role": "user", "content": "hello"}]
+    assert messages == [{"role": "user", "content": original}]
 
 
 def test_persist_user_message_override_preserves_multimodal_turns(agent):

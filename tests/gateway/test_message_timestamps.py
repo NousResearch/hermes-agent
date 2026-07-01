@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 from gateway.message_timestamps import (
@@ -68,27 +69,32 @@ def test_coerce_message_timestamp_accepts_datetime_and_epoch():
     assert coerce_message_timestamp(dt.timestamp(), tz=BERLIN) == dt.timestamp()
 
 
-def test_persist_user_message_override_keeps_clean_content_and_timestamp_metadata():
+def test_persist_user_message_override_applies_only_on_db_flush():
+    from run_agent import AIAgent
+
     agent = AIAgent.__new__(AIAgent)
+    agent._session_db = MagicMock()
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._session_db_created = True
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
     agent._persist_user_message_idx = 0
     agent._persist_user_message_override = "[Example User] Clean content"
     agent._persist_user_message_timestamp = _epoch(2026, 4, 28, 13, 40, 53)
-    messages = [
-        {
-            "role": "user",
-            "content": "[Tue 2026-04-28 13:40:53 CEST] [Example User] Clean content",
-        }
-    ]
+    augmented = "[Tue 2026-04-28 13:40:53 CEST] [Example User] Clean content"
+    messages = [{"role": "user", "content": augmented}]
 
     agent._apply_persist_user_message_override(messages)
+    assert messages == [{"role": "user", "content": augmented}]
 
-    assert messages == [
-        {
-            "role": "user",
-            "content": "[Example User] Clean content",
-            "timestamp": _epoch(2026, 4, 28, 13, 40, 53),
-        }
-    ]
+    agent._flush_messages_to_session_db(messages, [])
+
+    assert messages[0]["content"] == augmented
+    assert messages[0].get("_db_persisted") is True
+    first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
+    assert first_db_write["content"] == "[Example User] Clean content"
+    assert first_db_write["timestamp"] == _epoch(2026, 4, 28, 13, 40, 53)
 
 
 # ---------------------------------------------------------------------------

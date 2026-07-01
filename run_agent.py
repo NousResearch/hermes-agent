@@ -1615,35 +1615,14 @@ class AIAgent:
         )
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
-        """Rewrite the current-turn user message before persistence/return.
+        """Legacy seam — persistence overrides are resolved in the flush chokepoint.
 
-        Some call paths need an API-only user-message variant without letting
-        that synthetic text leak into persisted transcripts or resumed session
-        history. When an override is configured for the active turn, mutate the
-        in-memory messages list in place so both persistence and returned
-        history stay clean.  A paired timestamp override preserves the platform
-        event time as message metadata, rather than embedding it in content.
+        ``_flush_messages_to_session_db`` applies ``_persist_user_message_override``
+        and ``_persist_user_message_timestamp`` only to the values written to
+        SQLite, never mutating the live message dicts used for API calls
+        (#48677, #56303). This method intentionally does not mutate *messages*.
         """
-        idx = getattr(self, "_persist_user_message_idx", None)
-        override = getattr(self, "_persist_user_message_override", None)
-        timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
-            return
-        if 0 <= idx < len(messages):
-            msg = messages[idx]
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Multimodal
-                # turns, however, keep image/audio blocks in the live
-                # messages list that is still used for the API request after
-                # early crash-resilience persistence. Do not replace those
-                # blocks with the text-only persistence override before the
-                # model call is built. The paired timestamp override still
-                # applies — it is metadata, not content.
-                if override is not None and not isinstance(msg.get("content"), list):
-                    msg["content"] = override
-                if timestamp is not None:
-                    msg["timestamp"] = timestamp
+        return
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.

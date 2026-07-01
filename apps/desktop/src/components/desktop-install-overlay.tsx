@@ -4,6 +4,7 @@ import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorIcon } from '@/components/ui/error-state'
+import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type {
@@ -11,11 +12,14 @@ import type {
   DesktopBootstrapStageDescriptor,
   DesktopBootstrapStageResult,
   DesktopBootstrapStageState,
-  DesktopBootstrapState
+  DesktopBootstrapState,
+  DesktopConnectionProbeResult
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { ChevronDown, ChevronRight, iconSize } from '@/lib/icons'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, iconSize, Loader2, LogIn } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+
+import { deriveProviderShape, signInLabel } from './boot-failure-reauth'
 
 /**
  * DesktopInstallOverlay
@@ -53,6 +57,8 @@ interface StageRowProps {
   result: DesktopBootstrapStageResult | undefined
   now: number
 }
+
+type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 
 function formatStageName(name: string): string {
   // 'system-packages' -> 'System packages'; 'uv' stays 'uv'
@@ -240,6 +246,267 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   return state
 }
 
+function RemoteConnectCard() {
+  const { t } = useI18n()
+  const copy = t.install
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [remoteToken, setRemoteToken] = useState('')
+  const [probeStatus, setProbeStatus] = useState<ProbeStatus>('idle')
+  const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [messageKind, setMessageKind] = useState<'error' | 'success' | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const probeSeq = useRef(0)
+  const trimmedUrl = remoteUrl.trim()
+
+  useEffect(() => {
+    if (!trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
+      setProbeStatus('idle')
+      setProbe(null)
+
+      return
+    }
+
+    const desktop = window.hermesDesktop
+
+    if (!desktop?.probeConnectionConfig) {
+      return
+    }
+
+    const seq = ++probeSeq.current
+    setProbeStatus('probing')
+    setMessage(null)
+    setMessageKind(null)
+
+    const timer = window.setTimeout(() => {
+      void desktop
+        .probeConnectionConfig(trimmedUrl)
+        .then(result => {
+          if (seq !== probeSeq.current) {
+            return
+          }
+
+          setProbe(result)
+          setProbeStatus(result.reachable ? 'done' : 'error')
+        })
+        .catch(error => {
+          if (seq !== probeSeq.current) {
+            return
+          }
+
+          setProbe(null)
+          setProbeStatus('error')
+          setMessage(error instanceof Error ? error.message : String(error))
+          setMessageKind('error')
+        })
+    }, 400)
+
+    return () => window.clearTimeout(timer)
+  }, [trimmedUrl])
+
+  const authResolved = probeStatus === 'done' && probe?.authMode !== 'unknown'
+  const authMode = authResolved ? probe.authMode : 'token'
+  const providerShape = deriveProviderShape(probe?.providers)
+  const signInActionLabel = signInLabel(
+    { url: trimmedUrl, ...providerShape },
+    {
+      identityProvider: t.boot.failure.identityProvider,
+      remoteGateway: copy.remoteSignIn,
+      withProvider: copy.remoteSignInWithProvider
+    }
+  )
+  const oauthReady = authMode === 'oauth' && Boolean(trimmedUrl) && messageKind === 'success'
+  const tokenReady = authMode === 'token' && Boolean(trimmedUrl) && Boolean(remoteToken.trim())
+  const canTest = authMode === 'oauth' ? oauthReady : tokenReady
+
+  const payload = () => ({
+    mode: 'remote' as const,
+    remoteAuthMode: authMode,
+    remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
+    remoteUrl: trimmedUrl
+  })
+
+  const testConnection = async () => {
+    if (!canTest) {
+      setMessage(authMode === 'oauth' ? copy.remoteSignInRequired : copy.remoteConnectFirst)
+      setMessageKind('error')
+
+      return
+    }
+
+    setTesting(true)
+
+    try {
+      const result = await window.hermesDesktop.testConnectionConfig(payload())
+      setMessage(copy.remoteConnected(result.baseUrl, result.version ?? undefined))
+      setMessageKind('success')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+      setMessageKind('error')
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const connectRemote = async () => {
+    if (!canTest) {
+      setMessage(authMode === 'oauth' ? copy.remoteSignInRequired : copy.remoteConnectFirst)
+      setMessageKind('error')
+
+      return
+    }
+
+    setApplying(true)
+
+    try {
+      await window.hermesDesktop.applyConnectionConfig(payload())
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : copy.remoteApplyFailed)
+      setMessageKind('error')
+      setApplying(false)
+    }
+  }
+
+  const signIn = async () => {
+    if (!trimmedUrl) {
+      setMessage(copy.remoteConnectFirst)
+      setMessageKind('error')
+
+      return
+    }
+
+    setSigningIn(true)
+
+    try {
+      await window.hermesDesktop.saveConnectionConfig({
+        mode: 'remote',
+        remoteAuthMode: 'oauth',
+        remoteUrl: trimmedUrl
+      })
+
+      const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
+
+      if (result.connected) {
+        setMessage(copy.remoteSignInConnected)
+        setMessageKind('success')
+
+        return
+      }
+
+      setMessage(copy.remoteSignInRequired)
+      setMessageKind('error')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+      setMessageKind('error')
+    } finally {
+      setSigningIn(false)
+    }
+  }
+
+  const probeCopy = useMemo(() => {
+    if (probeStatus === 'probing') {
+      return copy.remoteProbeChecking
+    }
+
+    if (probeStatus === 'error') {
+      return probe?.error || copy.remoteProbeFailed
+    }
+
+    if (probeStatus === 'done') {
+      if (probe?.authMode === 'oauth') {
+        return `${copy.remoteProbeOauth}${probe?.providers?.length ? ` ${signInActionLabel}.` : ''}`
+      }
+
+      if (probe?.authMode === 'token') {
+        return copy.remoteProbeToken
+      }
+    }
+
+    return copy.remoteProbeIdle
+  }, [copy, probe, probeStatus, signInActionLabel])
+
+  return (
+    <div className="mt-6 rounded-xl border border-(--stroke-nous) bg-muted/30 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold tracking-tight">{copy.connectExistingTitle}</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.connectExistingDesc}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4">
+        <div className="grid gap-1.5">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="remote-dashboard-url">
+            {copy.remoteUrlLabel}
+          </label>
+          <Input
+            id="remote-dashboard-url"
+            onChange={event => setRemoteUrl(event.target.value)}
+            placeholder={copy.remoteUrlPlaceholder}
+            type="url"
+            value={remoteUrl}
+          />
+        </div>
+
+        <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+          <div className="font-medium text-foreground">{copy.remoteProbeLabel}</div>
+          <div className="mt-1">{probeCopy}</div>
+        </div>
+
+        {authResolved && authMode === 'oauth' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button disabled={!trimmedUrl || signingIn || applying} onClick={() => void signIn()} size="sm">
+              {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
+              {signInActionLabel}
+            </Button>
+            {oauthReady ? <span className="text-xs text-emerald-700">{copy.remoteSignInConnected}</span> : null}
+          </div>
+        ) : null}
+
+        {authResolved && authMode === 'token' ? (
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="remote-session-token">
+              {copy.remoteTokenLabel}
+            </label>
+            <Input
+              id="remote-session-token"
+              onChange={event => setRemoteToken(event.target.value)}
+              placeholder={copy.remoteTokenPlaceholder}
+              type="password"
+              value={remoteToken}
+            />
+          </div>
+        ) : null}
+
+        {message ? (
+          <div
+            className={cn(
+              'rounded-lg px-3 py-2 text-xs',
+              messageKind === 'error' ? 'border border-destructive/30 bg-destructive/10 text-destructive' : '',
+              messageKind === 'success' ? 'border border-emerald-300/60 bg-emerald-500/10 text-emerald-700' : ''
+            )}
+          >
+            {message}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={!canTest || testing || applying} onClick={() => void testConnection()} size="sm" variant="secondary">
+            {testing ? <Loader2 className="animate-spin" /> : null}
+            {copy.remoteTest}
+          </Button>
+          <Button disabled={!canTest || applying} onClick={() => void connectRemote()} size="sm">
+            {applying ? <Loader2 className="animate-spin" /> : null}
+            {applying ? copy.remoteApplying : copy.remoteConnect}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayProps) {
   const { t } = useI18n()
   const copy = t.install
@@ -351,8 +618,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
     return (
       <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
-        <div className="w-full max-w-xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
-          <h2 className="text-xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
+        <div className="w-full max-w-2xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
+          <h2 className="text-2xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
           <p className="mt-2 text-sm text-muted-foreground">{copy.unsupportedDesc(platformLabel)}</p>
 
           <div className="mt-4">
@@ -390,6 +657,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               {copy.retryAfterRun}
             </Button>
           </div>
+
+          <RemoteConnectCard />
         </div>
       </div>
     )

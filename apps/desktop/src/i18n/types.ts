@@ -1351,6 +1351,29 @@ export interface Translations {
     stageStates: Record<string, string>
     oneTimeTitle: string
     unsupportedDesc: (platform: string) => string
+    connectExistingTitle: string
+    connectExistingDesc: string
+    remoteUrlLabel: string
+    remoteUrlPlaceholder: string
+    remoteTokenLabel: string
+    remoteTokenPlaceholder: string
+    remoteProbeIdle: string
+    remoteProbeChecking: string
+    remoteProbeFailed: string
+    remoteProbeOauth: string
+    remoteProbeToken: string
+    remoteSignIn: string
+    remoteSignInWithProvider: (provider: string) => string
+    remoteSignInConnected: string
+    remoteSignInRequired: string
+    remoteConnectFirst: string
+    remoteTest: string
+    remoteApplying: string
+    remoteConnect: string
+    remoteConnected: (baseUrl: string, version?: string) => string
+    remoteSaved: string
+    remoteApplyFailed: string
+    remoteProbeLabel: string
     installCommand: string
     copyCommand: string
     viewDocs: string

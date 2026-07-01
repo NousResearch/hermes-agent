@@ -354,7 +354,7 @@ function DecisionReadiness({ approval }: { approval: ApprovalPreview }) {
       label: "Действия сервера",
       value: "не подключены",
       ready: false,
-      detail: "В Mini App нет endpoint для approve/reject/restart.",
+      detail: "В Mini App нет endpoint для approve/reject/restart. Их добавление требует отдельного approved design.",
     },
     {
       label: "Контекст владельца",
@@ -374,12 +374,12 @@ function DecisionReadiness({ approval }: { approval: ApprovalPreview }) {
     <section className="decision-readiness" aria-label="Готовность будущего решения">
       <div className="decision-readiness-head">
         <div>
-          <p className="mono-label">M9 / PREFLIGHT</p>
-          <h3>Решение ещё не подключено</h3>
+          <p className="mono-label">M12 / PREFLIGHT LOCK</p>
+          <h3>Решение требует отдельного design approval</h3>
         </div>
         <span className="lock-pill">read-only</span>
       </div>
-      <p>Этот блок заранее показывает, что должно быть проверено перед будущим approve/reject. Сейчас он ничего не отправляет и не меняет.</p>
+      <p>Этот блок заранее показывает, что должно быть проверено перед будущим approve/reject. Сейчас он ничего не отправляет, не меняет и не создаёт action route.</p>
       <div className="readiness-grid">
         {guardrails.map((item) => (
           <article className="readiness-item" data-ready={item.ready} key={item.label}>

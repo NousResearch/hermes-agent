@@ -101,8 +101,26 @@ def test_route_inventory_and_forbidden_routes_are_absent():
     }
 
     assert client.get("/does-not-exist").status_code == 404
-    for path in ["/api/actions/restart", "/api/restart", "/api/config/model", "/api/model/switch"]:
+    forbidden_posts = [
+        "/api/actions",
+        "/api/actions/restart",
+        "/api/actions/approve",
+        "/api/actions/reject",
+        "/api/restart",
+        "/api/approvals/system-mode-change-preview/approve",
+        "/api/approvals/system-mode-change-preview/reject",
+        "/api/approvals/system-mode-change-preview/decision",
+        "/api/config/model",
+        "/api/model/switch",
+    ]
+    forbidden_gets = [
+        "/api/actions",
+        "/api/restart",
+    ]
+    for path in forbidden_posts:
         assert client.post(path).status_code == 404
+    for path in forbidden_gets:
+        assert client.get(path).status_code == 404
 
 
 def test_auth_sets_httponly_api_scoped_cookie_without_raw_init_data():

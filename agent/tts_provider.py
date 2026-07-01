@@ -321,64 +321,6 @@ class FuelIXTTSProvider(TTSProvider):
         return output_path
 
 
-class FuelIXTranscriptionProvider(TranscriptionProvider):
-    name = "fuelix"
-
-    @property
-    def display_name(self) -> str:
-        return "FuelIX"
-
-    def is_available(self) -> bool:
-        try:
-            from hermes_cli.config import load_config
-
-            cfg = load_config()
-            api_key = (
-                cfg.get("providers", {})
-                .get("api", {})
-                .get("fuelix.ai", {})
-                .get("api_key", "")
-            )
-            return bool(str(api_key).strip())
-        except Exception:
-            return False
-
-    def transcribe(
-        self,
-        file_path: str,
-        *,
-        model: Optional[str] = None,
-        language: Optional[str] = None,
-        **extra: Any,
-    ) -> Dict[str, Any]:
-        import requests
-
-        from hermes_cli.config import load_config
-
-        cfg = load_config()
-        api_key = (
-            cfg.get("providers", {})
-            .get("api", {})
-            .get("fuelix.ai", {})
-            .get("api_key", "")
-        )
-        if not api_key:
-            return {"success": False, "transcript": "", "error": "FuelIX API key missing", "provider": self.name}
-
-        model = model or "whisper-1"
-        with open(file_path, "rb") as fh:
-            response = requests.post(
-                "https://api.fuelix.ai/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                files={"file": fh},
-                data={"model": model},
-                timeout=60,
-            )
-        response.raise_for_status()
-        data = response.json()
-        text = str(data.get("text") or "")
-        return {"success": True, "transcript": text, "provider": self.name}
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -6407,20 +6407,66 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                }
+                # ``running`` in the DB. Before treating this as a protocol
+                # violation (which trips the breaker immediately), check
+                # whether the run error or worker log indicates a
+                # rate-limit / quota wall. Known edge case: the conversation
+                # loop returns failed=rate_limit but the worker exits rc=0
+                # instead of KANBAN_RATE_LIMIT_EXIT_CODE — without this
+                # recovery the breaker fires and the card blocks forever.
+                _last_err_row = conn.execute(
+                    "SELECT error FROM task_runs "
+                    "WHERE task_id = ? AND error IS NOT NULL "
+                    "ORDER BY ended_at DESC LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                _last_err = (_last_err_row["error"] or "") if _last_err_row else ""
+                if not _RESPAWN_BLOCKER_RE.search(_last_err):
+                    # Also check the worker log file — the agent's rate-limit
+                    # error text is written there even when the worker exits
+                    # rc=0 without calling kanban_complete/kanban_block.
+                    try:
+                        from hermes_cli.kanban_db import worker_log_path
+
+                        _log_path = worker_log_path(row["id"])
+                        if _log_path.exists():
+                            _log_tail = _log_path.read_text(
+                                errors="replace"
+                            )[-4096:]
+                            if _RESPAWN_BLOCKER_RE.search(_log_tail):
+                                _last_err = _log_tail[:200]
+                    except Exception:
+                        pass
+                if _RESPAWN_BLOCKER_RE.search(_last_err):
+                    protocol_violation = False
+                    rate_limited_exit = True
+                    error_text = (
+                        f"pid {pid} exited rc=0 after rate-limit wall "
+                        f"(recovered from worker log) — requeued without "
+                        f"counting a failure"
+                    )
+                    event_kind = "rate_limited"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "recovered_from_clean_exit": True,
+                    }
+                else:
+                    # True protocol violation — worker answered
+                    # conversationally without calling kanban_complete
+                    # / kanban_block.
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation"
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —

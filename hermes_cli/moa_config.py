@@ -21,6 +21,25 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
 }
 
 
+def _coerce_slot_list(raw: Any) -> list[dict[str, str]]:
+    """Coerce a raw value into a list of clean model slots.
+
+    Accepts a single slot dict, a list of slot dicts, or None/other (→ []).
+    Slots missing provider or model are dropped. A slot whose provider is
+    ``"moa"`` is dropped (would recurse).
+    """
+    if isinstance(raw, dict):
+        raw = [raw]
+    elif not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        slot = _clean_slot(item)
+        if slot is not None:
+            out.append(slot)
+    return out
+
+
 def _coerce_float(value: Any, default: float) -> float:
     if value is None or value == "":
         return default
@@ -85,12 +104,15 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
 
-    aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
+    aggregator_list = _coerce_slot_list(raw.get("aggregator"))
+    if not aggregator_list:
+        aggregator_list = [deepcopy(DEFAULT_MOA_AGGREGATOR)]
 
     return {
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
-        "aggregator": aggregator,
+        "aggregator": aggregator_list[0],
+        "fallback_aggregators": aggregator_list[1:],
         "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),

@@ -372,6 +372,7 @@ def aggregate_moa_context(
     api_messages: list[dict[str, Any]],
     reference_models: list[dict[str, str]],
     aggregator: dict[str, str],
+    fallback_aggregators: list[dict[str, str]] | None = None,
     temperature: float = 0.6,
     aggregator_temperature: float = 0.4,
     max_tokens: int | None = None,
@@ -410,19 +411,25 @@ def aggregate_moa_context(
         f"Reference responses:\n{joined}"
     )
 
-    agg_label = _slot_label(aggregator)
-    try:
-        response = call_llm(
-            task="moa_aggregator",
-            messages=[{"role": "user", "content": synth_prompt}],
-            temperature=aggregator_temperature,
-            max_tokens=max_tokens,
-            **_slot_runtime(aggregator),
-        )
-        synthesis = _extract_text(response)
-    except Exception as exc:
-        logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
-        synthesis = ""
+    aggregator_candidates = [aggregator] + list(fallback_aggregators or [])
+    synthesis = ""
+    used_label = ""
+    for candidate in aggregator_candidates:
+        used_label = _slot_label(candidate)
+        try:
+            response = call_llm(
+                task="moa_aggregator",
+                messages=[{"role": "user", "content": synth_prompt}],
+                temperature=aggregator_temperature,
+                max_tokens=max_tokens,
+                **_slot_runtime(candidate),
+            )
+            synthesis = _extract_text(response)
+            if synthesis:
+                break
+        except Exception as exc:
+            logger.warning("MoA aggregator model %s failed: %s", used_label, exc)
+            continue
 
     if not synthesis:
         synthesis = joined
@@ -431,9 +438,9 @@ def aggregate_moa_context(
         "[Mixture of Agents context — use this as private guidance for the "
         "normal Hermes agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
-        f"Aggregator: {agg_label}\n"
+        f"Aggregator: {used_label or _slot_label(aggregator)}\n"
         f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
-        f"{synthesis.strip()}"
+        f"{synthesis.strip() if synthesis else joined.strip()}"
     )
 
 
@@ -481,6 +488,7 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
+        fallback_aggregators = preset.get("fallback_aggregators") or []
         # MoA does not cap reference or aggregator output: each model uses its
         # own maximum. Passing max_tokens=None makes call_llm omit the parameter
         # (it never caps by default), so a long aggregator synthesis is never
@@ -569,23 +577,29 @@ class MoAChatCompletions:
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_kwargs = dict(api_kwargs)
         agg_kwargs["messages"] = agg_messages
-        # The aggregator is the acting model. Resolve its slot to the provider's
-        # real runtime (base_url/api_key/api_mode) and call it through the same
-        # request-building path any model uses — so per-model wire-format
-        # handling (anthropic_messages, max_completion_tokens, fixed/forbidden
-        # temperature) applies identically to it. MoA imposes no output cap:
-        # max_tokens is passed through from the caller (normally None → omitted
-        # → the model's real maximum). The preset's old hardcoded 4096 default
-        # is gone — it truncated long syntheses.
-        return call_llm(
-            task="moa_aggregator",
-            messages=agg_messages,
-            temperature=aggregator_temperature,
-            max_tokens=agg_kwargs.get("max_tokens"),
-            tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
-            **_slot_runtime(aggregator),
-        )
+
+        last_exc: Exception | None = None
+        for candidate in [aggregator] + list(fallback_aggregators):
+            # call_llm omits None-typed kwargs per its contract; build a
+            # concrete kwargs dict to satisfy Pyright strict mode.
+            max_tok = agg_kwargs.get("max_tokens")
+            call_kwargs: dict[str, Any] = {
+                "task": "moa_aggregator",
+                "messages": agg_messages,
+                "temperature": aggregator_temperature,
+                "tools": agg_kwargs.get("tools") or [],
+                "extra_body": agg_kwargs.get("extra_body") or {},
+            }
+            if isinstance(max_tok, (int, float)) and not isinstance(max_tok, bool):
+                call_kwargs["max_tokens"] = int(max_tok)
+            call_kwargs.update(_slot_runtime(candidate))
+            try:
+                return call_llm(**call_kwargs)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("MoA aggregator %s failed, trying next: %s", _slot_label(candidate), exc)
+                continue
+        raise RuntimeError(f"All MoA aggregators failed: {last_exc}") from last_exc
 
 
 class MoAClient:

@@ -7901,8 +7901,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # failure and revive the unit via ``Restart=on-failure``,
                 # regardless of whether the helper survived.  Without
                 # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  ``StartLimitBurst``
-                # in the unit file still bounds accidental loops.
+                # until someone rebooted the host.  Only the planned code
+                # (75) is whitelisted via ``RestartForceExitStatus``; a
+                # genuine crash exits non-zero-but-not-75, so real crash
+                # loops are still governed by the unit's normal
+                # ``Restart=``/``RestartSec`` (and any StartLimit the
+                # operator sets) rather than force-restarted here.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 

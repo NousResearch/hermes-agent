@@ -649,6 +649,69 @@ class TestMediaExtensionAllowlistParity:
         assert "Here is your report:" in stripped
 
 
+class TestExtensionlessMediaDelivery:
+    """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    def test_extensionless_media_extracted_when_file_validates(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("localhost {}", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here is your config:\nMEDIA:{caddy}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(caddy.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_extensionless_media_left_visible_when_not_on_disk(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/Caddyfile"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/Caddyfile" in cleaned
+
+    def test_strip_media_directives_for_display_strips_validated_extensionless(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{caddy}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_as_document_directive_stripped_without_media_tag(self):
+        """[[as_document]] must be stripped even when no MEDIA: tag is present.
+
+        The display/strip guards short-circuit on text containing none of the
+        delivery directives; [[as_document]] must be in that guard or it leaks
+        to the user as visible text on any image-only response.
+        """
+        from gateway.platforms.base import _strip_media_directives
+
+        text = "Here is your image. [[as_document]]"
+        assert "[[as_document]]" not in _strip_media_directives(text)
+        assert "[[as_document]]" not in (
+            BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(
@@ -1174,6 +1237,69 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
 
+    def test_profile_scoped_cache_delivers_under_symlinked_root(self, tmp_path, monkeypatch):
+        """Reopened #31733: a profile gateway whose HERMES_HOME is symlinked
+        under a denied prefix (e.g. /opt/data -> /root/.hermes) emits
+        profile-scoped paths (``<root>/profiles/<name>/cache/images/x.png``)
+        that resolve under ``/root``. ``$HOME`` is NOT that prefix, so the
+        root-home exception doesn't fire, and the top-level cache allowlist
+        doesn't cover the profile subdir — the file was silently dropped.
+        Per-profile cache roots must be allowlisted so it delivers.
+        """
+        self._patch_roots(monkeypatch)  # strict on, zero top-level cache roots
+
+        # Stand-in for the literal /root deny prefix in the deployment.
+        denied_root = tmp_path / "root"
+        hermes_root = denied_root / ".hermes"
+        prof_cache = hermes_root / "profiles" / "myprof" / "cache" / "images"
+        prof_cache.mkdir(parents=True)
+        image = prof_cache / "gen.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        # $HOME is NOT the denied prefix (mirrors HOME=/opt/data/home).
+        fake_home = tmp_path / "opt" / "data" / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(denied_root),),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT", hermes_root
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(image))
+            == str(image.resolve())
+        )
+
+    def test_profile_scoped_credential_still_blocked_under_root(self, tmp_path, monkeypatch):
+        """The profile-cache allowlist must not un-block a credential sitting
+        directly in the profile dir (``profiles/<name>/auth.json``): it's not
+        under a cache subdir, so the credential denylist still rejects it.
+        """
+        self._patch_roots(monkeypatch)
+
+        denied_root = tmp_path / "root"
+        hermes_root = denied_root / ".hermes"
+        prof_dir = hermes_root / "profiles" / "myprof"
+        prof_dir.mkdir(parents=True)
+        cred = prof_dir / "auth.json"
+        cred.write_text("{}")
+
+        fake_home = tmp_path / "opt" / "data" / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(denied_root),),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT", hermes_root
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(cred)) is None
+
     def test_other_users_home_still_blocked_for_nonroot(self, tmp_path, monkeypatch):
         """The exception only un-blocks the *running user's own* home. A
         non-root gateway ($HOME=/home/me) must not deliver another user's home
@@ -1639,3 +1765,126 @@ class TestMediaDeliveryDiagnosability:
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.
         assert any(r.endswith("image_cache") for r in roots)
+
+
+# ---------------------------------------------------------------------------
+# Media-send fallback must not leak host filesystem paths into chat
+# ---------------------------------------------------------------------------
+
+
+class _CapturingAdapter(BasePlatformAdapter):
+    """Minimal concrete BasePlatformAdapter that records what send() sees.
+
+    The four media-send fallbacks (send_voice, send_video, send_document,
+    send_image_file) historically forwarded their *_path argument into the
+    chat text. That argument is a host filesystem path inside the Hermes
+    cache, so any subclass that fell back to super() — like the Telegram
+    adapter on a rejected video — would leak the host's directory layout
+    into the user's chat.
+    """
+
+    def __init__(self):
+        from gateway.config import Platform, PlatformConfig
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        self.sent: list[dict] = []
+
+    async def connect(self) -> bool:  # pragma: no cover - not exercised
+        return True
+
+    async def disconnect(self) -> None:  # pragma: no cover - not exercised
+        return None
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - not exercised
+        return {"name": chat_id, "type": "dm"}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="m1")
+
+
+class TestMediaFallbackDoesNotLeakHostPath:
+    """Regression: the four base-class media fallbacks must not echo *_path.
+
+    Telegram, Discord, and Slack adapters all fall back to these base
+    implementations on native-send failure. When they did, the user saw
+    a chat message like ``🎬 Video: /home/.../hermes/cache/video/abc.mp4``
+    — a host filesystem path with no actionable information.
+    """
+
+    SENSITIVE_PATH = "/home/jayne/.hermes/cache/media/sensitive_host_path_abc123.bin"
+
+    @pytest.mark.asyncio
+    async def test_send_voice_fallback_omits_audio_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_voice(chat_id="123", audio_path=self.SENSITIVE_PATH)
+        assert result.success
+        assert len(adapter.sent) == 1
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "audio" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_fallback_omits_video_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_video(chat_id="123", video_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "video" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_omits_file_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(chat_id="123", file_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "file" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_includes_explicit_filename_only(self):
+        """A caller-supplied file_name is user-facing and may be shown — but
+        the host file_path argument must still be suppressed."""
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(
+            chat_id="123",
+            file_path=self.SENSITIVE_PATH,
+            file_name="report.pdf",
+        )
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "report.pdf" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_fallback_omits_image_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_image_file(chat_id="123", image_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "image" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_caption_is_preserved_in_fallback(self):
+        """The user-supplied caption is still shown — only the path is suppressed."""
+        adapter = _CapturingAdapter()
+        await adapter.send_video(
+            chat_id="123",
+            video_path=self.SENSITIVE_PATH,
+            caption="Here's the daily summary.",
+        )
+        sent_text = adapter.sent[0]["content"]
+        assert "Here's the daily summary." in sent_text
+        assert self.SENSITIVE_PATH not in sent_text

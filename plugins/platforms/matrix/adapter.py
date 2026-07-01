@@ -2149,9 +2149,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            # file_path is a host-local path; never echo it into chat.
+            logger.warning(
+                "[%s] upload fallback: media file not found for %s",
+                self.name, file_path,
             )
+            text = f"{caption}\n⚠️ Couldn't deliver the attachment." if caption \
+                else "⚠️ Couldn't deliver the attachment."
+            return await self.send(room_id, text, reply_to)
         try:
             file_size = p.stat().st_size
         except OSError:
@@ -2885,15 +2890,46 @@ class MatrixAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
     async def _on_invite(self, event: Any) -> None:
-        """Auto-join rooms when invited."""
+        """Auto-join rooms when invited, recording DM rooms in m.direct."""
 
         room_id = str(getattr(event, "room_id", ""))
+        content = getattr(event, "content", None)
+        is_direct = bool(getattr(content, "is_direct", False))
+        inviter = str(getattr(event, "sender", ""))
+
+        # Only auto-join when the inviter is authorized. Without this, any
+        # federated Matrix user could invite the bot into arbitrary rooms,
+        # exposing its presence and metadata. Mirrors the allow-list gate
+        # used on the message/reaction paths.
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not allow_all and not (
+            self._allowed_user_ids and inviter in self._allowed_user_ids
+        ):
+            logger.warning(
+                "Matrix: rejecting invite to %s from unauthorized user %s",
+                room_id,
+                inviter,
+            )
+            return
 
         logger.info(
-            "Matrix: invited to %s — joining",
+            "Matrix: invited to %s — joining (is_direct=%s)",
             room_id,
+            is_direct,
         )
-        self._schedule_invite_join(room_id)
+        # When the invite declares this as a DM, record it in m.direct after
+        # the (non-blocking) join completes so that _resolve_room_identity
+        # treats it correctly even when the bot account has no prior DM
+        # history. The join itself stays off the sync path.
+        self._schedule_invite_join(
+            room_id,
+            is_direct=is_direct and bool(inviter),
+            inviter=inviter,
+        )
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
@@ -2913,7 +2949,13 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
             return False
 
-    def _schedule_invite_join(self, room_id: str) -> None:
+    def _schedule_invite_join(
+        self,
+        room_id: str,
+        *,
+        is_direct: bool = False,
+        inviter: str = "",
+    ) -> None:
         """Schedule an invite join without blocking sync or gateway readiness."""
         if not room_id or room_id in self._joined_rooms:
             return
@@ -2923,7 +2965,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
         async def _join_invite() -> None:
             try:
-                await asyncio.wait_for(self._join_room_by_id(room_id), timeout=45.0)
+                joined = await asyncio.wait_for(
+                    self._join_room_by_id(room_id), timeout=45.0
+                )
+                # Persist the DM signal from the invite once the join lands,
+                # so m.direct is authoritative even on a fresh bot account.
+                if joined and is_direct and inviter:
+                    await self._record_dm_room(room_id, inviter)
             except asyncio.TimeoutError:
                 logger.warning("Matrix: timed out joining invite %s", room_id)
             finally:
@@ -3778,6 +3826,47 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
         self._room_identities.clear()
         self._room_identity_cached_at.clear()
+
+    async def _record_dm_room(self, room_id: str, inviter: str) -> None:
+        """Persist a room as DM in m.direct account data after an invite.
+
+        When the bot account has never been used for DMs, ``m.direct`` is
+        absent (404).  This method fetches the current mapping (if any),
+        appends *room_id* under the *inviter*'s entry, and writes it back
+        so that subsequent ``_refresh_dm_cache`` calls treat the room as a
+        DM without requiring manual ``m.direct`` setup.
+        """
+        if not self._client:
+            return
+
+        dm_data: Dict[str, list] = {}
+        try:
+            resp = await self._client.get_account_data("m.direct")
+            if hasattr(resp, "content") and isinstance(resp.content, dict):
+                dm_data = resp.content
+            elif isinstance(resp, dict):
+                dm_data = resp
+        except Exception:
+            pass  # m.direct doesn't exist yet — start fresh
+
+        rooms_for_user = dm_data.get(inviter, [])
+        if not isinstance(rooms_for_user, list):
+            rooms_for_user = []
+        if room_id not in rooms_for_user:
+            rooms_for_user.append(room_id)
+            dm_data[inviter] = rooms_for_user
+            try:
+                await self._client.set_account_data("m.direct", dm_data)
+                logger.info(
+                    "Matrix: recorded %s as DM room (inviter=%s)", room_id, inviter
+                )
+            except Exception as exc:
+                logger.warning("Matrix: failed to update m.direct: %s", exc)
+
+        # Update local cache so _resolve_room_identity sees it immediately.
+        self._dm_rooms[room_id] = True
+        self._room_identities.pop(room_id, None)
+        self._room_identity_cached_at.pop(room_id, None)
 
     # ------------------------------------------------------------------
     # Mention detection helpers

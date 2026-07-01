@@ -892,7 +892,16 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                try:
+                    from gateway.status import terminate_pid
+
+                    terminate_pid(proc.pid, force=True)
+                except Exception:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)
@@ -987,3 +996,14 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
+        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
+        # a failed/interrupted mv could have left behind (#38249).
+        try:
+            import glob
+            for tmp in glob.glob(f"{self._snapshot_path}.tmp.*"):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except Exception:
+            pass

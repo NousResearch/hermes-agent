@@ -1,8 +1,8 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
@@ -34,7 +34,8 @@ export interface StatusbarItem {
   href?: string
   menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
-  menuContent?: ReactNode
+  // A render fn receives a `close()` to dismiss the popover from inside the content.
+  menuContent?: ((close: () => void) => ReactNode) | ReactNode
   menuItems?: readonly StatusbarMenuItem[]
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
   title?: string
@@ -63,6 +64,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
         'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
         className
       )}
+      data-slot="statusbar"
       {...props}
     >
       {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
@@ -88,6 +90,8 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+
   const content = (
     <>
       {item.icon}
@@ -97,58 +101,76 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   )
 
   if (item.variant === 'menu' && (item.menuContent || (item.menuItems && item.menuItems.length > 0))) {
-    return (
-      <Tip label={item.title}>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
-              {content}
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align={item.menuAlign ?? 'start'}
-            className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
-            side="top"
-            sideOffset={8}
-          >
-            {item.menuContent
-              ? item.menuContent
-              : (item.menuItems ?? [])
-                  .filter(menuItem => !menuItem.hidden)
-                  .map(menuItem => (
-                    <DropdownMenuItem
-                      className={cn('gap-2 text-foreground focus:bg-accent [&_svg]:size-4', menuItem.className)}
-                      disabled={menuItem.disabled}
-                      key={menuItem.id}
-                      onSelect={() => {
-                        if (menuItem.to) {
-                          navigate(menuItem.to)
-                        }
+    // The `Tip` helper can't wrap a menu: its TooltipTrigger needs a DOM child,
+    // but DropdownMenu's Root renders no element, so the hover listeners never
+    // land on the button and the tooltip silently never shows. Compose the two
+    // trigger Slots directly onto the same <button> instead (both asChild), the
+    // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
+    const trigger = (
+      <DropdownMenuTrigger asChild>
+        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+          {content}
+        </button>
+      </DropdownMenuTrigger>
+    )
 
-                        menuItem.onSelect?.()
-                      }}
-                    >
-                      {menuItem.href ? (
-                        <a
-                          className="inline-flex w-full items-center gap-2"
-                          href={menuItem.href}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
-                          {menuItem.icon}
-                          <span className="truncate">{menuItem.label}</span>
-                        </a>
-                      ) : (
-                        <>
-                          {menuItem.icon}
-                          <span className="truncate">{menuItem.label}</span>
-                        </>
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </Tip>
+    return (
+      <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+        {item.title ? (
+          <TooltipProvider delayDuration={0}>
+            <Tooltip>
+              <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+              <TooltipContent>{item.title}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          trigger
+        )}
+        <DropdownMenuContent
+          align={item.menuAlign ?? 'start'}
+          className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
+          side="top"
+          sideOffset={8}
+        >
+          {item.menuContent
+            ? typeof item.menuContent === 'function'
+              ? item.menuContent(() => setMenuOpen(false))
+              : item.menuContent
+            : (item.menuItems ?? [])
+                .filter(menuItem => !menuItem.hidden)
+                .map(menuItem => (
+                  <DropdownMenuItem
+                    className={cn('gap-2 text-foreground focus:bg-accent [&_svg]:size-4', menuItem.className)}
+                    disabled={menuItem.disabled}
+                    key={menuItem.id}
+                    onSelect={() => {
+                      if (menuItem.to) {
+                        navigate(menuItem.to)
+                      }
+
+                      menuItem.onSelect?.()
+                    }}
+                  >
+                    {menuItem.href ? (
+                      <a
+                        className="inline-flex w-full items-center gap-2"
+                        href={menuItem.href}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        {menuItem.icon}
+                        <span className="truncate">{menuItem.label}</span>
+                      </a>
+                    ) : (
+                      <>
+                        {menuItem.icon}
+                        <span className="truncate">{menuItem.label}</span>
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     )
   }
 

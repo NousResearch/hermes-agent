@@ -1,0 +1,64 @@
+name: chatwoot-platform
+label: Chatwoot
+kind: platform
+version: 1.0.0
+description: >
+  Chatwoot gateway adapter for Hermes Agent.
+  Connects a Chatwoot Agent Bot to Hermes: inbound customer messages on a
+  connected inbox are answered by the agent, one session per conversation.
+  Replies go out over Chatwoot's Application API; the agent's reasoning and
+  tool/skill activity can be surfaced as agent-only private notes.
+author: Hermes
+# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: CHATWOOT_BASE_URL
+    description: "Chatwoot instance URL (e.g. https://app.chatwoot.com)"
+    prompt: "Chatwoot base URL"
+    url: "https://www.chatwoot.com/"
+    password: false
+  - name: CHATWOOT_TOKEN
+    description: "Agent Bot access token (used for customer-visible replies)"
+    prompt: "Agent Bot access token"
+    password: true
+optional_env:
+  - name: CHATWOOT_AGENT_TOKEN
+    description: "User/agent access token for private notes (if the bot token cannot post private:true)"
+    prompt: "Agent (user) token for private notes"
+    password: true
+  - name: CHATWOOT_ACCOUNT_ID
+    description: "Default Chatwoot account id (otherwise derived from each webhook payload)"
+    prompt: "Default account id (optional)"
+    password: false
+  - name: CHATWOOT_WEBHOOK_SECRET
+    description: "Shared secret validated as ?token= on the inbound webhook URL"
+    prompt: "Webhook shared secret (optional)"
+    password: true
+  - name: CHATWOOT_HOST
+    description: "Webhook listener bind host (default: 0.0.0.0)"
+    prompt: "Webhook bind host"
+    password: false
+  - name: CHATWOOT_PORT
+    description: "Webhook listener bind port (default: 8647)"
+    prompt: "Webhook bind port"
+    password: false
+  - name: CHATWOOT_WEBHOOK_PATH
+    description: "Webhook listener path (default: /chatwoot/webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: CHATWOOT_ALLOWED_USERS
+    description: "Comma-separated Chatwoot contact ids allowed to talk to the bot"
+    prompt: "Allowed contact ids (comma-separated)"
+    password: false
+  - name: CHATWOOT_ALLOW_ALL_USERS
+    description: "Allow any contact to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: CHATWOOT_PRIVATE_NOTE_TRACE
+    description: "Post the agent's reasoning + tool/skill activity as private notes (true/false, default false)"
+    prompt: "Private-note trace? (true/false)"
+    password: false
+  - name: CHATWOOT_HOME_CHANNEL
+    description: "Default account:conversation target for cron / proactive delivery"
+    prompt: "Home channel (account:conversation)"
+    password: false

@@ -8,6 +8,8 @@ that runtime-manager injects into the container.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import os
@@ -22,7 +24,6 @@ from agent.image_gen_provider import (
     error_response,
     normalize_reference_images,
     resolve_aspect_ratio,
-    save_b64_image,
     success_response,
 )
 
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "karinai-image-gateway"
 DEFAULT_MODEL = "karinai/image-gateway"
+_MAX_DATA_URL_FALLBACK_B64_CHARS = 2_000_000
+_ALLOWED_DATA_URL_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _ASPECT_TO_GATEWAY = {
     "landscape": "16:9",
     "square": "1:1",
@@ -201,6 +204,23 @@ def _compact_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in asset.items() if key in allowed and value is not None}
 
 
+def _data_url_from_asset(asset: Dict[str, Any]) -> tuple[str, str]:
+    raw_b64 = asset.get("b64_json")
+    if not isinstance(raw_b64, str) or not raw_b64.strip():
+        return "", ""
+    b64_json = raw_b64.strip()
+    if len(b64_json) > _MAX_DATA_URL_FALLBACK_B64_CHARS:
+        return "", "image gateway b64_json asset exceeded the retrievable data URL limit"
+    try:
+        base64.b64decode(b64_json, validate=True)
+    except (binascii.Error, ValueError):
+        return "", "image gateway returned invalid b64 image data"
+    mime_type = _clean(asset.get("mime_type")) or "image/png"
+    if mime_type not in _ALLOWED_DATA_URL_MIME_TYPES:
+        return "", "image gateway returned an unsupported image MIME type"
+    return f"data:{mime_type};base64,{b64_json}", ""
+
+
 class KarinAIImageGatewayProvider(ImageGenProvider):
     """Bridge image generation to the trusted KarinAI image gateway."""
 
@@ -349,21 +369,16 @@ class KarinAIImageGatewayProvider(ImageGenProvider):
 
         first_asset = assets[0]
         image = _clean(first_asset.get("signed_url"))
+        fallback_error = ""
         if not image:
-            b64_json = _clean(first_asset.get("b64_json"))
-            if b64_json:
-                try:
-                    path = save_b64_image(
-                        b64_json,
-                        prefix="karinai_image_gateway",
-                        extension=_safe_extension(first_asset.get("format")),
-                    )
-                    image = str(path)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Could not materialize gateway b64 image: %s", exc)
+            # Managed product clients need a retrievable reference in the public
+            # response. Until the image gateway returns product-signed URLs for
+            # every stored asset, allow a bounded, validated data URL fallback for
+            # small gateway-returned b64 assets (used by staging fake-provider e2e).
+            image, fallback_error = _data_url_from_asset(first_asset)
         if not image:
             return error_response(
-                error="image gateway asset had no signed_url or b64_json image data",
+                error=fallback_error or "image gateway asset had no signed_url or b64_json image data",
                 error_type="image_gateway_contract",
                 provider=self.name,
                 model=str(result.get("model") or response_model),

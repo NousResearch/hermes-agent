@@ -195,6 +195,10 @@ DEFAULT_XAI_SPEED_DEFAULT = 1.0
 # xAI TTS `optimize_streaming_latency` accepts 0, 1, or 2; 0 (best quality) is
 # the API default (omitted => default). Values >0 trade quality for time-to-first-audio.
 DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT = 0
+# xAI TTS `text_normalization` is a boolean (default False). When enabled,
+# the model normalizes written-form text (numbers, abbreviations, symbols)
+# into spoken-form before generating audio.
+DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT = False
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -1218,6 +1222,12 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
             optimize_streaming_latency = None
     if optimize_streaming_latency is not None:
         optimize_streaming_latency = max(0, min(2, optimize_streaming_latency))
+    # ``tts.xai.text_normalization`` enables spoken-form normalization
+    # (numbers, abbreviations, symbols → words). Defaults to False.
+    text_normalization = _xai_bool_config(
+        xai_config.get("text_normalization"),
+        DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT,
+    )
     if auto_speech_tags:
         text = _apply_xai_auto_speech_tags(text)
     base_url = str(
@@ -1258,6 +1268,9 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         and optimize_streaming_latency != DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT
     ):
         payload["optimize_streaming_latency"] = optimize_streaming_latency
+    # Only attach `text_normalization` when explicitly enabled (default is False).
+    if text_normalization:
+        payload["text_normalization"] = True
 
     response = requests.post(
         f"{base_url}/tts",

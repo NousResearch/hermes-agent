@@ -2026,6 +2026,45 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _approval_notify(approval_data):
+                # type: (Dict[str, Any]) -> None
+                """Push approval-request events onto the chat-completions SSE stream.
+
+                Mirrors the runs-API ``_approval_notify`` (line ~3965): redact
+                credentials from the command before it enters the wire, then
+                enqueue a tagged tuple so ``_write_sse_chat_completion`` emits
+                ``event: approval.request`` (and the legacy
+                ``hermes.approval.request`` alias) on the SSE channel.
+                """
+                event = dict(approval_data or {})
+                if "command" in event:
+                    from gateway.run import _redact_approval_command
+
+                    event["command"] = _redact_approval_command(event.get("command"))
+                event.update({
+                    "event": "approval.request",
+                    "run_id": completion_id,
+                    "session_id": session_id or "",
+                    "timestamp": time.time(),
+                    "choices": ["once", "session", "always", "deny"],
+                })
+                try:
+                    _stream_q.put_nowait(("__approval__", event))
+                except Exception:
+                    pass
+
+            # Register the approval session so POST /v1/runs/{completion_id}/approval
+            # can resolve pending approvals on the legacy chat-completions path.
+            approval_session_key = gateway_session_key or session_id or completion_id
+            self._run_approval_sessions[completion_id] = approval_session_key
+            self._set_run_status(
+                completion_id,
+                "running",
+                created_at=created,
+                session_id=session_id,
+                model=model_name,
+            )
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -2045,10 +2084,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                approval_notify_callback=_approval_notify,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
-            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
+            # Also clean up the approval session mapping for the
+            # chat-completions path so stale entries don't accumulate.
+            def _on_agent_done(_fut):
+                _stream_q.put(None)
+                self._run_approval_sessions.pop(completion_id, None)
+
+            agent_task.add_done_callback(_on_agent_done)
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -2225,6 +2271,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__approval__":
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: approval.request\ndata: {event_data}\n\n".encode()
+                    )
+                    await response.write(
+                        f"event: hermes.approval.request\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -3790,6 +3844,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        approval_notify_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3825,11 +3880,34 @@ class APIServerAdapter(BasePlatformAdapter):
                 if agent_ref is not None:
                     agent_ref[0] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
-                result = agent.run_conversation(
-                    user_message=user_message,
-                    conversation_history=conversation_history,
-                    task_id=effective_task_id,
-                )
+                approval_token = None
+                approval_session_key = gateway_session_key or session_id or effective_task_id
+                try:
+                    if approval_notify_callback is not None:
+                        from tools.approval import (
+                            register_gateway_notify,
+                            reset_current_session_key,
+                            set_current_session_key,
+                            unregister_gateway_notify,
+                        )
+                        approval_token = set_current_session_key(approval_session_key)
+                        register_gateway_notify(approval_session_key, approval_notify_callback)
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
+                finally:
+                    if approval_notify_callback is not None:
+                        try:
+                            unregister_gateway_notify(approval_session_key)
+                        except Exception:
+                            pass
+                    if approval_token is not None:
+                        try:
+                            reset_current_session_key(approval_token)
+                        except Exception:
+                            pass
                 usage = {
                     "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

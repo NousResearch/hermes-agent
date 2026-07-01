@@ -39,31 +39,42 @@
 
 const path = require('node:path')
 
-// Map process.platform → electron-builder's `release/<dir>-unpacked` name.
-function unpackedDirName(platform) {
-  if (platform === 'darwin') return 'mac-unpacked' // not used (mac swaps bundles)
-  if (platform === 'win32') return 'win-unpacked'
-  return 'linux-unpacked'
+// Map process.platform + arch → electron-builder's `release/<dir>-unpacked` name.
+// electron-builder 26+ suffixes -<arch> (e.g. linux-arm64-unpacked), but
+// older builds may use the bare platform name. Try arch-suffixed first,
+// falling back to the bare platform form for backward compatibility.
+function unpackedDirName(platform, arch) {
+  const os = platform === 'darwin' ? 'mac' : platform === 'win32' ? 'win' : 'linux'
+  const candidates = arch && arch !== 'x64'
+    ? [`${os}-${arch}-unpacked`, `${os}-unpacked`]
+    : [`${os}-unpacked`]
+  return candidates
 }
 
 /**
- * If `execPath` lives under `<updateRoot>/apps/desktop/release/<plat>-unpacked`,
+ * If `execPath` lives under `<updateRoot>/apps/desktop/release/<plat>[-<arch>]-unpacked`,
  * return that unpacked dir; otherwise null. A null result means the running
  * binary is NOT the thing we just rebuilt (AppImage/.deb/.rpm/dev), so we must
  * not claim a GUI relaunch.
  *
+ * Tries arch-suffixed names first (electron-builder 26+ convention), falling
+ * back to the bare platform form for backward compatibility.
+ *
  * Match is a path-segment-aware prefix check (not a bare string startsWith) so
  * `.../release/linux-unpacked-evil` can't masquerade as `.../release/linux-unpacked`.
  */
-function resolveUnpackedRelease(execPath, updateRoot, platform) {
+function resolveUnpackedRelease(execPath, updateRoot, platform, arch) {
   if (!execPath || !updateRoot) return null
   const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
-  const unpacked = path.join(releaseDir, unpackedDirName(platform))
   const normalizedExec = path.resolve(String(execPath))
-  // execPath must be the unpacked dir itself or a descendant of it.
-  const withSep = unpacked.endsWith(path.sep) ? unpacked : unpacked + path.sep
-  if (normalizedExec === unpacked || normalizedExec.startsWith(withSep)) {
-    return unpacked
+  const candidates = unpackedDirName(platform, arch)
+  for (const name of candidates) {
+    const unpacked = path.join(releaseDir, name)
+    // execPath must be the unpacked dir itself or a descendant of it.
+    const withSep = unpacked.endsWith(path.sep) ? unpacked : unpacked + path.sep
+    if (normalizedExec === unpacked || normalizedExec.startsWith(withSep)) {
+      return unpacked
+    }
   }
   return null
 }

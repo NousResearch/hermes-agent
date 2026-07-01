@@ -6548,6 +6548,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return False
 
         from hermes_cli.main import _relative_time
+        from agent.markdown_tables import _pad_to_width, _disp_width
 
         print()
         if reason == "history":
@@ -6555,13 +6556,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        # Column widths (display cells, not character count) — CJK-aware.
+        col_w = {"num": 3, "title": 32, "preview": 40, "active": 13, "id": 24}
+        print(
+            f"  {_pad_to_width('#', col_w['num'])}"
+            f"{_pad_to_width('Title', col_w['title'])} "
+            f"{_pad_to_width('Preview', col_w['preview'])} "
+            f"{_pad_to_width('Last Active', col_w['active'])} "
+            f"{'ID'}"
+        )
+        print(
+            f"  {'─' * col_w['num']} "
+            f"{'─' * col_w['title']} "
+            f"{'─' * col_w['preview']} "
+            f"{'─' * col_w['active']} "
+            f"{'─' * col_w['id']}"
+        )
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = (session.get("preview") or "")
+            # Truncate preview to fit within the column's display width.
+            while _disp_width(preview) > col_w["preview"]:
+                preview = preview[:-1]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(
+                f"  {_pad_to_width(str(idx), col_w['num'])}"
+                f"{_pad_to_width(title, col_w['title'])} "
+                f"{_pad_to_width(preview, col_w['preview'])} "
+                f"{_pad_to_width(last_active, col_w['active'])} "
+                f"{session['id']}"
+            )
         print()
         print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         print("  Example: /resume 2")

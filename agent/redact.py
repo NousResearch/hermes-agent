@@ -67,6 +67,11 @@ _SENSITIVE_BODY_KEYS = frozenset({
 # downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
+# Snapshot optional PII coverage at import time alongside _REDACT_ENABLED.
+_REDACT_LEVEL = os.getenv("HERMES_REDACT_LEVEL", "basic").lower().strip()
+if _REDACT_LEVEL not in {"basic", "standard", "strict"}:
+    _REDACT_LEVEL = "basic"
+
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
     r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
@@ -110,7 +115,15 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    r"AC[A-Za-z0-9]{32}",               # Twilio Account SID
+    r"SK[A-Za-z0-9]{32}",               # Twilio API key
+    r"Bot\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}",  # Discord bot token
+    r"whsec_[A-Za-z0-9+/]{32,}",        # Stripe webhook signing secret
 ]
+
+# Mailchimp tokens have no vendor prefix. Keep this out of _PREFIX_PATTERNS so
+# the inexpensive prefix gate remains effective for ordinary text.
+_MAILCHIMP_API_KEY_RE = re.compile(r"[A-Za-z0-9]{32}-us[0-9]{1,2}\b")
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
@@ -546,6 +559,11 @@ def redact_sensitive_text(
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
+    # Mailchimp keys are structurally identifiable but lack a vendor prefix.
+    # Gate on their datacenter suffix instead of scanning every log line.
+    if "-us" in text:
+        text = _MAILCHIMP_API_KEY_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
         if "=" in text:
@@ -679,6 +697,11 @@ def redact_sensitive_text(
             return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
+    if _REDACT_LEVEL in {"standard", "strict"}:
+        text = _redact_standard_pii(text)
+    if _REDACT_LEVEL == "strict":
+        text = _redact_strict_pii(text)
+
     return text
 
 
@@ -798,6 +821,50 @@ def _has_http_method_substring(text: str) -> bool:
     """Cheap pre-check before scanning for access-log request targets."""
     upper = text.upper()
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
+
+
+_CREDIT_CARD_RE = re.compile(
+    r"(?<!\d)(\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,4}|"
+    r"3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5}|3(?:0[0-5]|[68]\d)\d{11})(?!\d)"
+)
+_SSN_RE = re.compile(
+    r"(?<!\d)(?!000|666|9\d\d)(\d{3})[-\s](?!00)(\d{2})[-\s](?!0000)(\d{4})(?!\d)"
+)
+_IBAN_RE = re.compile(r"\b([A-Z]{2}\d{2}[A-Z0-9]{4,30})\b")
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+_IPV4_RE = re.compile(
+    r"(?<!\d)((?!0\.|127\.|169\.254\.)"
+    r"(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))(?!\d)"
+)
+
+
+def _luhn_valid(number: str) -> bool:
+    """Return whether a 13-19 digit payment-card candidate passes Luhn."""
+    digits = "".join(character for character in number if character.isdigit())
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for index, character in enumerate(reversed(digits)):
+        value = int(character)
+        if index % 2:
+            value = value * 2 - 9 if value > 4 else value * 2
+        total += value
+    return total % 10 == 0
+
+
+def _redact_standard_pii(text: str) -> str:
+    def redact_card(match: re.Match) -> str:
+        digits = "".join(character for character in match.group(0) if character.isdigit())
+        return "****-****-****-" + digits[-4:] if _luhn_valid(digits) else match.group(0)
+
+    text = _CREDIT_CARD_RE.sub(redact_card, text)
+    text = _SSN_RE.sub(r"***-**-\3", text)
+    return _IBAN_RE.sub(lambda match: match.group(0)[:4] + "****", text)
+
+
+def _redact_strict_pii(text: str) -> str:
+    text = _EMAIL_RE.sub(lambda match: match.group(0).split("@", 1)[0][:2] + "***@***", text)
+    return _IPV4_RE.sub(lambda match: ".".join(match.group(1).split(".")[:2]) + ".***.***", text)
 
 
 class RedactingFormatter(logging.Formatter):

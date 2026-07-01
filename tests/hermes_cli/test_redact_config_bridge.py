@@ -201,3 +201,38 @@ def test_dotenv_redact_secrets_beats_config_yaml(tmp_path):
     # .env value wins
     assert "REDACT_ENABLED=True" in result.stdout
     assert "ENV_VAR=true" in result.stdout
+
+
+def test_redact_level_in_config_yaml_is_snapshotted_at_cli_startup(tmp_path):
+    """The CLI bridge must set redact_level before agent.redact is imported."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("security:\n  redact_level: strict\n")
+    (hermes_home / ".env").write_text("")
+
+    probe = textwrap.dedent(
+        """\
+        import os, sys
+        os.environ.pop("HERMES_REDACT_LEVEL", None)
+        sys.path.insert(0, %r)
+        import hermes_cli.main
+        import agent.redact
+        print(f"REDACT_LEVEL={agent.redact._REDACT_LEVEL}")
+        print(f"ENV_VAR={os.environ.get('HERMES_REDACT_LEVEL', '<unset>')}")
+        """
+    ) % str(REPO_ROOT)
+
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(hermes_home)
+    env.pop("HERMES_REDACT_LEVEL", None)
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=30,
+    )
+    assert result.returncode == 0, f"probe failed: {result.stderr}"
+    assert "REDACT_LEVEL=strict" in result.stdout
+    assert "ENV_VAR=strict" in result.stdout

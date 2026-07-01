@@ -1773,6 +1773,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            _level = _security_cfg.get("redact_level")
+            if _level is not None and "HERMES_REDACT_LEVEL" not in os.environ:
+                os.environ["HERMES_REDACT_LEVEL"] = str(_level).lower()
         # Gateway settings (media delivery allowlist + recency trust + strict mode)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):

@@ -1046,3 +1046,58 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestAdditionalSpecificPrefixes:
+    @pytest.mark.parametrize(
+        ("label", "token"),
+        [
+            ("twilio account SID", "AC" + "a" * 32),
+            ("twilio API key", "SK" + "b" * 32),
+            ("mailchimp API key", "c" * 32 + "-us3"),
+            (
+                "discord bot token",
+                "Bot." + "a" * 24 + "." + "b" * 6 + "." + "c" * 27,
+            ),
+            ("stripe webhook secret", "whsec_" + "d" * 32),
+        ],
+    )
+    def test_specific_token_is_redacted(self, label, token):
+        result = redact_sensitive_text(f"{label}: {token}", force=True)
+        assert token not in result
+
+    def test_unlabelled_88_character_base64_text_is_not_redacted(self):
+        value = "a" * 88
+        assert redact_sensitive_text(f"fixture data: {value}", force=True).endswith(value)
+
+
+class TestOptionalPiiLevels:
+    def test_standard_level_redacts_luhn_valid_card(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard", raising=False)
+        card = "4111 1111 1111 1111"
+        assert card not in redact_sensitive_text(f"card: {card}", force=True)
+
+    def test_standard_level_redacts_valid_ssn(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard", raising=False)
+        ssn = "123-45-6789"
+        assert ssn not in redact_sensitive_text(f"SSN: {ssn}", force=True)
+
+    def test_standard_level_redacts_iban(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "standard", raising=False)
+        iban = "GB82WEST12345698765432"
+        assert iban not in redact_sensitive_text(f"IBAN: {iban}", force=True)
+
+    def test_strict_level_redacts_email(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "strict", raising=False)
+        email = "alice@example.com"
+        assert email not in redact_sensitive_text(f"contact: {email}", force=True)
+
+    def test_strict_level_redacts_non_loopback_ipv4(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "strict", raising=False)
+        address = "192.168.1.10"
+        assert address not in redact_sensitive_text(f"server: {address}", force=True)
+
+    def test_basic_level_leaves_optional_pii_unchanged(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_LEVEL", "basic", raising=False)
+        card = "4111 1111 1111 1111"
+        assert card in redact_sensitive_text(f"card: {card}", force=True)

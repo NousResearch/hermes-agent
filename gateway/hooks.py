@@ -39,6 +39,7 @@ and ``thread_id`` is non-empty.
 import asyncio
 import importlib.util
 import sys
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
@@ -47,6 +48,35 @@ from hermes_cli.config import get_hermes_home
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
+# Import-time default, used by ``_resolve_hooks_dir`` below to detect a test
+# monkeypatch of the constant (test seam, see tests/gateway/test_hooks.py) vs.
+# an unmodified import-time value (in which case it re-resolves through the
+# active profile override).
+_HOOKS_DIR_IMPORT_DEFAULT = HOOKS_DIR
+
+
+def _resolve_hooks_dir() -> Path:
+    """Resolve the hooks directory, honoring the active profile.
+
+    ``HOOKS_DIR`` is frozen at import time, which pins every later hook
+    discovery to whichever profile's ``HERMES_HOME`` was active when this
+    module was first imported — a cross-profile leak under the multiplexed
+    gateway, where each profile's own ``Gateway``/``HookRegistry`` instance
+    shares one process. Without this, a later-starting profile's
+    ``discover_and_load()`` silently loads and executes the FIRST profile's
+    hook handlers (arbitrary Python) against its own live event context
+    (session_id, message, response text) instead of its own hooks directory.
+    Re-resolve through ``get_hermes_home()`` on every call so the
+    context-local profile override (``set_hermes_home_override``) is
+    honored, mirroring the cache-dir profile-isolation fix.
+
+    A test that monkeypatches the module constant away from its import-time
+    default is respected (test seam preserved).
+    """
+    current = HOOKS_DIR
+    if current != _HOOKS_DIR_IMPORT_DEFAULT:
+        return current
+    return get_hermes_home() / "hooks"
 
 
 class HookRegistry:
@@ -90,10 +120,11 @@ class HookRegistry:
         """
         self._register_builtin_hooks()
 
-        if not HOOKS_DIR.exists():
+        hooks_dir = _resolve_hooks_dir()
+        if not hooks_dir.exists():
             return
 
-        for hook_dir in sorted(HOOKS_DIR.iterdir()):
+        for hook_dir in sorted(hooks_dir.iterdir()):
             if not hook_dir.is_dir():
                 continue
 

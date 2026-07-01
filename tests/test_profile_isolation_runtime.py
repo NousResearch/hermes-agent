@@ -143,6 +143,62 @@ class TestRichSentStorePathResolution:
         assert b_seen.endswith("state/rich_sent_index.json")
 
 
+class TestGatewayHooksDirResolution:
+    """gateway/hooks.py's HookRegistry must discover hooks from the active
+    profile's directory — otherwise one profile's HookRegistry loads and
+    executes a DIFFERENT profile's hook handlers (arbitrary Python) against
+    its own live event context under the multiplexed gateway."""
+
+    def test_hooks_dir_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import gateway.hooks as gh
+
+        a_seen = _under_override(prof_a, lambda: gh._resolve_hooks_dir())
+        b_seen = _under_override(prof_b, lambda: gh._resolve_hooks_dir())
+
+        assert a_seen == prof_a / "hooks"
+        assert b_seen == prof_b / "hooks"
+        assert a_seen != b_seen
+
+    def test_discover_and_load_uses_active_profile_hooks_dir(self, two_profiles):
+        """End-to-end: a hook that only exists under profile B's hooks dir
+        must not be discovered when profile A's override is active, and vice
+        versa — proving the registry doesn't fall back to a frozen profile."""
+        prof_a, prof_b = two_profiles
+        import gateway.hooks as gh
+
+        b_hook_dir = prof_b / "hooks" / "only-in-b"
+        b_hook_dir.mkdir(parents=True)
+        (b_hook_dir / "HOOK.yaml").write_text(
+            "name: only-in-b\nevents: [\"agent:start\"]\n", encoding="utf-8",
+        )
+        (b_hook_dir / "handler.py").write_text(
+            "async def handle(event_type, context):\n    pass\n", encoding="utf-8",
+        )
+
+        def _load_and_names():
+            reg = gh.HookRegistry()
+            reg.discover_and_load()
+            return [h["name"] for h in reg.loaded_hooks]
+
+        a_hooks = _under_override(prof_a, _load_and_names)
+        b_hooks = _under_override(prof_b, _load_and_names)
+
+        assert "only-in-b" not in a_hooks
+        assert "only-in-b" in b_hooks
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (monkeypatch the module constant, see
+        tests/gateway/test_hooks.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import gateway.hooks as gh
+
+        forced = tmp_path / "forced_hooks"
+        monkeypatch.setattr("gateway.hooks.HOOKS_DIR", forced)
+        seen = _under_override(prof_b, lambda: gh._resolve_hooks_dir())
+        assert seen == forced
+
+
 # ---------------------------------------------------------------------------
 # M2 — thread / executor context propagation
 # ---------------------------------------------------------------------------

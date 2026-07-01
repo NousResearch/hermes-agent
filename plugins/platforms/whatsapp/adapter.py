@@ -1298,6 +1298,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if len(quoted_text) > 300:
                     quoted_text = quoted_text[:297] + "..."
                 body = f"[Replying to: \"{quoted_text}\"]\n{body}"
+            # If the quoted message had media, include the cached media path so
+            # vision/audio tools can inspect the original content.
+            quoted_media_urls = data.get("quotedMediaUrls") or []
+            quoted_media_type = data.get("quotedMediaType") or ""
+            if quoted_media_urls:
+                body = f"[Replying to {quoted_media_type or 'media'}: {', '.join(quoted_media_urls)}]\n{body}"
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
@@ -1347,6 +1353,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
+                reply_to_message_id=data.get("quotedMessageId") or None,
                 media_urls=cached_urls,
                 media_types=media_types,
                 metadata=metadata,

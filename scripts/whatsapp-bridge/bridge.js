@@ -195,6 +195,55 @@ function getContextInfo(messageContent) {
   return {};
 }
 
+// Extract the user-visible content of a quoted message so the agent sees
+// replies in a natural, human-like form instead of raw message ids.
+function extractQuotedText(quotedMessage) {
+  if (!quotedMessage || typeof quotedMessage !== 'object') return null;
+  let text = null;
+  if (quotedMessage.conversation) {
+    text = String(quotedMessage.conversation);
+  } else if (quotedMessage.extendedTextMessage?.text) {
+    text = String(quotedMessage.extendedTextMessage.text);
+  } else if (quotedMessage.imageMessage?.caption) {
+    text = `sent an image: ${quotedMessage.imageMessage.caption}`;
+  } else if (quotedMessage.videoMessage?.caption) {
+    text = `sent a video: ${quotedMessage.videoMessage.caption}`;
+  } else if (quotedMessage.documentMessage) {
+    const name = quotedMessage.documentMessage.fileName || 'a document';
+    text = `sent a document: ${name}`;
+  } else if (quotedMessage.audioMessage || quotedMessage.pttMessage) {
+    text = 'sent a voice message';
+  } else if (quotedMessage.locationMessage) {
+    const loc = quotedMessage.locationMessage;
+    text = `shared a location: ${loc.degreesLatitude}, ${loc.degreesLongitude}`;
+  } else if (quotedMessage.stickerMessage) {
+    text = 'sent a sticker';
+  }
+  return text ? text.trim() : null;
+}
+
+// In-memory store of recently seen inbound messages so replies can reference
+// the original text and cached media paths. Key: "chatId:messageId".
+const recentInboundMessages = new Map();
+const MAX_STORED_MESSAGES = 200;
+
+function rememberInboundMessage(chatId, messageId, payload) {
+  const key = `${chatId}:${messageId}`;
+  recentInboundMessages.set(key, {
+    timestamp: Date.now(),
+    ...payload,
+  });
+  // Evict oldest entries when we exceed the cap.
+  if (recentInboundMessages.size > MAX_STORED_MESSAGES) {
+    const oldestKey = recentInboundMessages.keys().next().value;
+    recentInboundMessages.delete(oldestKey);
+  }
+}
+
+function lookupInboundMessage(chatId, messageId) {
+  return recentInboundMessages.get(`${chatId}:${messageId}`) || null;
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -510,6 +559,34 @@ async function startSocket() {
         continue;
       }
 
+      // Remember this message so replies can include original text/media context.
+      rememberInboundMessage(chatId, msg.key.id, { body, hasMedia, mediaType, mediaUrls });
+
+      // Resolve quoted-message context using the in-memory store for media and
+      // falling back to the quotedMessage object for text-only messages.
+      let quotedText = extractQuotedText(contextInfo?.quotedMessage) || null;
+      let quotedMediaUrls = [];
+      let quotedMediaType = '';
+      if (quotedMessageId) {
+        const original = lookupInboundMessage(chatId, quotedMessageId) || lookupInboundMessage(quotedRemoteJid || chatId, quotedMessageId);
+        if (original) {
+          if (original.hasMedia && original.mediaUrls.length) {
+            quotedMediaUrls = original.mediaUrls;
+            quotedMediaType = original.mediaType;
+            if (!quotedText) {
+              quotedText = original.mediaType === 'image' ? 'sent an image' :
+                           original.mediaType === 'video' ? 'sent a video' :
+                           original.mediaType === 'audio' ? 'sent an audio message' :
+                           original.mediaType === 'ptt' ? 'sent a voice message' :
+                           original.mediaType === 'document' ? 'sent a document' :
+                           'sent media';
+            }
+          } else if (original.body && !quotedText) {
+            quotedText = original.body;
+          }
+        }
+      }
+
       const event = {
         messageId: msg.key.id,
         chatId,
@@ -526,6 +603,9 @@ async function startSocket() {
         quotedParticipant,
         quotedRemoteJid,
         hasQuotedMessage,
+        quotedText,
+        quotedMediaUrls,
+        quotedMediaType,
         botIds,
         timestamp: msg.messageTimestamp,
         fromOwner,

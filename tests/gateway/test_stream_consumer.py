@@ -1817,6 +1817,58 @@ class TestOnNewMessageCallback:
         assert consumer.already_sent is True
 
 
+class TestSplitTextChunks:
+    """Regression coverage for #55844 — _split_text_chunks must use the
+    codepoint-equivalent budget (not the raw limit) when falling back
+    to a hard split, so that emoji/supplementary characters don't produce
+    chunks that exceed the platform's UTF-16 limit."""
+
+    def test_ascii_text_hard_split_with_len(self):
+        """Plain ASCII text: len_fn=len, hard split should respect limit."""
+        text = "a" * 5000
+        chunks = GatewayStreamConsumer._split_text_chunks(text, 1000, len_fn=len)
+        for c in chunks:
+            assert len(c) <= 1000, f"chunk len {len(c)} > 1000"
+        assert "".join(chunks) == text
+
+    def test_emoji_text_hard_split_utf16(self):
+        """Emoji-only text with utf16_len: every chunk must be ≤ limit in
+        UTF-16 code units, even when no newlines exist to guide the split."""
+        from gateway.platforms.base import utf16_len
+
+        # 🚀 = 1 codepoint = 2 UTF-16 code units
+        text = "🚀" * 3000  # 3000 codepoints, 6000 UTF-16 units
+        limit = 1000       # 1000 UTF-16 units → at most 500 emoji per chunk
+        chunks = GatewayStreamConsumer._split_text_chunks(text, limit, len_fn=utf16_len)
+
+        for c in chunks:
+            actual = utf16_len(c)
+            assert actual <= limit, f"chunk utf16_len {actual} > {limit}"
+
+        # Concatenation must reproduce original
+        joined = "".join(chunks)
+        assert utf16_len(joined) == utf16_len(text)
+        assert joined == text
+
+    def test_mixed_text_hard_split_utf16(self):
+        """Mixed ASCII + emoji: each chunk respects the UTF-16 limit."""
+        from gateway.platforms.base import utf16_len
+
+        # Each segment: some ASCII chars then an emoji
+        segment = "Hello world! " + "🚀"
+        # segment utf16_len: 13 ASCII (13) + 1 emoji (2) = 15
+        # 200 segments = 200 * 15 = 3000 UTF-16 units
+        text = segment * 200
+        limit = 1000
+        chunks = GatewayStreamConsumer._split_text_chunks(text, limit, len_fn=utf16_len)
+
+        for c in chunks:
+            actual = utf16_len(c)
+            assert actual <= limit, f"chunk utf16_len {actual} > {limit}"
+
+        assert "".join(chunks) == text
+
+
 class TestUtf16OverflowDetection:
     """Regression coverage for #11170 — Telegram counts message length in
     UTF-16 code units, not Python codepoints. A response with supplementary

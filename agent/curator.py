@@ -1851,6 +1851,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _api_mode = None
     _resolved_provider = None
     _model_name = ""
+    _request_overrides = None
     try:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1867,6 +1868,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        _request_overrides = _rp.get("request_overrides")
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
 
@@ -1891,6 +1893,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             platform="curator",
             skip_context_files=True,
             skip_memory=True,
+            request_overrides=dict(_request_overrides or {}),
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0

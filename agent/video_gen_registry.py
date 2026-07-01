@@ -11,7 +11,7 @@ Active selection
 The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
-1. If exactly one provider is registered, use it.
+1. If exactly one available provider is registered, use it.
 2. Otherwise return ``None`` (the tool surfaces a helpful error pointing
    the user at ``hermes tools``).
 
@@ -104,9 +104,23 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             configured,
         )
 
-    # Fallback: single-provider case
-    if len(snapshot) == 1:
-        return next(iter(snapshot.values()))
+    # Fallback: single available-provider case.  Explicit configuration is
+    # returned above even when the provider reports unavailable so callers can
+    # surface that provider's setup error; implicit auto-selection should not
+    # route into a plugin that cannot currently service a request.
+    available = []
+    for provider in snapshot.values():
+        try:
+            if provider.is_available():
+                available.append(provider)
+        except Exception as exc:
+            logger.debug(
+                "Video gen provider '%s' availability check failed: %s",
+                getattr(provider, "name", type(provider).__name__),
+                exc,
+            )
+    if len(available) == 1:
+        return available[0]
 
     return None
 

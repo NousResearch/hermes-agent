@@ -884,6 +884,32 @@ class _CodexCompletionsAdapter:
             if converted:
                 resp_kwargs["tools"] = converted
 
+        # Stable prompt-cache routing for the Codex/Responses aux path, mirroring
+        # the main transport (agent/transports/codex.py::build_kwargs, which sets
+        # prompt_cache_key = _content_cache_key(instructions, tools)). Without
+        # this, MoA acting-aggregator and other auxiliary Responses calls stay
+        # cache-cold while the main Responses transport is warm (issue #53735).
+        # The key is content-addressed from the static prefix (instructions +
+        # tool schemas) so it stays warm across turns/fires. Guard the top-level
+        # field the same way the main transport does: xAI Responses takes the
+        # key in extra_body (not top-level) and GitHub/Copilot Responses opts
+        # out of cache-key routing entirely — for those hosts, skip it here.
+        try:
+            from agent.transports.codex import _content_cache_key
+            from utils import base_url_host_matches
+
+            _host_src = str(getattr(self._client, "base_url", "") or "")
+            _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
+            _is_github = base_url_host_matches(_host_src, "githubcopilot.com")
+            if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
+                _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
+                if _cache_key:
+                    resp_kwargs["prompt_cache_key"] = _cache_key
+        except Exception:
+            logger.debug(
+                "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True
+            )
+
         # Stream and collect the response
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
@@ -4505,6 +4531,42 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: external-process provider %s not "
                          "directly supported", provider)
         return None, None
+
+    elif pconfig.auth_type == "vertex":
+        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
+        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a fresh
+        # token; no custom SDK or message translation needed.
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not mint token / resolve project")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via

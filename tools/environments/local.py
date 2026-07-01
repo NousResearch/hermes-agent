@@ -40,6 +40,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _windows_to_msys_path(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).lower()
+    tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
+    return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -509,10 +527,10 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
+    # Check known Git for Windows install locations before PATH lookup.
+    # On machines with both WSL and Git for Windows, shutil.which("bash")
+    # may return WSL's bash (which doesn't understand Windows paths and
+    # will fail silently).  Explicit Git-for-Windows paths avoid that.
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -520,6 +538,10 @@ def _find_bash() -> str:
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -916,6 +938,11 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

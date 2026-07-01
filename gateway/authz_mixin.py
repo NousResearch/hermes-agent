@@ -417,7 +417,17 @@ class GatewayAuthorizationMixin:
         if getattr(source, "role_authorized", False) is True:
             return True
 
-        # Check pairing store (always checked, regardless of allowlists)
+        # Check pairing store. A pairing entry is a first-class authorization
+        # grant, created only by a trusted operator approving a pairing code
+        # (hermes gateway pairing approve / the authenticated dashboard) — an
+        # inbound sender can never reach approve_code, so this is not an
+        # attacker-controlled path. Honored as a UNION with the allowlist: a
+        # paired user is authorized regardless of the allowlist, and when an
+        # allowlist IS configured, operator approval also writes the user into
+        # that allowlist (see PairingStore._approve_user), keeping a single
+        # operator-visible source of truth. (#23778: the original bypass was the
+        # inbound message/approval-button gate, not this grant; that gate is
+        # fixed separately.)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
             return True

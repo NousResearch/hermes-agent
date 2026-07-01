@@ -3690,6 +3690,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route["request_overrides"] = overrides or {}
         return route
 
+    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+        """Persist the runtime model/provider actually used by a gateway turn.
+
+        Provider fallback can switch ``agent.model``/``agent.provider`` after the
+        session row was created. Keep the session DB metadata in sync so session
+        lists, desktop/dashboard details, and follow-up session tooling report the
+        backend that actually answered the latest turn.
+
+        Called from the ``run_sync`` closure, which executes off the event loop
+        in the executor thread — so the synchronous ``SessionDB`` (``_db``) is
+        used directly rather than awaiting the AsyncSessionDB forwarder.
+        """
+        if not session_id or agent is None or self._session_db is None:
+            return
+        model = getattr(agent, "model", None)
+        if not model:
+            return
+        runtime = {
+            "provider": getattr(agent, "provider", None),
+            "base_url": getattr(agent, "base_url", None),
+            "api_mode": getattr(agent, "api_mode", None),
+            "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
+        }
+        runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
+
+        try:
+            db = self._session_db._db
+            row = db.get_session(session_id)
+            if not row:
+                return
+            current_model = row.get("model")
+            raw_config = row.get("model_config")
+            try:
+                config = json.loads(raw_config) if raw_config else {}
+            except Exception:
+                config = {}
+            if not isinstance(config, dict):
+                config = {}
+            gateway_runtime = dict(config.get("gateway_runtime") or {})
+            if current_model == model and all(
+                gateway_runtime.get(k) == v for k, v in runtime.items()
+            ):
+                return
+            config["gateway_runtime"] = runtime
+            db.update_session_meta(session_id, json.dumps(config), model=model)
+        except Exception:
+            logger.debug("Failed to sync gateway session model metadata", exc_info=True)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -4746,6 +4794,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return False
 
+    def _session_has_compression_in_flight(self, session_key: str) -> bool:
+        """Return True when a compression lock is held for this session's id.
+
+        Context compression is interrupt-protected (#23975) but gateway
+        ``interrupt`` busy-input mode can still start a follow-up turn against
+        the pre-rotation parent while compression is mid-flight, producing
+        orphaned compression siblings (#56391). Callers demote interrupt to
+        queue when this returns True.
+        """
+        session_store = getattr(self, "session_store", None)
+        if not session_key or session_store is None:
+            return False
+        try:
+            with session_store._lock:  # noqa: SLF001 — snapshot entry under lock
+                session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = session_store._entries.get(session_key)  # noqa: SLF001
+            session_id = getattr(entry, "session_id", None) if entry is not None else None
+            if not session_id:
+                return False
+        except Exception:
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        db = getattr(session_db, "_db", session_db)
+        try:
+            return bool(db.get_compression_lock_holder(str(session_id)))
+        except Exception:
+            return False
+
     # Hard cap on per-session pending follow-ups for busy_input_mode=queue
     # (and the draining/steer-fallback/subagent-demotion paths that share
     # this entry point).  Without a cap, a stuck agent + a rapid-fire user
@@ -4966,6 +5044,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             effective_mode = "queue"
+        demoted_for_compression = (
+            effective_mode == "interrupt"
+            and self._session_has_compression_in_flight(session_key)
+        )
+        if demoted_for_compression:
+            logger.info(
+                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
+                "because context compression is in flight (#56391)",
+                session_key,
+            )
+            effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -5077,6 +5166,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # discovers `/stop` as the explicit escape hatch.
             message = (
                 f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and demoted_for_compression:
+            message = (
+                f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
@@ -5811,34 +5905,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 service_name = "hermes-gateway"
 
             current_pid = os.getpid()
-            show = subprocess.run(
-                [
-                    systemctl,
-                    "--user",
-                    "show",
-                    service_name,
-                    "--property=MainPID",
-                    "--value",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if (show.stdout or "").strip() != str(current_pid):
+
+            # Detect whether the gateway unit is registered as a system or
+            # user service.  Daemon-style deployments are typically system
+            # units (e.g. /etc/systemd/system/hermes-gateway.service), while
+            # `hermes setup` under a non-root account may register a user
+            # unit.  Hard-coding ``--user`` broke system-unit deployments:
+            # systemctl returned an empty MainPID, the PID-equality check
+            # below failed, and the planned-restart helper was never
+            # launched — leaving the gateway dead until a manual reboot.
+            def _query_pid(scope_flags):
+                try:
+                    out = subprocess.run(
+                        [systemctl, *scope_flags, "show", service_name,
+                         "--property=MainPID", "--value"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    return (out.stdout or "").strip()
+                except Exception:
+                    return ""
+
+            system_pid = _query_pid([])
+            user_pid = _query_pid(["--user"])
+            if str(current_pid) == system_pid:
+                scope_flags = []
+                systemctl_scope = "systemctl"
+            elif str(current_pid) == user_pid:
+                scope_flags = ["--user"]
+                systemctl_scope = "systemctl --user"
+            else:
+                # MainPID does not match in either scope — likely invoked
+                # outside of systemd or the unit was renamed.  Bail out
+                # rather than restart the wrong unit.
                 return
 
-            systemctl_user = "systemctl --user"
             service_arg = shlex.quote(service_name)
             shell_cmd = (
                 f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-                f"{systemctl_user} reset-failed {service_arg}; "
-                f"{systemctl_user} restart {service_arg}"
+                f"{systemctl_scope} reset-failed {service_arg}; "
+                f"{systemctl_scope} restart {service_arg}"
             )
             unit_name = f"{service_name}-planned-restart-{current_pid}".replace(".", "-")
             subprocess.Popen(
                 [
                     systemd_run,
-                    "--user",
+                    *scope_flags,
                     "--collect",
                     "--unit",
                     unit_name,
@@ -5851,9 +5962,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 start_new_session=True,
             )
             logger.info(
-                "Launched systemd planned-restart helper for %s (pid=%s)",
+                "Launched systemd planned-restart helper for %s (pid=%s, scope=%s)",
                 service_name,
                 current_pid,
+                "user" if scope_flags else "system",
             )
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
@@ -6065,6 +6177,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Skipping auto-resume for %s: adapter not ready for %s",
                     entry.session_key,
                     getattr(source.platform, "value", source.platform),
+                )
+                continue
+
+            # Validate the session owner against the current allowlist
+            # before auto-resuming. A session created before
+            # TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or
+            # before the owner was removed from it, must not silently
+            # receive a full agent response on gateway restart just
+            # because it has a resume-pending marker (issue #23778).
+            try:
+                if not self._is_user_authorized(source):
+                    logger.warning(
+                        "Skipping auto-resume for %s: session owner is no "
+                        "longer authorized under the current allowlist",
+                        entry.session_key,
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "Skipping auto-resume for %s: authorization check failed: %s",
+                    entry.session_key, exc,
                 )
                 continue
 
@@ -7802,17 +7935,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if self._restart_requested and self._restart_via_service:
                 self._launch_systemd_restart_shortcut()
-                # systemd units use Restart=always, so a planned restart should
-                # exit cleanly and still be relaunched.  Using TEMPFAIL here
-                # makes systemd treat the operator-requested restart as a
-                # failure and can trip stepped restart backoff.  launchd's
-                # KeepAlive.SuccessfulExit=false needs a non-zero exit to
-                # relaunch, so keep the old code on macOS.
-                self._exit_code = (
-                    GATEWAY_SERVICE_RESTART_EXIT_CODE
-                    if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
-                    else 0
-                )
+                # Always exit with TEMPFAIL (75) on service-managed
+                # restarts.  The shortcut helper above is best-effort and
+                # commonly fails on real deployments: non-root gateway
+                # units hit Polkit denials when invoking ``systemd-run
+                # --system``, headless boxes have no user bus for
+                # ``--user``, and operator-managed unit files may use
+                # ``Restart=on-failure`` rather than ``Restart=always``.
+                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
+                # systemd treat the planned restart as a controlled
+                # failure and revive the unit via ``Restart=on-failure``,
+                # regardless of whether the helper survived.  Without
+                # this, a clean exit (0) on Linux left the gateway dead
+                # until someone rebooted the host.  Only the planned code
+                # (75) is whitelisted via ``RestartForceExitStatus``; a
+                # genuine crash exits non-zero-but-not-75, so real crash
+                # loops are still governed by the unit's normal
+                # ``Restart=``/``RestartSec`` (and any StartLimit the
+                # operator sets) rather than force-restarted here.
+                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
@@ -13993,6 +14134,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
         )
 
@@ -17608,6 +17750,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             effective_session_id = agent_session_id
+            self._sync_session_model_from_agent(effective_session_id, agent)
             # history_offset=0 whenever the agent's message list no longer has
             # the original history prefix — i.e. on rotation (split) OR in-place
             # compaction. In both cases the returned `messages` is the compacted

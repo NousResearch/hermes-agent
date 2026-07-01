@@ -1194,6 +1194,7 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "allow_unsafe_evaluate": False,  # Allow browser_console(expression=...) to use sensitive JS primitives (cookies/storage/clipboard/network/form values)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -1623,7 +1624,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
         "moa_aggregator": {
@@ -1631,7 +1632,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
     },
@@ -3086,6 +3087,24 @@ DEFAULT_CONFIG = {
     },
 
 
+    # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
+    # Auth is OAuth2 (short-lived access tokens minted from a service-account
+    # JSON or Application Default Credentials) — NOT a static API key. The
+    # credential *path* is a secret-adjacent pointer and lives in .env
+    # (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS); these two
+    # settings are non-secret routing config and live here. Both are bridged to
+    # the VERTEX_PROJECT_ID / VERTEX_REGION env vars the adapter reads, so an
+    # explicit env var still wins over config.yaml.
+    "vertex": {
+        # GCP project ID. Empty → use the project_id embedded in the service
+        # account JSON (or ADC-resolved project).
+        "project_id": "",
+        # Vertex region. "global" is required for the Gemini 3.x preview models
+        # (regional endpoints silently 404 them). Override to a regional value
+        # (e.g. "us-central1") only if your models are pinned to a region.
+        "region": "global",
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 32,
 }
@@ -3151,6 +3170,18 @@ OPTIONAL_ENV_VARS = {
         "description": "Google AI Studio base URL override",
         "prompt": "Gemini base URL (leave empty for default)",
         "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_CREDENTIALS_PATH": {
+        "description": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). "
+                       "Vertex uses OAuth2, not a static API key — this points at the "
+                       "credentials Hermes mints short-lived tokens from. Falls back to "
+                       "GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
+                       "application-default login). Set project/region under vertex: in config.yaml.",
+        "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
+        "url": "https://cloud.google.com/iam/docs/keys-create-delete",
         "password": False,
         "category": "provider",
         "advanced": True,

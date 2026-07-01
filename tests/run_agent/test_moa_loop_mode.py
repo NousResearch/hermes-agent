@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -175,11 +177,14 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     """Codex slots must not become custom chat-completions endpoints.
 
-    _resolve_task_provider_model treats any explicit base_url as provider=custom.
-    For openai-codex that bypasses the Codex auxiliary branch, losing the
-    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    _slot_runtime forwards the resolved base_url/api_key/api_mode; the single
+    chokepoint that must NOT collapse openai-codex to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, the Codex auxiliary branch — Cloudflare headers + Responses
+    adapter for chatgpt.com/backend-api/codex — would be bypassed.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -194,8 +199,66 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     )
 
     rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
 
-    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+    # The chokepoint preserves openai-codex identity despite the explicit
+    # base_url (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "openai-codex"
+    assert base_url == "https://chatgpt.com/backend-api/codex"
+
+
+@pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
+def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
+    """MoA can pass resolved endpoints for provider-backed slots without
+    call_llm flattening them to generic custom endpoints.
+
+    ``_slot_runtime`` resolves a provider-backed slot to ``provider`` plus a
+    concrete ``base_url``/``api_key``/``api_mode``; ``_run_reference`` then
+    forwards that dict to ``call_llm``. ``call_llm`` resolves the routing tuple
+    via ``_resolve_task_provider_model`` (which takes everything except
+    ``api_mode``, handled separately). The provider identity must survive that
+    resolution rather than being flattened to ``custom``.
+
+    NOTE: providers in the ``_slot_runtime`` name-preservation set (anthropic,
+    bedrock, nous, openai-codex, xai-oauth) are intentionally NOT forwarded —
+    they're covered by their own dedicated tests. This case covers the
+    forward-the-resolved-endpoint path for providers that are NOT in the set.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"token-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": provider, "model": "test-model"})
+    # api_mode is forwarded to call_llm directly, not to _resolve_task_provider_model.
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, model, base_url, api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+
+    assert resolved_provider == provider
+    assert model == "test-model"
+    assert base_url == f"https://{provider}.example/v1"
+    assert api_key == f"token-for-{provider}"
 
 
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
@@ -635,3 +698,55 @@ def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
 
     # 2 references × 2 distinct turns = 4 reference runs.
     assert len(ref_runs) == 4
+
+
+def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch):
+    """Native anthropic slots must keep their provider identity, not collapse to custom.
+
+    anthropic OAuth setup-tokens (sk-ant-oat*) require Bearer auth + the
+    ``anthropic-beta: oauth-*`` header, which only the anthropic provider branch
+    of call_llm adds. _slot_runtime forwards the resolved base_url/api_key for
+    every provider now; the single chokepoint that must NOT collapse anthropic
+    to provider=custom (which would send the token as x-api-key → bare 429) is
+    _resolve_task_provider_model via _preserve_provider_with_base_url.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "base_url": "https://resolved.example/v1",
+            "api_key": "resolved-key",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
+    anthropic_rt = moa_loop._slot_runtime(
+        {"provider": "anthropic", "model": "claude-opus-4-8"}
+    )
+    assert anthropic_rt["provider"] == "anthropic"
+    assert anthropic_rt["base_url"] == "https://resolved.example/v1"
+
+    # The chokepoint preserves anthropic identity despite the explicit base_url,
+    # so call_llm routes through the anthropic provider branch (not custom).
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        provider="anthropic",
+        model="claude-opus-4-8",
+        base_url="https://resolved.example/v1",
+        api_key="resolved-key",
+    )
+    assert resolved_provider == "anthropic"
+
+    # A generic provider (openrouter) is likewise forwarded and preserved.
+    other_rt = moa_loop._slot_runtime(
+        {"provider": "openrouter", "model": "some-model"}
+    )
+    assert other_rt["provider"] == "openrouter"
+    assert other_rt["model"] == "some-model"
+    assert other_rt["base_url"] == "https://resolved.example/v1"
+    assert other_rt["api_key"] == "resolved-key"

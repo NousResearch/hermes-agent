@@ -2452,6 +2452,70 @@ async def run_curator():
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
 
 
+@app.get("/api/learning/graph")
+async def get_learning_graph(profile: Optional[str] = None):
+    """Learning graph payload for the desktop panel.
+
+    Profile-scoped view of learned, non-base skills plus memory chunks, with
+    graph links derived from skill relations and memory-skill overlap.
+    """
+    try:
+        from agent.learning_graph import build_learning_graph
+
+        with _profile_scope(profile):
+            return build_learning_graph()
+    except Exception:
+        _log.exception("GET /api/learning/graph failed")
+        raise HTTPException(status_code=500, detail="Failed to build learning graph")
+
+
+class LearningNodeRef(BaseModel):
+    id: str
+    profile: Optional[str] = None
+
+
+class LearningNodeEdit(BaseModel):
+    id: str
+    content: str
+    profile: Optional[str] = None
+
+
+@app.get("/api/learning/node")
+async def get_learning_node(id: str, profile: Optional[str] = None):
+    """Current content of a journey node (skill SKILL.md or memory chunk), for an edit prefill."""
+    from agent.learning_mutations import node_detail
+
+    with _profile_scope(profile):
+        res = node_detail(id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404, detail=res.get("message", "not found"))
+    return res
+
+
+@app.delete("/api/learning/node")
+async def delete_learning_node(body: LearningNodeRef):
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    from agent.learning_mutations import delete_node
+
+    with _profile_scope(body.profile):
+        res = delete_node(body.id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "delete failed"))
+    return res
+
+
+@app.put("/api/learning/node")
+async def update_learning_node(body: LearningNodeEdit):
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    from agent.learning_mutations import edit_node
+
+    with _profile_scope(body.profile):
+        res = edit_node(body.id, body.content)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "edit failed"))
+    return res
+
+
 def _safe_call(mod, fn_name: str, default):
     try:
         fn = getattr(mod, fn_name, None)
@@ -2868,8 +2932,15 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(principal=str(principal))
-    _log.info("Gateway drain BEGIN requested by %s", principal)
+    payload = write_drain_request(
+        principal=str(principal),
+        suppress_notification=bool((body or {}).get("suppress_notification", False)),
+    )
+    _log.info(
+        "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
+        principal,
+        payload["suppress_notification"],
+    )
     return {
         "ok": True,
         "action": "drain",
@@ -2877,6 +2948,7 @@ async def gateway_drain(request: Request):
         # Echo so a caller polling /api/status knows the marker is now set;
         # the gateway watcher flips gateway_state -> draining within ~1s.
         "draining": drain_requested(),
+        "suppress_notification": payload["suppress_notification"],
     }
 
 
@@ -3430,7 +3502,7 @@ async def get_sessions(
 
 
 @app.get("/api/profiles/sessions")
-async def get_profiles_sessions(
+def get_profiles_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -10719,7 +10791,9 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
@@ -14033,6 +14107,15 @@ def start_server(
     # For explicit non-zero ports, if the port is taken uvicorn catches
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
+    # Loopback binds are the Desktop case: a single local client, no reverse
+    # proxy in front. A GIL-heavy agent turn can stall the event loop past 20s,
+    # and uvicorn's ws keepalive ping runs on that same starved loop — so a
+    # 20s ping timeout kills an otherwise-healthy local connection over a
+    # recoverable stall (QW-1). Give loopback a longer 60s timeout / 30s
+    # interval to ride out those stalls. Non-loopback binds sit behind a
+    # Cloudflare Tunnel (idle timeout ~100s), so keep them at 20/20 to detect
+    # half-open connections promptly and stay under the tunnel's idle window.
+    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -14046,9 +14129,9 @@ def start_server(
         # Detect half-open WS connections (reverse-proxy 524, dropped
         # tunnels) within ~20-40s so WebSocketDisconnect fires the
         # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.
-        ws_ping_interval=20.0,
-        ws_ping_timeout=20.0,
+        # timeout, keeping it warm.  Loopback gets a longer window (see above).
+        ws_ping_interval=30.0 if _is_loopback else 20.0,
+        ws_ping_timeout=60.0 if _is_loopback else 20.0,
     )
     server = uvicorn.Server(config)
 
@@ -14083,6 +14166,35 @@ def start_server(
                 install_loop_noise_filter(asyncio.get_running_loop())
             except Exception as exc:  # pragma: no cover - best-effort
                 _log.debug("loop noise filter install skipped: %s", exc)
+
+            # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
+            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
+            # tick and measure the drift between when it *should* fire and
+            # when it actually does: a healthy loop drifts ~0, but a turn that
+            # holds the GIL blocks the loop and the next tick fires late by the
+            # stall duration. We log that so a stalled-loop WS drop is
+            # diagnosable from the gateway log. Uses loop.time() (monotonic)
+            # for drift, and call_later (not a task) so it dies with the loop —
+            # nothing to cancel on shutdown.
+            _hb_interval = 2.0
+            _hb_stall_threshold = 5.0
+            _hb_loop = asyncio.get_running_loop()
+
+            def _loop_heartbeat(expected: float) -> None:
+                now = _hb_loop.time()
+                drift = now - expected
+                if drift > _hb_stall_threshold:
+                    _log.warning(
+                        "event loop stalled %.1fs (GIL pressure suspected)",
+                        drift,
+                    )
+                _hb_loop.call_later(
+                    _hb_interval, _loop_heartbeat, now + _hb_interval
+                )
+
+            _hb_loop.call_later(
+                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
+            )
 
             await server.main_loop()
             if server.started:

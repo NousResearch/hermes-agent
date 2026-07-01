@@ -35,6 +35,10 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
+# Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
+# transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
+_OWNER_REPLY_PREFIX = "[owner reply] "
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -270,6 +274,47 @@ from gateway.platforms.base import (
     cache_audio_from_url,
 )
 from utils import env_int
+
+
+def _is_allowed_bridge_path(url: str) -> bool:
+    """Return True only when an absolute path from the bridge resolves inside a
+    known Hermes media cache directory.
+
+    The Baileys bridge is a local subprocess that downloads inbound media and
+    hands back absolute file paths. A compromised or buggy bridge could hand
+    back an arbitrary path (e.g. ``/etc/passwd``) which would otherwise be
+    attached verbatim and sent to the model. Resolve the path (following any
+    symlinks) and require it to live under one of the real cache roots — this
+    covers both the canonical ``cache/<kind>`` layout and the legacy
+    ``<kind>_cache`` layout that ``get_hermes_dir`` may return.
+    """
+    try:
+        resolved = Path(url).resolve()
+    except (OSError, ValueError):
+        return False
+    # Resolve the cache roots per-call via the getters (not the import-time
+    # constants) so this validator follows the active profile override; under a
+    # profile override the inbound bridge writes media into that profile's
+    # cache, which the frozen constants would not match.
+    from gateway.platforms.base import (
+        get_audio_cache_dir,
+        get_document_cache_dir,
+        get_image_cache_dir,
+        get_video_cache_dir,
+    )
+
+    for root in (
+        get_image_cache_dir(),
+        get_audio_cache_dir(),
+        get_video_cache_dir(),
+        get_document_cache_dir(),
+    ):
+        try:
+            if resolved.is_relative_to(Path(root).resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _file_content_hash(path: Path) -> str:
@@ -1193,9 +1238,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
-                    cached_urls.append(url)
-                    media_types.append("image/jpeg")
-                    print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("image/jpeg")
+                        print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
@@ -1208,20 +1256,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
-                    cached_urls.append(url)
-                    media_types.append("audio/ogg")
-                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("audio/ogg")
+                        print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
-                    cached_urls.append(url)
-                    ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
-                    media_types.append(mime)
-                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        ext = Path(url).suffix.lower()
+                        mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        media_types.append(mime)
+                        print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge document path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
-                    cached_urls.append(url)
-                    media_types.append("video/mp4")
-                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("video/mp4")
+                        print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
@@ -1268,6 +1325,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            metadata: Dict[str, Any] = {}
+            # The bridge sets ``fromOwner: true`` on inbound fromMe messages
+            # that look owner-typed (linked-device send, not echoed from our
+            # own /send).  Surfaced under a platform-prefixed key so plugins
+            # can detect "owner just replied in this customer chat" without
+            # having to peek at raw_message.  We also prefix ``MessageEvent.text``
+            # with ``[owner reply] `` here so the marker survives any downstream
+            # failure (e.g. handover-rule errors that bypass silent_ingest).
+            # Gated by ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer;
+            # metadata + text tagging are unconditional when the flag is present
+            # so a future producer can set it without adapter changes.
+            if data.get("fromOwner"):
+                metadata["whatsapp_from_owner"] = True
+                if not body.startswith(_OWNER_REPLY_PREFIX):
+                    body = f"{_OWNER_REPLY_PREFIX}{body}"
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1276,6 +1349,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                metadata=metadata,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

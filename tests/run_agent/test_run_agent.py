@@ -629,6 +629,34 @@ class TestSessionJsonSnapshotOptIn:
         # the session JSON opt-in.
         assert hasattr(agent, "logs_dir")
 
+    def test_traversal_session_id_cannot_escape_logs_dir(self, agent, tmp_path):
+        # Security regression (#5958): a traversal-shaped session ID (which can
+        # originate from the untrusted X-Hermes-Session-Id API header) must not
+        # redirect the session snapshot outside the sessions directory.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent.session_id = "../../../../outside_dir/pwned"
+        agent._save_session_log([{"role": "user", "content": "hello"}])
+
+        # Exactly one snapshot, and it lives directly under logs_dir.
+        written = list(tmp_path.glob("session_*.json"))
+        assert len(written) == 1, "writer must produce a single contained snapshot"
+        assert written[0].resolve().parent == tmp_path.resolve()
+        # Nothing escaped to the traversal target.
+        assert not (tmp_path.parent.parent / "outside_dir").exists()
+
+    def test_safe_session_filename_component_contains_traversal(self):
+        # The sanitizer is the chokepoint: every session-ID-derived artifact
+        # path goes through it, so it must always yield a single, traversal-free
+        # path segment while leaving legitimate IDs untouched.
+        f = run_agent._safe_session_filename_component
+        for raw in ("../../etc/passwd", "/abs/path", "..\\win\\trav", "a/b/c"):
+            out = f(raw)
+            assert "/" not in out and "\\" not in out and ".." not in out, out
+        # Legit IDs pass through unchanged; distinct IDs never collide.
+        assert f("api-abc123def456") == "api-abc123def456"
+        assert f("../a") != f("../b")
+
 
 class TestSaveSessionLogRedactsSecrets:
     """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
@@ -3631,6 +3659,48 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
+        """A tool_call with id but empty function.name makes the Responses-API
+        adapter drop the function_call while keeping its function_call_output,
+        causing the gateway's HTTP 400 'No tool call found for function call
+        output ...'. The sanitizer renames the blank name to a non-empty
+        sentinel so the call and its result stay PAIRED (no orphaned output,
+        no 400) while the result content is preserved — it must NOT drop the
+        call, because hermes' dispatch loop keeps empty-name calls paired with
+        an anti-priming result for self-correction (#47967). (#12807)"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_good",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {"name": "", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_good", "content": "ok"},
+            {"role": "tool", "tool_call_id": "call_bad", "content": "orphan"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        # The good call is untouched; the malformed call is repaired in place
+        # (renamed to a non-empty sentinel) rather than dropped.
+        assistant = next(m for m in sanitized if m.get("role") == "assistant")
+        names = [tc["function"]["name"] for tc in assistant["tool_calls"]]
+        assert names == ["web_search", "invalid_tool_call"]
+        # Both calls now have non-empty names, so neither output is orphaned
+        # and both tool results survive — this is what prevents the 400.
+        tool_ids = [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"]
+        assert tool_ids == ["call_good", "call_bad"]
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.
@@ -5670,6 +5740,13 @@ class TestMaxTokensParam:
         agent.model = "llama3"
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_enterprise_copilot(self, agent):
+        """Enterprise Copilot endpoints (api.<tenant>.githubcopilot.com) must
+        share the same max_tokens behavior as the default endpoint."""
+        agent.base_url = "https://api.enterprise.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
 
 
 class TestGpt5ApiModeRouting:

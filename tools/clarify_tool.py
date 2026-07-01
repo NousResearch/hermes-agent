@@ -98,6 +98,17 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
+    # Best-effort local OS toast: notify the user that this persona is
+    # blocked waiting for a clarify reply. Fire-and-forget on a daemon
+    # thread; the callback below still owns the actual blocking wait.
+    # A broken toast (no antenna, firewall block, etc.) MUST NOT prevent
+    # the clarify from proceeding.
+    try:
+        from tools.local_toast import notify_input_needed  # type: ignore
+        notify_input_needed("clarify", detail=question, level="info")
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         user_response = callback(question, choices)
     except Exception as exc:

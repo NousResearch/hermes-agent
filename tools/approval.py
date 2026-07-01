@@ -1044,6 +1044,25 @@ def prompt_dangerous_approval(command: str, description: str,
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    # Best-effort local OS toast: notify the user that this persona is
+    # blocked waiting for command approval. Fire-and-forget on a daemon
+    # thread; the callback/input below still owns the actual blocking wait.
+    # A broken toast (no antenna, firewall block, etc.) MUST NOT prevent
+    # the approval prompt from proceeding.
+    try:
+        from tools.local_toast import notify_input_needed  # type: ignore
+        # Truncate the command to the toast-friendly window. approval.py
+        # is called for a huge range of commands (rm -rf, docker exec, etc.)
+        # so the detail is highly informative.
+        _cmd_short = (command or "").strip().replace("\n", " ")
+        notify_input_needed(
+            "approval",
+            detail=f"{description}: {_cmd_short}" if description else _cmd_short,
+            level="warn",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     # Redact secrets before any user-visible rendering. The original
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory

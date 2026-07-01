@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("mongodb",          "🍃 MongoDB",                  "query and write MongoDB documents"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -115,7 +116,10 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {
+    "homeassistant", "mongodb", "spotify", "discord", "discord_admin",
+    "video", "video_gen", "x_search",
+}
 
 
 def _xai_credentials_present() -> bool:
@@ -582,6 +586,7 @@ TOOL_CATEGORIES = {
 # prompted or read for vision; it's purely a presence marker.
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "mongodb":    [("MONGODB_URI",          "https://www.mongodb.com/docs/manual/reference/connection-string/")],
 }
 
 
@@ -1617,6 +1622,7 @@ def _get_platform_tools(
 
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
+    enabled_mcp_servers = enabled_mcp_server_names(config)
     explicit_passthrough = {
         ts
         for ts in toolset_names
@@ -1624,12 +1630,19 @@ def _get_platform_tools(
         and ts not in plugin_ts_keys
         and ts not in platform_default_keys
     }
+    # Drop stale/invalid names (e.g. legacy "messaging") that aren't real
+    # toolsets or configured MCP servers — they only trigger startup warnings.
+    from toolsets import validate_toolset as _validate_toolset_name
+
+    explicit_passthrough = {
+        ts for ts in explicit_passthrough
+        if ts == "no_mcp" or ts in enabled_mcp_servers or _validate_toolset_name(ts)
+    }
 
     # MCP servers are expected to be available on all platforms by default.
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    enabled_mcp_servers = enabled_mcp_server_names(config)
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
@@ -1728,6 +1741,12 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     preserved_entries.discard("no_mcp")
 
     # Merge preserved entries with new enabled toolsets
+    from toolsets import validate_toolset as _validate_toolset_name
+    _enabled_mcp = enabled_mcp_server_names(config)
+    preserved_entries = {
+        entry for entry in preserved_entries
+        if entry == "no_mcp" or entry in _enabled_mcp or _validate_toolset_name(entry)
+    }
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
 
     # Track which plugin toolsets are "known" for this platform so we can

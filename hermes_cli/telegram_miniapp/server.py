@@ -17,6 +17,7 @@ from hermes_cli.config import get_env_value
 
 from .auth import InitDataAuthError, TelegramMiniAppUser, VerifiedInitData, verify_init_data
 from .approvals import build_approvals_snapshot
+from .capabilities import build_capabilities_snapshot
 from .previews import build_logs_snapshot, build_sessions_snapshot
 from .status import build_status_snapshot
 
@@ -243,8 +244,7 @@ def _apply_public_headers(response: Response, settings: MiniAppSettings) -> Resp
 
 
 def _apply_api_no_store(response: Response, settings: MiniAppSettings) -> Response:
-    if settings.public_smoke:
-        response.headers["Cache-Control"] = "no-store"
+    response.headers["Cache-Control"] = "no-store"
     return _apply_public_headers(response, settings)
 
 
@@ -255,6 +255,7 @@ def create_app(
     approvals_provider: Callable[[], dict[str, Any]] | None = None,
     sessions_provider: Callable[[], dict[str, Any]] | None = None,
     logs_provider: Callable[[], dict[str, Any]] | None = None,
+    capabilities_provider: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     settings = settings or MiniAppSettings()
     sessions = SessionStore()
@@ -263,6 +264,7 @@ def create_app(
     approvals_provider = approvals_provider or build_approvals_snapshot
     sessions_provider = sessions_provider or build_sessions_snapshot
     logs_provider = logs_provider or build_logs_snapshot
+    capabilities_provider = capabilities_provider or build_capabilities_snapshot
     app = FastAPI(title="Hermes Telegram Mini App", docs_url=None, redoc_url=None, openapi_url=None)
 
     def guarded_response(request: Request, response: Response) -> Response:
@@ -388,6 +390,19 @@ def create_app(
         if settings.public_smoke:
             snapshot = dict(snapshot)
             snapshot["miniapp"] = {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True}
+        return _apply_api_no_store(JSONResponse(snapshot), settings)
+
+    @app.get("/api/capabilities")
+    def capabilities(request: Request):
+        session = current_session(request)
+        if settings.public_smoke:
+            if not rate_limiter.check(
+                f"capabilities:{session.session_id}",
+                limit=settings.status_rate_limit_per_minute,
+                now=settings.now(),
+            ):
+                raise HTTPException(status_code=429, detail="Too many requests")
+        snapshot = capabilities_provider()
         return _apply_api_no_store(JSONResponse(snapshot), settings)
 
     @app.get("/api/approvals")

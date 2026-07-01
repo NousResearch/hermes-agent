@@ -2,11 +2,13 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import {
   authenticateTelegram,
   fetchApprovalsSnapshot,
+  fetchCapabilitiesSnapshot,
   fetchLogsSnapshot,
   fetchSessionsSnapshot,
   fetchStatusSnapshot,
   hasMiniAppApi,
   type ApprovalItem,
+  type CapabilityItem,
   type LogPreviewItem,
   type SessionPreviewItem,
   type SnapshotMeta,
@@ -242,10 +244,12 @@ function StatusSection({
   cards,
   safetyText,
   approvalCount,
+  capabilities,
 }: {
   cards: ReadonlyArray<{ label: string; value: string; meta: string; tone: string }>;
   safetyText: string;
   approvalCount: number;
+  capabilities: CapabilityItem[];
 }) {
   return (
     <>
@@ -267,6 +271,28 @@ function StatusSection({
         </div>
         <span className="approval-lock">{approvalCount}</span>
       </section>
+
+      {capabilities.length > 0 ? (
+        <section className="capability-card glass-card" aria-label="Матрица возможностей">
+          <div className="section-heading">
+            <div>
+              <p className="mono-label">M13 / CAPABILITIES</p>
+              <h2>Что разрешено сейчас</h2>
+            </div>
+            <span className="lock-pill">backend says</span>
+          </div>
+          <div className="capability-grid">
+            {capabilities.map((capability) => (
+              <article className="capability-item" data-enabled={capability.enabled} key={capability.id}>
+                <span>{capability.enabled ? "enabled" : "blocked"}</span>
+                <strong>{capability.label}</strong>
+                <p>{capability.reason}</p>
+                <em>{capability.mode}</em>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="command-card glass-card" aria-label="Быстрые маршруты">
         <div className="section-heading">
@@ -584,6 +610,7 @@ export function App() {
   const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
+  const [serverCapabilities, setServerCapabilities] = useState<CapabilityItem[]>([]);
   const [snapshotMeta, setSnapshotMeta] = useState<Record<"approvals" | "sessions" | "logs", SnapshotMeta | null>>({ approvals: null, sessions: null, logs: null });
   const [isPaletteOpen, setPaletteOpen] = useState(false);
   const [isRefreshing, setRefreshing] = useState(false);
@@ -673,7 +700,13 @@ export function App() {
       setApiState((current) => (current === "connected" ? current : "connecting"));
 
       try {
-        const [status, approvals, sessions, logs] = await Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot(), fetchSessionsSnapshot(), fetchLogsSnapshot()]);
+        const [status, capabilities, approvals, sessions, logs] = await Promise.all([
+          fetchStatusSnapshot(),
+          fetchCapabilitiesSnapshot().catch(() => ({ ok: false, items: [] })),
+          fetchApprovalsSnapshot(),
+          fetchSessionsSnapshot(),
+          fetchLogsSnapshot(),
+        ]);
         if (requestId !== refreshRequestId.current) return;
 
         setSnapshot(status);
@@ -683,6 +716,7 @@ export function App() {
         setServerApprovals(mappedApprovals);
         setServerSessions(mappedSessions);
         setServerLogs(mappedLogs);
+        setServerCapabilities(capabilities.items);
         setSnapshotMeta({ approvals: approvals.meta ?? null, sessions: sessions.meta ?? null, logs: logs.meta ?? null });
         setSelectedApprovalId((current) => {
           if (mappedApprovals.some((approval) => approval.id === current)) return current;
@@ -721,6 +755,7 @@ export function App() {
       setServerApprovals([]);
       setServerSessions([]);
       setServerLogs([]);
+      setServerCapabilities([]);
       setSnapshotMeta({ approvals: null, sessions: null, logs: null });
       setLastSuccessAt(null);
       setRefreshing(false);
@@ -853,7 +888,7 @@ export function App() {
       />
       <SourceStrip meta={currentSourceMeta} />
 
-      {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
+      {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} capabilities={serverCapabilities} /> : null}
       {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
       {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
       {activeTab === "logs" ? (

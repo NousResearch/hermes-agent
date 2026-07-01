@@ -477,12 +477,20 @@ h2 {
   border: 1px solid rgba(255, 59, 48, 0.16);
 }
 
-.quick-grid {
+.quick-grid,
+.capability-grid {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.quick-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.capability-grid {
+  grid-template-columns: 1fr;
 }
 
 .quick-tile {
@@ -497,6 +505,60 @@ h2 {
   background: rgba(255, 255, 255, 0.46);
   animation: rise 580ms cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--delay, 0ms);
+}
+
+.capability-item {
+  display: grid;
+  gap: 7px;
+  border: 1px solid rgba(21, 23, 25, 0.08);
+  border-radius: 18px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.44);
+}
+
+.capability-item[data-enabled="false"] {
+  border-color: rgba(201, 138, 19, 0.2);
+  background: rgba(201, 138, 19, 0.08);
+}
+
+.capability-item span,
+.capability-item em {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 5px 7px;
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.capability-item span {
+  color: #175c32;
+  background: rgba(183, 255, 74, 0.14);
+}
+
+.capability-item[data-enabled="false"] span {
+  color: #7a4a06;
+  background: rgba(201, 138, 19, 0.12);
+}
+
+.capability-item strong {
+  color: var(--c-text);
+  font-size: 0.93rem;
+  letter-spacing: -0.02em;
+}
+
+.capability-item p {
+  margin: 0;
+  color: var(--c-text-soft);
+  font-size: 0.82rem;
+}
+
+.capability-item em {
+  color: #075766;
+  background: rgba(0, 213, 255, 0.1);
+  font-style: normal;
 }
 
 .tap {
@@ -1294,6 +1356,10 @@ button.list-card[data-selected="true"] {
 
   .status-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .capability-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .intel-grid {

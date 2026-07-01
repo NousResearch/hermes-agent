@@ -95,6 +95,7 @@ def test_route_inventory_and_forbidden_routes_are_absent():
         ("POST", "/api/logout"),
         ("GET", "/api/me"),
         ("GET", "/api/status"),
+        ("GET", "/api/capabilities"),
         ("GET", "/api/approvals"),
         ("GET", "/api/sessions"),
         ("GET", "/api/logs"),
@@ -182,6 +183,36 @@ def test_me_and_status_require_auth_then_return_safe_schema():
     serialized = status.text
     assert "/Volumes/Diver Pro/hermes" not in serialized
     assert BOT_TOKEN not in serialized
+
+
+def test_capabilities_require_auth_then_return_safe_read_only_matrix():
+    client = make_client()
+
+    assert client.get("/api/capabilities").status_code == 401
+
+    auth_client(client)
+    response = client.get("/api/capabilities")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["ok"] is True
+    assert_safe_preview_meta(body["meta"])
+    assert len(body["items"]) == 5
+    ids = {item["id"] for item in body["items"]}
+    assert {"status-read", "approvals-read", "sessions-read", "approve-action", "restart-action"} == ids
+    for item in body["items"]:
+        assert set(item) == {"id", "label", "enabled", "mode", "reason"}
+        assert isinstance(item["enabled"], bool)
+        assert item["mode"] in {"read-only", "blocked"}
+    blocked = [item for item in body["items"] if not item["enabled"]]
+    assert {item["id"] for item in blocked} == {"approve-action", "restart-action"}
+    serialized = response.text
+    assert "/Volumes/Diver Pro/hermes" not in serialized
+    assert BOT_TOKEN not in serialized
+    assert "TELEGRAM_BOT_TOKEN" not in serialized
+    assert "pid" not in serialized.lower()
+    assert "command" not in serialized.lower()
 
 
 def test_approvals_require_auth_then_return_safe_read_only_queue():

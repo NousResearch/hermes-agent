@@ -40,6 +40,20 @@ class PreviewSnapshotMeta(TypedDict):
     contains_live_actions: bool
 
 
+class CapabilityItem(TypedDict):
+    id: str
+    label: str
+    enabled: bool
+    mode: str
+    reason: str
+
+
+class CapabilitiesSnapshot(TypedDict):
+    ok: bool
+    meta: PreviewSnapshotMeta
+    items: list[CapabilityItem]
+
+
 class ApprovalItem(TypedDict):
     id: str
     title: str

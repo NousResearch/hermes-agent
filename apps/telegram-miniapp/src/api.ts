@@ -41,6 +41,20 @@ export type SnapshotMeta = {
   contains_live_actions: boolean;
 };
 
+export type CapabilityItem = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  mode: "read-only" | "blocked";
+  reason: string;
+};
+
+export type CapabilitiesSnapshot = {
+  ok: boolean;
+  meta?: SnapshotMeta;
+  items: CapabilityItem[];
+};
+
 export type ApprovalRisk = "read_only" | "critical";
 
 export type ApprovalStatus = "waiting" | "blocked";
@@ -119,6 +133,10 @@ export async function authenticateTelegram(initData: string): Promise<AuthRespon
 
 export async function fetchStatusSnapshot(): Promise<StatusSnapshot> {
   return requestJson<StatusSnapshot>("/api/status");
+}
+
+export async function fetchCapabilitiesSnapshot(): Promise<CapabilitiesSnapshot> {
+  return requestJson<CapabilitiesSnapshot>("/api/capabilities");
 }
 
 export async function fetchApprovalsSnapshot(): Promise<ApprovalsSnapshot> {

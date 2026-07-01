@@ -24,6 +24,7 @@ from typing import Any, Optional
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
+    build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
@@ -68,6 +69,27 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+# Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
+# guard does not preempt a slow-but-valid summarization attempt.
+_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+
+
+def _resolve_concurrent_tool_timeout() -> float | None:
+    raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
+    if not raw:
+        return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid HERMES_CONCURRENT_TOOL_TIMEOUT_S=%r; using %.0fs",
+            raw,
+            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        )
+        return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
+    if value <= 0:
+        return None
+    return value
 
 
 def _flush_session_db_after_tool_progress(
@@ -610,9 +632,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if block_result is None
         ]
         futures = []
+        future_to_index = {}
+        timed_out_indices: set[int] = set()
+        timeout_s = _resolve_concurrent_tool_timeout()
+        deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            abandon_executor = False
+            try:
                 for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
@@ -648,6 +676,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 )
                         break
                     futures.append(f)
+                    future_to_index[f] = i
 
                 # Wait for all to complete with periodic heartbeats so the
                 # gateway's inactivity monitor doesn't kill us during long
@@ -657,10 +686,52 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _conc_start = time.time()
                 _interrupt_logged = False
                 while True:
-                    done, not_done = concurrent.futures.wait(
-                        futures, timeout=5.0,
-                    )
+                    wait_timeout = 5.0
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            done, not_done = set(), {
+                                f for f in futures if not f.done()
+                            }
+                        else:
+                            wait_timeout = min(wait_timeout, remaining)
+                            done, not_done = concurrent.futures.wait(
+                                futures, timeout=wait_timeout,
+                            )
+                    else:
+                        done, not_done = concurrent.futures.wait(
+                            futures, timeout=wait_timeout,
+                        )
                     if not not_done:
+                        break
+
+                    if deadline is not None and time.monotonic() >= deadline:
+                        abandon_executor = True
+                        timed_out_indices = {
+                            future_to_index[f]
+                            for f in not_done
+                            if f in future_to_index
+                        }
+                        _still_running = [
+                            parsed_calls[i][1]
+                            for i in timed_out_indices
+                        ]
+                        logger.warning(
+                            "concurrent tool batch timed out after %.1fs; "
+                            "%d tool(s) still running: %s",
+                            timeout_s,
+                            len(timed_out_indices),
+                            ", ".join(_still_running[:5]),
+                        )
+                        for f in not_done:
+                            f.cancel()
+                        with agent._tool_worker_threads_lock:
+                            worker_tids = list(agent._tool_worker_threads)
+                        for tid in worker_tids:
+                            try:
+                                _ra()._set_interrupt(True, tid)
+                            except Exception:
+                                pass
                         break
 
                     # Check for interrupt — the per-thread interrupt signal
@@ -669,6 +740,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     # read_file) will run to completion. Cancel any futures
                     # that haven't started yet so we don't block on them.
                     if agent._interrupt_requested:
+                        abandon_executor = True
                         if not _interrupt_logged:
                             _interrupt_logged = True
                             agent._vprint(
@@ -687,14 +759,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
-                            parsed_calls[futures.index(f)][1]
+                            parsed_calls[future_to_index[f]][1]
                             for f in not_done
-                            if f in futures
+                            if f in future_to_index
                         ]
                         agent._touch_activity(
                             f"concurrent tools running ({_conc_elapsed}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
+            finally:
+                # On abandon (interrupt or deadline) we intentionally do NOT
+                # join hung workers: wait=False returns immediately and
+                # cancel_futures drops queued-but-unstarted work. A wedged tool
+                # thread is left running detached — the deliberate tradeoff vs.
+                # deadlocking the whole batch. Normal completion joins (wait=True).
+                executor.shutdown(
+                    wait=not abandon_executor,
+                    cancel_futures=abandon_executor,
+                )
     finally:
         if spinner:
             # Build a summary message for the spinner stop
@@ -706,7 +788,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
-        if r is None:
+        # A worker can finish and write results[i] in the window between the
+        # deadline snapshot (timed_out_indices, taken from not_done) and this
+        # loop. Prefer that real result over a fabricated timeout message — the
+        # tool genuinely succeeded, just slightly late.
+        if i in timed_out_indices and r is None:
+            suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
+            function_result = f"Error executing tool '{name}': timed out after {suffix}"
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=name,
+                function_args=args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tc, "id", "") or "",
+                status="timeout",
+                error_type="tool_timeout",
+                error_message=function_result,
+                middleware_trace=list(middleware_trace),
+            )
+            tool_duration = float(timeout_s or 0.0)
+        elif r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
@@ -1224,7 +1326,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _ce_result = None
@@ -1258,7 +1360,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _mem_result = None
@@ -1290,7 +1392,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_preview(function_name, display_args) or function_name
+                preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
             _spinner_result = None

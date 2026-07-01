@@ -1109,6 +1109,18 @@ class APIServerAdapter(BasePlatformAdapter):
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
+        # When the primary provider's auth fails (expired token / 429 quota
+        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
+        # provider chain, whose runtime dict carries its own ``model`` key.
+        # Pop it and let it override the config model, mirroring the native
+        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
+        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
+        # spread → "got multiple values for keyword argument 'model'", 500ing
+        # every /v1/chat/completions request while a fallback is active.
+        runtime_model = runtime_kwargs.pop("model", None)
+        if runtime_model:
+            model = runtime_model
+
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
@@ -1154,8 +1166,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access.  Requires the same Bearer auth as other API routes.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
@@ -4180,7 +4196,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        # Approval queues gate host-side tool execution and must be isolated
+        # per API run.  Client-provided session IDs and memory session keys are
+        # conversation/memory scopes, not authorization namespaces: multiple
+        # concurrent runs can intentionally share them, and resolving an
+        # approval for one run must not unblock another run's dangerous command.
+        approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -4635,10 +4656,58 @@ class APIServerAdapter(BasePlatformAdapter):
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
+    def _api_key_passes_startup_guard(self) -> bool:
+        """Return True when API_SERVER_KEY is present and strong enough to start."""
+        if not self._api_key:
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
+                "including loopback-only binds on %s.",
+                self.name, self._host,
+            )
+            return False
+
+        try:
+            from hermes_cli.auth import has_usable_secret
+            if not has_usable_secret(self._api_key, min_length=16):
+                logger.error(
+                    "[%s] Refusing to start: API_SERVER_KEY is a "
+                    "placeholder or too short (<16 chars). This endpoint "
+                    "dispatches terminal-capable agent work — a guessable "
+                    "key is remote code execution. Generate a strong secret "
+                    "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                    "before starting the API server on %s.",
+                    self.name, self._host,
+                )
+                return False
+        except ImportError:
+            pass
+        return True
+
+    def _port_is_available(self) -> bool:
+        """Return True when the configured listen port is free."""
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                _s.settimeout(1)
+                _s.connect(('127.0.0.1', self._port))
+            logger.error(
+                "[%s] Port %d already in use. Set a different port in config.yaml: "
+                "platforms.api_server.port",
+                self.name, self._port,
+            )
+            return False
+        except (ConnectionRefusedError, OSError):
+            return True
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
+            return False
+
+        if not self._api_key_passes_startup_guard():
+            return False
+
+        if not self._port_is_available():
             return False
 
         try:
@@ -4706,39 +4775,6 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
-            # Refuse to start without authentication. The API server can
-            # dispatch terminal-capable agent work, so every deployment needs
-            # an explicit API_SERVER_KEY regardless of bind address.
-            if not self._api_key:
-                logger.error(
-                    "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
-                    "including loopback-only binds on %s.",
-                    self.name, self._host,
-                )
-                return False
-
-            # Refuse to start network-accessible with a placeholder or weak key.
-            # Ported from openclaw/openclaw#64586; entropy floor raised to 16 in
-            # the June 2026 hermes-0day hardening (an 8-char key dispatching
-            # terminal-capable agent work on a public bind is brute-forceable).
-            if is_network_accessible(self._host) and self._api_key:
-                try:
-                    from hermes_cli.auth import has_usable_secret
-                    if not has_usable_secret(self._api_key, min_length=16):
-                        logger.error(
-                            "[%s] Refusing to start: API_SERVER_KEY is a "
-                            "placeholder or too short (<16 chars) for a "
-                            "network-accessible bind. This endpoint dispatches "
-                            "terminal-capable agent work — a guessable key is "
-                            "remote code execution. Generate a strong secret "
-                            "(e.g. `openssl rand -hex 32`) and set "
-                            "API_SERVER_KEY before exposing it on %s.",
-                            self.name, self._host,
-                        )
-                        return False
-                except ImportError:
-                    pass
-
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the
             # agent's terminal/file tools as the host user; on a public bind
@@ -4766,16 +4802,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         "firewalling this port to trusted networks only.",
                         self.name, self._host,
                     )
-
-            # Port conflict detection — fail fast if port is already in use
-            try:
-                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                    _s.settimeout(1)
-                    _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
-                return False
-            except (ConnectionRefusedError, OSError):
-                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

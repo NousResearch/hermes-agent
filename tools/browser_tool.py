@@ -65,11 +65,7 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
-from agent.redact import (
-    redact_sensitive_text,
-    _redact_url_query_params,
-    _redact_url_userinfo,
-)
+from agent.redact import redact_cdp_url
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -244,21 +240,13 @@ _command_timeout_resolved = False
 def _sanitize_url_for_logs(value: object) -> str:
     """Mask secrets in logged browser endpoint URLs and URL-like errors.
 
-    The global ``redact_sensitive_text`` deliberately passes web-URL query
-    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
-    magic-link / pre-signed URLs the agent is meant to follow — see the
-    web-URL note in ``agent/redact.py``). CDP discovery endpoints are NOT
-    such a workflow: their query-string tokens and userinfo passwords are
-    pure credentials that must never reach the logs. So at these log sites
-    we opt INTO the URL redactors that the global pass leaves off, reusing
-    the shared ``redact.py`` helpers rather than a second regex.
+    Thin wrapper over :func:`agent.redact.redact_cdp_url`, which is the single
+    source of truth for CDP-URL log redaction. Kept as a local name because
+    several browser-tool log sites reference it; the redaction policy itself
+    lives once in ``redact.py`` so the browser tool and the CDP supervisor
+    cannot drift apart.
     """
-    text = redact_sensitive_text(value)
-    if not text:
-        return text
-    text = _redact_url_query_params(text)
-    text = _redact_url_userinfo(text)
-    return text
+    return redact_cdp_url(value)
 
 
 def _get_command_timeout() -> int:
@@ -1945,7 +1933,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     import uuid
     session_name = f"cdp_{uuid.uuid4().hex[:10]}"
     logger.info("Created CDP browser session %s → %s for task %s",
-                session_name, cdp_url, task_id)
+                session_name, _sanitize_url_for_logs(cdp_url), task_id)
     return {
         "session_name": session_name,
         "bb_session_id": None,
@@ -2953,6 +2941,9 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         return camofox_click(ref, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "click")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -2991,6 +2982,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return camofox_type(ref, text, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "type")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -3126,6 +3120,9 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return camofox_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "press")
+    if blocked is not None:
+        return blocked
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
@@ -3142,7 +3139,21 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-
+def _blocked_private_page_action(effective_task_id: str, action: str) -> Optional[str]:
+    """Return a blocked payload when an unsafe cloud page would receive input."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Refusing to {action} on this page in this "
+            "browser mode."
+        ),
+    }, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:

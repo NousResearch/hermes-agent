@@ -3385,6 +3385,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {"Content-Length": "11"}
             content_type = "image/png"
             content = _Content()
@@ -3434,6 +3435,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3472,15 +3474,82 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_redirect(self, monkeypatch):
+        """A 302 to a private/loopback target must be blocked per-hop, before
+        the redirect is followed (not only re-checked on the final URL)."""
+        import aiohttp
+        import tools.url_safety as url_safety
+
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "http://127.0.0.1/private.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _Session:
+            def __init__(self):
+                self.requested = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse()
+
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
+
+        with pytest.raises(ValueError, match="unsafe redirect"):
+            await self.adapter._download_external_media_with_cap(
+                "https://example.com/image.png"
+            )
+
+        # Only the initial public URL was fetched — the loopback hop was never
+        # followed because it was rejected before the next GET.
+        assert session.requested == ["https://example.com/image.png"]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
+        """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
         import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
-                yield b"ok"
+                yield b"imgbytes"
 
-        class _Response:
-            url = "http://127.0.0.1/private.png"
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "https://cdn.example.com/final.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _OkResponse:
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3495,26 +3564,85 @@ class TestMatrixImageOnlyMediaNormalization:
                 return None
 
         class _Session:
+            def __init__(self):
+                self.requested = []
+
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_args):
                 return None
 
-            def get(self, *_args, **_kwargs):
-                return _Response()
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse() if len(self.requested) == 1 else _OkResponse()
 
-        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
-        monkeypatch.setattr(
-            url_safety,
-            "is_safe_url",
-            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+
+        data, ct, _fname = await self.adapter._download_external_media_with_cap(
+            "https://example.com/image.png"
         )
 
-        with pytest.raises(ValueError, match="unsafe redirect"):
-            await self.adapter._download_external_media_with_cap(
-                "https://example.com/image.png"
-            )
+        assert data == b"imgbytes"
+        assert ct == "image/png"
+        assert session.requested == [
+            "https://example.com/image.png",
+            "https://cdn.example.com/final.png",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_httpx_installs_redirect_guard(self, monkeypatch):
+        """The httpx fallback re-checks redirect targets via the shared guard."""
+        import tools.url_safety as url_safety
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        clients = []
+
+        class _Content:
+            async def iter_chunked(self, _size):
+                yield b"ok"
+
+        class _Response:
+            headers = {"content-type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"ok"
+
+        class _Client:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                clients.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, *_args, **_kwargs):
+                return _Response()
+
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+        with patch.dict(sys.modules, {"aiohttp": None}):
+            with patch("httpx.AsyncClient", _Client):
+                data, ct, _fname = await self.adapter._download_external_media_with_cap(
+                    "https://example.com/image.png"
+                )
+
+        assert data == b"ok"
+        assert ct == "image/png"
+        assert clients[0].kwargs["event_hooks"]["response"] == [_ssrf_redirect_guard]
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_initial_url(self):
@@ -3534,6 +3662,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "text/html"
             content = _Content()
@@ -4527,3 +4656,616 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+
+class TestMatrixDeadInviteHandling:
+    """Tests for _join_room_by_id auto-leaving dead/abandoned rooms.
+
+    Regression: when a room had no current members, ``join_room`` raised
+    ``MUnknown: Can't join remote room because no servers that are in the
+    room have been provided``. The pending invite stayed in the bot's view
+    of the world, so every gateway restart re-attempted the join and
+    re-emitted the warning indefinitely. There was no path that ever
+    cleared the invite.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._refresh_dm_cache = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_no_servers_error_triggers_leave(self):
+        join_err = Exception(
+            "Can't join remote room because no servers that are in the "
+            "room have been provided."
+        )
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!dead:example.org")
+
+        assert result is False
+        self.adapter._client.leave_room.assert_awaited_once()
+        # leave_room receives a RoomID-wrapped value; verify the underlying str.
+        leave_arg = self.adapter._client.leave_room.await_args.args[0]
+        assert str(leave_arg) == "!dead:example.org"
+
+    @pytest.mark.asyncio
+    async def test_room_not_found_error_triggers_leave(self):
+        join_err = Exception("M_NOT_FOUND: Room not found")
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        await self.adapter._join_room_by_id("!gone:example.org")
+        self.adapter._client.leave_room.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_does_not_trigger_leave(self):
+        """A network blip or 5xx must NOT decline the invite — the bot
+        should retry on the next sync cycle."""
+        join_err = Exception("Connection reset by peer")
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!transient:example.org")
+        assert result is False
+        self.adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_join_does_not_attempt_leave(self):
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(return_value=None),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!alive:example.org")
+        assert result is True
+        assert "!alive:example.org" in self.adapter._joined_rooms
+        self.adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leave_room_failure_is_swallowed(self):
+        """If leave_room itself fails (e.g. server returns 500), the helper
+        must still return False cleanly rather than re-raise."""
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=Exception("no servers in the room")),
+            leave_room=AsyncMock(side_effect=Exception("500 internal")),
+        )
+
+        result = await self.adapter._join_room_by_id("!brokenleave:example.org")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Device ID resolution when whoami returns None
+# ---------------------------------------------------------------------------
+
+class TestDeviceIdNoneResolution:
+    """connect() should resolve device_id when whoami returns None."""
+
+    @pytest.mark.asyncio
+    async def test_none_device_id_resolved_via_query_keys(self):
+        """query_keys({mxid: []}) with exactly one device should adopt that ID."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+
+        resolve_resp = MagicMock()
+        resolve_dev = MagicMock()
+        resolve_dev.keys = {"ed25519:RESOLVED_DEV": "fake_ed25519_key"}
+        resolve_resp.device_keys = {"@bot:example.org": {"RESOLVED_DEV": resolve_dev}}
+
+        verify_resp = MagicMock()
+        verify_dev = MagicMock()
+        verify_dev.keys = {"ed25519:RESOLVED_DEV": "fake_ed25519_key"}
+        verify_resp.device_keys = {"@bot:example.org": {"RESOLVED_DEV": verify_dev}}
+        mock_client.query_keys = AsyncMock(side_effect=[resolve_resp, verify_resp])
+
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result = await adapter.connect()
+
+        assert result is True
+        assert adapter._device_id_unverified is False
+        # Positive path (W1 hardening, salvage of #53997): the resolution query
+        # must use an empty device list ({mxid: []}), and once RESOLVED_DEV is
+        # adopted the verification query must carry the REAL id, never [None]
+        # (the [null] body Synapse/Dendrite reject — the original bug).
+        assert mock_client.device_id == "RESOLVED_DEV"
+        assert mock_client.query_keys.await_count == 2
+        _resolution_call, _verify_call = mock_client.query_keys.await_args_list
+        assert _resolution_call.args[0] == {"@bot:example.org": []}
+        assert _verify_call.args[0] == {"@bot:example.org": ["RESOLVED_DEV"]}
+        assert None not in _verify_call.args[0]["@bot:example.org"]
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_none_device_id_sets_unverified_flag_when_no_devices(self):
+        """query_keys returns zero devices → _device_id_unverified = True."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+
+        resolve_resp = MagicMock()
+        resolve_resp.device_keys = {"@bot:example.org": {}}
+        mock_client.query_keys = AsyncMock(return_value=resolve_resp)
+
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        await adapter.connect()
+
+        assert adapter._device_id_unverified is True
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_none_device_id_sets_unverified_flag_when_multiple_devices(self):
+        """query_keys returns multiple devices → _device_id_unverified = True."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+
+        resolve_resp = MagicMock()
+        resolve_resp.device_keys = {"@bot:example.org": {
+            "DEV_A": {"keys": {"ed25519:DEV_A": "key_a"}},
+            "DEV_B": {"keys": {"ed25519:DEV_B": "key_b"}},
+        }}
+        mock_client.query_keys = AsyncMock(return_value=resolve_resp)
+
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        await adapter.connect()
+
+        assert adapter._device_id_unverified is True
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_none_device_id_sets_unverified_flag_when_query_keys_raises(self):
+        """query_keys raising an exception should not propagate — set flag."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+
+        mock_client.query_keys = AsyncMock(side_effect=Exception("server unavailable"))
+
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        try:
+                            await adapter.connect()
+                        except Exception:
+                            pytest.fail("connect() raised — exception should be caught")
+
+        assert adapter._device_id_unverified is True
+
+        await adapter.disconnect()
+
+
+class TestVerifyDeviceKeysGuards:
+    """_verify_device_keys_on_server and _reverify_keys_after_upload guards."""
+
+    @pytest.mark.asyncio
+    async def test_verify_skips_when_device_id_unverified_flag_set(self):
+        adapter = _make_adapter()
+        adapter._device_id_unverified = True
+
+        mock_client = MagicMock()
+        mock_client.device_id = "SOME_DEVICE"
+        mock_client.mxid = "@bot:example.org"
+        mock_client.query_keys = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_key"}
+
+        result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
+
+        assert result is True
+        mock_client.query_keys.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verify_skips_when_client_device_id_is_none(self):
+        adapter = _make_adapter()
+        adapter._device_id_unverified = False
+
+        mock_client = MagicMock()
+        mock_client.device_id = None
+        mock_client.mxid = "@bot:example.org"
+        mock_client.query_keys = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_key"}
+
+        result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
+
+        assert result is True
+        mock_client.query_keys.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reverify_skips_when_device_id_unverified_flag_set(self):
+        adapter = _make_adapter()
+        adapter._device_id_unverified = True
+
+        mock_client = MagicMock()
+        mock_client.device_id = "SOME_DEVICE"
+        mock_client.mxid = "@bot:example.org"
+        mock_client.query_keys = AsyncMock()
+
+        result = await adapter._reverify_keys_after_upload(mock_client, "fake_ed25519")
+
+        assert result is True
+        mock_client.query_keys.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reverify_skips_when_client_device_id_is_none(self):
+        adapter = _make_adapter()
+        adapter._device_id_unverified = False
+
+        mock_client = MagicMock()
+        mock_client.device_id = None
+        mock_client.mxid = "@bot:example.org"
+        mock_client.query_keys = AsyncMock()
+
+        result = await adapter._reverify_keys_after_upload(mock_client, "fake_ed25519")
+
+        assert result is True
+        mock_client.query_keys.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Reconnect-disconnect guard
+# ---------------------------------------------------------------------------
+
+class TestMatrixReconnectDisconnect:
+    """connect() must disconnect existing client before reconnecting."""
+
+    @pytest.mark.asyncio
+    async def test_connect_calls_disconnect_when_client_already_set(self):
+        """When self._client is set, connect() should call disconnect() first."""
+        adapter = _make_adapter()
+
+        adapter._client = MagicMock()
+        adapter._client.api = MagicMock()
+        adapter._client.api.session = MagicMock()
+        adapter._client.api.session.close = AsyncMock()
+        adapter._client.whoami = AsyncMock()
+
+        adapter.disconnect = AsyncMock()
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id="NEW_DEV",
+        ))
+        mock_client.query_keys = AsyncMock()
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    await adapter.connect()
+
+        adapter.disconnect.assert_awaited_once()
+
+
+class TestDeviceIdRecoveryOnReconnect:
+    """_device_id_unverified must reset on every connect() call so a
+    recovery after a failed resolution clears the stuck-true flag."""
+
+    @pytest.mark.asyncio
+    async def test_flag_clears_when_second_connect_resolves_device_id(self):
+        """Same adapter, first connect fails to resolve, second succeeds. Flag
+        must be False afterward and server verification must run on the second
+        call."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        # --- first connect: whoami returns no device_id, query_keys returns
+        #     zero devices → flag set to True ---
+        mock_client1 = MagicMock()
+        mock_client1.mxid = "@bot:example.org"
+        mock_client1.device_id = None
+        mock_client1.state_store = MagicMock()
+        mock_client1.sync_store = MagicMock()
+        mock_client1.crypto = None
+        mock_client1.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+        resolve_resp = MagicMock()
+        resolve_resp.device_keys = {"@bot:example.org": {}}
+        mock_client1.query_keys = AsyncMock(return_value=resolve_resp)
+        mock_client1.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client1.add_event_handler = MagicMock()
+        mock_client1.handle_sync = MagicMock(return_value=[])
+        mock_client1.api = MagicMock()
+        mock_client1.api.token = "syt_test_access_token"
+        mock_client1.api.session = MagicMock()
+        mock_client1.api.session.close = AsyncMock()
+
+        mock_olm1 = MagicMock()
+        mock_olm1.load = AsyncMock()
+        mock_olm1.share_keys = AsyncMock()
+        mock_olm1.share_keys_min_trust = None
+        mock_olm1.send_keys_min_trust = None
+        mock_olm1.account = MagicMock()
+        mock_olm1.account.identity_keys = {"ed25519": "fake_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client1)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        await adapter.connect()
+
+        assert adapter._device_id_unverified is True
+        await adapter.disconnect()
+
+        # --- second connect (same adapter, re-attaching): whoami returns a
+        #     real device_id this time → flag must be False ---
+        mock_client2 = MagicMock()
+        mock_client2.mxid = "@bot:example.org"
+        mock_client2.device_id = None
+        mock_client2.state_store = MagicMock()
+        mock_client2.sync_store = MagicMock()
+        mock_client2.crypto = None
+        mock_client2.whoami = AsyncMock(return_value=MagicMock(
+            user_id="@bot:example.org", device_id=None,
+        ))
+        resolve_resp2 = MagicMock()
+        resolve_dev = MagicMock()
+        resolve_dev.keys = {"ed25519:DEV2": "fake_ed25519_key2"}
+        resolve_resp2.device_keys = {"@bot:example.org": {"DEV2": resolve_dev}}
+        verify_resp = MagicMock()
+        verify_dev = MagicMock()
+        verify_dev.keys = {"ed25519:DEV2": "fake_ed25519_key2"}
+        verify_resp.device_keys = {"@bot:example.org": {"DEV2": verify_dev}}
+        mock_client2.query_keys = AsyncMock(side_effect=[resolve_resp2, verify_resp])
+        mock_client2.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client2.add_event_handler = MagicMock()
+        mock_client2.handle_sync = MagicMock(return_value=[])
+        mock_client2.api = MagicMock()
+        mock_client2.api.token = "syt_test_access_token"
+        mock_client2.api.session = MagicMock()
+        mock_client2.api.session.close = AsyncMock()
+
+        mock_olm2 = MagicMock()
+        mock_olm2.load = AsyncMock()
+        mock_olm2.share_keys = AsyncMock()
+        mock_olm2.share_keys_min_trust = None
+        mock_olm2.send_keys_min_trust = None
+        mock_olm2.account = MagicMock()
+        mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key2"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client2)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result = await adapter.connect()
+
+        assert result is True
+        assert adapter._device_id_unverified is False
+        # Verification must genuinely re-run on the second connect — not just
+        # the resolution query. Two awaited query_keys calls: resolution
+        # ({mxid: []}) then verification ({mxid: [<resolved id>]}). The
+        # verification call must carry the REAL resolved device id ("DEV2"),
+        # never [None] (the original bug). (W2 hardening, salvage of #53997)
+        assert mock_client2.query_keys.await_count == 2
+        _resolution_call, _verify_call = mock_client2.query_keys.await_args_list
+        assert _resolution_call.args[0] == {"@bot:example.org": []}
+        assert _verify_call.args[0] == {"@bot:example.org": ["DEV2"]}
+        assert None not in _verify_call.args[0]["@bot:example.org"]
+
+        await adapter.disconnect()

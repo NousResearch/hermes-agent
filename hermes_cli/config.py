@@ -999,15 +999,31 @@ DEFAULT_CONFIG = {
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
+        # Standing operator instructions for the coding posture. A string (or
+        # list of strings) appended to the coding brief as an extra stable
+        # system block — pin project-wide workflow rules here instead of editing
+        # the shipped brief, e.g. "For UI work, don't run tsc/lint until I
+        # approve. Clean the diff before you commit and push." Cache-safe:
+        # takes effect next session. Empty by default.
+        "coding_instructions": "",
+        # When verify-on-stop finds edited code without fresh verification
+        # evidence, append guidance for creative UI work (avoid broad
+        # tsc/lint/test before visual approval) and clean-diff expectations.
+        # Set false to keep the evidence nudge terse.
+        "verify_guidance": True,
+        # Upper bound on consecutive `pre_verify` "continue" nudges in a single
+        # turn, so a user/plugin hook can never trap the loop.
+        "max_verify_nudges": 3,
         # Verification closure: after the agent edits files in a code workspace,
         # do not accept a final answer until fresh verification evidence exists
         # or the agent explains why it cannot run checks. The loop is bounded
-        # and uses the passive verification ledger. Default is OFF — the
-        # verification narrative was more noise than signal for most users
-        # (it fired on doc/markdown/skill edits too). Set true to opt in, or
-        # "auto" for the legacy surface-aware behavior (on for interactive
-        # coding surfaces, off for conversational messaging surfaces).
-        "verify_on_stop": False,
+        # and uses the passive verification ledger. Default is "auto" —
+        # surface-aware: on for interactive coding surfaces (CLI, TUI, desktop)
+        # and programmatic callers, off for conversational messaging surfaces
+        # (Telegram, Discord, etc.) where the verification narrative would reach
+        # a human as chat noise. Doc/markdown/skill-only edits never fire it.
+        # Set true to force on everywhere, or false to disable.
+        "verify_on_stop": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -1725,6 +1741,11 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Human-phrased tool status labels for built-in tools: "Searching the
+        # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
+        # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
+        # Custom/plugin/MCP tools always fall back to the raw preview.
+        "friendly_tool_labels": True,
         # How gateway tool-progress is grouped on platforms that support message
         # editing: "accumulate" (default) edits one bubble in place; "separate"
         # sends one message per tool (the pre-v0.9 behavior, noisier). Only
@@ -2066,6 +2087,22 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        # Subagent summaries return to the parent's context verbatim. A batch
+        # fan-out (N children) returns N summaries at once, which can exceed
+        # the parent's context window and trigger a compression/429 death
+        # spiral. delegate_task sizes each summary against the parent's
+        # remaining context headroom (split across the batch); when it must
+        # trim, the full text is spilled to ~/.hermes/cache/delegation/
+        # (mounted into remote backends) and the in-context summary becomes a
+        # head+tail window plus a footer with the exact read_file offset to
+        # page the omitted middle — the same convention web_extract uses for
+        # large pages. Nothing is lost. max_summary_chars is a hard per-summary
+        # character ceiling layered on top of that dynamic budget
+        # (belt-and-suspenders for models that ignore the "be concise"
+        # instruction). 0 disables the hard ceiling; the dynamic headroom
+        # budget still applies.
+        "max_summary_chars": 24000,
+
         "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
                                      # = no timeout: children fail only from real errors
                                      # (API, tools, iteration budget), never a delegation
@@ -2118,6 +2155,14 @@ DEFAULT_CONFIG = {
     "moa": {
         "default_preset": "default",
         "active_preset": "",
+        # When true, every MoA turn that runs the reference fan-out writes the
+        # FULL turn (each reference's exact input messages + output + usage/cost,
+        # and the aggregator's exact input + output) to a JSONL file at
+        # <hermes_home>/moa-traces/<session_id>.jsonl. Off by default — turn it
+        # on to audit / improve MoA behavior from real runs. Set trace_dir to
+        # override the output directory.
+        "save_traces": False,
+        "trace_dir": "",
         "presets": {
             "default": {
                 "reference_models": [
@@ -2649,6 +2694,17 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Seconds the gateway waits for a single messaging platform to finish
+        # connecting during startup (and on reconnect). Discord in particular
+        # can blow past the old fixed 30s when an account has many slash
+        # commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this
+        # if your gateway hits "discord connect timed out" / "Timeout waiting
+        # for connection to Discord" restart loops. ``0`` or negative disables
+        # the timeout entirely (wait indefinitely). Bridged at startup to the
+        # internal HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT env var, which still
+        # works as a manual override and wins if set explicitly.
+        "platform_connect_timeout": 30,
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
@@ -2659,6 +2715,23 @@ DEFAULT_CONFIG = {
         # config key (decisions.md D2/D11). 0/negative falls back to the default.
         "scale_to_zero": {
             "idle_timeout_minutes": 5,
+        },
+
+        # Auto-resume restart-loop breaker (#30719, defense-3). When the
+        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
+        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
+        # restart-interrupted session on the next boot. If the resumed turn
+        # keeps triggering another kill (e.g. the agent runs a raw
+        # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
+        # cover), the result is a tight SIGTERM-respawn loop. This breaker
+        # counts restart-interrupted boots in a rolling window and, once
+        # `max_restarts` boots happen within `window_seconds`, SKIPS
+        # auto-resume for that boot — the gateway still starts and serves
+        # real inbound messages, it just stops replaying the session that
+        # keeps killing it. Set `max_restarts` to 0 to disable the breaker.
+        "restart_loop_guard": {
+            "max_restarts": 3,
+            "window_seconds": 60,
         },
 
         # Inject a human-readable timestamp prefix (e.g.
@@ -4938,6 +5011,29 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
+def _persist_migration(config: Dict[str, Any]) -> None:
+    """Persist a migrated config under the migration write invariant.
+
+    THE INVARIANT (single source of truth for the whole migration pipeline):
+    a migration may only persist values that DIFFER from the current schema
+    default, plus explicit removals/renames of user data. Pure schema defaults
+    are never materialised to disk — ``load_config()``'s deep-merge supplies
+    them at read time, so writing them adds nothing and actively shadows future
+    default changes (see ``save_config``'s docstring). Materialising defaults on
+    every version bump is what rewrote hand-curated configs into full
+    DEFAULT_CONFIG dumps (the "hermes update / hermes -p blows up my config"
+    reports).
+
+    Every migration step MUST route its write through this helper instead of
+    calling ``save_config`` directly. It is a thin wrapper over
+    ``save_config(config)`` (default-stripping ON); centralising the call makes
+    the invariant impossible to regress one migration at a time. Correctness
+    across seeds, non-default values, behaviour flips, and data transforms is
+    verified by the migration parity tests.
+    """
+    save_config(config)
+
+
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
@@ -4981,7 +5077,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 display["tool_progress"] = "all"
                 results["config_added"].append("display.tool_progress=all (default)")
             config["display"] = display
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
@@ -4996,7 +5092,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 config["timezone"] = ""
                 results["config_added"].append("timezone= (empty, uses server-local)")
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
@@ -5070,7 +5166,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["providers"] = providers_dict
                 # Remove the old list — runtime reads via get_compatible_custom_providers()
                 config.pop("custom_providers", None)
-                save_config(config, strip_defaults=False)
+                _persist_migration(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
                     for key in list(providers_dict.keys())[-migrated_count:]:
@@ -5138,7 +5234,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     provider_cfg = stt.setdefault(provider, {})
                     provider_cfg["model"] = legacy_model
             config["stt"] = stt
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 print(f"  ✓ Migrated legacy stt.model to provider-specific config")
 
@@ -5152,7 +5248,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             display["interim_assistant_messages"] = True
             config["display"] = display
             results["config_added"].append("display.interim_assistant_messages=true (default)")
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 print("  ✓ Added display.interim_assistant_messages=true")
 
@@ -5174,7 +5270,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     platforms[plat]["tool_progress"] = mode
             display["platforms"] = platforms
             config["display"] = display
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
@@ -5210,7 +5306,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     migrated_keys.append(f"base_url={s_base_url}")
             if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
                 config["compression"] = comp
-                save_config(config, strip_defaults=False)
+                _persist_migration(config)
                 if not quiet:
                     if migrated_keys:
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
@@ -5266,7 +5362,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             plugins_cfg["enabled"] = grandfathered
             config["plugins"] = plugins_cfg
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             results["config_added"].append(
                 f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
             )
@@ -5346,15 +5442,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             touched = True
 
         if touched:
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if added_curator:
                 results["config_added"].append(
                     f"curator ({len(added_curator)} default key(s))"
                 )
                 if not quiet:
                     print(
-                        "  ✓ Seeded curator defaults in config.yaml: "
-                        f"{', '.join(added_curator)}"
+                        "  ✓ Curator settings now available "
+                        f"({', '.join(added_curator)}) — edit via `hermes config set`"
                     )
             if added_aux:
                 results["config_added"].append(
@@ -5362,8 +5458,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 )
                 if not quiet:
                     print(
-                        "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
-                        f"{', '.join(added_aux)}"
+                        "  ✓ auxiliary.curator settings now available "
+                        f"({', '.join(added_aux)}) — edit via `hermes config set`"
                     )
 
     # ── Version 24 → 25: lower model_catalog TTL 24h → 1h ──
@@ -5377,7 +5473,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
             raw_mc["ttl_hours"] = 1
             config["model_catalog"] = raw_mc
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
@@ -5406,32 +5502,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
             )
         if touched:
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
-    # ── Version 29 → 30: seed curator.consolidate (default false) ──
-    # Consolidation (the LLM umbrella-building fork) is now an opt-in toggle,
-    # OFF by default. The deterministic inactivity prune still runs whenever
-    # the curator is enabled; only the opinionated, aux-model-cost LLM pass is
-    # gated. The runtime deep-merge already supplies the default, but we seed
-    # the key so it's visible/editable in config.yaml. Existing installs that
-    # WANT the old always-consolidate behavior must set it to true explicitly.
-    # Only add the key when a curator section exists and lacks it — never
-    # clobber a value the user already set.
-    if current_ver < 30:
-        config = read_raw_config()
-        raw_curator = config.get("curator")
-        if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
-            raw_curator["consolidate"] = False
-            config["curator"] = raw_curator
-            save_config(config, strip_defaults=False)
-            results["config_added"].append("curator.consolidate=false")
-            if not quiet:
-                print(
-                    "  ✓ Seeded curator.consolidate: false "
-                    "(LLM consolidation is now opt-in; pruning stays on)"
-                )
+    # ── Version 29 → 30: curator.consolidate defaults to false ──
+    # Consolidation (the LLM umbrella-building fork) is opt-in, OFF by default;
+    # the deterministic inactivity prune still runs whenever the curator is
+    # enabled. No write is needed: the schema default (curator.consolidate=false)
+    # is supplied by load_config()'s deep-merge at read time, and persisting a
+    # default-valued key would only bloat a lean config (it gets stripped on
+    # save anyway). Existing installs that WANT the old always-consolidate
+    # behavior set it to true explicitly via `hermes config set`.
 
     # ── Version 30 → 31: switch verify_on_stop OFF (one-time) ──
     # verify_on_stop defaulted to the "auto" sentinel (surface-aware: on for
@@ -5454,7 +5536,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if cur is None or is_auto_sentinel:
             raw_agent["verify_on_stop"] = False
             config["agent"] = raw_agent
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
                 print(
@@ -5481,7 +5563,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_agent, dict) and raw_agent.get("verify_on_stop") is True:
             raw_agent["verify_on_stop"] = False
             config["agent"] = raw_agent
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
             results["config_added"].append("agent.verify_on_stop=false")
             if not quiet:
                 print(
@@ -5521,7 +5603,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
-                save_config(config, strip_defaults=False)
+                _persist_migration(config)
 
     # ── Always: validate platform_toolsets after migration ──
     # A migration (or hand-edit) that leaves an invalid toolset name in
@@ -5625,29 +5707,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 print("  Set later with: hermes config set <key> <value>")
     
-    # Check for missing config fields
+    # Check for missing config fields.
+    #
+    # New default keys are NOT materialised to disk: load_config() deep-merges
+    # DEFAULT_CONFIG at read time, so a missing key already takes effect with
+    # its default (see _persist_migration's invariant). We surface the list for
+    # the informational "N new config option(s) available" display in
+    # `hermes update`, but only the version bump is persisted.
     missing_config = get_missing_config_fields()
-    
     if missing_config:
-        config = read_raw_config()
-        
-        for field in missing_config:
-            key = field["key"]
-            default = field["default"]
-            
-            _set_nested(config, key, default)
-            results["config_added"].append(key)
-            if not quiet:
-                print(f"  ✓ Added {key} = {default}")
-        
-        # Update version and save
-        config["_config_version"] = latest_ver
-        save_config(config, strip_defaults=False)
-    elif current_ver < latest_ver:
-        # Just update version
+        results["config_added"].extend(field["key"] for field in missing_config)
+
+    if current_ver < latest_ver:
         config = read_raw_config()
         config["_config_version"] = latest_ver
-        save_config(config, strip_defaults=False)
+        _persist_migration(config)
 
     # ── Skill-declared config vars ──────────────────────────────────────
     # Skills can declare config.yaml settings they need via
@@ -5688,7 +5762,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
                     )
                 print()
-            save_config(config, strip_defaults=False)
+            _persist_migration(config)
         else:
             print("  Set later with: hermes config set <key> <value>")
 
@@ -6643,6 +6717,23 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+_STRUCTURED_VALUE_MARKERS = ("://", "?", "&")
+
+
+def _looks_like_structured_value(value: str) -> bool:
+    """True when ``value`` looks like a URL/query string or holds whitespace.
+
+    Such a value is treated as one opaque secret. An embedded
+    ``KNOWN_KEY=`` substring inside it (e.g. a webhook URL carrying a query
+    parameter, or a proxy base URL with an embedded key) is part of the value,
+    not the start of a second .env entry, so the concatenation splitter must
+    not break on it. Plain token secrets (API keys) never contain these.
+    """
+    if any(marker in value for marker in _STRUCTURED_VALUE_MARKERS):
+        return True
+    return any(ch.isspace() for ch in value)
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
@@ -6691,10 +6782,32 @@ def _sanitize_env_lines(lines: list) -> list:
             )
         })
 
-        if len(split_positions) > 1:
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
+        # Only treat the line as a concatenation when it actually begins with a
+        # known KEY= (split_positions[0] == 0). A first match at a non-zero
+        # offset means the matches sit inside a value, so splitting there would
+        # silently drop the leading text — keep the line intact instead.
+        split_into_entries = False
+        segments: list[str] = []
+        if len(split_positions) > 1 and split_positions[0] == 0:
+            segments = [
+                stripped[pos:(
+                    split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
+                )]
+                for i, pos in enumerate(split_positions)
+            ]
+            # A genuine concatenation has a simple token value in every segment
+            # that precedes a boundary. If a preceding value looks structured
+            # (a URL/query string or whitespace), the embedded KNOWN_KEY= is
+            # part of that value rather than a new entry, so we must not split —
+            # otherwise we truncate the real secret and fabricate a bogus one.
+            split_into_entries = all(
+                not _looks_like_structured_value(seg.split("=", 1)[1])
+                for seg in segments[:-1]
+            )
+
+        if split_into_entries:
+            for seg in segments:
+                part = seg.strip()
                 if part:
                     sanitized.append(part + "\n")
         else:
@@ -7025,10 +7138,36 @@ def get_env_value(key: str) -> Optional[str]:
     # Check environment first
     if key in os.environ:
         return os.environ[key]
-    
+
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
+
+
+def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
+    """Resolve a credential env value, preferring ``~/.hermes/.env`` over ``os.environ``.
+
+    Used for Hermes-managed credentials where a deliberate edit to ``.env``
+    must take precedence over a stale value inherited from the parent shell
+    (Codex CLI, test scripts, login profile exports). Without this, rotating
+    a key in ``.env`` mid-session leaves callers serving the stale shell
+    value and produces persistent 401s.
+
+    The ``os.environ`` fallback routes through ``secret_scope.get_secret`` so
+    that, under an active profile scope (multiplexed gateway turn), this read
+    is scope-checked rather than leaking another profile's raw ``os.environ``
+    value — matching the credential-pool seeding path's behaviour.
+    """
+    env_vars = load_env()
+    val = env_vars.get(key)
+    if val:
+        return val
+    try:
+        from agent.secret_scope import get_secret as _get_secret
+
+        return _get_secret(key)
+    except Exception:
+        return os.environ.get(key)
 
 
 # =============================================================================

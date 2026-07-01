@@ -201,9 +201,12 @@ _LONG_HANDLERS = frozenset(
         # round-trips per call — so it must never block the reader thread.
         "pet.generate",
         "pet.hatch",
+        "pet.info",
         "pet.select",
         "pet.thumb",
+        "learning.frames",
         "plugins.manage",
+        "process.list",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -211,6 +214,7 @@ _LONG_HANDLERS = frozenset(
         "projects.project_sessions",
         "session.branch",
         "session.compress",
+        "session.list",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -220,7 +224,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
@@ -2960,12 +2964,31 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        # context_used is the *current-window* occupancy. Do NOT fall back to
+        # usage["total"] (cumulative lifetime session_total_tokens): for an
+        # external context engine that doesn't report last_prompt_tokens that
+        # substitution showed lifetime totals as the live context fill, yielding
+        # impossible readings such as 1.9m/120k clamped to 100% (#50421).
+        #
+        # Per the issue, populate context_used/percent only from a *real*
+        # current-occupancy value and "leave it unknown otherwise" — so a falsy
+        # last_prompt_tokens (0 or missing, i.e. an engine that doesn't track
+        # per-window occupancy) intentionally emits no gauge rather than a
+        # fabricated 0% or the old cumulative reading. The built-in compressor
+        # always reports a real last_prompt_tokens once a turn runs, so it is
+        # unaffected.
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (conversation_compression.py) to 0 so the transitional turn reads as
+        # unknown (no gauge) instead of leaking context_used=-1. Matches the
+        # CLI status-bar path (cli.py _get_status_bar_snapshot).
+        last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        if last_prompt < 0:
+            last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max:
-            usage["context_used"] = ctx_used
+        if ctx_max and last_prompt:
+            usage["context_used"] = last_prompt
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+            usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
@@ -3160,9 +3183,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 def _tool_ctx(name: str, args: dict) -> str:
     try:
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_label
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_label(name, args, max_len=80) or ""
     except Exception:
         return ""
 
@@ -4209,12 +4232,25 @@ def _make_agent(
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
-        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
         if missing_skills:
-            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            missing_display = ", ".join(missing_skills)
+            # Degrade gracefully when some skills loaded; only hard-fail when
+            # every requested skill is missing. Mirrors cli.py — a typo'd skill
+            # name should not crash the worker and auto-block the Kanban task.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
@@ -8104,7 +8140,12 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
+            # Reject out-of-range ordinals on BOTH ends. A negative value would
+            # otherwise sail past the upper-bound check and hit Python's negative
+            # indexing below (user_indices[-1] -> the LAST user turn), silently
+            # truncating history to everything before it and persisting that loss
+            # via replace_messages — an unrecoverable overwrite of the session DB.
+            if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -11293,6 +11334,11 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            # Sanitize env to prevent credential leakage —
+            # quick commands run in the TUI server process which
+            # has all API keys in os.environ.
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
@@ -11300,12 +11346,16 @@ def _(rid, params: dict) -> dict:
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
                 + (r.stderr or "")
             ).strip()[:4000]
+            if output:
+                from agent.redact import redact_sensitive_text
+                output = redact_sensitive_text(output)
             if r.returncode != 0:
                 return _err(
                     rid,
@@ -13452,6 +13502,63 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))
+
+
+@method("learning.frames")
+def _(rid, params: dict) -> dict:
+    """Pre-render the learning timeline for the TUI ``/journey`` overlay.
+
+    Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
+    so Ink can render and walk the tree locally without round-tripping the
+    gateway. Shares its renderer with the ``hermes journey`` CLI.
+    """
+    try:
+        cols = int(params.get("cols", 80) or 80)
+        rows = int(params.get("rows", 24) or 24)
+        frames = int(params.get("frames", 48) or 48)
+    except (TypeError, ValueError):
+        cols, rows, frames = 80, 24, 48
+    try:
+        from agent.learning_graph import build_learning_graph
+        from agent.learning_graph_render import render_frames
+
+        payload = build_learning_graph()
+        return _ok(rid, render_frames(payload, cols=max(20, cols), rows=max(10, rows), frames=frames))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.frames failed: {exc}")
+
+
+@method("learning.detail")
+def _(rid, params: dict) -> dict:
+    """Current content of a journey node, for an edit prefill."""
+    try:
+        from agent.learning_mutations import node_detail
+
+        return _ok(rid, node_detail(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.detail failed: {exc}")
+
+
+@method("learning.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    try:
+        from agent.learning_mutations import delete_node
+
+        return _ok(rid, delete_node(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.delete failed: {exc}")
+
+
+@method("learning.edit")
+def _(rid, params: dict) -> dict:
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    try:
+        from agent.learning_mutations import edit_node
+
+        return _ok(rid, edit_node(str(params.get("id", "")), str(params.get("content", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.edit failed: {exc}")
 
 
 @method("skills.manage")

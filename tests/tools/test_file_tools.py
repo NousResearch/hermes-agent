@@ -871,3 +871,141 @@ class TestSilentFileMisplacementE2E:
             "file silently misplaced into config default (the #26211 bug)"
 
         tt.clear_session_cwd(task_id)
+
+
+class TestIsHostLocalEnv:
+    """_is_host_local_env gates read-dedup and staleness detection to the
+    local backend only. Host os.path.getmtime is meaningless for a file
+    living inside a docker/singularity/ssh/modal/daytona sandbox, so those
+    backends must never be reported as host-local."""
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_true_when_active_env_is_local(self, mock_active):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_tools import _is_host_local_env
+
+        mock_active["default"] = MagicMock(spec=LocalEnvironment)
+        assert _is_host_local_env("default") is True
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_false_when_active_env_is_not_local(self, mock_active):
+        from tools.file_tools import _is_host_local_env
+
+        mock_active["default"] = MagicMock()  # e.g. a container/ssh backend
+        assert _is_host_local_env("default") is False
+
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_falls_back_to_config_when_no_active_env(self, mock_active, mock_config):
+        from tools.file_tools import _is_host_local_env
+
+        mock_config.return_value = {"env_type": "local"}
+        assert _is_host_local_env("default") is True
+
+        mock_config.return_value = {"env_type": "docker"}
+        assert _is_host_local_env("default") is False
+
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_false_on_exception(self, mock_active, mock_config):
+        from tools.file_tools import _is_host_local_env
+
+        mock_config.side_effect = RuntimeError("no config available")
+        assert _is_host_local_env("default") is False
+
+
+class TestReadDedupHostLocalGate:
+    """Regression guard: read-dedup must only stub out a re-read when the
+    terminal backend is local. On a remote backend a host mtime "match" is
+    meaningless — skipping the real read would silently serve stale content
+    for a file the agent never actually re-checked."""
+
+    @staticmethod
+    def _seed_dedup(task_id, resolved_path, offset, limit, mtime):
+        from tools.file_tools import _read_tracker, _read_tracker_lock
+        with _read_tracker_lock:
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {},
+                "dedup_hits": {}, "read_timestamps": {},
+            })
+            task_data["dedup"][(resolved_path, offset, limit)] = mtime
+
+    @patch("tools.file_tools._is_host_local_env", return_value=True)
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_stub_fires_on_local_env(self, mock_get, mock_is_local, tmp_path):
+        from tools.file_tools import read_file_tool, _read_tracker
+
+        f = tmp_path / "a.txt"
+        f.write_text("hello\n")
+        task_id = "dedup-local"
+        _read_tracker.pop(task_id, None)
+        self._seed_dedup(task_id, str(f), 1, 500, f.stat().st_mtime)
+
+        result = json.loads(read_file_tool(str(f), 1, 500, task_id))
+
+        assert result.get("dedup") is True
+        assert result.get("status") == "unchanged"
+        mock_get.assert_not_called()
+        _read_tracker.pop(task_id, None)
+
+    @patch("tools.file_tools._is_host_local_env", return_value=False)
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_skipped_on_remote_env_even_with_matching_mtime(
+        self, mock_get, mock_is_local, tmp_path
+    ):
+        from tools.file_tools import read_file_tool, _read_tracker
+
+        f = tmp_path / "b.txt"
+        f.write_text("hello\n")
+        task_id = "dedup-remote"
+        _read_tracker.pop(task_id, None)
+        self._seed_dedup(task_id, str(f), 1, 500, f.stat().st_mtime)
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "hello"
+        result_obj.to_dict.return_value = {"content": "hello", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        result = json.loads(read_file_tool(str(f), 1, 500, task_id))
+
+        assert result.get("dedup") is not True
+        assert result.get("content") == "hello"
+        mock_get.assert_called_once()
+        _read_tracker.pop(task_id, None)
+
+
+class TestCheckFileStalenessHostLocalGate:
+    """Regression guard: staleness warnings on write/patch must only compare
+    host mtimes when the backend is local. On a remote backend the host-side
+    mtime of a same-named path is unrelated to the sandboxed file, so a
+    "changed" comparison would be a false positive."""
+
+    @patch("tools.file_tools._is_host_local_env", return_value=False)
+    def test_returns_none_on_remote_env_even_when_mtime_differs(self, mock_is_local, tmp_path):
+        from tools.file_tools import _check_file_staleness, _read_tracker
+
+        f = tmp_path / "c.txt"
+        f.write_text("v1\n")
+        task_id = "staleness-remote"
+        _read_tracker[task_id] = {"read_timestamps": {str(f): -1.0}}  # deliberately stale
+
+        assert _check_file_staleness(str(f), task_id) is None
+        _read_tracker.pop(task_id, None)
+
+    @patch("tools.file_tools._is_host_local_env", return_value=True)
+    def test_warns_on_local_env_when_mtime_differs(self, mock_is_local, tmp_path):
+        from tools.file_tools import _check_file_staleness, _read_tracker
+
+        f = tmp_path / "d.txt"
+        f.write_text("v1\n")
+        task_id = "staleness-local"
+        _read_tracker[task_id] = {"read_timestamps": {str(f): -1.0}}  # older than real mtime
+
+        warning = _check_file_staleness(str(f), task_id)
+
+        assert warning is not None
+        assert "modified since you last read it" in warning
+        _read_tracker.pop(task_id, None)

@@ -1106,6 +1106,34 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+def _is_host_local_env(task_id: str = "default") -> bool:
+    """Return True iff this task's file I/O runs on the host filesystem.
+
+    Read-dedup and staleness detection compare host-side os.path.getmtime
+    values.  Those only correspond to the file actually read when the
+    terminal backend is local; on docker/singularity/ssh/modal/daytona the
+    files live inside the sandbox, so host mtimes are meaningless and must
+    not drive dedup/staleness.  Mirrors ShellFileOperations._lsp_local_only.
+    Side-effect free: never creates an environment.
+    """
+    try:
+        from tools.terminal_tool import _active_environments, _env_lock, _get_env_config
+        from tools.environments.local import LocalEnvironment
+    except Exception:
+        return False
+    try:
+        with _env_lock:
+            env = _active_environments.get(task_id)
+        if env is not None:
+            return isinstance(env, LocalEnvironment)
+    except Exception:
+        pass
+    try:
+        return _get_env_config().get("env_type") == "local"
+    except Exception:
+        return False
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -1227,7 +1255,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and _is_host_local_env(task_id):
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1511,6 +1539,9 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    # Host mtimes only describe the file when the backend is local.
+    if not _is_host_local_env(task_id):
+        return None
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):

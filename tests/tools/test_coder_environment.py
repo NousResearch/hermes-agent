@@ -650,6 +650,103 @@ def test_coder_environment_missing_exit_marker_returns_backend_error(monkeypatch
     assert "plain output without marker" in result["output"]
 
 
+def test_coder_resolve_agent_id_stops_rest_polling_after_cancel(monkeypatch):
+    stopped_workspace = {
+        "id": "workspace-123",
+        "name": "hermes-20260521-173045-ab12cd",
+        "latest_build": {
+            "transition": "stop",
+            "status": "stopped",
+            "resources": [],
+        },
+    }
+    pending_build = {"job": {"status": "running", "completed_at": None}}
+    requests_get = MagicMock(
+        side_effect=[
+            _FakeResponse({"workspaces": [stopped_workspace]}),
+            _FakeResponse(stopped_workspace),
+            _FakeResponse(pending_build),
+        ]
+    )
+    requests_post = MagicMock(return_value=_FakeResponse({"id": "build-123"}, status_code=201))
+    cancel_state = {"lock": threading.Lock(), "websocket": None, "cancelled": False}
+
+    def cancel_during_sleep(_seconds):
+        with cancel_state["lock"]:
+            cancel_state["cancelled"] = True
+
+    monkeypatch.setattr("tools.environments.coder.requests.get", requests_get)
+    monkeypatch.setattr("tools.environments.coder.requests.post", requests_post)
+    monkeypatch.setattr("tools.environments.coder.time.sleep", cancel_during_sleep)
+    monkeypatch.setattr(
+        "tools.environments.coder.coder_workspace_name_for_task",
+        lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
+    )
+
+    env = CoderEnvironment(
+        base_url="https://coder.example",
+        task_id="20260521_180000_ef3456",
+        api_key="secret-token",
+        timeout=30,
+        workspace_startup_timeout=120,
+        init_session=False,
+    )
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        env._resolve_agent_id(timeout=30, cancel_state=cancel_state)
+
+    assert requests_get.call_count == 3
+    assert requests_post.call_count == 1
+
+
+def test_coder_workspace_startup_timeout_bounds_agent_ready_wait(monkeypatch):
+    current_time = [1000.0]
+    sleep_calls = []
+    not_ready_workspace = {
+        "id": "workspace-123",
+        "name": "hermes-20260521-173045-ab12cd",
+        "latest_build": {
+            "transition": "start",
+            "resources": [
+                {"agents": [{"id": "agent-123", "status": "starting", "lifecycle_state": "created"}]}
+            ],
+        },
+    }
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        current_time[0] += seconds
+
+    def fake_get(url, **_kwargs):
+        if url.endswith("/api/v2/workspaces"):
+            return _FakeResponse({"workspaces": [not_ready_workspace]})
+        return _FakeResponse(not_ready_workspace)
+
+    monkeypatch.setattr("tools.environments.coder.requests.get", MagicMock(side_effect=fake_get))
+    monkeypatch.setattr("tools.environments.coder.requests.post", MagicMock())
+    monkeypatch.setattr("tools.environments.coder.time.monotonic", lambda: current_time[0])
+    monkeypatch.setattr("tools.environments.coder.time.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "tools.environments.coder.coder_workspace_name_for_task",
+        lambda task_id, db=None: "hermes-20260521-173045-ab12cd",
+    )
+
+    env = CoderEnvironment(
+        base_url="https://coder.example",
+        task_id="20260521_180000_ef3456",
+        api_key="secret-token",
+        timeout=30,
+        workspace_startup_timeout=3,
+        init_session=False,
+    )
+
+    with pytest.raises(TimeoutError, match="agent startup"):
+        env._resolve_agent_id(timeout=30, cancel_state=None)
+
+    assert sum(sleep_calls) <= 3
+    assert sleep_calls
+
+
 def test_coder_process_kill_sends_ctrl_c_to_active_pty(monkeypatch):
     connected = threading.Event()
     closed = threading.Event()

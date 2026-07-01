@@ -156,8 +156,10 @@ class CoderEnvironment(BaseEnvironment):
         self.task_id = task_id
         self.workspace = workspace_name or coder_workspace_name_for_task(task_id)
         self.api_key = api_key
+        self._workspace_startup_timeout = self._snapshot_timeout
         if workspace_startup_timeout is not None:
-            self._snapshot_timeout = int(workspace_startup_timeout)
+            self._workspace_startup_timeout = int(workspace_startup_timeout)
+            self._snapshot_timeout = self._workspace_startup_timeout
         self._workspace_id: str | None = None
         self._forward_env = normalize_forward_env_names(forward_env, config_name="coder_forward_env")
 
@@ -183,13 +185,61 @@ class CoderEnvironment(BaseEnvironment):
     def _workspace_builds_url(self, workspace_id: str) -> str:
         return f"{self.base_url}/api/v2/workspaces/{urllib.parse.quote(workspace_id, safe='')}/builds"
 
-    def _ensure_workspace(self) -> dict:
+    @staticmethod
+    def _startup_deadline(timeout: int | float, workspace_startup_timeout: int | float) -> float:
+        # Startup REST polling is part of the command, so it must respect both
+        # the command timeout and the Coder-specific startup bound.
+        return time.monotonic() + max(0.001, min(float(timeout), float(workspace_startup_timeout)))
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_state: dict | None) -> None:
+        if CoderEnvironment._cancel_requested(cancel_state):
+            raise RuntimeError("Coder workspace startup cancelled")
+
+    def _check_startup_deadline(self, deadline: float, what: str) -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Timed out waiting for Coder {what} for {self.workspace!r}")
+
+    def _rest_timeout(self, deadline: float | None, what: str) -> float:
+        if deadline is None:
+            return float(self.timeout)
+        self._check_startup_deadline(deadline, what)
+        remaining = deadline - time.monotonic()
+        configured_timeout = float(self.timeout)
+        if remaining + 0.05 >= configured_timeout:
+            return self.timeout
+        return max(0.001, min(configured_timeout, remaining))
+
+    def _sleep_for_startup(
+        self,
+        seconds: float,
+        *,
+        deadline: float,
+        cancel_state: dict | None,
+        what: str,
+    ) -> None:
+        remaining_sleep = max(0.0, seconds)
+        while remaining_sleep > 0:
+            self._raise_if_cancelled(cancel_state)
+            self._check_startup_deadline(deadline, what)
+            chunk = min(remaining_sleep, 0.2, max(0.0, deadline - time.monotonic()))
+            if chunk <= 0:
+                self._check_startup_deadline(deadline, what)
+                return
+            time.sleep(chunk)
+            remaining_sleep -= chunk
+        self._raise_if_cancelled(cancel_state)
+        self._check_startup_deadline(deadline, what)
+
+    def _ensure_workspace(self, *, deadline: float | None = None, cancel_state: dict | None = None) -> dict:
+        self._raise_if_cancelled(cancel_state)
         payload = _find_workspace_by_name(
             base_url=self.base_url,
             workspace_name=self.workspace,
             api_key=self.api_key,
-            timeout=self.timeout,
+            timeout=self._rest_timeout(deadline, "workspace lookup"),
         )
+        self._raise_if_cancelled(cancel_state)
         if payload is None:
             raise RuntimeError(f"Coder workspace {self.workspace!r} does not exist")
         workspace_id = payload.get("id") if isinstance(payload, dict) else None
@@ -198,26 +248,36 @@ class CoderEnvironment(BaseEnvironment):
         self._workspace_id = workspace_id
         return payload
 
-    def _get_workspace_payload(self) -> dict:
-        self._ensure_workspace()
+    def _get_workspace_payload(self, *, deadline: float | None = None, cancel_state: dict | None = None) -> dict:
+        self._ensure_workspace(deadline=deadline, cancel_state=cancel_state)
+        self._raise_if_cancelled(cancel_state)
         response = requests.get(
             self._workspace_url(),
             headers=self._headers(),
-            timeout=self.timeout,
+            timeout=self._rest_timeout(deadline, "workspace payload"),
         )
+        self._raise_if_cancelled(cancel_state)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError(f"Unexpected workspace payload for Coder workspace {self.workspace!r}")
         return payload
 
-    def _start_workspace(self, workspace_id: str) -> str:
+    def _start_workspace(
+        self,
+        workspace_id: str,
+        *,
+        deadline: float | None = None,
+        cancel_state: dict | None = None,
+    ) -> str:
+        self._raise_if_cancelled(cancel_state)
         response = requests.post(
             self._workspace_builds_url(workspace_id),
             headers=self._headers(),
             json={"transition": "start"},
-            timeout=self.timeout,
+            timeout=self._rest_timeout(deadline, "workspace start"),
         )
+        self._raise_if_cancelled(cancel_state)
         response.raise_for_status()
         payload = response.json()
         build_id = payload.get("id")
@@ -225,14 +285,22 @@ class CoderEnvironment(BaseEnvironment):
             raise RuntimeError(f"Coder start build for workspace {self.workspace!r} did not return a build id")
         return build_id
 
-    def _wait_for_build_completion(self, build_id: str) -> None:
-        deadline = time.time() + max(self.timeout, 300)
-        while time.time() < deadline:
+    def _wait_for_build_completion(
+        self,
+        build_id: str,
+        *,
+        deadline: float,
+        cancel_state: dict | None = None,
+    ) -> None:
+        while True:
+            self._raise_if_cancelled(cancel_state)
+            self._check_startup_deadline(deadline, f"workspace build {build_id} to complete")
             response = requests.get(
                 self._workspace_build_url(build_id),
                 headers=self._headers(),
-                timeout=self.timeout,
+                timeout=self._rest_timeout(deadline, f"workspace build {build_id} to complete"),
             )
+            self._raise_if_cancelled(cancel_state)
             response.raise_for_status()
             payload = response.json()
             job = payload.get("job") or {}
@@ -243,8 +311,12 @@ class CoderEnvironment(BaseEnvironment):
                         f"Coder workspace build {build_id} finished with status {status or 'unknown'}"
                     )
                 return
-            time.sleep(2)
-        raise TimeoutError(f"Timed out waiting for Coder workspace build {build_id} to complete")
+            self._sleep_for_startup(
+                2,
+                deadline=deadline,
+                cancel_state=cancel_state,
+                what=f"workspace build {build_id} to complete",
+            )
 
     @staticmethod
     def _agent_startup_ready(agent: dict) -> bool:
@@ -259,9 +331,15 @@ class CoderEnvironment(BaseEnvironment):
 
         return True
 
-    def _wait_for_agent_ready(self, payload: dict) -> dict:
-        deadline = time.time() + max(self.timeout, 120)
+    def _wait_for_agent_ready(
+        self,
+        payload: dict,
+        *,
+        deadline: float,
+        cancel_state: dict | None = None,
+    ) -> dict:
         while True:
+            self._raise_if_cancelled(cancel_state)
             latest_build = payload.get("latest_build") or {}
             resources = latest_build.get("resources") or []
             for resource in resources:
@@ -272,16 +350,24 @@ class CoderEnvironment(BaseEnvironment):
                     if self._agent_startup_ready(agent):
                         return agent
 
-            if time.time() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for Coder workspace agent startup for {self.workspace!r}"
-                )
+            self._check_startup_deadline(deadline, "workspace agent startup")
+            self._sleep_for_startup(
+                2,
+                deadline=deadline,
+                cancel_state=cancel_state,
+                what="workspace agent startup",
+            )
+            payload = self._get_workspace_payload(deadline=deadline, cancel_state=cancel_state)
 
-            time.sleep(2)
-            payload = self._get_workspace_payload()
-
-    def _resolve_agent_id(self) -> str:
-        payload = self._get_workspace_payload()
+    def _resolve_agent_id(
+        self,
+        *,
+        timeout: int | float | None = None,
+        cancel_state: dict | None = None,
+    ) -> str:
+        command_timeout = self.timeout if timeout is None else timeout
+        deadline = self._startup_deadline(command_timeout, self._workspace_startup_timeout)
+        payload = self._get_workspace_payload(deadline=deadline, cancel_state=cancel_state)
         latest_build = payload.get("latest_build") or {}
         transition = (latest_build.get("transition") or "").lower()
 
@@ -295,16 +381,20 @@ class CoderEnvironment(BaseEnvironment):
             workspace_id = payload.get("id")
             if not workspace_id:
                 raise RuntimeError(f"Coder workspace {self.workspace!r} did not include a workspace id")
-            build_id = self._start_workspace(workspace_id)
-            self._wait_for_build_completion(build_id)
-            payload = self._get_workspace_payload()
+            build_id = self._start_workspace(workspace_id, deadline=deadline, cancel_state=cancel_state)
+            self._wait_for_build_completion(build_id, deadline=deadline, cancel_state=cancel_state)
+            payload = self._get_workspace_payload(deadline=deadline, cancel_state=cancel_state)
         else:
             job = latest_build.get("job") or {}
             if latest_build.get("id") and not job.get("completed_at"):
-                self._wait_for_build_completion(latest_build["id"])
-                payload = self._get_workspace_payload()
+                self._wait_for_build_completion(
+                    latest_build["id"],
+                    deadline=deadline,
+                    cancel_state=cancel_state,
+                )
+                payload = self._get_workspace_payload(deadline=deadline, cancel_state=cancel_state)
 
-        agent = self._wait_for_agent_ready(payload)
+        agent = self._wait_for_agent_ready(payload, deadline=deadline, cancel_state=cancel_state)
         agent_id = agent.get("id")
         if agent_id:
             return agent_id
@@ -436,7 +526,7 @@ class CoderEnvironment(BaseEnvironment):
         stdin_data: str | None = None,
         cancel_state: dict | None = None,
     ) -> tuple[str, int]:
-        agent_id = self._resolve_agent_id()
+        agent_id = self._resolve_agent_id(timeout=timeout, cancel_state=cancel_state)
         reconnect_id = str(uuid.uuid4())
         exit_marker = self._exit_marker(reconnect_id)
         pty_command = self._pty_command(cmd_string, login=login, exit_marker=exit_marker)

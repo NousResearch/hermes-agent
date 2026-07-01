@@ -491,6 +491,13 @@ def _resolve_runtime_from_pool_entry(
     # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
     if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
         base_url = re.sub(r"/v1/?$", "", base_url)
+    elif api_mode == "chat_completions" and provider in {"opencode-zen", "opencode-go"}:
+        # Ensure /v1 suffix for OpenAI-compatible models (GLM, Kimi, etc.)
+        # Fixes: config may be missing /v1 if user manually edited or previous
+        # bug saved without it. The OpenAI SDK does NOT auto-append /v1, so we
+        # must ensure it's present.
+        if base_url and not re.search(r"/v1/?$", base_url):
+            base_url = base_url.rstrip("/") + "/v1"
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".

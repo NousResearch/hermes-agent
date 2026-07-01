@@ -558,6 +558,12 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # Local carried fixes re-applied after the 2026-07-01 upstream update
+            # reset them away: self-dev holds curated Engineering Bay / loop test
+            # deliverables; script-tests holds test_*.py for deterministic live
+            # scripts in ~/.hermes/scripts/. Neither may be categorised "test" and
+            # swept — that silently destroyed test coverage (caught 2026-06-30).
+            "self-dev", "script-tests",
         }:
             return None
         if top == "cron" or top == "cronjobs":

@@ -161,6 +161,76 @@ class TestMiniMaxAnthropicWire:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestZAIGLMAnthropicWire:
+    """Z.AI / Zhipu GLM on its Anthropic-compatible endpoint.
+
+    Z.AI documents cache_control support on ``.../api/anthropic``
+    (0.1x read pricing, 5m/1h TTL). The blanket ``is_claude`` gate on
+    the third-party-gateway branch left GLM-named models paying full
+    input cost every turn. Allowlist Z.AI/Zhipu explicitly via provider
+    id or host match.
+    """
+
+    def test_glm52_on_provider_zai_caches_native_layout(self):
+        agent = _make_agent(
+            provider="zai",
+            base_url="https://api.z.ai/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_glm52_on_provider_zhipu_caches_native_layout(self):
+        agent = _make_agent(
+            provider="zhipu",
+            base_url="https://api.z.ai/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_custom_provider_pointed_at_zai_host_caches(self):
+        # User wires a custom provider manually at Z.AI's Anthropic URL;
+        # host match alone should be sufficient to enable caching.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.z.ai/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_glm_on_bigmodel_cn_host_caches(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://open.bigmodel.cn/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-4.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_zai_provider_on_openai_wire_does_not_cache(self):
+        # chat_completions transport -- Z.AI's cache_control support is
+        # documented only for the /anthropic endpoint. Stay off.
+        agent = _make_agent(
+            provider="zai",
+            base_url="https://api.z.ai/api/paas/v4",
+            api_mode="chat_completions",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_kill_switch_disables_zai_cache(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ZAI_PROMPT_CACHE", "0")
+        agent = _make_agent(
+            provider="zai",
+            base_url="https://api.z.ai/api/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestOpenAIWireFormatOnCustomProvider:
     """A custom provider using chat_completions (OpenAI wire) should NOT get caching."""
 

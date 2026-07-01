@@ -1084,8 +1084,16 @@ def init_agent(
     
     # Show prompt caching status
     if agent._use_prompt_caching and not agent.quiet_mode:
+        _prov_l = (agent.provider or "").lower()
+        _is_zai_cache = agent._use_native_cache_layout and (
+            _prov_l in {"zai", "glm", "z-ai", "z.ai", "zhipu"}
+            or base_url_host_matches(agent.base_url or "", "z.ai")
+            or base_url_host_matches(agent.base_url or "", "bigmodel.cn")
+        )
         if agent._use_native_cache_layout and agent.provider == "anthropic":
             source = "native Anthropic"
+        elif _is_zai_cache:
+            source = "Z.AI/GLM Anthropic-wire (cache_control)"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"
         else:

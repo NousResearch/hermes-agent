@@ -2246,3 +2246,110 @@ class TestRunStillCurrentGuard:
         adapter.send.assert_not_called()
         adapter.edit_message.assert_not_called()
         assert consumer._final_response_sent is False
+
+
+# ── _strip_orphan_close_tags regression tests ──────────────────────────
+# Regression guard for the /think tag leak: when the stream consumer is
+# NOT inside a think block, stray close tags like </think> must be
+# stripped before text is accumulated — otherwise they leak to Telegram.
+# (Reported by Tony on 2026-06-09.)
+
+
+class TestStripOrphanCloseTags:
+    """Verify orphan close tags are stripped from text the stream consumer
+    would accumulate while NOT inside a think block."""
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "</think>",
+            "</thinking>",
+            "</thought>",
+            "</reasoning>",
+            "</REASONING_SCRATCHPAD>",
+            "</THINKING>",
+        ],
+    )
+    def test_all_close_tag_variants_stripped(self, tag):
+        text = f"before{tag}after"
+        result = GatewayStreamConsumer._strip_orphan_close_tags(text)
+        assert tag not in result
+        assert "before" in result and "after" in result
+
+    def test_no_close_tag_passthrough(self):
+        text = "Just normal text with no tags."
+        assert GatewayStreamConsumer._strip_orphan_close_tags(text) == text
+
+    def test_empty_string(self):
+        assert GatewayStreamConsumer._strip_orphan_close_tags("") == ""
+
+    def test_close_tag_with_trailing_whitespace(self):
+        """The trailing whitespace after the tag should also be eaten so
+        surrounding prose flows naturally (matches StreamingThinkScrubber)."""
+        text = "Looking at this now.\n\n</think>\n\nThe answer is 42."
+        result = GatewayStreamConsumer._strip_orphan_close_tags(text)
+        assert "</think>" not in result
+        assert "Looking at this now" in result
+        assert "The answer is 42" in result
+
+    def test_multiple_orphan_close_tags(self):
+        text = "foo </think> bar </thinking> baz"
+        result = GatewayStreamConsumer._strip_orphan_close_tags(text)
+        assert "</think>" not in result
+        assert "</thinking>" not in result
+        assert "foo" in result and "bar" in result and "baz" in result
+
+    def test_orphan_close_does_not_eat_following_prose(self):
+        text = "answer </think> then this should remain"
+        result = GatewayStreamConsumer._strip_orphan_close_tags(text)
+        assert result == "answer then this should remain"
+
+    def test_partial_close_tag_not_stripped(self):
+        """A partial tag like '</thi' should not be eaten — it's not yet
+        a recognized close tag, and eating it would corrupt following text."""
+        text = "before </thin after"
+        result = GatewayStreamConsumer._strip_orphan_close_tags(text)
+        assert result == text  # unchanged — partial tag, no stripping
+
+    def test_filter_and_accumulate_strips_orphan_close(self):
+        """End-to-end: feed an orphan close tag through _filter_and_accumulate
+        and verify the accumulated text does not contain the raw tag."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate a stream delta that contains an orphan close tag with
+        # surrounding prose (the actual leak pattern reported 2026-06-09).
+        consumer._filter_and_accumulate(
+            "Here is the result you asked for.\n\n</think>\n\n"
+            "The answer is 42 and the cat is black."
+        )
+        # No raw close tag should remain in the accumulated text.
+        for tag in GatewayStreamConsumer._CLOSE_THINK_TAGS:
+            assert tag not in consumer._accumulated, (
+                f"Orphan close tag {tag!r} leaked into accumulated text: "
+                f"{consumer._accumulated!r}"
+            )
+        # Surrounding prose must survive intact.
+        assert "Here is the result" in consumer._accumulated
+        assert "The answer is 42" in consumer._accumulated
+
+    def test_flush_think_buffer_strips_orphan_close(self):
+        """The end-of-stream flush should also strip orphan close tags from
+        any held-back buffer text."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        config = StreamConsumerConfig(cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Plant a held-back buffer with an orphan close tag (simulates the
+        # buffer being held while waiting for a possible opening tag, then
+        # flushed when the stream ends).
+        consumer._think_buffer = "trailing prose </think> more"
+        consumer._in_think_block = False
+        consumer._flush_think_buffer()
+        for tag in GatewayStreamConsumer._CLOSE_THINK_TAGS:
+            assert tag not in consumer._accumulated
+        assert "trailing prose" in consumer._accumulated
+        assert "more" in consumer._accumulated

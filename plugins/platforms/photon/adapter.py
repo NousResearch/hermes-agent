@@ -39,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 if TYPE_CHECKING:
     # Type checkers see ``httpx`` as the always-imported module, so every use
     # site type-checks cleanly. The runtime fallback below keeps the optional
@@ -883,6 +885,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            creationflags=windows_hide_flags(),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

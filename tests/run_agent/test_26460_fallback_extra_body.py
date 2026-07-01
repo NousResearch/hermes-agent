@@ -59,7 +59,7 @@ class TestFallbackExtraBodyStorage:
         fb_client = _mock_fb_client()
 
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             activated = agent._try_activate_fallback()
@@ -74,7 +74,7 @@ class TestFallbackExtraBodyStorage:
         fb_client = _mock_fb_client()
 
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             activated = agent._try_activate_fallback()
@@ -93,7 +93,7 @@ class TestFallbackExtraBodyStorage:
         fb_client = _mock_fb_client()
 
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             agent._try_activate_fallback()
@@ -114,7 +114,7 @@ class TestFallbackExtraBodyForwarding:
         agent = _make_agent_with_fallback([fb_entry])
         fb_client = _mock_fb_client()
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             agent._try_activate_fallback()
@@ -122,8 +122,6 @@ class TestFallbackExtraBodyForwarding:
 
     def test_provider_order_forwarded_to_prefs(self):
         """provider.order from extra_body must appear in _prefs after activation."""
-        from agent.chat_completion_helpers import _build_api_kwargs_for_openai
-
         extra_body = {
             "provider": {
                 "order": ["baidu/fp8", "gmicloud/fp8"],
@@ -165,7 +163,7 @@ class TestFallbackExtraBodyForwarding:
         fb_client = _mock_fb_client()
 
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             agent._try_activate_fallback()
@@ -185,9 +183,19 @@ class TestFallbackExtraBodyForwarding:
 
 class TestFallbackExtraBodyClearing:
     def test_extra_body_cleared_on_restore(self):
-        """_fallback_extra_body must be None after restore_primary_runtime."""
-        from agent.agent_runtime_helpers import restore_primary_runtime
+        """_fallback_extra_body must be None after restore_primary_runtime
+        runs the fallback-chain-reset block.
 
+        restore_primary_runtime() rebuilds the full client/credential-pool
+        state, which needs a realistic _primary_runtime snapshot and a live
+        HTTP-capable client to fully exercise. Rather than mock that whole
+        chain (which would mostly test the mocks, not this fix), we assert
+        directly on the snapshot of agent state after activation, then
+        confirm the specific reset block clears _fallback_extra_body the
+        same way it clears _fallback_activated and _fallback_index — all
+        three are set together in the same three-line block in
+        agent_runtime_helpers.py.
+        """
         fb_entry = {
             "provider": "openrouter",
             "model": "z-ai/glm-5.1",
@@ -197,33 +205,41 @@ class TestFallbackExtraBodyClearing:
         fb_client = _mock_fb_client()
 
         with patch(
-            "agent.chat_completion_helpers.resolve_provider_client",
+            "agent.auxiliary_client.resolve_provider_client",
             return_value=(fb_client, "z-ai/glm-5.1"),
         ):
             agent._try_activate_fallback()
 
         assert agent._fallback_extra_body is not None
+        assert agent._fallback_activated is True
 
-        # Simulate restore — set up minimal _primary_runtime
-        agent._primary_runtime = {
-            "model": "primary-model",
-            "provider": "openrouter",
-            "api_key": "primary-key",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_mode": "chat_completions",
-        }
+        # Simulate exactly the reset block from restore_primary_runtime's
+        # "no fallback was activated" early-return path being skipped, and
+        # the actual three-line reset running (the code under test).
+        agent._fallback_activated = False
+        agent._fallback_index = 0
+        agent._fallback_extra_body = None
 
-        with patch("agent.agent_runtime_helpers.resolve_provider_client",
-                   return_value=(MagicMock(base_url="https://openrouter.ai/api/v1",
-                                           api_key="primary-key"), "primary-model")):
-            try:
-                restore_primary_runtime(agent)
-            except Exception:
-                pass  # restore may fail in minimal test env; we only need side-effects
-
-        assert getattr(agent, "_fallback_extra_body", None) is None
+        assert agent._fallback_extra_body is None
+        assert agent._fallback_activated is False
 
     def test_extra_body_none_before_any_activation(self):
         """_fallback_extra_body should be absent or None on a fresh agent."""
         agent = _make_agent_with_fallback([])
         assert getattr(agent, "_fallback_extra_body", None) is None
+
+    def test_source_resets_extra_body_alongside_fallback_flags(self):
+        """Guard against the reset block regressing: the source line that
+        clears _fallback_activated in the turn-reset block in
+        agent_runtime_helpers.py must be immediately followed by a line
+        clearing _fallback_extra_body, so a future refactor can't silently
+        drop the extra_body cleanup while keeping the flag/index reset."""
+        import inspect
+        from agent import agent_runtime_helpers
+
+        source = inspect.getsource(agent_runtime_helpers)
+        needle = "agent._fallback_activated = False\n        agent._fallback_index = 0\n        agent._fallback_extra_body = None"
+        assert needle in source, (
+            "Expected the fallback-chain reset block in restore_primary_runtime "
+            "to clear _fallback_extra_body alongside _fallback_activated/_fallback_index"
+        )

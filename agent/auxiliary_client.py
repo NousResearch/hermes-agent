@@ -3247,6 +3247,24 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized == "vertex":
+            # Mirrors run_agent.py's _try_refresh_vertex_client_credentials
+            # for the main conversation loop. Without this branch, an
+            # auxiliary Vertex client (vision, title generation, reflection,
+            # context compression, ...) that 401s on its ~1h token expiry
+            # falls through to the final `return False` below: the stale
+            # client is never evicted from _client_cache (whose cache key
+            # ignores the rotating bearer token), so every subsequent
+            # auxiliary Vertex call keeps 401ing until process restart.
+            from agent.vertex_adapter import get_vertex_config
+
+            token, base_url = get_vertex_config()
+            if not isinstance(token, str) or not token.strip():
+                return False
+            if not isinstance(base_url, str) or not base_url.strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
     except Exception as exc:
         logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
         return False

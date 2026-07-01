@@ -2439,6 +2439,30 @@ def convert_messages_to_anthropic(
     return system, result
 
 
+# Valid Anthropic thinking.display values (per SDK ThinkingConfig*Param stubs).
+_THINKING_DISPLAY_VALUES = ("summarized", "omitted")
+
+
+def _resolve_thinking_display(reasoning_config: Optional[Dict[str, Any]]) -> str:
+    """Resolve the Anthropic ``thinking.display`` value for a request.
+
+    Reads an optional ``reasoning_config["display"]`` override and validates it
+    against the SDK-supported values (``"summarized"`` | ``"omitted"``).
+
+    Default is ``"summarized"`` so Hermes always receives the reasoning text for
+    its CLI activity feed and the API-server reasoning-exposure paths. A caller
+    that wants to suppress reasoning text on the wire (save returned tokens; the
+    model still thinks, the signature is still returned for continuity) sets
+    ``reasoning_config["display"] = "omitted"``. Any unknown value falls back to
+    ``"summarized"`` so a bad config never produces an invalid request.
+    """
+    if isinstance(reasoning_config, dict):
+        raw = reasoning_config.get("display")
+        if isinstance(raw, str) and raw.strip().lower() in _THINKING_DISPLAY_VALUES:
+            return raw.strip().lower()
+    return "summarized"
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -2624,6 +2648,14 @@ def build_anthropic_kwargs(
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
+    #
+    # The display can be overridden per-request via reasoning_config["display"]
+    # ("summarized" | "omitted"). "omitted" suppresses the reasoning *text* on
+    # the wire (the model still thinks; you just stop receiving + paying for the
+    # summary) while keeping the signature for multi-turn continuity. Default
+    # stays "summarized" so Hermes' own UI / API-exposure paths always have
+    # reasoning to surface; only an explicit opt-out flips it to "omitted".
+    _thinking_display = _resolve_thinking_display(reasoning_config)
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
@@ -2632,7 +2664,7 @@ def build_anthropic_kwargs(
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
-                    "display": "summarized",
+                    "display": _thinking_display,
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a

@@ -819,10 +819,22 @@ def normalize_usage(
             )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
+    # reasoning_tokens lives under different sub-objects depending on the API
+    # shape: `output_tokens_details` (Anthropic / OpenAI Responses) vs
+    # `completion_tokens_details` (OpenAI chat/completions). Check both, then
+    # fall back to a flat `reasoning_tokens` field. Without the
+    # completion_tokens_details branch, reasoning_tokens was always 0 in
+    # chat_completions mode (issue #18466).
     reasoning_tokens = 0
-    output_details = getattr(response_usage, "output_tokens_details", None)
-    if output_details:
-        reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    for _details_attr in ("output_tokens_details", "completion_tokens_details"):
+        _details = getattr(response_usage, _details_attr, None)
+        if _details:
+            _rt = _to_int(getattr(_details, "reasoning_tokens", 0))
+            if _rt:
+                reasoning_tokens = _rt
+                break
+    if not reasoning_tokens:
+        reasoning_tokens = _to_int(getattr(response_usage, "reasoning_tokens", 0))
 
     return CanonicalUsage(
         input_tokens=input_tokens,

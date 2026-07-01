@@ -131,6 +131,51 @@ def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     assert "Goal:" in (t.body or "")
 
 
+def test_specify_task_strips_think_block_from_fallback_body(kanban_home):
+    """A think-enabled auxiliary model's reasoning must not leak into the
+    task body, whether or not it breaks the JSON extraction outright."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="keep title", triage=True)
+
+    content = (
+        "<think>The task mentions a {set} of steps, let me reason about "
+        "this for a bit before answering.</think>\n"
+        '{"title": "Refined", "body": "Concrete plan."}'
+    )
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is True
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t.title == "Refined"
+    assert t.body == "Concrete plan."
+    assert "<think>" not in (t.body or "")
+    assert "reason about" not in (t.body or "")
+
+
+def test_specify_task_strips_unterminated_think_block_from_fallback_body(kanban_home):
+    """An unterminated <think> block (truncated by max_tokens) must not
+    become the fallback task body verbatim."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="keep title", triage=True)
+
+    content = "<think>Let me reason about the best plan for this task"
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    # Everything is stripped -> empty raw -> explicit "empty response" failure,
+    # not a leaked-reasoning body.
+    assert outcome.ok is False
+    assert "empty" in outcome.reason.lower()
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t.status == "triage"
+    assert "<think>" not in (t.body or "")
+
+
 def test_specify_task_rejects_non_triage_task(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ready task")

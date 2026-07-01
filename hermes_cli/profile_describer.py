@@ -257,6 +257,15 @@ def describe_profile(
     except Exception:
         raw = ""
 
+    # Think-enabled auxiliary models (MiniMax M2.7, DeepSeek, etc.) can emit
+    # inline <think>...</think> reasoning even for this structured-output
+    # prompt — max_tokens=400 above makes an unterminated block especially
+    # likely. Strip before both JSON extraction and the raw-text fallback
+    # below, or the leaked reasoning becomes the profile's dashboard-visible
+    # description. Same leak class fixed in agent/title_generator.py.
+    from agent.agent_runtime_helpers import strip_think_blocks
+    raw = strip_think_blocks(None, raw).strip()
+
     parsed = _extract_json_blob(raw)
     if parsed is None:
         # Fall back: take the raw text trimmed to one paragraph.

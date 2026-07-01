@@ -210,6 +210,15 @@ def specify_task(
     except Exception:
         raw = ""
 
+    # Think-enabled auxiliary models (MiniMax M2.7, DeepSeek, etc.) can emit
+    # inline <think>...</think> reasoning even for this structured-output
+    # prompt. Strip it before both JSON extraction and the raw-text fallback
+    # below — a brace inside the reasoning breaks the greedy first-'{'/last-'}'
+    # slice, and an unterminated block makes the leaked reasoning itself the
+    # fallback task body. Same leak class fixed in agent/title_generator.py.
+    from agent.agent_runtime_helpers import strip_think_blocks
+    raw = strip_think_blocks(None, raw).strip()
+
     parsed = _extract_json_blob(raw)
 
     new_title: Optional[str]

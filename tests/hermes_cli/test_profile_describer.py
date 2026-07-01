@@ -160,6 +160,51 @@ def test_describer_handles_malformed_llm_response(profile_env, monkeypatch):
     assert "Plain text description" in (outcome.description or "")
 
 
+def test_describer_strips_think_block_from_fallback_description(profile_env, monkeypatch):
+    """A think-enabled auxiliary model's reasoning must not leak into the
+    profile's dashboard-visible description, whether or not it breaks JSON
+    extraction outright."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+
+    content = (
+        "<think>The profile has a {set} of Python skills, let me reason "
+        "about how to phrase this.</think>\n\n"
+        "Writes Python codebases."
+    )
+    with _patch_aux_client(content), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")
+
+    assert outcome.ok, outcome.reason
+    assert outcome.description == "Writes Python codebases."
+    assert "<think>" not in (outcome.description or "")
+    assert "reason about" not in (outcome.description or "")
+
+
+def test_describer_strips_unterminated_think_block_from_fallback_description(
+    profile_env, monkeypatch
+):
+    """An unterminated <think> block (truncated by max_tokens=400) must not
+    become the fallback description verbatim."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+
+    content = "<think>Let me reason about the best way to describe this profile"
+    with _patch_aux_client(content), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")
+
+    # Everything is stripped -> empty raw -> explicit "empty response"
+    # failure, not a leaked-reasoning description.
+    assert outcome.ok is False
+    assert "empty" in outcome.reason.lower()
+
+
 def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
     monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: False)
     monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)

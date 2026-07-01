@@ -488,7 +488,7 @@ class TestWebToolPolicy:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
 
         assert checked_urls == ["https://allowed.test"]
         assert result["results"][0]["url"] == "http://169.254.169.254/latest/meta-data/"

@@ -21,7 +21,9 @@ from acp.schema import (
     LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
+    ResourceContentBlock,
     ResumeSessionResponse,
+    EmbeddedResourceContentBlock,
     SessionModelState,
     SessionModeState,
     SetSessionConfigOptionResponse,
@@ -29,14 +31,18 @@ from acp.schema import (
     SetSessionModeResponse,
     SessionInfo,
     SessionInfoUpdate,
+    TextResourceContents,
+    BlobResourceContents,
+    ImageContentBlock,
     TextContentBlock,
+    AudioContentBlock,
     ToolCallProgress,
     ToolCallStart,
     UsageUpdate,
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import HermesACPAgent, HERMES_VERSION, _extract_text
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -59,10 +65,18 @@ async def test_new_session_exposes_edit_approvals_as_modes_and_model_config_opti
     resp = await agent.new_session(cwd="/tmp")
 
     assert resp.config_options is not None
-    assert len(resp.config_options) >= 1
+    assert len(resp.config_options) >= 2
     model_opt = resp.config_options[0]
     assert model_opt.id == "model"
     assert model_opt.type == "select"
+    mode_opt = next(opt for opt in resp.config_options if opt.id == "mode")
+    assert mode_opt.category == "mode"
+    assert mode_opt.current_value == "default"
+    assert [opt.value for opt in mode_opt.options] == [
+        "default",
+        "accept_edits",
+        "dont_ask",
+    ]
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -85,6 +99,21 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     assert isinstance(update, SetSessionConfigOptionResponse)
     assert update.config_options == []
     assert getattr(state, "mode", None) == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_accepts_mode_selector(agent):
+    resp = await agent.new_session(cwd="/tmp")
+    update = await agent.set_config_option(
+        "mode",
+        resp.session_id,
+        "dont_ask",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "mode", None) == "dont_ask"
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +142,10 @@ class TestInitialize:
         caps = resp.agent_capabilities
         assert isinstance(caps, AgentCapabilities)
         assert caps.load_session is True
+        assert caps.prompt_capabilities is not None
+        assert caps.prompt_capabilities.image is True
+        assert caps.prompt_capabilities.audio is False
+        assert caps.prompt_capabilities.embedded_context is True
         assert caps.session_capabilities is not None
         assert caps.session_capabilities.fork is not None
         assert caps.session_capabilities.list is not None
@@ -124,6 +157,9 @@ class TestInitialize:
         resp = await agent.initialize(protocol_version=1)
         payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
         assert payload["loadSession"] is True
+        assert payload["promptCapabilities"]["image"] is True
+        assert payload["promptCapabilities"]["audio"] is False
+        assert payload["promptCapabilities"]["embeddedContext"] is True
         session_caps = payload["sessionCapabilities"]
         assert "fork" in session_caps
         assert "list" in session_caps
@@ -271,6 +307,8 @@ class TestSessionOps:
         assert help_cmd is not None
         assert help_cmd.description == "List available commands"
         assert help_cmd.input is None
+        assert help_cmd.field_meta["displayName"] == "Help"
+        assert help_cmd.field_meta["icon"] == "question-mark"
 
     @pytest.mark.asyncio
     async def test_send_available_commands_update(self, agent):
@@ -303,6 +341,9 @@ class TestSessionOps:
         )
         assert model_cmd.input is not None
         assert model_cmd.input.root.hint == "model name to switch to"
+        assert model_cmd.field_meta["displayName"] == "Model"
+        assert model_cmd.field_meta["toolTip"]
+        assert model_cmd.field_meta["icon"] == "cpu"
 
     def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
         state = mock_manager.create_session(cwd="/tmp")
@@ -1010,6 +1051,54 @@ class TestSessionConfiguration:
 
 
 class TestPrompt:
+    def test_extract_text_handles_all_content_block_types(self, tmp_path):
+        attached = tmp_path / "attached.txt"
+        attached.write_text("from file uri", encoding="utf-8")
+        image = tmp_path / "diagram.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        prompt = [
+            TextContentBlock(type="text", text="typed text"),
+            ResourceContentBlock(type="resource_link", uri=attached.as_uri(), name="attached.txt"),
+            EmbeddedResourceContentBlock(
+                type="resource",
+                resource=TextResourceContents(uri="memory://note.txt", mimeType="text/plain", text="embedded text"),
+            ),
+            EmbeddedResourceContentBlock(
+                type="resource",
+                resource=BlobResourceContents(
+                    uri="memory://blob.txt",
+                    mimeType="text/plain",
+                    blob="embedded blob text",
+                ),
+            ),
+            ImageContentBlock(type="image", mimeType="image/png", uri=image.as_uri(), data="iVBORw0KGgo="),
+            AudioContentBlock(type="audio", mimeType="audio/wav", data="UklGRg=="),
+        ]
+
+        extracted = _extract_text(prompt)
+
+        assert "typed text" in extracted
+        assert "from file uri" in extracted
+        assert "embedded text" in extracted
+        assert "embedded blob text" in extracted
+        assert "[Image attachment:" in extracted
+        assert "[Audio attachment: audio/wav]" in extracted
+
+    def test_extract_text_handles_unreadable_resource_link(self, tmp_path):
+        missing = tmp_path / "missing.txt"
+
+        extracted = _extract_text([
+            ResourceContentBlock(
+                type="resource_link",
+                uri=missing.as_uri(),
+                name="missing.txt",
+            )
+        ])
+
+        assert "missing.txt" in extracted
+        assert "Could not read attached file" in extracted
+
     @pytest.mark.asyncio
     async def test_prompt_returns_refusal_for_unknown_session(self, agent):
         prompt = [TextContentBlock(type="text", text="hello")]
@@ -1020,9 +1109,52 @@ class TestPrompt:
     @pytest.mark.asyncio
     async def test_prompt_returns_end_turn_for_empty_message(self, agent):
         new_resp = await agent.new_session(cwd=".")
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
         prompt = [TextContentBlock(type="text", text="   ")]
         resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
         assert resp.stop_reason == "end_turn"
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        assert any(
+            getattr(getattr(update, "content", None), "text", "") == "Prompt was empty or contained no readable text/resources."
+            for update in updates
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_passes_resource_only_prompt_to_agent(self, agent, tmp_path):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        attached = tmp_path / "context.txt"
+        attached.write_text("resource-only prompt body", encoding="utf-8")
+
+        captured: dict[str, object] = {}
+
+        def mock_run(user_message, **kwargs):
+            captured["user_message"] = user_message
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [
+            ResourceContentBlock(
+                type="resource_link",
+                uri=attached.as_uri(),
+                name="context.txt",
+            )
+        ]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        assert isinstance(captured["user_message"], str)
+        assert "resource-only prompt body" in captured["user_message"]
 
     @pytest.mark.asyncio
     async def test_prompt_runs_agent(self, agent):
@@ -1055,6 +1187,43 @@ class TestPrompt:
         assert state.agent.stream_delta_callback is not None
         assert state.agent.reasoning_callback is not None
         assert state.agent.thinking_callback is None
+
+    @pytest.mark.asyncio
+    async def test_prompt_sends_plan_update_when_todo_tool_starts(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.tool_progress_callback(
+                "tool.started",
+                name="todo",
+                args={
+                    "todos": [
+                        {"id": "a", "content": "First", "status": "in_progress"},
+                        {"id": "b", "content": "Second", "status": "pending"},
+                    ]
+                },
+            )
+            return {"final_response": "planned", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="plan it")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        plan = next(update for update in updates if getattr(update, "session_update", None) == "plan")
+        assert isinstance(plan, AgentPlanUpdate)
+        assert [entry.content for entry in plan.entries] == ["First", "Second"]
+        assert [entry.status for entry in plan.entries] == ["in_progress", "pending"]
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

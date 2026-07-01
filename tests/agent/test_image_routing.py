@@ -97,11 +97,33 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_respects_aux_vision_override_even_for_vision_model(self):
-        """If the user configured a dedicated vision backend, don't bypass it."""
-        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+    def test_auto_respects_aux_vision_force_text_override(self):
+        """An explicit aux-vision block used to force text mode by default.
+        After the fix it only does so when the user opts in via
+        ``auxiliary.vision.force_text: true`` — otherwise the native main
+        model wins. This test pins the opt-in behaviour.
+        """
+        cfg = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-2.5-flash",
+                    "force_text": True,
+                }
+            }
+        }
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_auto_uses_native_when_aux_vision_is_fallback_only(self):
+        """The motivating case: user configures auxiliary.vision as a
+        fallback (e.g. Gemini Flash on OpenRouter) but the main model has
+        native vision. The aux must NOT short-circuit the routing — native
+        wins, aux stays as a silent fallback when the native call fails.
+        """
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("minimax-oauth", "MiniMax-M3", cfg) == "native"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -294,15 +316,33 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+    def test_explicit_aux_vision_force_text_still_wins(self):
+        # The user opts in to forcing text mode via auxiliary.vision.force_text.
+        # Even with supports_vision: true, the aux wins. Aux stays consulted
+        # by the legacy fallback path when the native call is rejected.
+        cfg = {
+            "model": {"supports_vision": True},
+            "auxiliary": {
+                "vision": {
+                    "provider": "openrouter",
+                    "model": "gemini-2.5-pro",
+                    "force_text": True,
+                }
+            },
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+
+    def test_aux_vision_without_force_text_lets_native_win(self):
+        # The motivating fix: a custom model declared vision-capable (supports_vision: true)
+        # gets the native path even when auxiliary.vision is configured — the aux is a
+        # silent fallback for when the native call fails, not a routing override.
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────

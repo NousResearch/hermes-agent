@@ -427,8 +427,21 @@ def decide_image_input_mode(
         return "text"
 
     # auto
+    # An explicit ``auxiliary.vision`` block used to short-circuit to "text"
+    # unconditionally — the rationale was "the user paid for a dedicated
+    # vision model, don't bypass it". In practice that broke setups where the
+    # user configured a vision aux as a *fallback* (different provider, cost,
+    # or capability profile) and still expected the main model to handle
+    # images natively when it could. The dedicated aux is still consulted
+    # whenever the main model lacks vision OR rejects the attachment (see
+    # ``vision_analyze`` legacy fallback path) — it just no longer wins the
+    # routing decision by default.
+    #
+    # Opt-in to the old behaviour with ``auxiliary.vision.force_text: true``.
     if _explicit_aux_vision_override(cfg):
-        return "text"
+        aux = (cfg.get("auxiliary") or {}).get("vision") or {}
+        if isinstance(aux, dict) and bool(aux.get("force_text", False)):
+            return "text"
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:

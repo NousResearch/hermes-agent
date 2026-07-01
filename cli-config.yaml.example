@@ -646,6 +646,25 @@ agent:
   # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: auto
 
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
+
   # Enable verbose logging
   verbose: false
   
@@ -1276,3 +1295,33 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#
+# -----------------------------------------------------------------------------
+# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
+# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
+# nous block above when gating the dashboard with your own identity provider.
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#
+# dashboard:
+#   oauth:
+#     provider: self-hosted
+#     self_hosted:
+#       issuer: "https://auth.example.com/application/o/hermes/"  # required
+#       client_id: "hermes-dashboard"                             # required
+#       scopes: "openid profile email"                            # optional
+#
+#       # OPTIONAL — set ONLY if your IDP registered the client as
+#       # *confidential* (Authentik / Keycloak often default to this). When
+#       # set, Hermes authenticates the client at the token endpoint
+#       # (client_secret_basic or client_secret_post, auto-selected from the
+#       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
+#       # (PKCE-only) client — the common case.
+#       #
+#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#       # in ~/.hermes/.env over putting it here in config.yaml.
+#       #   client_secret: ""

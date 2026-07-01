@@ -3385,6 +3385,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {"Content-Length": "11"}
             content_type = "image/png"
             content = _Content()
@@ -3434,6 +3435,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3472,15 +3474,82 @@ class TestMatrixImageOnlyMediaNormalization:
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_redirect(self, monkeypatch):
+        """A 302 to a private/loopback target must be blocked per-hop, before
+        the redirect is followed (not only re-checked on the final URL)."""
+        import aiohttp
+        import tools.url_safety as url_safety
+
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "http://127.0.0.1/private.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _Session:
+            def __init__(self):
+                self.requested = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse()
+
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(
+            url_safety,
+            "is_safe_url",
+            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        )
+
+        with pytest.raises(ValueError, match="unsafe redirect"):
+            await self.adapter._download_external_media_with_cap(
+                "https://example.com/image.png"
+            )
+
+        # Only the initial public URL was fetched — the loopback hop was never
+        # followed because it was rejected before the next GET.
+        assert session.requested == ["https://example.com/image.png"]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
+        """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
         import tools.url_safety as url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
-                yield b"ok"
+                yield b"imgbytes"
 
-        class _Response:
-            url = "http://127.0.0.1/private.png"
+        class _RedirectResponse:
+            status = 302
+            headers = {"Location": "https://cdn.example.com/final.png"}
+            content_type = "image/png"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+        class _OkResponse:
+            status = 200
             headers = {}
             content_type = "image/png"
             content = _Content()
@@ -3495,26 +3564,85 @@ class TestMatrixImageOnlyMediaNormalization:
                 return None
 
         class _Session:
+            def __init__(self):
+                self.requested = []
+
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_args):
                 return None
 
-            def get(self, *_args, **_kwargs):
-                return _Response()
+            def get(self, url, *_args, **_kwargs):
+                self.requested.append(url)
+                return _RedirectResponse() if len(self.requested) == 1 else _OkResponse()
 
-        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: _Session())
-        monkeypatch.setattr(
-            url_safety,
-            "is_safe_url",
-            lambda candidate, **_kwargs: str(candidate) == "https://example.com/image.png",
+        session = _Session()
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kwargs: session)
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+
+        data, ct, _fname = await self.adapter._download_external_media_with_cap(
+            "https://example.com/image.png"
         )
 
-        with pytest.raises(ValueError, match="unsafe redirect"):
-            await self.adapter._download_external_media_with_cap(
-                "https://example.com/image.png"
-            )
+        assert data == b"imgbytes"
+        assert ct == "image/png"
+        assert session.requested == [
+            "https://example.com/image.png",
+            "https://cdn.example.com/final.png",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_external_media_download_httpx_installs_redirect_guard(self, monkeypatch):
+        """The httpx fallback re-checks redirect targets via the shared guard."""
+        import tools.url_safety as url_safety
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        clients = []
+
+        class _Content:
+            async def iter_chunked(self, _size):
+                yield b"ok"
+
+        class _Response:
+            headers = {"content-type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"ok"
+
+        class _Client:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                clients.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, *_args, **_kwargs):
+                return _Response()
+
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
+        with patch.dict(sys.modules, {"aiohttp": None}):
+            with patch("httpx.AsyncClient", _Client):
+                data, ct, _fname = await self.adapter._download_external_media_with_cap(
+                    "https://example.com/image.png"
+                )
+
+        assert data == b"ok"
+        assert ct == "image/png"
+        assert clients[0].kwargs["event_hooks"]["response"] == [_ssrf_redirect_guard]
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_unsafe_initial_url(self):
@@ -3534,6 +3662,7 @@ class TestMatrixImageOnlyMediaNormalization:
 
         class _Response:
             url = "https://example.com/image.png"
+            status = 200
             headers = {}
             content_type = "text/html"
             content = _Content()
@@ -4527,3 +4656,87 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+
+class TestMatrixDeadInviteHandling:
+    """Tests for _join_room_by_id auto-leaving dead/abandoned rooms.
+
+    Regression: when a room had no current members, ``join_room`` raised
+    ``MUnknown: Can't join remote room because no servers that are in the
+    room have been provided``. The pending invite stayed in the bot's view
+    of the world, so every gateway restart re-attempted the join and
+    re-emitted the warning indefinitely. There was no path that ever
+    cleared the invite.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._refresh_dm_cache = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_no_servers_error_triggers_leave(self):
+        join_err = Exception(
+            "Can't join remote room because no servers that are in the "
+            "room have been provided."
+        )
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!dead:example.org")
+
+        assert result is False
+        self.adapter._client.leave_room.assert_awaited_once()
+        # leave_room receives a RoomID-wrapped value; verify the underlying str.
+        leave_arg = self.adapter._client.leave_room.await_args.args[0]
+        assert str(leave_arg) == "!dead:example.org"
+
+    @pytest.mark.asyncio
+    async def test_room_not_found_error_triggers_leave(self):
+        join_err = Exception("M_NOT_FOUND: Room not found")
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        await self.adapter._join_room_by_id("!gone:example.org")
+        self.adapter._client.leave_room.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_does_not_trigger_leave(self):
+        """A network blip or 5xx must NOT decline the invite — the bot
+        should retry on the next sync cycle."""
+        join_err = Exception("Connection reset by peer")
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=join_err),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!transient:example.org")
+        assert result is False
+        self.adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_join_does_not_attempt_leave(self):
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(return_value=None),
+            leave_room=AsyncMock(),
+        )
+
+        result = await self.adapter._join_room_by_id("!alive:example.org")
+        assert result is True
+        assert "!alive:example.org" in self.adapter._joined_rooms
+        self.adapter._client.leave_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leave_room_failure_is_swallowed(self):
+        """If leave_room itself fails (e.g. server returns 500), the helper
+        must still return False cleanly rather than re-raise."""
+        self.adapter._client = types.SimpleNamespace(
+            join_room=AsyncMock(side_effect=Exception("no servers in the room")),
+            leave_room=AsyncMock(side_effect=Exception("500 internal")),
+        )
+
+        result = await self.adapter._join_room_by_id("!brokenleave:example.org")
+        assert result is False

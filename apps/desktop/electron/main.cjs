@@ -39,6 +39,7 @@ const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
+const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -793,7 +794,7 @@ let rendererReloadTimes = []
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
 // Latched non-bootstrap backend spawn failure — stops getConnection() from
-// respawning hermes dashboard children in a tight loop while boot is broken.
+// respawning hermes serve backend children in a tight loop while boot is broken.
 let backendStartFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
@@ -1311,7 +1312,7 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
+function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (!IS_WINDOWS || !command || isCommandScript(command)) return null
 
   const resolved = path.resolve(String(command))
@@ -1321,14 +1322,14 @@ function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
   if (path.basename(scriptsDir).toLowerCase() !== 'scripts') return null
 
   const venvRoot = path.dirname(scriptsDir)
-  const python = getNoConsoleVenvPython(venvRoot)
+  const python = getVenvPython(venvRoot)
   if (!fileExists(python)) return null
 
   const root = path.dirname(venvRoot)
   return {
-    label: `existing Hermes no-console Python at ${python}`,
+    label: `existing Hermes Python at ${python}`,
     command: python,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     bootstrap: false,
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
@@ -1336,9 +1337,70 @@ function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
       venvRoot
     }),
     kind: 'python',
-    readyFile: true,
+    // Surfaced so backendSupportsServe() can read this runtime's source for the
+    // `serve` capability check instead of falling back to a heavyweight probe.
+    root,
     shell: false
   }
+}
+
+// Does the resolved runtime understand the `serve` subcommand? The desktop
+// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
+// detect support so getBackendArgsForRuntime() can route old runtimes through
+// the legacy `dashboard --no-open` form instead of crashing on an unknown
+// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+//
+// Fast path: read the runtime's own dashboard.py (instant, covers managed
+// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
+// (covers a bare `hermes` resolved from PATH with no known source root). Result
+// is cached per resolved runtime so we probe at most once per backend.
+const _serveSupportCache = new Map()
+function backendSupportsServe(backend) {
+  if (!backend || !backend.command) return true
+  const key = `${backend.command}::${backend.root || ''}`
+  if (_serveSupportCache.has(key)) return _serveSupportCache.get(key)
+
+  let supported = null
+  if (backend.root) {
+    try {
+      const src = fs.readFileSync(
+        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
+        'utf8'
+      )
+      supported = sourceDeclaresServe(src)
+    } catch {
+      supported = null // source unreadable — fall through to the probe
+    }
+  }
+
+  if (supported === null) {
+    try {
+      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
+      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
+        cwd: backend.root || undefined,
+        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        timeout: 15000,
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      supported = true
+    } catch {
+      supported = false
+    }
+  }
+
+  _serveSupportCache.set(key, supported)
+  rememberLog(
+    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+  )
+  return supported
+}
+
+// Given a resolved backend whose args target `serve`, return the args the
+// runtime actually understands: unchanged when `serve` is supported, or
+// rewritten to `dashboard --no-open` for older runtimes.
+function getBackendArgsForRuntime(backend) {
+  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -1561,62 +1623,26 @@ function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
 
-function readVenvHome(venvRoot) {
-  try {
-    const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
-    const match = cfg.match(/^home\s*=\s*(.+?)\s*$/im)
-    return match ? match[1].trim() : null
-  } catch {
-    return null
-  }
-}
-
-function getNoConsoleVenvPython(venvRoot) {
-  if (!IS_WINDOWS) return getVenvPython(venvRoot)
-
-  // The venv's ``Scripts\pythonw.exe`` is a uv launcher shim that re-execs the
-  // base console ``python.exe``, allocating a conhost/Windows Terminal window
-  // that CREATE_NO_WINDOW can't suppress. Use the base ``pythonw.exe`` directly;
-  // callers put the venv site-packages on PYTHONPATH so imports still resolve.
-  const baseHome = readVenvHome(venvRoot)
-  if (baseHome) {
-    const basePythonw = path.join(baseHome, 'pythonw.exe')
-    if (fileExists(basePythonw)) return basePythonw
-  }
-
-  return path.join(venvRoot, 'Scripts', 'pythonw.exe')
-}
-
-function toNoConsolePython(pythonPath) {
-  if (!IS_WINDOWS || !pythonPath) return pythonPath
-
-  const resolved = String(pythonPath)
-  if (/pythonw\.exe$/i.test(resolved)) return resolved
-
-  if (/python\.exe$/i.test(resolved)) {
-    const pythonw = path.join(path.dirname(resolved), 'pythonw.exe')
-    if (fileExists(pythonw)) return pythonw
-  }
-
-  return pythonPath
-}
-
-function applyWindowsNoConsoleSpawnHints(backend) {
-  if (!IS_WINDOWS || !backend?.command) return backend
-
-  const usesHermesModule =
-    backend.kind === 'python' ||
-    (Array.isArray(backend.args) && backend.args[0] === '-m' && backend.args[1] === 'hermes_cli.main')
-
-  if (!usesHermesModule) return backend
-
-  backend.command = toNoConsolePython(backend.command)
-  if (/pythonw\.exe$/i.test(path.basename(String(backend.command || '')))) {
-    backend.readyFile = true
-  }
-
-  return backend
-}
+// Windows console-window flashes are governed by the *parent's* console, not by
+// each child spawn. A GUI-subsystem parent (pythonw.exe) has no console, so every
+// console-subsystem child it spawns (git, gh, cmd, ...) must allocate its own —
+// which flashes a window. A console-subsystem parent (python.exe) instead owns a
+// single console that all of its children inherit, so none of them flash.
+//
+// Note this change adds no new creationflag: the backend spawn is ALREADY wrapped
+// in hiddenWindowsChildOptions() (windowsHide: true), but that setting is INERT
+// against pythonw.exe — a GUI-subsystem process has no console for it to act on.
+// Switching the backend to the venv's console python.exe is what makes the
+// existing wrapper load-bearing: with windowsHide the process comes up owning a
+// *windowless* console (verified at runtime — it has an attachable console whose
+// window handle is NULL), and its children inherit that one windowless console
+// instead of each allocating a visible one.
+//
+// This makes "no flashing windows" a property of the one backend launch rather
+// than a flag that has to be remembered at every descendant spawn site. Restoring
+// console python also restores stdout, so the backend announces its port on the
+// normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
+// needed.
 
 function getVenvSitePackagesEntries(venvRoot) {
   const entries = []
@@ -2374,14 +2400,14 @@ async function applyUpdatesPosixInApp() {
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
-  // `hermes update` reaps stale `hermes dashboard` backends (a code update
+  // `hermes update` reaps stale `hermes serve` backends (a code update
   // leaves the running process serving old Python against the freshly-updated
   // JS bundle). But OUR backend is one of those processes, and killing it
   // mid-update produces the boot→kill→crash loop in #37532 — the desktop
   // already restarts its own backend via the rebuild+relaunch below, so the
   // reap must spare it. Hand the live backend's PID to the update process;
   // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
-  // it while still reaping any genuinely-orphaned dashboards. (#37532)
+  // it while still reaping any genuinely-orphaned backends. (#37532)
   // Exclude every desktop-managed backend (primary + all pool profiles) from
   // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
   // list (a single int still parses for back-compat).
@@ -2832,19 +2858,19 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, dashboardArgs, options = {}) {
+function createPythonBackend(root, label, backendArgs, options = {}) {
   const python = findPythonForRoot(root)
   if (!python) return null
 
   const venvRoot = path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? getNoConsoleVenvPython(venvRoot) : toNoConsolePython(python)
+  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
 
-  return applyWindowsNoConsoleSpawnHints({
+  return {
     kind: 'python',
     label,
     command,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
       pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
@@ -2853,22 +2879,22 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     root,
     bootstrap: Boolean(options.bootstrap),
     shell: false
-  })
+  }
 }
 
 // createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(dashboardArgs) {
+function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? getNoConsoleVenvPython(VENV_ROOT) : toNoConsolePython(findSystemPython())
+  const command = fileExists(venvPython) ? venvPython : findSystemPython()
 
-  return applyWindowsNoConsoleSpawnHints({
+  return {
     kind: 'python',
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
       pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
@@ -2877,15 +2903,15 @@ function createActiveBackend(dashboardArgs) {
     root: ACTIVE_HERMES_ROOT,
     bootstrap: true,
     shell: false
-  })
+  }
 }
 
-function resolveHermesBackend(dashboardArgs) {
+function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, dashboardArgs)
+    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
     if (backend) return backend
   }
 
@@ -2894,7 +2920,7 @@ function resolveHermesBackend(dashboardArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, dashboardArgs)
+    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
     if (backend) return backend
   }
 
@@ -2905,7 +2931,7 @@ function resolveHermesBackend(dashboardArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
-    return createActiveBackend(dashboardArgs)
+    return createActiveBackend(backendArgs)
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
@@ -2938,7 +2964,7 @@ function resolveHermesBackend(dashboardArgs) {
     }
 
     if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs)
+      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
       if (unwrapped) {
         return unwrapped
       }
@@ -2953,10 +2979,10 @@ function resolveHermesBackend(dashboardArgs) {
       const shellForProbe = isCommandScript(hermesCommand)
       if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
         return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs) || {
+          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
             label: `existing Hermes CLI at ${hermesCommand}`,
             command: hermesCommand,
-            args: dashboardArgs,
+            args: backendArgs,
             bootstrap: false,
             env: {},
             kind: 'command',
@@ -2984,15 +3010,15 @@ function resolveHermesBackend(dashboardArgs) {
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
     if (canImportHermesCli(python)) {
-      return applyWindowsNoConsoleSpawnHints({
+      return {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
-        command: toNoConsolePython(python),
-        args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+        command: python,
+        args: ['-m', 'hermes_cli.main', ...backendArgs],
         bootstrap: false,
         env: {},
         shell: false
-      })
+      }
     }
     rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
   }
@@ -3011,7 +3037,7 @@ function resolveHermesBackend(dashboardArgs) {
     kind: 'bootstrap-needed',
     label: 'Hermes Agent not installed yet; bootstrap required',
     command: null,
-    args: dashboardArgs,
+    args: backendArgs,
     bootstrap: true,
     env: {},
     shell: false,
@@ -3026,7 +3052,7 @@ function resolveHermesBackend(dashboardArgs) {
 async function ensureRuntime(backend) {
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
-    return applyWindowsNoConsoleSpawnHints(backend)
+    return backend
   }
 
   // backend.kind === 'bootstrap-needed' means resolveHermesBackend couldn't
@@ -3168,7 +3194,7 @@ async function ensureRuntime(backend) {
     )
   }
 
-  backend.command = getNoConsoleVenvPython(VENV_ROOT)
+  backend.command = getVenvPython(VENV_ROOT)
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
   updateBootProgress({
     phase: 'runtime.ready',
@@ -3177,7 +3203,7 @@ async function ensureRuntime(backend) {
     running: true,
     error: null
   })
-  return applyWindowsNoConsoleSpawnHints(backend)
+  return backend
 }
 
 function fetchJson(url, token, options = {}) {
@@ -5172,13 +5198,24 @@ function resetBootProgressForReconnect() {
   )
 }
 
+function stopBackendChild(child) {
+  if (!child || child.killed) return
+  try {
+    if (IS_WINDOWS && Number.isInteger(child.pid)) {
+      forceKillProcessTree(child.pid)
+    } else {
+      child.kill('SIGTERM')
+    }
+  } catch {
+    // Already gone.
+  }
+}
+
 function resetHermesConnection() {
   connectionPromise = null
   backendStartFailure = null
 
-  if (hermesProcess && !hermesProcess.killed) {
-    hermesProcess.kill('SIGTERM')
-  }
+  stopBackendChild(hermesProcess)
 
   hermesProcess = null
   resetBootProgressForReconnect()
@@ -5332,8 +5369,10 @@ async function spawnPoolBackend(profile, entry) {
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const dashboardArgs = ['--profile', profile, 'dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+  backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -5424,13 +5463,7 @@ function stopPoolBackend(profile) {
   const entry = backendPool.get(profile)
   if (!entry) return
   backendPool.delete(profile)
-  if (entry.process && !entry.process.killed) {
-    try {
-      entry.process.kill('SIGTERM')
-    } catch {
-      // Already gone.
-    }
-  }
+  stopBackendChild(entry.process)
 }
 
 async function teardownPoolBackendAndWait(profile) {
@@ -5438,13 +5471,7 @@ async function teardownPoolBackendAndWait(profile) {
   if (!entry) return
   backendPool.delete(profile)
 
-  if (entry.process && !entry.process.killed) {
-    try {
-      entry.process.kill('SIGTERM')
-    } catch {
-      // Already gone.
-    }
-  }
+  stopBackendChild(entry.process)
 
   await waitForBackendExit(entry.process)
 }
@@ -5549,7 +5576,7 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
+    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -5557,10 +5584,12 @@ async function startHermes() {
     // unaffected.
     const activeProfile = readActiveDesktopProfile()
     if (activeProfile) {
-      dashboardArgs.unshift('--profile', activeProfile)
+      backendArgs.unshift('--profile', activeProfile)
     }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
-    const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+    const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+    // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+    backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -7660,9 +7689,7 @@ app.on('before-quit', () => {
     disposeTerminalSession(id)
   }
 
-  if (hermesProcess && !hermesProcess.killed) {
-    hermesProcess.kill('SIGTERM')
-  }
+  stopBackendChild(hermesProcess)
   stopAllPoolBackends()
 })
 

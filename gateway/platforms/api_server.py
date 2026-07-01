@@ -1108,6 +1108,18 @@ class APIServerAdapter(BasePlatformAdapter):
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
+        # When the primary provider's auth fails (expired token / 429 quota
+        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
+        # provider chain, whose runtime dict carries its own ``model`` key.
+        # Pop it and let it override the config model, mirroring the native
+        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
+        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
+        # spread → "got multiple values for keyword argument 'model'", 500ing
+        # every /v1/chat/completions request while a fallback is active.
+        runtime_model = runtime_kwargs.pop("model", None)
+        if runtime_model:
+            model = runtime_model
+
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
@@ -1490,7 +1502,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        if not session_id or re.search(r'[\r\n\x00]', session_id):
+        from gateway.session import _is_path_unsafe
+        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
@@ -1905,10 +1918,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=403,
                 )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
+            # Sanitize: reject control characters that could enable header
+            # injection, and path-traversal-shaped IDs that would escape the
+            # sessions directory when interpolated into on-disk artifact
+            # filenames (session snapshots, request dumps). Mirrors the native
+            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
+            from gateway.session import _is_path_unsafe
+            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
                 return web.json_response(
                     {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    status=400,
+                )
+            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
+                return web.json_response(
+                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
                     status=400,
                 )
             session_id = provided_session_id
@@ -3971,7 +3994,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        # Approval queues gate host-side tool execution and must be isolated
+        # per API run.  Client-provided session IDs and memory session keys are
+        # conversation/memory scopes, not authorization namespaces: multiple
+        # concurrent runs can intentionally share them, and resolving an
+        # approval for one run must not unblock another run's dangerous command.
+        approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()

@@ -3388,3 +3388,84 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestLaunchctlBootstrapEioRetry:
+    """`_launchctl_bootstrap` must recover from a stale already-loaded label.
+
+    On macOS, ``launchctl bootstrap`` of a label that is still registered in
+    the domain fails with ``5: Input/output error`` (EIO). That is the *already
+    loaded* case — recoverable by booting the leftover out and retrying — not a
+    sign the domain is unmanageable. The regression this guards against
+    misclassified a stale registration as "launchd cannot manage this macOS
+    version" and needlessly degraded the gateway to a detached process.
+    """
+
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    DOMAIN = "gui/501"
+    LABEL = "ai.hermes.gateway"
+
+    def test_bootstrap_succeeds_first_try_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+    def test_eio_triggers_bootout_then_retry(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            bootstrap_calls = [c for c in calls if c[1] == "bootstrap"]
+            # First bootstrap hits EIO; bootout clears it; retry succeeds.
+            if cmd[1] == "bootstrap" and len(bootstrap_calls) == 1:
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+            ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+        ]
+
+    def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
+        # When the retry also fails, the error must propagate so callers apply
+        # their _launchctl_domain_unsupported fallback (degrade to detached).
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 5
+
+    def test_non_eio_failure_reraises_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(125, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 125
+        # A non-EIO failure is not the already-loaded case: no bootout/retry.
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]

@@ -31,8 +31,10 @@ from agent.auxiliary_client import (
     _OPENROUTER_MODEL,
     OPENROUTER_BASE_URL,
     _resolve_auto,
+    _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _pool_runtime_base_url,
 )
 
 
@@ -108,6 +110,65 @@ class TestAuxiliaryMaxTokensParam:
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
+class TestResolveTaskProviderModel:
+    @pytest.mark.parametrize(
+        "provider",
+        [
+            "anthropic",
+            "minimax-oauth",
+            "nous",
+            "openai-codex",
+            "qwen-oauth",
+            "xai-oauth",
+        ],
+    )
+    def test_explicit_base_url_preserves_first_class_provider_identity(self, provider):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider=provider,
+            model="test-model",
+            base_url="https://provider.example/v1",
+            api_key="resolved-token",
+        )
+
+        assert resolved_provider == provider
+        assert model == "test-model"
+        assert base_url == "https://provider.example/v1"
+        assert api_key == "resolved-token"
+        assert api_mode is None
+
+    @pytest.mark.parametrize("provider", ["", "auto", "custom", "custom:local", "unknown-provider"])
+    def test_explicit_base_url_without_first_class_provider_routes_as_custom(self, provider):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            provider=provider,
+            model="test-model",
+            base_url="https://provider.example/v1",
+            api_key="resolved-token",
+        )
+
+        assert resolved_provider == "custom"
+        assert model == "test-model"
+        assert base_url == "https://provider.example/v1"
+        assert api_key == "resolved-token"
+        assert api_mode is None
+
+    def test_direct_openai_alias_with_base_url_still_routes_as_custom(self):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="vision",
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="https://proxy.example/v1",
+            api_key="sk-test",
+        )
+
+        assert resolved_provider == "custom"
+        assert model == "gpt-4o-mini"
+        assert base_url == "https://proxy.example/v1"
+        assert api_key == "sk-test"
+        assert api_mode is None
+
+
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
 
@@ -162,6 +223,18 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
+
+    def test_keeps_max_tokens_for_nvidia_nim(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nvidia",
+            model="minimaxai/minimax-m3",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        assert kwargs["max_tokens"] == 4096
 
 
 class TestNousTagsScoping:
@@ -2480,6 +2553,144 @@ class TestTransientTransportRetry:
         assert primary.chat.completions.create.call_count == 2
         assert fb_client.chat.completions.create.call_count == 1
 
+    def test_compression_skips_same_provider_retry_on_timeout(self):
+        """A timeout on the critical compression path must NOT retry the same
+        provider (that doubles the user-visible stall, issue #54465) — it
+        falls straight through to the fallback chain instead.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        # Primary tried ONCE only — no same-provider timeout retry — then fallback.
+        assert primary.chat.completions.create.call_count == 1
+        assert fb_client.chat.completions.create.call_count == 1
+
+    def test_non_compression_still_retries_same_provider_on_timeout(self):
+        """The timeout skip is scoped to compression only; other auxiliary
+        tasks keep the single same-provider transient retry.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [
+            _Timeout("Request timed out."),
+            {"ok": True},
+        ]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+
+    def test_compression_still_retries_streaming_close_on_timeout_path(self):
+        """A fast streaming-close (not a full-budget timeout) still retries
+        same-provider even for compression — only timeouts are skipped.
+        """
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [
+            Exception(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            ),
+            {"ok": True},
+        ]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+
+
+class TestAuxClientNoSdkRetries:
+    """Auxiliary OpenAI clients are constructed with SDK-internal retries
+    disabled so Hermes owns the retry/timeout budget (issue #54465). The SDK
+    default (max_retries=2 → 3 attempts) silently triples the effective wall
+    time of every aux call against a slow/hung endpoint.
+    """
+
+    def test_sync_client_disables_sdk_retries(self):
+        from agent import auxiliary_client as ac
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(ac, "OpenAI", _FakeOpenAI), \
+             patch.object(ac, "_openai_http_client_kwargs", return_value={}):
+            ac._create_openai_client(api_key="k", base_url="https://x/v1")
+        assert captured.get("max_retries") == 0
+
+    def test_explicit_max_retries_override_wins(self):
+        from agent import auxiliary_client as ac
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(ac, "OpenAI", _FakeOpenAI), \
+             patch.object(ac, "_openai_http_client_kwargs", return_value={}):
+            ac._create_openai_client(api_key="k", base_url="https://x/v1", max_retries=5)
+        assert captured.get("max_retries") == 5
+
+
+class TestIsTimeoutError:
+    """_is_timeout_error distinguishes a full-budget timeout from a fast
+    connection drop."""
+
+    def test_timed_out_string(self):
+        from agent.auxiliary_client import _is_timeout_error
+        assert _is_timeout_error(Exception("Request timed out.")) is True
+
+    def test_timeout_typename(self):
+        from agent.auxiliary_client import _is_timeout_error
+
+        class ReadTimeout(Exception):
+            pass
+
+        assert _is_timeout_error(ReadTimeout("slow")) is True
+
+    def test_streaming_close_is_not_timeout(self):
+        from agent.auxiliary_client import _is_timeout_error
+        err = Exception("peer closed connection (incomplete chunked read)")
+        assert _is_timeout_error(err) is False
+
+    def test_5xx_is_not_timeout(self):
+        from agent.auxiliary_client import _is_timeout_error
+
+        class _Err503(Exception):
+            status_code = 503
+
+        assert _is_timeout_error(_Err503("upstream")) is False
+
 
 class TestIsConnectionError:
     """Tests for _is_connection_error detection."""
@@ -4164,6 +4375,18 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+
+def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
+    entry = SimpleNamespace(
+        provider="nous",
+        runtime_base_url="https://inference-api.nousresearch.com/v1",
+        inference_base_url="https://inference-api.nousresearch.com/v1",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
+
+    assert _pool_runtime_base_url(entry) == "https://ai.wildebeest-newton.ts.net/v1"
 
 
 class TestAnthropicExplicitApiKey:

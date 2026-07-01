@@ -91,3 +91,89 @@ class TestResolveJobFallbackChain:
         out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
         # revert switch → per-job chain passes through unfiltered
         assert out == [{"provider": "claude-api-proxy-f1", "model": "claude-opus-4-8"}]
+
+
+class TestPerJobCrossProviderOptIn:
+    """`allow_cross_provider_fallback: true` keeps THIS job's cross-provider
+    fallback while every other pinned job stays strictly same-provider — the
+    sanctioned, intentional codex-primary→opus-fallback path Ace asked for.
+    """
+
+    def teardown_method(self):
+        os.environ.pop("HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK", None)
+
+    @property
+    def _fn(self):
+        from cron.scheduler import _resolve_job_fallback_chain
+        return _resolve_job_fallback_chain
+
+    GLOBAL_CHAIN = [
+        {"provider": "claude-api-proxy-f1", "model": "claude-opus-4-8"},
+        {"provider": "openai-codex", "model": "gpt-5.5"},
+    ]
+
+    def test_opt_in_keeps_cross_provider_job_fallback(self):
+        """The digest case: codex primary, opus fallback, opt-in true → kept."""
+        job = {
+            "id": "md", "provider": "openai-codex", "model": "gpt-5.5",
+            "allow_cross_provider_fallback": True,
+            "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+        }
+        out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
+        assert out == [{"provider": "claude-app", "model": "claude-opus-4-8"}]
+
+    def test_absent_opt_in_still_strips_cross_provider(self):
+        """INV-1: a pinned job WITHOUT the opt-in keeps today's behavior."""
+        job = {
+            "id": "md", "provider": "openai-codex", "model": "gpt-5.5",
+            "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+        }
+        out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
+        # cross-provider stripped → nothing left → None (fail loudly on primary)
+        assert out is None
+
+    def test_false_opt_in_still_strips_cross_provider(self):
+        job = {
+            "id": "md", "provider": "openai-codex", "model": "gpt-5.5",
+            "allow_cross_provider_fallback": False,
+            "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+        }
+        out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
+        assert out is None
+
+    def test_truthy_string_opt_in_honored(self):
+        """A hand-edited jobs.json may carry the value as a string."""
+        for truthy in ("true", "1", "yes", "TRUE"):
+            job = {
+                "id": "md", "provider": "openai-codex", "model": "gpt-5.5",
+                "allow_cross_provider_fallback": truthy,
+                "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+            }
+            out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
+            assert out == [{"provider": "claude-app", "model": "claude-opus-4-8"}], truthy
+
+    def test_opt_in_does_not_leak_to_other_jobs(self):
+        """INV-2: opt-in is per-job — a sibling pinned job is unaffected."""
+        opted = {
+            "id": "a", "provider": "openai-codex", "model": "gpt-5.5",
+            "allow_cross_provider_fallback": True,
+            "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+        }
+        other = {
+            "id": "b", "provider": "openai-codex", "model": "gpt-5.5",
+            "fallback": [{"provider": "claude-app", "model": "claude-opus-4-8"}],
+        }
+        assert self._fn(opted, None, "a") == [{"provider": "claude-app", "model": "claude-opus-4-8"}]
+        assert self._fn(other, None, "b") is None
+
+    def test_opt_in_with_opus_via_global_chain(self):
+        """Opt-in also un-strips a cross-provider entry coming from the GLOBAL chain
+        (a job that relies on config.yaml's opus entry rather than its own)."""
+        job = {
+            "id": "g", "provider": "openai-codex", "model": "gpt-5.5",
+            "allow_cross_provider_fallback": True,
+        }
+        out = self._fn(job, list(self.GLOBAL_CHAIN), job["id"])
+        # whole global chain preserved (opus entry survives)
+        assert out == self.GLOBAL_CHAIN
+

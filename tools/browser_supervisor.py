@@ -342,12 +342,8 @@ class CDPSupervisor:
         if not self._ready_event.wait(timeout=timeout):
             self.stop()
             try:
-                from agent.redact import (
-                    _redact_url_query_params,
-                    _redact_url_userinfo,
-                    redact_sensitive_text,
-                )
-                _safe_url = _redact_url_userinfo(_redact_url_query_params(redact_sensitive_text(self.cdp_url)))
+                from agent.redact import redact_cdp_url
+                _safe_url = redact_cdp_url(self.cdp_url)
             except Exception:
                 _safe_url = "<cdp_url redacted>"
             raise TimeoutError(

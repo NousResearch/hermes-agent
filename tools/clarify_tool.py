@@ -55,6 +55,58 @@ def _flatten_choice(c) -> str:
     return str(c).strip()
 
 
+def _choice_response_tokens(response: str) -> List[str]:
+    """Split a choice response into shortcut/label tokens."""
+    if not response:
+        return []
+    return [t.strip() for t in re.split(r"\s*(?:,|\+|;|\n)\s*", response) if t.strip()]
+
+
+def _resolve_choice_token(token: str, labels: List[str]) -> Optional[str]:
+    """Map an exact label, number, or A/B/C shortcut to a canonical label."""
+    label_map = {label.casefold(): label for label in labels}
+
+    # Exact labels win before numeric/letter shortcuts so a real choice named
+    # "A" is not misread as shortcut A -> first option.
+    label = label_map.get(token.casefold())
+    if label is not None:
+        return label
+    if token.isdigit():
+        idx = int(token) - 1
+        if 0 <= idx < len(labels):
+            return labels[idx]
+    if len(token) == 1 and token.isalpha():
+        idx = ord(token.upper()) - ord("A")
+        if 0 <= idx < len(labels):
+            return labels[idx]
+    return None
+
+
+def _parse_choice_response(response: str, choices: Optional[List[str]]) -> tuple[List[str], List[str], int]:
+    """Return selected labels, unmatched tokens, and token count.
+
+    The selected list is best-effort/deduped for the additive
+    ``selected_choices`` result field. The unmatched tokens and raw token count
+    let constrained prompts (`allow_other=false`) reject mixed custom text or
+    multiple selections instead of silently discarding invalid tokens.
+    """
+    if not response or not choices:
+        return [], [], 0
+
+    labels = list(choices)
+    selected: List[str] = []
+    unmatched: List[str] = []
+    tokens = _choice_response_tokens(response)
+
+    for token in tokens:
+        label = _resolve_choice_token(token, labels)
+        if label is None:
+            unmatched.append(token)
+        elif label not in selected:
+            selected.append(label)
+    return selected, unmatched, len(tokens)
+
+
 def _selected_choices_from_response(response: str, choices: Optional[List[str]]) -> List[str]:
     """Best-effort parse of selected choice labels from a response string.
 
@@ -62,30 +114,7 @@ def _selected_choices_from_response(response: str, choices: Optional[List[str]])
     structured field helps UI/test consumers understand which offered choices
     were selected. Free-form custom text returns an empty list.
     """
-    if not response or not choices:
-        return []
-
-    labels = list(choices)
-    label_map = {label.lower(): label for label in labels}
-    selected: List[str] = []
-    tokens = [t.strip() for t in re.split(r"\s*(?:,|\+|;|\n)\s*", response) if t.strip()]
-    if not tokens:
-        tokens = [response.strip()]
-
-    for token in tokens:
-        # Exact labels win before numeric/letter shortcuts so a real choice
-        # named "A" is not misread as shortcut A -> first option.
-        label = label_map.get(token.lower())
-        if label is None and token.isdigit():
-            idx = int(token) - 1
-            if 0 <= idx < len(labels):
-                label = labels[idx]
-        elif label is None and len(token) == 1 and token.isalpha():
-            idx = ord(token.upper()) - ord("A")
-            if 0 <= idx < len(labels):
-                label = labels[idx]
-        if label and label not in selected:
-            selected.append(label)
+    selected, _, _ = _parse_choice_response(response, choices)
     return selected
 
 
@@ -187,9 +216,11 @@ def clarify_tool(
         )
 
     user_response_text = str(user_response).strip()
-    selected_choices = _selected_choices_from_response(user_response_text, choices)
+    selected_choices, unmatched_choice_tokens, choice_token_count = _parse_choice_response(user_response_text, choices)
     if multi_select and choices:
         if selected_choices:
+            if unmatched_choice_tokens and not allow_other:
+                return tool_error("Reply with one or more listed choices.")
             if len(selected_choices) < min_selections:
                 return tool_error(f"Select at least {min_selections} choices.")
             if max_selections is not None and len(selected_choices) > max_selections:
@@ -198,8 +229,12 @@ def clarify_tool(
             return tool_error(f"Select at least {min_selections} choices.")
         elif user_response_text and not allow_other:
             return tool_error("Reply with one or more listed choices.")
-    elif choices and not allow_other and not selected_choices:
-        return tool_error("Reply with one of the listed choices.")
+    elif choices and not allow_other:
+        if not selected_choices or unmatched_choice_tokens:
+            return tool_error("Reply with one of the listed choices.")
+        if choice_token_count != 1 or len(selected_choices) != 1:
+            return tool_error("Reply with exactly one listed choice.")
+        user_response_text = selected_choices[0]
 
     return json.dumps({
         "question": question,

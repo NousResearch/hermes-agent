@@ -96,6 +96,11 @@ STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+try:  # Version tag for the Codex token-endpoint User-Agent; fall back if unavailable.
+    from hermes_cli import __version__ as _HERMES_CLI_VERSION
+except Exception:  # pragma: no cover - version import should always succeed
+    _HERMES_CLI_VERSION = "unknown"
+CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
@@ -3608,7 +3613,13 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+    with httpx.Client(
+        timeout=timeout,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": CODEX_OAUTH_USER_AGENT,
+        },
+    ) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},

@@ -477,6 +477,73 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _plugin_api_runtime_gate(request: Request, call_next):
+    """Block requests to disabled plugin API routes at request time.
+
+    :func:`_mount_plugin_api_routes` gates at import time, but if a plugin
+    is disabled *after* the dashboard is already running, its FastAPI router
+    remains mounted until restart.  This middleware enforces the enabled/
+    disabled policy on every request to ``/api/plugins/{name}/...`` so that
+    runtime config changes take effect immediately.
+
+    Registered BEFORE the auth middlewares (so it executes AFTER them): a
+    request that hasn't cleared auth must get auth's 401 first, never this
+    gate's 404 — otherwise an unauthenticated caller could fingerprint which
+    plugins are installed/enabled by reading the status code. We only reach
+    the enabled/disabled check for a request that auth already let through.
+    """
+    path = request.url.path
+    if path.startswith("/api/plugins/"):
+        # Only gate authenticated requests. Unauthenticated ones fall
+        # through so auth_middleware / the OAuth gate return 401 first and
+        # this route can't be used as a plugin-name oracle.
+        _authed = (
+            getattr(request.state, "token_authenticated", False)
+            or getattr(request.app.state, "auth_required", False)
+            or _has_valid_session_token(request)
+            or _has_valid_query_token(request, path)
+        )
+        if _authed:
+            # Extract plugin name from /api/plugins/<name>/...
+            parts = path.split("/")
+            # parts: ['', 'api', 'plugins', '<name>', ...]
+            if len(parts) >= 4:
+                plugin_name = parts[3]
+                if plugin_name:
+                    try:
+                        from hermes_cli.plugins_cmd import (
+                            _get_enabled_set,
+                            _get_disabled_set,
+                        )
+                        enabled_set = _get_enabled_set()
+                        disabled_set = _get_disabled_set()
+                    except Exception:
+                        enabled_set = set()
+                        disabled_set = set()
+                    # Determine plugin source.  Check the cached plugin list;
+                    # if not found, assume user plugin (safe default — blocks).
+                    plugins = _get_dashboard_plugins()
+                    plugin = next(
+                        (p for p in plugins if p.get("name") == plugin_name),
+                        None,
+                    )
+                    source = plugin.get("source") if plugin else "user"
+                    if source == "user":
+                        if plugin_name in disabled_set or plugin_name not in enabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
+                    elif source == "bundled":
+                        if plugin_name in disabled_set:
+                            return JSONResponse(
+                                status_code=404,
+                                content={"detail": "Plugin not found"},
+                            )
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard OAuth auth gate — engaged only when start_server flags the
 # bind as non-loopback-without-insecure.  No-op pass-through in loopback
@@ -512,57 +579,6 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def _plugin_api_runtime_gate(request: Request, call_next):
-    """Block requests to disabled plugin API routes at request time.
-
-    :func:`_mount_plugin_api_routes` gates at import time, but if a plugin
-    is disabled *after* the dashboard is already running, its FastAPI router
-    remains mounted until restart.  This middleware enforces the enabled/
-    disabled policy on every request to ``/api/plugins/{name}/...`` so that
-    runtime config changes take effect immediately.
-    """
-    path = request.url.path
-    if path.startswith("/api/plugins/"):
-        # Extract plugin name from /api/plugins/<name>/...
-        parts = path.split("/")
-        # parts: ['', 'api', 'plugins', '<name>', ...]
-        if len(parts) >= 4:
-            plugin_name = parts[3]
-            if plugin_name:
-                try:
-                    from hermes_cli.plugins_cmd import (
-                        _get_enabled_set,
-                        _get_disabled_set,
-                    )
-                    enabled_set = _get_enabled_set()
-                    disabled_set = _get_disabled_set()
-                except Exception:
-                    enabled_set = set()
-                    disabled_set = set()
-                # Determine plugin source.  Check the cached plugin list;
-                # if not found, assume user plugin (safe default — blocks).
-                plugins = _get_dashboard_plugins()
-                plugin = next(
-                    (p for p in plugins if p.get("name") == plugin_name),
-                    None,
-                )
-                source = plugin.get("source") if plugin else "user"
-                if source == "user":
-                    if plugin_name in disabled_set or plugin_name not in enabled_set:
-                        return JSONResponse(
-                            status_code=404,
-                            content={"detail": "Plugin not found"},
-                        )
-                elif source == "bundled":
-                    if plugin_name in disabled_set:
-                        return JSONResponse(
-                            status_code=404,
-                            content={"detail": "Plugin not found"},
-                        )
     return await call_next(request)
 
 

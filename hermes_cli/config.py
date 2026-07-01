@@ -2717,6 +2717,23 @@ DEFAULT_CONFIG = {
             "idle_timeout_minutes": 5,
         },
 
+        # Auto-resume restart-loop breaker (#30719, defense-3). When the
+        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
+        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
+        # restart-interrupted session on the next boot. If the resumed turn
+        # keeps triggering another kill (e.g. the agent runs a raw
+        # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
+        # cover), the result is a tight SIGTERM-respawn loop. This breaker
+        # counts restart-interrupted boots in a rolling window and, once
+        # `max_restarts` boots happen within `window_seconds`, SKIPS
+        # auto-resume for that boot — the gateway still starts and serves
+        # real inbound messages, it just stops replaying the session that
+        # keeps killing it. Set `max_restarts` to 0 to disable the breaker.
+        "restart_loop_guard": {
+            "max_restarts": 3,
+            "window_seconds": 60,
+        },
+
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was

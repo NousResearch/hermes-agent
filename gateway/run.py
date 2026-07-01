@@ -3800,6 +3800,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raw = None
         return parse_idle_timeout_seconds(raw)
 
+    def _restart_loop_guard_config(self) -> tuple:
+        """Return ``(max_restarts, window_seconds)`` for the auto-resume
+        restart-loop breaker (#30719, defense-3), read from
+        ``gateway.restart_loop_guard`` in config.yaml with the module defaults
+        as fallback. ``max_restarts <= 0`` disables the breaker.
+        """
+        from gateway import restart_loop_guard as _rlg
+
+        max_restarts = _rlg.DEFAULT_MAX_RESTARTS
+        window_seconds = _rlg.DEFAULT_WINDOW_SECONDS
+        try:
+            user_cfg = _load_gateway_config()
+            gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
+            rlg = gw.get("restart_loop_guard") if isinstance(gw, dict) else None
+            if isinstance(rlg, dict):
+                if isinstance(rlg.get("max_restarts"), int):
+                    max_restarts = rlg["max_restarts"]
+                if isinstance(rlg.get("window_seconds"), int) and rlg["window_seconds"] > 0:
+                    window_seconds = rlg["window_seconds"]
+        except Exception:  # noqa: BLE001
+            pass
+        return max_restarts, window_seconds
+
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
         from gateway.relay import relay_wake_url
@@ -5960,6 +5983,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
+
+        # Defense-3 (#30719): break the SIGTERM-respawn loop. Only count this
+        # boot when there are restart-interrupted sessions to resume — a clean
+        # boot must not accrue toward the breaker. If too many such boots have
+        # happened in the configured window, skip auto-resume for THIS boot:
+        # the gateway still comes up and serves real inbound messages, it just
+        # stops replaying the session that keeps killing it. The session stays
+        # resume_pending, so a real user message can still continue it (a human
+        # is now in the loop). Defenses 1-2 cover the cron/CLI/terminal paths;
+        # this catches every other SIGTERM source (e.g. a raw `terminal(
+        # "launchctl kickstart ai.hermes.gateway")`).
+        if candidates:
+            try:
+                from gateway import restart_loop_guard as _rlg
+
+                _max_restarts, _window = self._restart_loop_guard_config()
+                if _rlg.check_and_record(_max_restarts, _window):
+                    return 0
+            except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
+                logger.debug("Restart-loop guard check skipped: %s", exc)
 
         now = datetime.now()
         scheduled = 0

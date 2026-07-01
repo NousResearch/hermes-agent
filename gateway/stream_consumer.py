@@ -121,6 +121,7 @@ class GatewayStreamConsumer:
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
+        run_still_current: Optional[Callable[[], bool]] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -184,6 +185,11 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+
+        # Session staleness guard — when set to False (e.g. after /new or
+        # /stop), the run() loop will abandon the stream early instead of
+        # continuing to edit and deliver stale deltas.
+        self._run_still_current = run_still_current or (lambda: True)
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -504,6 +510,12 @@ class GatewayStreamConsumer:
 
         try:
             while True:
+                # Abandon the stream early if the session has been reset
+                # (e.g. /new or /stop). Prevents stale deltas from being
+                # delivered after the user has already moved on.
+                if not self._run_still_current():
+                    return
+
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
@@ -801,14 +813,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        # Strip trailing whitespace/newlines but preserve leading content
-        return cleaned.rstrip()
+        return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     async def _send_new_chunk(
         self,

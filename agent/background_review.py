@@ -18,11 +18,12 @@ for invariants and PR review criteria.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+
+from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
@@ -602,9 +603,15 @@ def _run_review_in_thread(
     review_agent = None
     review_messages: List[Dict] = []
     try:
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
+        # Silence stdout/stderr for THIS worker thread only.  A process-global
+        # ``contextlib.redirect_stdout(devnull)`` here would also blank
+        # ``sys.stdout``/``sys.stderr`` for every other thread — including a
+        # gateway event-loop thread driving a Telegram long-poll — for the full
+        # duration of the review (tens of seconds), swallowing their console
+        # output (#55769 / #55925).  ``thread_scoped_silence`` routes only this
+        # thread's writes to devnull and leaves all other threads on the real
+        # streams.
+        with thread_scoped_silence():
             # Inherit the parent agent's live runtime (provider, model,
             # base_url, api_key, api_mode) so the fork uses the exact
             # same credentials the main turn is using.  Without this,
@@ -725,10 +732,17 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
+            # Gate the built-in memory tool on the profile's memory_enabled flag.
+            # Hardcoding ["memory", "skills"] granted the review LLM the MEMORY.md
+            # read/write tool even when a profile set memory_enabled: false,
+            # contaminating a memory-disabled profile (#54937 layer 2).
+            review_toolsets = ["skills"]
+            if review_agent._memory_enabled or review_agent._user_profile_enabled:
+                review_toolsets.insert(0, "memory")
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=review_toolsets,
                     quiet_mode=True,
                 )
             }
@@ -739,6 +753,13 @@ def _run_review_in_thread(
                     "{tool_name}. Only memory/skill tools are allowed."
                 ),
             )
+            try:
+                from tools.skill_manager_tool import _reset_background_review_read_marks
+
+                _reset_background_review_read_marks()
+            except Exception:
+                pass
+
             try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
@@ -808,16 +829,14 @@ def _run_review_in_thread(
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)
     finally:
-        # Safety-net cleanup for the exception path.  Normal
-        # completion already shut down inside redirect_stdout above.
-        # Re-open devnull here so any teardown output (Honcho flush,
-        # Hindsight sync, background thread joins) stays silent even
-        # on the exception path where redirect_stdout already exited.
+        # Safety-net cleanup for the exception path.  Normal completion already
+        # shut down inside the thread-scoped silence above.  Re-enter the
+        # thread-scoped silence here so teardown output (Honcho flush, Hindsight
+        # sync, background thread joins) stays quiet even on the exception path,
+        # without blanking other threads' streams.
         if review_agent is not None:
             try:
-                with open(os.devnull, "w", encoding="utf-8") as _fn, \
-                     contextlib.redirect_stdout(_fn), \
-                     contextlib.redirect_stderr(_fn):
+                with thread_scoped_silence():
                     try:
                         review_agent.shutdown_memory_provider()
                     except Exception:

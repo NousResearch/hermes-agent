@@ -1,0 +1,48 @@
+# AI Relay adapter examples.
+# ก๊อปไฟล์นี้ไปที่ .hermes/ai-relay/adapters.yaml ใน repo ที่จะใช้ Relay
+# ไฟล์นี้ไม่มีรหัสลับ เก็บได้ใน repo ส่วนตัวของทีม
+
+tools:
+  grok:
+    cmd:
+      - grok
+      - -p
+      - "{prompt}"
+      - --cwd
+      - "{cwd}"
+      - --output-format
+      - json
+      - --always-approve
+    note: "Grok ทำงานแบบไม่เปิดหน้าจอ ใช้บัญชีที่พนักงาน login ไว้ในเครื่องของตัวเอง"
+
+  codex:
+    cmd:
+      - codex
+      - exec
+      - --skip-git-repo-check
+      - --color
+      - never
+      - "{prompt}"
+    run_in_cwd: true
+    note: "ใช้ Codex เป็นตัวสำรองเมื่อ Grok ใช้ไม่ได้"
+
+  gemini:
+    cmd:
+      - gemini
+      - -p
+      - "{prompt}"
+      - -m
+      - "{model}"
+      - --approval-mode
+      - yolo
+    run_in_cwd: true
+    note: "ใช้ Gemini เป็นตัวสำรองสำหรับงานไฟล์เยอะ"
+
+  ollama:
+    cmd:
+      - ollama
+      - run
+      - "{model}"
+      - "{prompt}"
+    run_in_cwd: true
+    note: "ใช้โมเดลในเครื่องเป็นตัวสำรองฟรี คุณภาพต้องตรวจเข้มเท่าเดิม"

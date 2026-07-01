@@ -1,0 +1,28 @@
+# AI Relay local account labels.
+# ก๊อปไฟล์นี้ไปที่ .hermes/ai-relay/accounts.yaml ใน repo ที่จะใช้ Relay
+# ห้ามใส่รหัสผ่าน รหัส API หรือ token จริงในไฟล์นี้
+# id เป็นแค่ป้ายชื่อให้ ledger อ่านง่าย เช่น grok-google-nat
+
+accounts:
+  grok:
+    - id: grok-google-staff
+  codex:
+    - id: codex-staff
+  gemini:
+    - id: gemini-google-staff
+
+fallback:
+  code_writing:
+    - grok
+    - codex
+    - gemini
+    - ollama
+
+limits:
+  max_rounds_per_issue: 3
+  max_calls_per_session: 50
+  budget: null
+
+ollama_models:
+  default: qwen3:8b
+  code: deepseek-r1:7b

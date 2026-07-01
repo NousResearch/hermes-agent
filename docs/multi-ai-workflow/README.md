@@ -129,6 +129,30 @@ git worktree add ../worktrees/hermes-agent/phase-001-codex -b ai/phase-001-codex
 `Use AI Pair` จับคู่ AI หนึ่งตัวเป็น coder และอีกตัวเป็น reviewer แบบ read-only
 โดยมี Hermes หรือ VPS เป็นตัวกลางคุม flow ไม่ให้ AI คุยกันเองแบบไม่มีสมุดงานกลาง
 
+## Use AI Relay
+
+`Use AI Relay` คือโหมดประหยัด token: Hermes หรือ AI ตัวหลักวางแผนและตรวจ ส่วน Grok, Codex, Gemini หรือ Ollama เขียนโค้ดผ่านคำสั่งกลาง `relay-call` แล้วตรวจผลด้วย `gate-run`
+
+คู่มือให้พนักงานเชื่อม Grok ผ่าน Google ID:
+
+```text
+docs/multi-ai-workflow/ai-relay-staff-setup.md
+```
+
+ติดตั้งคำสั่งในเครื่อง:
+
+```bash
+bash scripts/ai-relay/install-local.sh
+relay-doctor
+```
+
+ถ้าเครื่องมี AI Relay อยู่แล้วและต้องการเพิ่มเฉพาะ Grok:
+
+```bash
+relay-add-grok --cwd .
+relay-doctor
+```
+
 Hermes Agent pilot defaults:
 
 | Role | AI |

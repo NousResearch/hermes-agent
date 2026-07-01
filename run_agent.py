@@ -225,6 +225,13 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
+    # verify-on-stop and pre_verify nudges append a synthetic assistant
+    # "done" plus a synthetic user nudge to keep the agent going one more
+    # turn before it can claim completion. Those messages exist only to
+    # drive the verification loop; persisting them poisons the resumed
+    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
 )
 
 

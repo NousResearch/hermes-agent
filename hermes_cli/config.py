@@ -4381,7 +4381,9 @@ def _normalize_model_api_key_for_save(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
     api_key = model_cfg.get("api_key")
     if api_key is None or isinstance(api_key, (int, float, bool)):
-        model_cfg["api_key"] = ""
+        model_cfg.pop("api_key", None)
+    elif isinstance(api_key, str) and not api_key.strip():
+        model_cfg.pop("api_key", None)
     return config
 
 

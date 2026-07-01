@@ -331,7 +331,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
         )
     )
 
-    stale_config = yaml.safe_load(config_path.read_text()) or {}
+    stale_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     selected_model = "deepseek/deepseek-v4-flash"
 
     monkeypatch.setattr(
@@ -369,7 +369,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
 
     hermes_main._model_flow_nous(stale_config, current_model="glm-5.2")
 
-    config = yaml.safe_load(config_path.read_text()) or {}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     model = config.get("model")
     assert model["provider"] == "nous"
     assert model["default"] == selected_model
@@ -426,7 +426,7 @@ def test_model_flow_openrouter_clears_stale_custom_key(tmp_path, monkeypatch):
 
     hermes_main._model_flow_openrouter({}, current_model="glm-5.2")
 
-    config = yaml.safe_load(config_path.read_text()) or {}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     model = config["model"]
     assert model["provider"] == "openrouter"
     assert model["default"] == "anthropic/claude-sonnet-4.6"
@@ -461,7 +461,7 @@ def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeyp
 
     hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
 
-    config = yaml.safe_load(config_path.read_text()) or {}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     model = config["model"]
     assert model["provider"] == "anthropic"
     assert model["default"] == "claude-sonnet-4-6"
@@ -871,7 +871,8 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     cfg_path.write_text(yaml.dump({}))
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+        "hermes_cli.config.load_config",
+        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {},
     )
     saved = {}
     def _save(cfg):

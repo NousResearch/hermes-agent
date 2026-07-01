@@ -956,6 +956,36 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
     )
 
 
+def _missing_content_error(store: "MemoryStore", target: str, old_text: str) -> str:
+    """Build a recoverable error for a replace call that arrived with old_text
+    but no content.
+
+    The model knows which entry to target (old_text is set) but didn't provide
+    the replacement text. Returning a bare "content is required" is a dead-end:
+    the model retries the same call identically, wasting turns. Instead, show
+    the matched entry and an explicit retry instruction with the content field.
+    """
+    entries = store._entries_for(target)
+    current = store._char_count(target)
+    limit = store._char_limit(target)
+    matched = [e for e in entries if old_text in e]
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"'replace' needs both old_text (got it: '{old_text[:60]}') AND content "
+                f"(the new text to replace the matched entry with). You provided old_text "
+                f"but no content. Reissue the replace with BOTH fields: "
+                f"action='replace', old_text='{old_text[:60]}', content='<the new text>'."
+            ),
+            "matched_entry": matched[0] if matched else None,
+            "current_entries": entries,
+            "usage": f"{current:,}/{limit:,}",
+        },
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str = None,
     target: str = "memory",
@@ -1003,7 +1033,12 @@ def memory_tool(
             # retry instruction so the model can reissue with old_text set,
             # instead of hitting a dead-end error. (issues #43412, #49466)
             return _missing_old_text_error(store, target, "replace")
-        return tool_error(f"{missing} is required for 'replace' action.", success=False)
+        # content is missing but old_text is present. The model knows which
+        # entry to target but didn't provide replacement text. Return the
+        # matched entry plus a retry instruction so it can reissue with
+        # content set. Without this, the bare error is a dead-end the model
+        # retries identically, wasting turns (20+ failures observed Jun-Jul 2026).
+        return _missing_content_error(store, target, old_text)
     if action == "remove" and not old_text:
         return _missing_old_text_error(store, target, "remove")
 

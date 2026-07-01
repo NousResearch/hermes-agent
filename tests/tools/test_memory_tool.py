@@ -564,13 +564,17 @@ class TestMemoryToolDispatcher:
         assert "usage" in result
 
     def test_replace_missing_content_still_distinct_error(self, store):
-        # When old_text IS present but content is missing, keep the original
-        # content-specific error (don't route through the old_text recovery path).
+        # When old_text IS present but content is missing, return a recoverable
+        # error with the matched entry and a retry instruction — NOT a bare
+        # "content is required" dead-end that the model retries identically.
         store.add("memory", "fact A")
         result = json.loads(memory_tool(action="replace", old_text="fact A", store=store))
         assert result["success"] is False
-        assert "content is required" in result["error"]
-        assert "current_entries" not in result
+        assert "content" in result["error"]
+        assert "old_text" in result["error"]
+        assert result["matched_entry"] == "fact A"
+        assert result["current_entries"] == ["fact A"]
+        assert "usage" in result
 
 
 class TestMemoryBatch:

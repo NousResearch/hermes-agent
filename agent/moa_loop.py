@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
@@ -466,6 +467,199 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 
+def _tool_call_arguments_str(args: Any) -> str:
+    """Coerce a tool call's ``arguments`` to the JSON *string* the streaming
+    consumer requires.
+
+    The consumer concatenates argument fragments (``entry["arguments"] +=
+    tc.function.arguments``), so a non-string value (an already-parsed dict/list
+    from some adapters) would raise ``TypeError`` there. Serialize non-strings
+    the same way ``_render_tool_calls`` does; a real ``None`` becomes ``""``.
+    """
+    if args is None:
+        return ""
+    if isinstance(args, str):
+        return args
+    try:
+        import json
+
+        return json.dumps(args, ensure_ascii=False)
+    except Exception:
+        return str(args)
+
+
+def _delta_tool_calls(tool_calls: Any) -> list[Any]:
+    """Reshape a completed message's ``tool_calls`` into streaming ``delta``
+    tool-call chunks the outer consumer can reassemble.
+
+    The completed Codex response carries ``tool_calls`` as
+    ``SimpleNamespace(id, type, function=SimpleNamespace(name, arguments))``
+    with NO stream ``.index`` — but the streaming consumer reads ``tc.index``,
+    ``tc.id``, ``tc.function.name/.arguments``, and ``tc.extra_content``. We add
+    a positional ``index`` (each completed tool call is already whole, so one
+    delta per call), coerce arguments to a JSON string (the consumer
+    concatenates them), and preserve ``extra_content`` metadata. Handles
+    dict-shaped tool calls too, mirroring ``_render_tool_calls``.
+    """
+    out: list[Any] = []
+    for idx, tc in enumerate(tool_calls or []):
+        if isinstance(tc, dict):
+            tc_id = tc.get("id") or ""
+            tc_type = tc.get("type") or "function"
+            fn = tc.get("function") or {}
+            name = (fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)) or ""
+            args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            extra_content = tc.get("extra_content")
+        else:
+            tc_id = getattr(tc, "id", "") or ""
+            tc_type = getattr(tc, "type", "function") or "function"
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", None) or ""
+            args = getattr(fn, "arguments", None)
+            extra_content = getattr(tc, "extra_content", None)
+        out.append(
+            SimpleNamespace(
+                index=idx,
+                id=tc_id,
+                type=tc_type,
+                function=SimpleNamespace(name=name, arguments=_tool_call_arguments_str(args)),
+                extra_content=extra_content,
+            )
+        )
+    return out
+
+
+def _stream_chunk(
+    *,
+    content: Any = None,
+    tool_calls: Any = None,
+    finish_reason: Any = None,
+    model: Any = None,
+    usage: Any = None,
+    reasoning_content: Any = None,
+    reasoning: Any = None,
+) -> Any:
+    """One OpenAI-chat-stream-shaped chunk built to the exact fields the shared
+    streaming consumer reads: ``choices[0].delta.role/.content/.tool_calls/
+    .reasoning_content/.reasoning``, ``choices[0].finish_reason``, ``model``,
+    and ``usage``.
+
+    Mirrors the delta shape produced by the sibling completed→stream shims
+    (``copilot_acp_client._completion_to_stream_chunks``,
+    ``gemini_native_adapter._make_stream_chunk``) — notably ``role="assistant"``
+    — so the Codex one-shot path is not a silent divergence from every other
+    provider's stream deltas. We keep a separate getattr-based builder here
+    (rather than importing those) because the Codex message shape lacks
+    ``reasoning_content``/``reasoning`` attributes those shims access directly,
+    and the plan scopes the fix to ``agent/moa_loop.py``.
+    """
+    delta = SimpleNamespace(
+        role="assistant",
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=reasoning_content,
+        reasoning=reasoning,
+    )
+    choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice], model=model, usage=usage)
+
+
+def _one_shot_stream_from_response(response: Any) -> Any:
+    """Yield stream chunks reconstructed from a COMPLETED chat response.
+
+    Emits one content+tool-call chunk carrying the aggregator's text, any
+    tool-call deltas, and the terminal ``finish_reason``; then a final
+    usage-only chunk (empty ``choices``) mirroring the SDK's ``include_usage``
+    frame so session accounting still sees usage. A finish_reason is always
+    set (``tool_calls`` when tools are present, else ``stop``) so the
+    consumer's zero-chunk guard never mistakes a legitimate empty completion
+    for a dropped stream.
+    """
+    choices = getattr(response, "choices", None) or []
+    model = getattr(response, "model", None)
+    usage = getattr(response, "usage", None)
+
+    content: Any = None
+    tool_calls: Any = None
+    finish_reason: Any = None
+    reasoning_content: Any = None
+    reasoning: Any = None
+    if choices:
+        choice = choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        message = getattr(choice, "message", None)
+        if message is not None:
+            raw_content = getattr(message, "content", None)
+            if isinstance(raw_content, str) and raw_content:
+                content = raw_content
+            raw_tool_calls = getattr(message, "tool_calls", None)
+            if raw_tool_calls:
+                tool_calls = _delta_tool_calls(raw_tool_calls)
+            # Carry reasoning through when a reasoning-model aggregator returns
+            # a completed response; the pre-fix inline consumer guard surfaced
+            # these, and dropping them here would regress reasoning display.
+            reasoning_content = getattr(message, "reasoning_content", None)
+            reasoning = getattr(message, "reasoning", None)
+
+    if finish_reason is None:
+        finish_reason = "tool_calls" if tool_calls else "stop"
+
+    yield _stream_chunk(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        model=model,
+        usage=None,
+        reasoning_content=reasoning_content,
+        reasoning=reasoning,
+    )
+    if usage is not None:
+        # Final SDK-style frame: usage arrives with empty choices.
+        yield SimpleNamespace(choices=[], model=model, usage=usage)
+
+
+def _one_shot_stream_from_text(text: Any) -> Any:
+    """Wrap a bare string/bytes payload as a single content chunk.
+
+    Some code paths could hand back raw text on ``stream=True``. Text is
+    technically iterable but is NOT a provider chunk stream — iterating it in
+    the consumer would yield characters and crash on ``chunk.choices``. Expose
+    it as one content chunk instead so the text survives and the consumer stays
+    on its normal reassembly path (KTD4).
+    """
+    if isinstance(text, (bytes, bytearray)):
+        text = text.decode("utf-8", "replace")
+    yield _stream_chunk(content=text or None, finish_reason="stop")
+
+
+def _normalize_aggregator_stream(result: Any) -> Any:
+    """Normalize a ``stream=True`` aggregator return into something the outer
+    streaming consumer can always iterate.
+
+    - Completed chat response (has a ``choices`` attribute): reconstruct a
+      one-shot chunk iterator (KTD3). This is the Codex auxiliary-adapter case
+      that crashed the live turn with ``'types.SimpleNamespace' object is not
+      iterable`` — the adapter consumes Codex Responses events internally and
+      returns a completed response despite ``stream=True``.
+    - Raw provider stream (iterable, no ``choices``): return it unchanged so
+      the upstream MoA streaming feature keeps its latency benefit (KTD2).
+    - String/bytes: not a provider chunk stream — wrap as a single content
+      chunk rather than hand it over for character iteration (KTD4).
+    """
+    # A completed chat response is the mismatch we must repair. Discriminate on
+    # the mere PRESENCE of a ``choices`` attribute, not on it being a non-empty
+    # list: an adapter may hand back a completed response whose ``choices`` is
+    # None, empty, or a tuple, and every such shape is still a whole response
+    # (not a token stream) that would crash ``for chunk in stream``. Raw
+    # provider streams (SDK Stream objects, generators) expose no ``choices``.
+    if hasattr(result, "choices"):
+        return _one_shot_stream_from_response(result)
+    if isinstance(result, (str, bytes, bytearray)):
+        return _one_shot_stream_from_text(result)
+    # Raw provider stream (or an opaque stream-like sentinel): pass through.
+    return result
+
+
 def _extract_text(response: Any) -> str:
     try:
         transport = get_transport("chat_completions")
@@ -896,6 +1090,17 @@ class MoAChatCompletions:
                     self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
                 except Exception:  # pragma: no cover - defensive
                     self._pending_trace["aggregator_output"] = None
+        if stream:
+            # Provider-contract guard. call_llm(stream=True) normally yields a
+            # raw provider token stream, but Hermes' Codex auxiliary adapter
+            # consumes Codex Responses events internally and returns a COMPLETED
+            # chat response even under stream=True. Handing that non-iterable
+            # object straight to the outer streaming consumer crashes it with
+            # "'types.SimpleNamespace' object is not iterable". Normalize here,
+            # at the seam that knows it requested a stream, so raw streams pass
+            # through untouched while completed responses become a one-shot
+            # chunk iterator the existing consumer can reassemble.
+            _agg_response = _normalize_aggregator_stream(_agg_response)
         return _agg_response
 
 

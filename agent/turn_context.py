@@ -39,6 +39,7 @@ from agent.conversation_compression import (
     recover_rotated_compression_session,
 )
 from agent.context_engine import automatic_compaction_status_message
+from agent.i18n import t
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -590,11 +591,7 @@ def build_turn_context(
     if agent.api_mode != "anthropic_messages":
         try:
             if agent._cleanup_dead_connections():
-                agent._emit_status(
-                    "🔌 Detected stale connections from a previous provider "
-                    "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
-                )
+                agent._emit_status(t("gateway.stale_connections_cleaned"))
         except Exception:
             pass
     # Replay compression warning through status_callback for gateway platforms.
@@ -980,9 +977,10 @@ def build_turn_context(
             _preflight_status = automatic_compaction_status_message(
                 _compressor,
                 phase="preflight",
-                default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-                    tokens=_preflight_tokens,
-                    threshold=_compressor.threshold_tokens,
+                default_message=t(
+                    "gateway.preflight_compression",
+                    tokens=f"{_preflight_tokens:,}",
+                    threshold=f"{_compressor.threshold_tokens:,}",
                 ),
                 approx_tokens=_preflight_tokens,
                 threshold_tokens=_compressor.threshold_tokens,

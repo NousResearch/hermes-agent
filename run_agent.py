@@ -116,6 +116,7 @@ from agent.process_bootstrap import (
 )
 from agent.iteration_budget import IterationBudget
 from agent.interrupt_compat import request_hard_interrupt
+from agent.i18n import t
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1312,7 +1313,7 @@ class AIAgent:
         detail = (detail or exc.__class__.__name__).strip()
         if len(detail) > 220:
             detail = detail[:217].rstrip() + "..."
-        self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
+        self._emit_warning(t("gateway.aux_task_failed", task=task, detail=detail))
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
@@ -3669,10 +3670,7 @@ class AIAgent:
         if not failed:
             return ""
         lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            t("gateway.file_mutation_header", count=len(failed))
         ]
         shown = 0
         for path, info in failed.items():
@@ -3681,13 +3679,13 @@ class AIAgent:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+                lines.append(t("gateway.file_mutation_bullet", path=path, tool=tool, preview=preview))
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                lines.append(t("gateway.file_mutation_bullet", path=path, tool=tool, preview="failed"))
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
-            lines.append(f"  • … and {remaining} more")
+            lines.append(t("gateway.file_mutation_more", remaining=remaining))
         # Neutralize any path the preview text echoed (the bullet path is
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
@@ -3766,71 +3764,26 @@ class AIAgent:
         if reason.startswith("text_response"):
             return ""
 
-        prefix = "⚠️ No reply: "
         if reason == "empty_response_exhausted":
-            return (
-                prefix
-                + "the model returned empty content after retries and any "
-                "fallback providers. Try `continue`, switch model/provider, "
-                "or inspect the tool output above."
-            )
+            return t("gateway.no_reply_empty_response_exhausted")
         if reason == "all_retries_exhausted_no_response":
-            return (
-                prefix
-                + "all API retries were exhausted before a response was "
-                "produced (provider errors / rate limits). Try `continue` "
-                "or switch provider."
-            )
+            return t("gateway.no_reply_all_retries_exhausted")
         if reason == "partial_stream_recovery":
-            return (
-                prefix
-                + "streaming stopped early and only a partial response was "
-                "recovered. Send `continue` to resume from where it stopped."
-            )
+            return t("gateway.no_reply_partial_stream_recovery")
         if reason == "fallback_prior_turn_content":
-            return (
-                prefix
-                + "no new content was produced this turn; showing recovered "
-                "prior context. Send `continue` to retry."
-            )
+            return t("gateway.no_reply_fallback_prior_turn_content")
         if reason == "interrupted_during_api_call":
-            return (
-                prefix
-                + "the request was interrupted mid-call before a reply was "
-                "received. Send `continue` to retry."
-            )
+            return t("gateway.no_reply_interrupted_during_api_call")
         if reason == "budget_exhausted":
-            return (
-                prefix
-                + "the per-turn iteration/cost budget was exhausted before a "
-                "final answer. Send `continue` to keep going."
-            )
+            return t("gateway.no_reply_budget_exhausted")
         if reason == "ollama_runtime_context_too_small":
-            return (
-                prefix
-                + "the local model's context window was too small to finish. "
-                "Increase the context size or use a larger model."
-            )
+            return t("gateway.no_reply_ollama_context_too_small")
         if reason.startswith("max_iterations_reached"):
-            return (
-                prefix
-                + "the maximum tool-iteration limit was reached before a "
-                "final answer. Send `continue` to keep going, or raise "
-                "`max_iterations`."
-            )
+            return t("gateway.no_reply_max_iterations_reached")
         if reason.startswith("error_near_max_iterations"):
-            return (
-                prefix
-                + "an error occurred near the iteration limit before a final "
-                "answer. Check the tool output above, then send `continue`."
-            )
+            return t("gateway.no_reply_error_near_max_iterations")
         if reason == "pending_tool_result":
-            return (
-                prefix
-                + "the turn stopped while a tool result was still pending and "
-                "the model produced no follow-up text. Send `continue` to "
-                "let it summarize."
-            )
+            return t("gateway.no_reply_pending_tool_result")
         if reason == "session_persistence_failed":
             cause = persistence_cause or "unknown"
             if cause == "compression":
@@ -3858,13 +3811,7 @@ class AIAgent:
                     "again."
                 )
             if cause == "locked":
-                return (
-                    prefix
-                    + "the turn was stopped because session storage was busy "
-                    "(another Hermes process was writing to the state "
-                    "database). Your message should already be saved — "
-                    "please send it again in a moment."
-                )
+                return t("gateway.no_reply_session_persistence_locked")
             if cause == "corrupt":
                 return (
                     prefix
@@ -3875,21 +3822,8 @@ class AIAgent:
                     "database, then send your message again."
                 )
             if cause == "disk":
-                return (
-                    prefix
-                    + "the turn was stopped because session storage could not "
-                    "be written (the transcript would have been lost on "
-                    "restart). This is often a full disk — free some space "
-                    "(or fix state.db permissions), then send your message "
-                    "again."
-                )
-            return (
-                prefix
-                + "the turn was stopped because session storage could not be "
-                "written (the transcript would have been lost on restart). "
-                "Check the state database health (`hermes doctor`), then "
-                "send your message again."
-            )
+                return t("gateway.no_reply_session_persistence_disk")
+            return t("gateway.no_reply_session_persistence_failed")
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.
         return ""

@@ -115,6 +115,103 @@ def install_ctrl_enter_alias() -> int:
     return changed
 
 
+def install_kitty_control_aliases() -> int:
+    """Map Kitty keyboard protocol CSI-u sequences for common control keys
+    (Ctrl+A–Z, Escape) to their corresponding prompt_toolkit ``Keys`` entries.
+
+    When :func:`enable_kitty_keyboard_protocol` pushes the terminal into
+    CSI-u mode, *every* modified key is sent as a CSI-u sequence — not just
+    Shift+Enter and Ctrl+Enter.  prompt_toolkit's stock ``ANSI_SEQUENCES``
+    table contains only four CSI-u entries (codepoint 1, modifier 5–8).
+    The existing :func:`install_shift_enter_alias` and
+    :func:`install_ctrl_enter_alias` cover Enter (codepoint 13), but all
+    other Ctrl+letter combinations (Ctrl+C = ``\\x1b[99;5u``, Ctrl+D =
+    ``\\x1b[100;5u``, …) are unmapped.
+
+    Unmapped CSI-u sequences fall through prompt_toolkit's VT100 parser to
+    literal text insertion: the leading ESC fires as ``Keys.Escape``, then
+    ``[99;5u`` appears as garbage text in the prompt buffer.  In vi mode
+    this is especially disruptive because Escape is the mode-switch key.
+
+    This helper registers CSI-u sequences for all Ctrl+letter keys (a–z,
+    codepoints 97–122, modifier 5 = Ctrl) and plain Escape (codepoint 27,
+    no modifier) so the parser routes them to the correct
+    ``Keys.ControlX`` / ``Keys.Escape`` entries instead of inserting
+    literal text.
+
+    Also clears the VT100 parser's ``_IS_PREFIX_OF_LONGER_MATCH_CACHE`` so
+    the new entries are immediately effective even if a parser has already
+    been instantiated earlier in the process lifecycle.
+
+    Returns the number of sequences whose mapping was changed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.input.vt100_parser import (
+            _IS_PREFIX_OF_LONGER_MATCH_CACHE,
+        )
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    # Ctrl+A through Ctrl+Z: codepoints 97–122, modifier 5 (Ctrl).
+    _CTRL_LETTERS = {
+        97: Keys.ControlA,
+        98: Keys.ControlB,
+        99: Keys.ControlC,
+        100: Keys.ControlD,
+        101: Keys.ControlE,
+        102: Keys.ControlF,
+        103: Keys.ControlG,
+        104: Keys.ControlH,
+        105: Keys.ControlI,
+        106: Keys.ControlJ,
+        107: Keys.ControlK,
+        108: Keys.ControlL,
+        109: Keys.ControlM,
+        110: Keys.ControlN,
+        111: Keys.ControlO,
+        112: Keys.ControlP,
+        113: Keys.ControlQ,
+        114: Keys.ControlR,
+        115: Keys.ControlS,
+        116: Keys.ControlT,
+        117: Keys.ControlU,
+        118: Keys.ControlV,
+        119: Keys.ControlW,
+        120: Keys.ControlX,
+        121: Keys.ControlY,
+        122: Keys.ControlZ,
+    }
+
+    changed = 0
+    for codepoint, key in _CTRL_LETTERS.items():
+        seq = f"\x1b[{codepoint};5u"
+        if ANSI_SEQUENCES.get(seq) != key:
+            ANSI_SEQUENCES[seq] = key
+            changed += 1
+
+    # Plain Escape: codepoint 27, no modifier.
+    #
+    # In kitty protocol level 1, the terminal sends ESC[27u for a bare
+    # Escape key press instead of a raw ESC byte.  Without this mapping the
+    # parser fires Keys.Escape on the leading ESC byte and then inserts
+    # "[27u" as literal text.
+    esc_seq = "\x1b[27u"
+    if ANSI_SEQUENCES.get(esc_seq) != Keys.Escape:
+        ANSI_SEQUENCES[esc_seq] = Keys.Escape
+        changed += 1
+
+    # Invalidate the prefix cache so the parser picks up the new entries.
+    # _IsPrefixOfLongerMatchCache.__missing__ caches results on first
+    # access; if any prefix (e.g. "\x1b[99") was queried before our
+    # additions, it would have a stale is_prefix_of_longer=False that
+    # prevents the parser from waiting for the full sequence.
+    _IS_PREFIX_OF_LONGER_MATCH_CACHE.clear()
+
+    return changed
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
     are consumed by the VT100 parser before they reach key bindings or

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "compat": {
+    "ts_min": "0.0.0"
+  },
+  "consts_path": "consts.json",
+  "messages": {
+    "errors_path": "messages/errors.json",
+    "hints_path": "messages/hints.json"
+  },
+  "presets_dir": "presets",
+  "help": {
+    "readme_stub_path": "help/readme_stub.md",
+    "topics_dir": "help/topics",
+    "fragments_dir": "help/fragments",
+    "topic_order": [
+      "overview",
+      "installation",
+      "auth",
+      "jmap_cheatsheet",
+      "tools",
+      "presets",
+      "cron",
+      "multi_account",
+      "troubleshooting"
+    ]
+  },
+  "fixtures": {
+    "pow_vectors_path": "fixtures/pow_vectors.json"
+  }
+}

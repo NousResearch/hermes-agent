@@ -8,6 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
+    related_skills: [atomicmail]
     homepage: https://github.com/pimalaya/himalaya
 prerequisites:
   commands: [himalaya]
@@ -16,6 +17,11 @@ prerequisites:
 # Himalaya Email CLI
 
 Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
+
+**For an agent-owned inbox** (register a new `@atomicmail.ai` address, JMAP API,
+hourly triage blueprint), prefer the bundled **`atomicmail`** skill instead.
+Use Himalaya when the operator already has a personal mailbox (Gmail app
+password, corporate IMAP, etc.).
 
 This skill is separate from the Hermes Email gateway adapter. The gateway
 adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP

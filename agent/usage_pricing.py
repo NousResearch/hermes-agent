@@ -823,6 +823,12 @@ def normalize_usage(
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    # Fallback: some providers (e.g. MiMo/xiaomi) expose reasoning_tokens at
+    # the top level of the usage object instead of nesting them in
+    # output_tokens_details.  Check the top-level field when the nested one
+    # is absent or zero.
+    if not reasoning_tokens:
+        reasoning_tokens = _to_int(getattr(response_usage, "reasoning_tokens", 0))
 
     return CanonicalUsage(
         input_tokens=input_tokens,

@@ -106,6 +106,53 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
+def test_normalize_usage_prefers_output_tokens_details_reasoning_over_top_level():
+    """When both output_tokens_details.reasoning_tokens and a top-level
+    reasoning_tokens field are present, prefer the nested one (OpenAI standard).
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=300,
+        output_tokens_details=SimpleNamespace(reasoning_tokens=500),
+        reasoning_tokens=999,  # intentionally different — should be ignored
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 500
+
+
+def test_normalize_usage_falls_back_to_top_level_reasoning_tokens():
+    """Some providers (e.g. MiMo/xiaomi) expose reasoning_tokens at the top
+    level of the usage object instead of nesting them in output_tokens_details.
+    normalize_usage() should fall back to the top-level field.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=300,
+        reasoning_tokens=450,
+    )
+
+    normalized = normalize_usage(usage, provider="xiaomi", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 450
+    assert normalized.output_tokens == 300
+
+
+def test_normalize_usage_top_level_reasoning_zero_when_absent():
+    """When neither output_tokens_details nor top-level reasoning_tokens exist,
+    reasoning_tokens should be 0.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 0
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

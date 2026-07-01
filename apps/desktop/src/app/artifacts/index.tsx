@@ -58,6 +58,7 @@ const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+const EPOCH_SECONDS_CUTOFF = 1_000_000_000_000
 
 const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
@@ -68,6 +69,22 @@ const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+function artifactTimestampMs(timestamp: number): number {
+  return timestamp > 0 && timestamp < EPOCH_SECONDS_CUTOFF ? timestamp * 1000 : timestamp
+}
+
+function messageToolName(message: SessionMessage): string {
+  return message.tool_name || message.name || ''
+}
+
+function isBrowserToolMessage(message: SessionMessage): boolean {
+  return message.role === 'tool' && messageToolName(message).startsWith('browser_')
+}
+
+function isRemoteImageArtifact(value: string): boolean {
+  return value.startsWith('data:image/') || (/^https?:\/\//i.test(value) && IMAGE_EXT_RE.test(value))
 }
 
 function parseMaybeJson(value: string): unknown {
@@ -277,10 +294,16 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
+    const browserToolMessage = isBrowserToolMessage(message)
+
     collectArtifactsFromMessage(message, candidate => {
       const value = normalizeValue(candidate)
 
       if (!value || !looksLikeArtifact(value)) {
+        return
+      }
+
+      if (browserToolMessage && isRemoteImageArtifact(value)) {
         return
       }
 
@@ -298,7 +321,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: artifactTimestampMs(message.timestamp || session.last_active || session.started_at || Date.now())
       })
     })
   }
@@ -307,7 +330,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 }
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return ARTIFACT_TIME_FMT.format(new Date(artifactTimestampMs(timestamp)))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

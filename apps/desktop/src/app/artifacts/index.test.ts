@@ -59,4 +59,67 @@ describe('collectArtifactsForSession', () => {
       value: 'https://example.com/changelog/latest'
     })
   })
+
+  it('normalizes epoch-second message timestamps for sorting and display', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/report.pdf',
+        role: 'assistant',
+        timestamp: 1_781_774_001.5943704
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(1_781_774_001_594.3704)
+  })
+
+  it('leaves millisecond message timestamps unchanged', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/report.pdf',
+        role: 'assistant',
+        timestamp: 1_781_774_001_594
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(1_781_774_001_594)
+  })
+
+  it('does not promote browser page image assets to artifacts', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({
+          snapshot:
+            'link "ad" https://example.com/workspace-advertising/banner.gif and text https://example.com/article'
+        }),
+        role: 'tool',
+        timestamp: 4000,
+        tool_name: 'browser_snapshot'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://example.com/article',
+      kind: 'link',
+      value: 'https://example.com/article'
+    })
+  })
+
+  it('keeps generated remote images as artifacts', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({ image: 'https://cdn.example.com/generated/cat.png', success: true }),
+        role: 'tool',
+        timestamp: 5000,
+        tool_name: 'image_generate'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://cdn.example.com/generated/cat.png',
+      kind: 'image',
+      value: 'https://cdn.example.com/generated/cat.png'
+    })
+  })
 })

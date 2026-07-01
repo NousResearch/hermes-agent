@@ -2867,29 +2867,45 @@ class GatewaySlashCommandsMixin:
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
-                if rotated:
-                    session_entry.session_id = new_session_id
-                    self.session_store._save()
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compress-command",
-                    )
 
-                # Rewrite the transcript when EITHER rotation produced a new id
-                # OR in-place compaction succeeded. The danger this guards
-                # against is the THIRD case: _compress_context could NOT rotate
-                # AND was not in-place (e.g. legacy mode but _session_db
-                # unavailable / the DB split raised) — there session_id is
-                # unchanged for a FAILURE reason, and rewrite_transcript() would
-                # DELETE the original messages and replace them with only the
-                # compressed summary (permanent data loss #44794, #39704). In
-                # in-place mode the unchanged id is SUCCESS, so the rewrite is
-                # exactly right (and is the durable write when the throwaway
-                # /compress agent has no _session_db of its own).
+                # Persist the compressed transcript BEFORE repointing the live
+                # session onto the new session_id. Order matters: if we
+                # repointed first and the canonical DB write then failed (lock
+                # contention under concurrent writes, ENOSPC, a disk/IO error),
+                # the session entry would already reference a brand-new, empty
+                # session_id while the handler still reported success — the
+                # user's active conversation would silently vanish from view.
+                # Writing first, and treating a write failure as fatal, keeps
+                # the old history reachable (on rotation the entry still points
+                # at it; in place the original transcript is untouched) and lets
+                # the outer handler surface a "compress failed" banner instead.
+                #
+                # The rewrite runs when EITHER rotation produced a new id OR
+                # in-place compaction succeeded. It is skipped in the THIRD
+                # case: _compress_context could NOT rotate AND was not in-place
+                # (e.g. legacy mode but _session_db unavailable / the DB split
+                # raised) — there session_id is unchanged for a FAILURE reason,
+                # and rewrite_transcript() would DELETE the original messages and
+                # replace them with only the compressed summary (permanent data
+                # loss #44794, #39704). In in-place mode the unchanged id is
+                # SUCCESS, so the rewrite is exactly right (and is the durable
+                # write when the throwaway /compress agent has no _session_db of
+                # its own).
                 if rotated or _in_place:
-                    self.session_store.rewrite_transcript(
+                    if not self.session_store.rewrite_transcript(
                         new_session_id, compressed
-                    )
+                    ):
+                        raise RuntimeError(
+                            f"failed to persist compressed transcript for "
+                            f"session {new_session_id}"
+                        )
+                    if rotated:
+                        session_entry.session_id = new_session_id
+                        self.session_store._save()
+                        await asyncio.to_thread(
+                            self._sync_telegram_topic_binding,
+                            source, session_entry, reason="compress-command",
+                        )
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
@@ -3589,9 +3605,10 @@ class GatewaySlashCommandsMixin:
 
             # Context window and compressions
             ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
+            _lpt = ctx.last_prompt_tokens if ctx.last_prompt_tokens > 0 else 0
+            if _lpt:
+                pct = min(100, _lpt / ctx.context_length * 100) if ctx.context_length else 0
+                lines.append(t("gateway.usage.label_context", used=f"{_lpt:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 

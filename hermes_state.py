@@ -124,6 +124,11 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 17
 
+# Cap on user-controlled FTS5 query input before regex/sanitizer processing.
+# Search queries do not need to be arbitrarily large, and bounding them keeps
+# sanitizer/runtime behavior predictable under adversarial input.
+MAX_FTS5_QUERY_CHARS = 2_048
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -735,6 +740,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
+    ON sessions(handoff_state, started_at);
 """
 
 FTS_SQL = """
@@ -815,6 +822,16 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Merge fragmented FTS5 segments every N successful writes. The message
+    # triggers append one segment per insert; left unmaintained these grow
+    # into tens of thousands of segments, so every MATCH must scan them all
+    # and every insert pays a growing automerge cost — which lengthens the
+    # write-lock hold time and starves competing writers (gateway + cron
+    # processes share one state.db), surfacing as "database is locked".
+    # 'optimize' is a no-op once the index is already merged, so an idle DB
+    # pays almost nothing; the cadence is deliberately coarse so the one-off
+    # merge cost is amortised far below the checkpoint cadence.
+    _OPTIMIZE_EVERY_N_WRITES = 1000
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1083,10 +1100,12 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint.
+                # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
+                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
+                    self._try_optimize_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1134,6 +1153,22 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
+        except Exception:
+            pass  # Best effort — never fatal.
+
+    def _try_optimize_fts(self) -> None:
+        """Best-effort FTS5 segment merge. Never raises.
+
+        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
+        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
+        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
+        never reach the write path, so this is implicitly skipped for them.
+        Once the index is merged the 'optimize' command is close to free, so
+        the steady-state cost is negligible; the expensive case is only the
+        first merge of a long-neglected index.
+        """
+        try:
+            self.optimize_fts()
         except Exception:
             pass  # Best effort — never fatal.
 
@@ -3906,15 +3941,36 @@ class SessionDB:
           matches them as exact phrases instead of splitting on the
           hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
+        # Cap user-controlled FTS input before any regex processing. Search
+        # queries do not need to be arbitrarily large, and bounding them keeps
+        # sanitizer/runtime behavior predictable under adversarial input.
+        query = query[:MAX_FTS5_QUERY_CHARS]
+
         # Step 1: Extract balanced double-quoted phrases and protect them
-        # from further processing via numbered placeholders.
+        # from further processing via numbered placeholders. Do this with a
+        # single linear scan rather than a regex so pathological quote runs
+        # cannot induce backtracking.
         _quoted_parts: list = []
+        pieces: list[str] = []
+        i = 0
+        while i < len(query):
+            ch = query[i]
+            if ch != '"':
+                pieces.append(ch)
+                i += 1
+                continue
+            end = query.find('"', i + 1)
+            if end == -1:
+                # Unmatched quote: replace with whitespace like the old
+                # sanitizer's special-char stripping step.
+                pieces.append(" ")
+                i += 1
+                continue
+            _quoted_parts.append(query[i:end + 1])
+            pieces.append(f"\x00Q{len(_quoted_parts) - 1}\x00")
+            i = end + 1
 
-        def _preserve_quoted(m: re.Match) -> str:
-            _quoted_parts.append(m.group(0))
-            return f"\x00Q{len(_quoted_parts) - 1}\x00"
-
-        sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+        sanitized = "".join(pieces)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters.  ``:`` is
         # FTS5's column-filter operator (``col:term``); since the FTS table has a

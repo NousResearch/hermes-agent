@@ -202,6 +202,10 @@ async def test_discord_defaults_to_require_mention(adapter, monkeypatch):
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    # Auto-thread failures now correctly skip agent invocation (#20243), and
+    # FakeTextChannel has no real ``create_thread``. Disable auto-thread so the
+    # routing assertion below stays focused on free-response gating.
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     message = make_message(channel=FakeTextChannel(channel_id=123), content="hello from channel")
 
@@ -334,6 +338,10 @@ async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(ad
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    # Auto-thread failures now correctly skip agent invocation (#20243).
+    # FakeTextChannel can't satisfy the real ``create_thread`` API, so disable
+    # auto-thread to keep this test focused on mention-strip behaviour.
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     bot_user = adapter._client.user
     message = make_message(
@@ -347,6 +355,65 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_raw_bot_mentions_when_required(adapter, monkeypatch):
+    """Raw <@!ID> mention should trigger even when message.mentions is empty."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=322),
+        content=f"<@!{bot_user.id}> hello from raw mention",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from raw mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_bare_bot_mentions_without_text(adapter, monkeypatch):
+    """A bare raw @bot ping with no other text should be dropped, not a fake turn."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=323),
+        content=f"<@{bot_user.id}>",
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_bare_bot_mentions_with_populated_mentions(adapter, monkeypatch):
+    """Bare @bot ping is dropped even when message.mentions resolves the bot."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=324),
+        content=f"<@{bot_user.id}>",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

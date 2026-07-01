@@ -400,6 +400,84 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["max_iterations"] == 200
 
+    def test_create_agent_handles_fallback_model_kwarg_collision(self, monkeypatch):
+        """When the primary provider auth-fails, _resolve_runtime_agent_kwargs()
+        returns a runtime dict that carries its own ``model`` key. _create_agent
+        must pop it and let it override the config model — otherwise the explicit
+        ``model=`` collides with ``**runtime_kwargs`` and every request 500s with
+        "got multiple values for keyword argument 'model'"."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "model": "anthropic/claude-haiku",  # from the fallback entry
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "primary/model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Must not raise TypeError on the duplicate 'model' kwarg.
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        # Fallback model overrides the config model, mirroring the native path.
+        assert captured["model"] == "anthropic/claude-haiku"
+
+    def test_create_agent_keeps_config_model_when_runtime_omits_it(self, monkeypatch):
+        """Happy path (no fallback active): runtime_kwargs has no 'model', so the
+        resolved gateway model is used unchanged. Regression guard for the pop."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "primary/model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "primary/model"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

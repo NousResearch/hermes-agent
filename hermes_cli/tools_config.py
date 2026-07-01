@@ -964,8 +964,11 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
-                if result.stderr:
-                    _print_info(f"      {result.stderr.strip()[:200]}")
+                diagnostic = (result.stderr or result.stdout or "").strip()
+                if diagnostic:
+                    _print_info(f"      {diagnostic[:200]}")
+                else:
+                    _print_info(f"      npm exited with code {result.returncode}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
             return

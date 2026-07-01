@@ -1,6 +1,7 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1098,6 +1099,32 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     run.assert_not_called()
     assert "custom-cua" in seen
     assert "curl" in seen
+
+
+def test_agent_browser_post_setup_reports_empty_npm_exit_code(tmp_path, monkeypatch):
+    """If npm fails without output, post-setup should still show the exit code."""
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", tmp_path)
+    messages: list[str] = []
+
+    def fake_which(name: str):
+        if name == "npm":
+            return "/usr/bin/npm"
+        if name == "npx":
+            return "/usr/bin/npx"
+        return None
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], returncode=137, stdout="", stderr="")
+
+    with patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run", side_effect=fake_run), \
+         patch("hermes_cli.tools_config._print_info", side_effect=messages.append), \
+         patch("hermes_cli.tools_config._print_warning"):
+        _run_post_setup("browserbase")
+
+    assert any("npm exited with code 137" in message for message in messages)
 
 
 class TestImagegenBackendRegistry:

@@ -469,6 +469,51 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
 
+    # ── 5xx that are actually context overflow ──
+    # Some local inference servers (llama.cpp / llama-server, and vLLM/Ollama
+    # behind a Cloudflare/Tailscale hop) report context overflow with a 5xx
+    # status instead of the standard 400/413. These must route into the
+    # compression-and-retry path, not the blind server_error/overloaded retry
+    # that exhausts and drops the turn.
+
+    def test_500_context_overflow_routes_to_compression(self):
+        """A llama.cpp 500 'Context size has been exceeded.' must compress."""
+        e = MockAPIError(
+            "Context size has been exceeded.",
+            status_code=500,
+            body={"error": {"code": 500, "message": "Context size has been exceeded.", "type": "server_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+        assert result.retryable is True
+
+    def test_503_context_overflow_routes_to_compression(self):
+        """An overflow surfaced as 503 (busy / model-load OOM) must compress."""
+        e = MockAPIError(
+            "the request exceeds the available context size",
+            status_code=503,
+            body={"error": {"message": "the request exceeds the available context size"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_500_plain_server_error_not_compressed(self):
+        """A genuine 500 crash without overflow wording must NOT be swallowed
+        into compression — it stays a retryable server_error."""
+        e = MockAPIError("Internal Server Error", status_code=500)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
+    def test_503_plain_overloaded_not_compressed(self):
+        """A genuine 503 overload without overflow wording stays overloaded."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):

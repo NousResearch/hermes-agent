@@ -21,6 +21,17 @@ from hermes_cli.config import get_hermes_home
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
+_HOOKS_DIR_AT_IMPORT = HOOKS_DIR
+
+
+def _resolve_hooks_dir() -> Path:
+    """Active profile's hooks dir at call time: the patched ``HOOKS_DIR`` when a test changed it,
+    else ``get_hermes_home()/hooks``. The import-time constant is the LAUNCH profile's; under
+    ``gateway.multiplex_profiles`` every served profile has its own ``hooks/``, and a registry
+    loaded from the launch home would run the default profile's handlers (arbitrary Python) on
+    every other profile's messages, responses and user ids."""
+    configured = Path(HOOKS_DIR)
+    return configured if configured != _HOOKS_DIR_AT_IMPORT else get_hermes_home() / "hooks"
 
 
 def _skip(name: str, reason: str) -> None:
@@ -74,11 +85,12 @@ class HookRegistry:
         """Extension point for always-on built-in hooks; currently none shipped."""
 
     def discover_and_load(self) -> None:
-        """Register built-in hooks, then load every valid hook dir under HOOKS_DIR."""
+        """Register built-in hooks, then load every valid hook dir under the active profile's ``hooks/``."""
         self._register_builtin_hooks()
-        if not HOOKS_DIR.exists():
+        hooks_dir = _resolve_hooks_dir()
+        if not hooks_dir.exists():
             return
-        for hook_dir in sorted(HOOKS_DIR.iterdir()):
+        for hook_dir in sorted(hooks_dir.iterdir()):
             if not hook_dir.is_dir():
                 continue
             try:

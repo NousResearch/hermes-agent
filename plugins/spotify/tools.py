@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, List
+from urllib.parse import urlparse
 
 from hermes_cli.auth import get_auth_status
 from plugins.spotify.client import (
@@ -10,9 +11,6 @@ from plugins.spotify.client import (
     SpotifyAuthRequiredError,
     SpotifyClient,
     SpotifyError,
-    normalize_spotify_id,
-    normalize_spotify_uri,
-    normalize_spotify_uris,
 )
 from tools.registry import tool_error, tool_result
 
@@ -64,6 +62,41 @@ def _as_list(raw: Any) -> List[str]:
     return [str(raw).strip()] if str(raw).strip() else []
 
 
+def _coerce_spotify_uri(value: str, *, expected_type: Optional[str] = None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise SpotifyError("Spotify URI/url/id is required.")
+    if raw.startswith("spotify:"):
+        parts = raw.split(":")
+        if len(parts) < 3:
+            raise SpotifyError(
+                "Invalid Spotify URI format. Expected `spotify:<type>:<id>`."
+            )
+        if expected_type and parts[1] != expected_type:
+            raise SpotifyError(
+                f"Expected a Spotify {expected_type}, got {parts[1]}."
+            )
+        return raw
+    if "open.spotify.com" in raw:
+        parsed = urlparse(raw)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) < 2:
+            raise SpotifyError(
+                "Invalid Spotify URL. Expected `open.spotify.com/<type>/<id>`."
+            )
+        item_type = path_parts[0]
+        if expected_type and item_type != expected_type:
+            raise SpotifyError(
+                f"Expected a Spotify {expected_type}, got {item_type}."
+            )
+        return f"spotify:{item_type}:{path_parts[1]}"
+    if expected_type and raw:
+        return f"spotify:{expected_type}:{raw}"
+    raise SpotifyError(
+        "Invalid Spotify URI/URL format. Provide an item ID, `open.spotify.com/<type>/<id>` URL, or `spotify:<type>:<id>` URI."
+    )
+
+
 def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:
     if not isinstance(payload, dict) or not payload.get("empty"):
         return None
@@ -86,6 +119,14 @@ def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:
     return None
 
 
+def _is_device_available(client: SpotifyClient) -> bool:
+    try:
+        devices = client.get_devices() or {}
+        return bool(devices.get("devices"))
+    except Exception:
+        return False
+
+
 def _handle_spotify_playback(args: dict, **kw) -> str:
     action = str(args.get("action") or "get_state").strip().lower()
     client = _spotify_client()
@@ -98,13 +139,21 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
             payload = client.get_currently_playing(market=args.get("market"))
             empty_result = _describe_empty_playback(payload, action=action)
             return tool_result(empty_result or payload)
+        if action in {"play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume"}:
+            if not args.get("device_id") and not _is_device_available(client):
+                return tool_error(
+                    "No active Spotify playback device is available. Use `spotify_devices` to list devices, "
+                    "then transfer playback before retrying."
+                )
         if action == "play":
             offset = args.get("offset")
             if isinstance(offset, dict):
                 payload_offset = {k: v for k, v in offset.items() if v is not None}
             else:
                 payload_offset = None
-            uris = normalize_spotify_uris(_as_list(args.get("uris")), "track") if args.get("uris") else None
+            uris = None
+            if args.get("uris"):
+                uris = [_coerce_spotify_uri(item, expected_type="track") for item in _as_list(args.get("uris"))]
             context_uri = None
             if args.get("context_uri"):
                 raw_context = str(args.get("context_uri"))
@@ -115,7 +164,7 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
                     context_type = "playlist"
                 elif raw_context.startswith("spotify:artist:") or "/artist/" in raw_context:
                     context_type = "artist"
-                context_uri = normalize_spotify_uri(raw_context, context_type)
+                context_uri = _coerce_spotify_uri(raw_context, context_type)
             result = client.start_playback(
                 device_id=args.get("device_id"),
                 context_uri=context_uri,
@@ -191,9 +240,16 @@ def _handle_spotify_queue(args: dict, **kw) -> str:
         if action == "get":
             return tool_result(client.get_queue())
         if action == "add":
-            uri = normalize_spotify_uri(str(args.get("uri") or ""), None)
-            result = client.add_to_queue(uri=uri, device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "uri": uri, "result": result})
+            if not args.get("device_id") and not _is_device_available(client):
+                return tool_error(
+                    "No active Spotify playback device is available. Use `spotify_devices` to list devices, "
+                    "then transfer playback before retrying."
+                )
+            result = client.add_to_queue(
+                uri=_coerce_spotify_uri(str(args.get("uri") or ""), None),
+                device_id=args.get("device_id"),
+            )
+            return tool_result({"success": True, "action": action, "uri": _coerce_spotify_uri(str(args.get("uri") or ""), None), "result": result})
         return tool_error(f"Unknown spotify_queue action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)

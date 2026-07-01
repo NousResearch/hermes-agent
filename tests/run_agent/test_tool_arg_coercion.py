@@ -84,6 +84,17 @@ class TestCoerceNumber:
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5
 
+    def test_integer_only_preserves_large_int(self):
+        """Integers above 2**53 must survive without float round-trip loss."""
+        assert (
+            _coerce_number("1234567890123456789", integer_only=True)
+            == 1234567890123456789
+        )
+        assert (
+            _coerce_number("9007199254740993", integer_only=True)
+            == 9007199254740993
+        )
+
 
 class TestCoerceBoolean:
     """Unit tests for _coerce_boolean."""
@@ -145,6 +156,16 @@ class TestCoerceValue:
     def test_union_with_string_preserves_original(self):
         """A non-numeric string in [number, string] should stay a string."""
         assert _coerce_value("hello", ["number", "string"]) == "hello"
+
+    def test_union_string_first_preserves_numeric_string(self):
+        """A leading "string" member matches, honoring declared order."""
+        assert _coerce_value("007", ["string", "integer"]) == "007"
+        assert _coerce_value("42", ["string", "integer"]) == "42"
+        assert _coerce_value("3.14", ["string", "number"]) == "3.14"
+
+    def test_union_integer_first_still_coerces(self):
+        """Declared order is honored the other way too: integer-first coerces."""
+        assert _coerce_value("7", ["integer", "string"]) == 7
 
     def test_array_type_parsed_from_json_string(self):
         """Stringified JSON arrays are parsed into native lists."""

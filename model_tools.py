@@ -737,8 +737,14 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
-        # Union type — try each in order, return first successful coercion
+        # Union type — try each in order, return first successful coercion.
+        # `value` is already a str, so a "string" member matches immediately;
+        # otherwise the string branch (which returns `value` unchanged) never
+        # counts as a success and the loop falls through to a numeric member,
+        # ignoring declared order (e.g. "007" under ["string", "integer"] -> 7).
         for t in expected_type:
+            if t == "string":
+                return value
             result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result
@@ -814,6 +820,15 @@ def _coerce_json(value: str, expected_python_type: type):
 
 def _coerce_number(value: str, integer_only: bool = False):
     """Try to parse *value* as a number.  Returns original string on failure."""
+    if integer_only:
+        # Parse integers directly: float() cannot represent integers above
+        # 2**53 exactly, so int(float(value)) would silently corrupt large
+        # ids / timestamps / nonces. Non-integer strings ("3.5", "1e3") raise
+        # ValueError here and fall through to the float logic below.
+        try:
+            return int(value.strip(), 10)
+        except ValueError:
+            pass
     try:
         f = float(value)
     except (ValueError, OverflowError):

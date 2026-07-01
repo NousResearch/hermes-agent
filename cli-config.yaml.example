@@ -242,6 +242,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: explicit env vars set at container creation (visible to all
+#   # processes in the container). TMPDIR also controls where Hermes writes
+#   # its session snapshot/cwd artifacts — set it to a writable path if your
+#   # image's /tmp is not writable by the container user.
+#   # docker_env:
+#   #   TMPDIR: "/workspace/tmp"
 #   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
 #   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
 #   # Example: add a Linux capability not included by default

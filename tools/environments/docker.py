@@ -599,12 +599,15 @@ class DockerEnvironment(BaseEnvironment):
     ):
         if cwd == "~":
             cwd = "/root"
+        # Normalized before base init: BaseEnvironment.__init__ calls
+        # get_temp_dir() to place the session snap/cwd artifacts, and our
+        # override reads the configured docker_env TMPDIR from self._env.
+        self._env = _normalize_env_dict(env)
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
-        self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
@@ -977,6 +980,22 @@ class DockerEnvironment(BaseEnvironment):
 
         # Initialize session snapshot inside the container
         self.init_session()
+
+    def get_temp_dir(self) -> str:
+        """Return the in-container temp dir for session snap/cwd artifacts.
+
+        /tmp inside the container is not always writable: docker's ``--tmpfs``
+        preserves the mode of the image's existing mount point, so images
+        whose /tmp is not world-writable end up with a root:root 0755 tmpfs.
+        A non-root container user (image ``USER`` or
+        ``docker_run_as_host_user: true``) then gets EACCES writing the
+        snapshot wrapper and cwd marker, which breaks multi-step state
+        (cwd/env tracking) for every command. Honor a ``TMPDIR`` configured
+        via ``terminal.docker_env`` so operators can point the artifacts at a
+        writable path; fall back to the base default (/tmp).
+        """
+        tmpdir = self._env.get("TMPDIR", "").strip().rstrip("/")
+        return tmpdir or super().get_temp_dir()
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.

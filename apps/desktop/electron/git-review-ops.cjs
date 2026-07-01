@@ -10,7 +10,24 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-const simpleGit = require('simple-git')
+// Load `simple-git` lazily/defensively. A GUI (Finder/Dock) launch on macOS does
+// not expose the packaged app's `Resources/node_modules` to module resolution
+// inside app.asar, so an eager top-level require crashed the main process before
+// the window opened. Try the normal resolution first, then fall back to the
+// packaged path when it exists, and leave null so git-review degrades instead of
+// taking down startup.
+let simpleGit = null
+try {
+  simpleGit = require('simple-git')
+} catch {
+  try {
+    if (process.resourcesPath) {
+      simpleGit = require(path.join(process.resourcesPath, 'node_modules', 'simple-git'))
+    }
+  } catch {
+    simpleGit = null
+  }
+}
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')
 
@@ -45,6 +62,10 @@ function runGh(args, cwd, ghBin) {
 }
 
 function gitFor(cwd, gitBin) {
+  if (!simpleGit) {
+    throw new Error('simple-git unavailable: git review operations are disabled in this build')
+  }
+
   return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
 }
 

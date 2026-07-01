@@ -61,6 +61,9 @@ class HermesAgent(HalfDuplexAgent[HermesAgentState]):
         "You cannot do both at the same time.\n\n"
         "Try to be helpful and always follow the policy. "
         "Always make sure you generate valid JSON only.\n\n"
+        "IMPORTANT: You MUST only use the exact tool names provided to you. "
+        "Do NOT invent or guess tool names. If a tool call fails, check the "
+        "available tools list and use the correct name.\n\n"
         "<policy>\n{domain_policy}\n</policy>"
     )
 
@@ -80,6 +83,28 @@ class HermesAgent(HalfDuplexAgent[HermesAgentState]):
         "You are provided with function signatures within <tools></tools> XML tags:\n"
         "<tools>\n{tools_json}\n</tools>\n\n"
         "<policy>\n{domain_policy}\n</policy>"
+    )
+
+    # System prompt variant for Hermes tool format — tools are embedded in the
+    # system prompt as JSON and the model outputs tool calls as \fncall{...}\fn tags
+    # instead of OpenAI tool_calls.
+    # Use @@@TOOLS_JSON@@@ and @@@DOMAIN_POLICY@@@ as placeholders to avoid
+    # conflicts with literal braces in the template (no .format() needed).
+    SYSTEM_PROMPT_HERMES = (
+        "You are a customer service agent that helps the user according to the "
+        "<policy> provided below.\n"
+        "In each turn you can either:\n"
+        "- Send a message to the user.\n"
+        "- Make a tool call.\n"
+        "You cannot do both at the same time.\n\n"
+        "Try to be helpful and always follow the policy. "
+        "Always make sure you generate valid JSON only.\n\n"
+        "You have access to the following functions:\n\n"
+        "@@@TOOLS_JSON@@@\n\n"
+        "To call a function, respond with a single JSON object wrapped in \fncall{...}\fn tags:\n"
+        "```\ncall{\"name\": \"function_name\", \"arguments\": {\"arg\": \"value\"}}\n```\n"
+        "You may make multiple calls by emitting multiple \fncall{...}\fn tags.\n\n"
+        "<policy>\n@@@DOMAIN_POLICY@@@\n</policy>"
     )
 
     def __init__(
@@ -120,11 +145,34 @@ class HermesAgent(HalfDuplexAgent[HermesAgentState]):
             tools_json = json.dumps(
                 [t.openai_schema for t in self.tools], indent=2, ensure_ascii=False
             )
+            # Escape braces for .format(): replace { with {{ and } with }}
+            tools_json_escaped = tools_json.replace("{", "{{").replace("}", "}}")
             return self.SYSTEM_PROMPT_QWEN3_CODER.format(
-                tools_json=tools_json,
+                tools_json=tools_json_escaped,
                 domain_policy=self.domain_policy,
             )
-        return self.SYSTEM_PROMPT.format(domain_policy=self.domain_policy)
+        if self.tool_parser == "hermes" and self.tools:
+            tools_json = json.dumps(
+                [t.openai_schema for t in self.tools], indent=2, ensure_ascii=False
+            )
+            # Use replace instead of format to avoid conflicts with literal braces
+            return (self.SYSTEM_PROMPT_HERMES
+                    .replace("@@@TOOLS_JSON@@@", tools_json)
+                    .replace("@@@DOMAIN_POLICY@@@", self.domain_policy))
+        # Default case: native OpenAI function calling (tools passed via API)
+        prompt = self.SYSTEM_PROMPT.format(domain_policy=self.domain_policy)
+        # Append tool signatures to reinforce correct names AND parameter names.
+        # This helps weaker models that don't strictly read the tools= schema.
+        if self.tools:
+            sigs = []
+            for t in self.tools:
+                schema = t.openai_schema
+                fn = schema.get("function", {})
+                params = fn.get("parameters", {}).get("properties", {})
+                param_str = ", ".join(f"{k}: {v.get('type', '?')}" for k, v in params.items())
+                sigs.append(f"  {t.name}({param_str})")
+            prompt += "\n\nAvailable tools — use ONLY these exact function and parameter names:\n" + "\n".join(sigs)
+        return prompt
 
     def get_init_state(
         self, message_history: Optional[list[Message]] = None
@@ -152,8 +200,11 @@ class HermesAgent(HalfDuplexAgent[HermesAgentState]):
             messages=lm_messages,
             temperature=self.temperature,
         )
-        if self.tools:
+        # Only pass tools via OpenAI tools= parameter when NOT using hermes parser.
+        # For hermes, tools are embedded in the system prompt.
+        if self.tools and self.tool_parser != "hermes":
             kwargs["tools"] = [t.openai_schema for t in self.tools]
+            kwargs["tool_choice"] = "auto"  # Match tau2's default behavior
         if self.max_tokens is not None:
             kwargs["max_tokens"] = self.max_tokens
         if self.top_p is not None:

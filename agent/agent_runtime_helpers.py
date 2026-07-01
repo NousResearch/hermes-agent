@@ -611,11 +611,29 @@ def strip_think_blocks(agent, content: str) -> str:
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
+    #     Logged (not silently dropped): a model emitting its tool call as
+    #     text instead of the structured tool_calls field means the call
+    #     never actually executed, but the model's surrounding narration
+    #     often still claims success -- e.g. #56461, where a local Ollama
+    #     model told the user it saved a memory and nothing was ever
+    #     written. Without this log line that failure is undiagnosable.
+    def _log_stripped_pseudo_tool_call(tag_name: str):
+        def _sub(match: "re.Match") -> str:
+            logger.warning(
+                "Stripped a <%s> block the model emitted as plain text "
+                "instead of a structured tool call -- the call never "
+                "executed, but any surrounding narration claiming success "
+                "is untouched: %r",
+                tag_name, match.group(0)[:300],
+            )
+            return ""
+        return _sub
+
     for _tc_name in ("tool_call", "tool_calls", "tool_result",
                       "function_call", "function_calls"):
         content = re.sub(
             rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
-            '',
+            _log_stripped_pseudo_tool_call(_tc_name),
             content,
             flags=re.DOTALL | re.IGNORECASE,
         )
@@ -628,7 +646,7 @@ def strip_think_blocks(agent, content: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
         r'<function\b[^>]*\bname\s*=[^>]*>'
         r'(?:(?:(?!</function>).)*)</function>',
-        '',
+        _log_stripped_pseudo_tool_call("function"),
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )

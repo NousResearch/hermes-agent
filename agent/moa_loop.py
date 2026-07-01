@@ -466,10 +466,10 @@ class MoAChatCompletions:
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
     def create(self, **api_kwargs: Any) -> Any:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.moa_config import resolve_moa_preset
 
-        preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
+        preset = resolve_moa_preset(load_config_readonly().get("moa") or {}, self.preset_name)
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}

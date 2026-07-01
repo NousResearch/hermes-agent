@@ -1156,10 +1156,10 @@ def build_environment_hints() -> str:
     extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
     if not extra:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
             extra = str(
-                (load_config().get("agent", {}) or {}).get("environment_hint", "")
+                (load_config_readonly().get("agent", {}) or {}).get("environment_hint", "")
             ).strip()
         except Exception as e:
             logger.debug("Could not read agent.environment_hint from config: %s", e)
@@ -1210,9 +1210,9 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
       3. ``CONTEXT_FILE_MAX_CHARS`` (20K) as the upstream-compatible fallback.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        val = load_config().get("context_file_max_chars")
+        val = load_config_readonly().get("context_file_max_chars")
         if isinstance(val, (int, float)) and val > 0:
             return int(val)
     except Exception as e:

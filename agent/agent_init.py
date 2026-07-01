@@ -518,7 +518,7 @@ def init_agent(
     # sessions with >5-minute pauses between turns (#14971).
     agent._cache_ttl = "5m"
     try:
-        from hermes_cli.config import load_config as _load_pc_cfg
+        from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
@@ -776,7 +776,7 @@ def init_agent(
         # Guardrail config — read from config.yaml at init time.
         agent._bedrock_guardrail_config = None
         try:
-            from hermes_cli.config import load_config as _load_br_cfg
+            from hermes_cli.config import load_config_readonly as _load_br_cfg
             _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
             if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                 agent._bedrock_guardrail_config = {
@@ -1124,7 +1124,7 @@ def init_agent(
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
     try:
-        from hermes_cli.config import load_config as _load_sess_cfg
+        from hermes_cli.config import load_config_readonly as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
@@ -1179,7 +1179,7 @@ def init_agent(
     
     # Load config once for memory, skills, and compression sections
     try:
-        from hermes_cli.config import load_config as _load_agent_config
+        from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}

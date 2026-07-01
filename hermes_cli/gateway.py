@@ -2615,6 +2615,29 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if _is_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
+    # Package-manager bin dirs. launchd's default PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin) and systemd's minimal unit PATH both
+    # omit these, so CLI tools installed via Homebrew (gh, jq, ffmpeg, ...)
+    # or /usr/local (Linux tarball installs, Linuxbrew) are invisible to
+    # cron job scripts and any subprocess launched from the running gateway
+    # service — even though the same tools resolve fine in an interactive
+    # shell or when a tool is invoked manually from this codebase. Seen
+    # live: a cron job's `script` shelling out to `gh` raised
+    # FileNotFoundError under the gateway service despite `which gh`
+    # succeeding in every interactive terminal. Homebrew installs to
+    # /opt/homebrew on Apple Silicon and /usr/local on Intel Macs;
+    # Linuxbrew defaults to /home/linuxbrew/.linuxbrew.
+    for pm_dir in (
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/home/linuxbrew/.linuxbrew/sbin",
+    ):
+        if _is_dir(Path(pm_dir)):
+            candidates.append(pm_dir)
+
     return candidates
 
 

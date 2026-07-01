@@ -159,6 +159,7 @@ AUTHOR_MAP = {
     "yehaotian@xuanshudeMac-mini.local": "ArcanePivot",
     "dbeyer7@gmail.com": "benegessarit",
     "264773240+MrDiamondBallz@users.noreply.github.com": "MrDiamondBallz",
+    "claudlos@agentmail.to": "claudlos",  # PR #52351 salvage (cron base_url exfil guard; #<salvagePR>)
     "94890352+Adolanium@users.noreply.github.com": "Adolanium",
     "kenmege@yahoo.com": "Kenmege",
     "tianying.x@eukarya.io": "xtymac",

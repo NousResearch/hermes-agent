@@ -115,6 +115,40 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class InteractiveProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.tool_progress_sends = []
+        self.tool_progress_edits = []
+
+    async def send_tool_progress_message(
+        self, chat_id, content, *, reply_to=None, metadata=None, tool_trace=None
+    ) -> SendResult:
+        self.tool_progress_sends.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+                "tool_trace": tool_trace,
+            }
+        )
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def edit_tool_progress_message(
+        self, chat_id, message_id, content, *, tool_trace=None
+    ) -> SendResult:
+        self.tool_progress_edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "tool_trace": tool_trace,
+            }
+        )
+        return await self.edit_message(chat_id, message_id, content)
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -143,6 +177,38 @@ class FakeAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class AdaptiveTraceAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            for name, preview, args, result in [
+                ("read_file", "adapter.py", {"path": "adapter.py"}, {"content": "hello"}),
+                ("terminal", "pytest", {"command": "pytest -q"}, "passed"),
+                ("web_search", "Hermes docs", {"query": "Hermes Agent docs"}, "docs"),
+            ]:
+                cb("tool.started", name, preview, args)
+                cb("tool.completed", name, duration=0.1, result=result)
+                time.sleep(0.30)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class AdaptiveThinkingTraceAgent(AdaptiveTraceAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("_thinking", "checking the obvious path first")
+            time.sleep(0.30)
+        return super().run_conversation(message, conversation_history, task_id)
 
 
 class ThinkingAgent:
@@ -793,6 +859,85 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_adaptive_tool_progress_uses_trace_payload(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        AdaptiveTraceAgent,
+        session_id="sess-adaptive-tool-progress",
+        config_data={
+            "display": {
+                "tool_progress": "adaptive",
+                "tool_progress_update_interval": 0.25,
+                "tool_progress_interactive_inline_limit": 2,
+                "interim_assistant_messages": False,
+            }
+        },
+        adapter_cls=InteractiveProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    interactive_updates = adapter.tool_progress_sends + adapter.tool_progress_edits
+    assert interactive_updates, "adaptive mode should use the interactive adapter path"
+    latest = interactive_updates[-1]
+    assert latest["tool_trace"]["total"] == 3
+    assert latest["tool_trace"]["completed"] == 3
+    assert "Tools: 3 calls" in latest["content"]
+    assert "Sequence: read_file → terminal → web_search" in latest["content"]
+    assert "pytest -q" not in latest["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_adaptive_progress_keeps_thinking_line(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        AdaptiveThinkingTraceAgent,
+        session_id="sess-adaptive-thinking-progress",
+        config_data={
+            "display": {
+                "tool_progress": "adaptive",
+                "thinking_progress": True,
+                "tool_progress_update_interval": 0.25,
+                "tool_progress_interactive_inline_limit": 2,
+                "interim_assistant_messages": False,
+            }
+        },
+        adapter_cls=InteractiveProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    latest = (adapter.tool_progress_sends + adapter.tool_progress_edits)[-1]
+    assert "💬 checking the obvious path first" in latest["content"]
+    assert "Tools: 3 calls" in latest["content"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_adaptive_with_thinking_does_not_emit_tool_trace(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        AdaptiveThinkingTraceAgent,
+        session_id="sess-webhook-adaptive-thinking",
+        config_data={
+            "display": {
+                "tool_progress": "adaptive",
+                "thinking_progress": True,
+                "tool_progress_update_interval": 0.25,
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.WEBHOOK,
+        adapter_cls=InteractiveProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.tool_progress_sends == []
+    assert adapter.tool_progress_edits == []
+    assert any("checking the obvious path" in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio

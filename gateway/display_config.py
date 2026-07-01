@@ -33,6 +33,15 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # Minimum seconds between visible progress-message sends/edits.  This
+    # protects Telegram and other edit-based surfaces from flood-control churn
+    # when a turn fires many tool events in quick succession.
+    "tool_progress_update_interval": 1.5,
+    # Adaptive/interactive tool progress: show details inline for at most this
+    # many calls, then collapse to counts + sequence with drill-down buttons on
+    # platforms that support them (currently Telegram).
+    "tool_progress_interactive_inline_limit": 2,
+    "tool_progress_interactive_detail_chars": 1200,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -251,6 +260,19 @@ def _normalise(setting: str, value: Any) -> Any:
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
+    if setting == "tool_progress_update_interval":
+        try:
+            return max(0.25, float(value))
+        except (TypeError, ValueError):
+            return _GLOBAL_DEFAULTS["tool_progress_update_interval"]
+    if setting in {
+        "tool_progress_interactive_inline_limit",
+        "tool_progress_interactive_detail_chars",
+    }:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return _GLOBAL_DEFAULTS[setting]
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"

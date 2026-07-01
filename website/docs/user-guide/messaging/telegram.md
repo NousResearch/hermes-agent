@@ -194,6 +194,31 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+### Optional: adaptive interactive tool progress
+
+Telegram supports an adaptive tool-progress bubble with inline buttons. It starts
+as one message; one or two calls show inline details, then longer tool sequences
+collapse into counts plus call order. Tap **Подробнее** to inspect all calls, or
+`#1`, `#2`, … to drill into arguments and output previews.
+
+```yaml
+display:
+  platforms:
+    telegram:
+      # off | new | all | verbose | adaptive
+      tool_progress: adaptive
+      # Minimum seconds between visible progress edits/sends.
+      tool_progress_update_interval: 1.5
+      # Show full inline details until this many calls, then collapse.
+      tool_progress_interactive_inline_limit: 2
+      # Per-call argument/output preview budget stored for button drill-down.
+      tool_progress_interactive_detail_chars: 1200
+```
+
+The drill-down payload is in-memory gateway presentation state only. It is not
+added to model context and disappears after gateway restart or when the bounded
+cache evicts old progress messages.
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

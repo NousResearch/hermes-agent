@@ -51,6 +51,33 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _emit_tool_progress_callback(
+    agent,
+    event_type: str,
+    tool_name: str | None = None,
+    preview: Any = None,
+    args: Any = None,
+    **kwargs: Any,
+) -> None:
+    """Emit tool progress while preserving the legacy 4-argument callback shape."""
+    callback = getattr(agent, "tool_progress_callback", None)
+    if not callback:
+        return
+    try:
+        callback(event_type, tool_name, preview, args, **kwargs)
+    except TypeError as cb_err:
+        if kwargs:
+            try:
+                callback(event_type, tool_name, preview, args)
+                return
+            except Exception as legacy_err:
+                logging.debug("Tool progress callback error: %s", legacy_err)
+                return
+        logging.debug("Tool progress callback error: %s", cb_err)
+    except Exception as cb_err:
+        logging.debug("Tool progress callback error: %s", cb_err)
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -508,7 +535,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             try:
                 display_args = _redact_tool_args_for_display(name, args) or args
                 preview = _build_tool_preview(name, display_args)
-                agent.tool_progress_callback("tool.started", name, preview, display_args)
+                _emit_tool_progress_callback(
+                    agent,
+                    "tool.started",
+                    name,
+                    preview,
+                    display_args,
+                    tool_call_id=getattr(tc, "id", "") or "",
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -868,10 +902,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if not blocked and agent.tool_progress_callback:
                 try:
-                    agent.tool_progress_callback(
+                    _emit_tool_progress_callback(
+                        agent,
                         "tool.completed", function_name, None, None,
-                        duration=tool_duration, is_error=is_error,
+                        duration=tool_duration,
+                        is_error=is_error,
                         result=function_result,
+                        tool_call_id=getattr(tc, "id", "") or "",
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
@@ -1088,7 +1125,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
                 preview = _build_tool_preview(function_name, display_args)
-                agent.tool_progress_callback("tool.started", function_name, preview, display_args)
+                _emit_tool_progress_callback(
+                    agent,
+                    "tool.started",
+                    function_name,
+                    preview,
+                    display_args,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -1536,10 +1580,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
-                agent.tool_progress_callback(
+                _emit_tool_progress_callback(
+                    agent,
                     "tool.completed", function_name, None, None,
-                    duration=tool_duration, is_error=_is_error_result,
+                    duration=tool_duration,
+                    is_error=_is_error_result,
                     result=function_result,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
                 )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")

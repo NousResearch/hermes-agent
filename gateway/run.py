@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import site
 import sys
@@ -15980,10 +15981,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_update_interval = resolve_display_setting(
+            user_config, platform_key, "tool_progress_update_interval"
+        )
+        try:
+            progress_update_interval = max(0.25, float(progress_update_interval))
+        except (TypeError, ValueError):
+            progress_update_interval = 1.5
+        _interactive_inline_limit = resolve_display_setting(
+            user_config, platform_key, "tool_progress_interactive_inline_limit"
+        )
+        try:
+            _interactive_inline_limit = max(0, int(_interactive_inline_limit))
+        except (TypeError, ValueError):
+            _interactive_inline_limit = 2
+        _interactive_detail_chars = resolve_display_setting(
+            user_config, platform_key, "tool_progress_interactive_detail_chars"
+        )
+        try:
+            _interactive_detail_chars = max(0, int(_interactive_detail_chars))
+        except (TypeError, ValueError):
+            _interactive_detail_chars = 1200
+        progress_mode_normalized = str(progress_mode or "").lower()
+        interactive_tool_progress = progress_mode_normalized in {"interactive", "adaptive"}
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = progress_mode_normalized != "off" and source.platform != Platform.WEBHOOK
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -16015,6 +16039,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
+        tool_progress_trace = None
+        if interactive_tool_progress and tool_progress_enabled and progress_queue is not None:
+            try:
+                from gateway.tool_progress_trace import ToolProgressTrace
+
+                trace_seed = secrets.token_urlsafe(12)
+                tool_progress_trace = ToolProgressTrace(
+                    trace_seed,
+                    max_args_chars=_interactive_detail_chars,
+                    max_result_chars=_interactive_detail_chars,
+                    redact=_redact_gateway_user_facing_secrets,
+                )
+            except Exception as _trace_err:
+                logger.debug("interactive tool-progress trace disabled: %s", _trace_err)
+                tool_progress_trace = None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -16091,6 +16130,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not progress_queue or not _run_still_current():
                 return
 
+            if tool_progress_trace is not None and event_type == "tool.completed":
+                try:
+                    tool_progress_trace.completed(
+                        tool_name or "tool",
+                        duration=kwargs.get("duration"),
+                        is_error=kwargs.get("is_error"),
+                        result=kwargs.get("result"),
+                        call_id=kwargs.get("tool_call_id"),
+                    )
+                    _snapshot = tool_progress_trace.snapshot()
+                    _snapshot["inline_limit"] = _interactive_inline_limit
+                    progress_queue.put(("__tool_trace__", _snapshot))
+                except Exception as _trace_err:
+                    logger.debug("interactive tool-progress completion failed: %s", _trace_err)
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting
@@ -16100,7 +16154,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event_type == "tool.completed" and not long_tool_hint_fired[0]:
                 try:
                     duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode_normalized == "all":
                         from agent.onboarding import (
                             TOOL_PROGRESS_FLAG,
                             is_seen,
@@ -16159,8 +16213,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
+            if tool_progress_trace is not None:
+                try:
+                    tool_progress_trace.started(
+                        tool_name or "tool",
+                        preview,
+                        args,
+                        call_id=kwargs.get("tool_call_id"),
+                    )
+                    _snapshot = tool_progress_trace.snapshot()
+                    _snapshot["inline_limit"] = _interactive_inline_limit
+                    progress_queue.put(("__tool_trace__", _snapshot))
+                except Exception as _trace_err:
+                    logger.debug("interactive tool-progress start failed: %s", _trace_err)
+                return
+
             # "new" mode: only report when tool changes
-            if progress_mode == "new" and tool_name == last_tool[0]:
+            if progress_mode_normalized == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
             
@@ -16216,7 +16285,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
-            if progress_mode == "verbose":
+            if progress_mode_normalized == "verbose":
                 if _code_block_full is not None:
                     last_was_terminal_block[0] = True
                     progress_queue.put(_code_block_full)
@@ -16338,7 +16407,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             progress_msg_id = None   # ID of the current progress message to edit
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_EDIT_INTERVAL = progress_update_interval  # Minimum seconds between edits/sends
+            _pending_tool_trace_snapshot = None
+            _pending_tool_trace_summary = None
+            _progress_aux_lines = []
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -16372,7 +16444,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except (TypeError, ValueError):
                     _edit_accepts_metadata = False
 
-            async def _edit_progress_message(message_id: str, content: str):
+            async def _edit_progress_message(message_id: str, content: str, tool_trace: dict | None = None):
+                if tool_trace is not None and hasattr(adapter, "edit_tool_progress_message"):
+                    return await adapter.edit_tool_progress_message(
+                        chat_id=source.chat_id,
+                        message_id=message_id,
+                        content=content,
+                        tool_trace=tool_trace,
+                    )
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
@@ -16386,6 +16465,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
+
+            def _interactive_progress_lines() -> list:
+                lines = list(_progress_aux_lines)
+                if _pending_tool_trace_summary:
+                    lines.append(_pending_tool_trace_summary)
+                return lines
 
             def _split_progress_groups(lines: list) -> list[list]:
                 """Partition progress lines into platform-sized editable bubbles."""
@@ -16410,13 +16495,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ):
                     _cleanup_msg_ids.append(str(result.message_id))
 
-            async def _send_progress_text(text: str):
-                result = await adapter.send(
-                    chat_id=source.chat_id,
-                    content=text,
-                    reply_to=_progress_reply_to,
-                    metadata=_progress_metadata,
-                )
+            async def _send_progress_text(text: str, tool_trace: dict | None = None):
+                if tool_trace is not None and hasattr(adapter, "send_tool_progress_message"):
+                    result = await adapter.send_tool_progress_message(
+                        chat_id=source.chat_id,
+                        content=text,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                        tool_trace=tool_trace,
+                    )
+                else:
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=text,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
                 _track_progress_result(result)
                 return result
 
@@ -16484,8 +16578,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                    # Handle adaptive/interactive tool trace snapshots: replace
+                    # the current editable bubble with the latest compact
+                    # summary, while the platform adapter stores the detail
+                    # payload for button drill-down.
+                    if isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__tool_trace__":
+                        _old_tool_trace_summary = _pending_tool_trace_summary
+                        try:
+                            from gateway.tool_progress_trace import format_tool_progress_summary
+
+                            _pending_tool_trace_snapshot = raw[1] if isinstance(raw[1], dict) else None
+                            _pending_tool_trace_summary = format_tool_progress_summary(
+                                _pending_tool_trace_snapshot or {},
+                                inline_limit=_interactive_inline_limit,
+                                max_chars=_PROGRESS_TEXT_LIMIT,
+                            )
+                            msg = _pending_tool_trace_summary
+                        except Exception as _format_err:
+                            logger.debug("interactive tool-progress format failed: %s", _format_err)
+                            _pending_tool_trace_snapshot = None
+                            _pending_tool_trace_summary = None
+                            msg = "🛠️ Tools updated"
+                        if can_edit:
+                            if progress_lines:
+                                _progress_aux_lines = [
+                                    line for line in progress_lines
+                                    if line != _old_tool_trace_summary
+                                ]
+                            progress_lines = _interactive_progress_lines() or [msg]
+                        else:
+                            progress_lines.append(msg)
                     # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -16501,12 +16625,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # linearization regression after PR #7885.)
                         progress_msg_id = None
                         progress_lines = []
+                        _pending_tool_trace_snapshot = None
+                        _pending_tool_trace_summary = None
+                        _progress_aux_lines = []
                         last_progress_msg[0] = None
                         repeat_count[0] = 0
                         continue
                     else:
                         msg = raw
-                        progress_lines.append(msg)
+                        if _pending_tool_trace_snapshot is not None and can_edit:
+                            _progress_aux_lines.append(msg)
+                            progress_lines = _interactive_progress_lines()
+                        else:
+                            progress_lines.append(msg)
 
                     if await _roll_progress_overflow_if_needed():
                         _last_edit_ts = time.monotonic()
@@ -16534,7 +16665,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await _edit_progress_message(progress_msg_id, full_text)
+                        result = await _edit_progress_message(progress_msg_id, full_text, _pending_tool_trace_snapshot)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
                             # Transient network errors (ConnectError, timeouts)
@@ -16558,40 +16689,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _last_edit_ts = time.monotonic()
                             else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                            await _send_progress_text(msg, _pending_tool_trace_snapshot)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            result = await _send_progress_text(full_text, _pending_tool_trace_snapshot)
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            result = await _send_progress_text(msg, _pending_tool_trace_snapshot)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
 
                     _last_edit_ts = time.monotonic()
 
@@ -16607,7 +16715,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     while not progress_queue.empty():
                         try:
                             raw = progress_queue.get_nowait()
-                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                            if isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__tool_trace__":
+                                _old_tool_trace_summary = _pending_tool_trace_summary
+                                try:
+                                    from gateway.tool_progress_trace import format_tool_progress_summary
+
+                                    _pending_tool_trace_snapshot = raw[1] if isinstance(raw[1], dict) else None
+                                    _pending_tool_trace_summary = format_tool_progress_summary(
+                                        _pending_tool_trace_snapshot or {},
+                                        inline_limit=_interactive_inline_limit,
+                                        max_chars=_PROGRESS_TEXT_LIMIT,
+                                    )
+                                    msg = _pending_tool_trace_summary
+                                except Exception:
+                                    _pending_tool_trace_snapshot = None
+                                    _pending_tool_trace_summary = None
+                                    msg = "🛠️ Tools updated"
+                                if can_edit:
+                                    if progress_lines:
+                                        _progress_aux_lines = [
+                                            line for line in progress_lines
+                                            if line != _old_tool_trace_summary
+                                        ]
+                                    progress_lines = _interactive_progress_lines() or [msg]
+                                else:
+                                    progress_lines.append(msg)
+                                await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -16620,15 +16754,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        await _edit_progress_message(progress_msg_id, _pending_text, _pending_tool_trace_snapshot)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
                                 progress_lines = []
+                                _pending_tool_trace_snapshot = None
+                                _pending_tool_trace_summary = None
+                                _progress_aux_lines = []
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
-                                progress_lines.append(raw)
+                                if _pending_tool_trace_snapshot is not None and can_edit:
+                                    _progress_aux_lines.append(raw)
+                                    progress_lines = _interactive_progress_lines()
+                                else:
+                                    progress_lines.append(raw)
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break
@@ -16638,7 +16779,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            await _edit_progress_message(progress_msg_id, full_text, _pending_tool_trace_snapshot)
                         except Exception:
                             pass
                     return

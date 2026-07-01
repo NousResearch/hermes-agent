@@ -15,6 +15,7 @@ import logging
 import os
 import html as _html
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -438,6 +439,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # While True, send() short-circuits to a failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
+        # In-memory interactive tool-progress payloads keyed by short trace_id.
+        # They are presentation state only: not durable, not injected into model
+        # context, and bounded to avoid unbounded growth in long-lived gateways.
+        self._tool_progress_state: OrderedDict[str, dict] = OrderedDict()
         self._general_request_drain_lock = asyncio.Lock()
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
@@ -922,6 +927,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return isinstance(error, BadRequest)
         except ImportError:
             return False
+
+    @classmethod
+    def _is_markdown_parse_error(cls, error: Exception) -> bool:
+        if not cls._is_bad_request_error(error):
+            return False
+        err_lower = str(error).lower()
+        return any(
+            marker in err_lower
+            for marker in (
+                "can't parse entities",
+                "can't parse message text",
+                "can't find end of",
+                "parse entities",
+                "unsupported start tag",
+                "entity",
+            )
+        )
 
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
@@ -3595,6 +3617,347 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    def _tool_progress_states(self) -> OrderedDict:
+        state = getattr(self, "_tool_progress_state", None)
+        if state is None:
+            state = OrderedDict()
+            self._tool_progress_state = state
+        return state
+
+    def _remember_tool_progress_trace(
+        self,
+        snapshot: Optional[dict],
+        *,
+        chat_id: Any = None,
+        message_id: Any = None,
+        thread_id: Any = None,
+    ) -> Optional[str]:
+        if not isinstance(snapshot, dict):
+            return None
+        trace_id = str(snapshot.get("trace_id") or "").strip()
+        if not trace_id:
+            return None
+        state = self._tool_progress_states()
+        previous = state.get(trace_id) if isinstance(state.get(trace_id), dict) else {}
+        stored = dict(snapshot)
+        for key, value in (
+            ("telegram_chat_id", chat_id),
+            ("telegram_message_id", message_id),
+            ("telegram_thread_id", thread_id),
+        ):
+            if value is not None:
+                stored[key] = str(value)
+            elif previous and previous.get(key) is not None:
+                stored[key] = previous.get(key)
+        state[trace_id] = stored
+        state.move_to_end(trace_id)
+        while len(state) > 128:
+            state.popitem(last=False)
+        return trace_id
+
+    def _build_tool_progress_keyboard(
+        self,
+        snapshot: Optional[dict],
+        *,
+        view: str = "summary",
+        call_index: Optional[int] = None,
+    ):
+        if not TELEGRAM_AVAILABLE or InlineKeyboardButton is Any:
+            return None
+        trace_id = str((snapshot or {}).get("trace_id") or "").strip()
+        if not trace_id:
+            return None
+        calls = list((snapshot or {}).get("calls") or [])
+        rows = []
+        if view == "detail":
+            rows.append([InlineKeyboardButton("Сводка", callback_data=f"tp:{trace_id}:s")])
+        else:
+            rows.append([InlineKeyboardButton("Подробнее", callback_data=f"tp:{trace_id}:d")])
+
+        if view.startswith("call") and call_index is not None:
+            rows.append([
+                InlineKeyboardButton("Args", callback_data=f"tp:{trace_id}:a:{call_index}"),
+                InlineKeyboardButton("Output", callback_data=f"tp:{trace_id}:o:{call_index}"),
+                InlineKeyboardButton("Назад", callback_data=f"tp:{trace_id}:d"),
+            ])
+        elif calls:
+            row = []
+            for call in calls[:8]:
+                idx = call.get("index")
+                try:
+                    idx_int = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                row.append(InlineKeyboardButton(f"#{idx_int}", callback_data=f"tp:{trace_id}:c:{idx_int}"))
+                if len(row) == 4:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def send_tool_progress_message(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        tool_trace: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a Telegram progress bubble with interactive tool trace buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if getattr(self, "_send_path_degraded", False):
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+        reply_to_id = self._reply_to_message_id_for_send(
+            reply_to, metadata, reply_to_mode=self._reply_to_mode
+        )
+        thread_id = self._metadata_thread_id(metadata)
+        formatted = self.format_message(content)
+        if utf16_len(formatted) > self.MAX_MESSAGE_LENGTH:
+            formatted = self._truncate_stream_overflow_preview(formatted)
+        kwargs = {
+            "chat_id": normalize_telegram_chat_id(chat_id),
+            "text": formatted,
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_markup": self._build_tool_progress_keyboard(tool_trace, view="summary"),
+            **self._link_preview_kwargs(),
+            **self._notification_kwargs(metadata),
+        }
+        if reply_to_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_id
+        kwargs.update(
+            self._thread_kwargs_for_send(
+                chat_id, thread_id, metadata, reply_to_id, reply_to_mode=self._reply_to_mode
+            )
+        )
+        try:
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._remember_tool_progress_trace(
+                tool_trace,
+                chat_id=kwargs.get("chat_id"),
+                message_id=getattr(msg, "message_id", None),
+                thread_id=thread_id,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            if not self._is_markdown_parse_error(exc):
+                err_str = str(exc).lower()
+                error_kind = classify_send_error(exc)
+                retry_after = getattr(exc, "retry_after", None)
+                is_timeout = "timed out" in err_str or "timeout" in err_str
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    retryable=(
+                        retry_after is not None
+                        or self._looks_like_connect_timeout(exc)
+                        or self._looks_like_pool_timeout(exc)
+                        or not is_timeout
+                    ),
+                    error_kind=error_kind,
+                )
+            try:
+                plain_text = _strip_mdv2(content) if content else content
+                if plain_text and utf16_len(plain_text) > self.MAX_MESSAGE_LENGTH:
+                    plain_text = self._truncate_stream_overflow_preview(plain_text)
+                kwargs["text"] = plain_text
+                kwargs.pop("parse_mode", None)
+                msg = await self._send_message_with_thread_fallback(**kwargs)
+                self._remember_tool_progress_trace(
+                    tool_trace,
+                    chat_id=kwargs.get("chat_id"),
+                    message_id=getattr(msg, "message_id", None),
+                    thread_id=thread_id,
+                )
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as fallback_exc:
+                error_kind = classify_send_error(fallback_exc)
+                retry_after = getattr(fallback_exc, "retry_after", None)
+                return SendResult(
+                    success=False,
+                    error=str(fallback_exc),
+                    retryable=retry_after is not None or error_kind == "network",
+                    error_kind=error_kind,
+                )
+
+    async def edit_tool_progress_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        tool_trace: Optional[dict] = None,
+    ) -> SendResult:
+        """Edit a Telegram progress bubble and refresh its drill-down payload."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        chat_id_normalized = normalize_telegram_chat_id(chat_id)
+        self._remember_tool_progress_trace(
+            tool_trace,
+            chat_id=chat_id_normalized,
+            message_id=message_id,
+        )
+        reply_markup = self._build_tool_progress_keyboard(tool_trace, view="summary")
+        formatted = self.format_message(content)
+        if utf16_len(formatted) > self.MAX_MESSAGE_LENGTH:
+            formatted = self._truncate_stream_overflow_preview(formatted)
+        try:
+            await self._bot.edit_message_text(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                message_id=int(message_id),
+                text=formatted,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=reply_markup,
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            if not self._is_markdown_parse_error(exc):
+                error_kind = classify_send_error(exc)
+                retry_after = getattr(exc, "retry_after", None)
+                is_timeout = "timed out" in err_str or "timeout" in err_str
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    retryable=(
+                        retry_after is not None
+                        or self._looks_like_connect_timeout(exc)
+                        or self._looks_like_pool_timeout(exc)
+                        or not is_timeout
+                    ),
+                    error_kind=error_kind,
+                )
+            try:
+                plain_text = _strip_mdv2(content) if content else content
+                if plain_text and utf16_len(plain_text) > self.MAX_MESSAGE_LENGTH:
+                    plain_text = self._truncate_stream_overflow_preview(plain_text)
+                await self._bot.edit_message_text(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    text=plain_text,
+                    reply_markup=reply_markup,
+                    **self._link_preview_kwargs(),
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as fallback_exc:
+                error_kind = classify_send_error(fallback_exc)
+                retry_after = getattr(fallback_exc, "retry_after", None)
+                return SendResult(
+                    success=False,
+                    error=str(fallback_exc),
+                    retryable=retry_after is not None or error_kind == "network",
+                    error_kind=error_kind,
+                )
+
+    async def _handle_tool_progress_callback(self, query, data: str) -> None:
+        parts = data.split(":")
+        if len(parts) < 3:
+            await query.answer(text="Bad tool trace button.")
+            return
+        trace_id = parts[1]
+        action = parts[2]
+        snapshot = self._tool_progress_states().get(trace_id)
+        if not snapshot:
+            await query.answer(text="Tool details expired.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        query_message = getattr(query, "message", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_id = getattr(query_message, "chat_id", None)
+        query_message_id = getattr(query_message, "message_id", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_user_name = getattr(query.from_user, "first_name", None)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Not authorized.")
+            return
+
+        expected_chat_id = snapshot.get("telegram_chat_id")
+        expected_message_id = snapshot.get("telegram_message_id")
+        expected_thread_id = snapshot.get("telegram_thread_id")
+        if (
+            expected_chat_id
+            and query_chat_id is not None
+            and str(query_chat_id) != str(expected_chat_id)
+        ):
+            await query.answer(text="Tool details expired.")
+            return
+        if (
+            expected_message_id
+            and query_message_id is not None
+            and str(query_message_id) != str(expected_message_id)
+        ):
+            await query.answer(text="Tool details expired.")
+            return
+        if (
+            expected_thread_id
+            and query_thread_id is not None
+            and str(query_thread_id) != str(expected_thread_id)
+        ):
+            await query.answer(text="Tool details expired.")
+            return
+
+        from gateway.tool_progress_trace import (
+            format_tool_progress_call,
+            format_tool_progress_detail,
+            format_tool_progress_summary,
+        )
+
+        view = "summary"
+        call_index: Optional[int] = None
+        if action == "d":
+            text = format_tool_progress_detail(snapshot, max_chars=3900)
+            view = "detail"
+        elif action in {"c", "a", "o"}:
+            try:
+                call_index = int(parts[3])
+            except (IndexError, TypeError, ValueError):
+                await query.answer(text="Tool call is missing.")
+                return
+            section = {"c": "call", "a": "args", "o": "output"}[action]
+            text = format_tool_progress_call(snapshot, call_index, section=section, max_chars=3900)
+            view = "call"
+        else:
+            try:
+                inline_limit = int(snapshot.get("inline_limit", 2))
+            except (TypeError, ValueError):
+                inline_limit = 2
+            text = format_tool_progress_summary(snapshot, inline_limit=inline_limit, max_chars=3900)
+
+        reply_markup = self._build_tool_progress_keyboard(snapshot, view=view, call_index=call_index)
+        try:
+            await query.edit_message_text(
+                text=self.format_message(text),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=reply_markup,
+                **self._link_preview_kwargs(),
+            )
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                try:
+                    await query.edit_message_text(
+                        text=_strip_mdv2(text),
+                        reply_markup=reply_markup,
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception:
+                    pass
+        await query.answer()
+
     async def edit_message(
         self,
         chat_id: str,
@@ -4906,6 +5269,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Tool-progress drill-down callbacks ---
+        if data.startswith("tp:"):
+            await self._handle_tool_progress_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):

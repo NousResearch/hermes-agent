@@ -258,8 +258,8 @@ TOOLSETS = {
     },
 
     "crwd": {
-        "description": "CRWD MongoDB lookups: gigs, users, membership (gated on CRWD_MONGO_URI)",
-        "tools": ["crwd_db"],
+        "description": "CRWD MongoDB lookups: gigs, users, membership (gated on CRWD_MONGO_URI); plus crwd_handoff to loop in a human (gated on Chatwoot creds)",
+        "tools": ["crwd_db", "crwd_handoff"],
         "includes": [],
     },
 

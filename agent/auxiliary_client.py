@@ -1190,7 +1190,7 @@ class _AnthropicCompletionsAdapter:
         if _skip_mt:
             max_tokens = None
         else:
-            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
+            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         temperature = kwargs.get("temperature")
 
         normalized_tool_choice = None

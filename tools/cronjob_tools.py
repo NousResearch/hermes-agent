@@ -127,6 +127,20 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
+_GATEWAY_LIFECYCLE_HINT = (
+    " (#30719). Run `hermes gateway restart` from a shell outside the "
+    "gateway/cron process instead."
+)
+
+
+def _cron_threat_block_message(pid: str) -> str:
+    hint = _GATEWAY_LIFECYCLE_HINT if pid.startswith("gateway_lifecycle") else ""
+    return (
+        f"Blocked: prompt matches threat pattern '{pid}'. "
+        f"Cron prompts must not contain injection or exfiltration payloads.{hint}"
+    )
+
+
 # Single source of truth, shared with the install-time scanner
 # (threat_patterns.INVISIBLE_CHARS / skills_guard). Keeping a separate, narrower
 # copy here let an obfuscated injection directive slip past this runtime cron
@@ -253,10 +267,10 @@ def _scan_cron_prompt(prompt: str) -> str:
         return invisible_err
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
-            return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+            return _cron_threat_block_message(pid)
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
-            return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+            return _cron_threat_block_message(pid)
     return ""
 
 
@@ -290,7 +304,7 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
     prompt_to_scan = _strip_cron_safe_constructs(cleaned)
     for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
-            return cleaned, f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+            return cleaned, _cron_threat_block_message(pid)
     return cleaned, ""
 
 

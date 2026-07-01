@@ -863,10 +863,11 @@ class GatewaySlashCommandsMixin:
                 # apply there.
                 if caller_keys_on_alt and not (bool(row_chat) and bool(caller_chat)):
                     return False
-                return (
-                    bool(row_uid) and row_uid == caller_uid
-                    and row_chat == caller_chat
-                )
+                if row_chat and caller_chat and row_chat != caller_chat:
+                    return False
+                if row_chat and not caller_chat:
+                    return False
+                return bool(row_uid) and row_uid == caller_uid
             # Non-DM (group/channel/forum/thread): build_session_key includes
             # chat_id, so a row (or caller) with NO chat provenance cannot prove
             # same-chat. Require both sides non-blank and equal — a legacy

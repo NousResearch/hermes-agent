@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
+_SENSITIVE_CDP_METHODS = frozenset({
+    "Browser.grantPermissions",
+    "Browser.resetPermissions",
+    "Browser.setPermission",
+    "Network.clearBrowserCache",
+    "Network.clearBrowserCookies",
+    "Network.deleteCookies",
+    "Network.getAllCookies",
+    "Network.getCookies",
+    "Network.setCookie",
+    "Network.setCookies",
+    "Storage.clearCookies",
+    "Storage.clearDataForOrigin",
+    "Storage.getCookies",
+    "Storage.setCookies",
+})
+
 
 def _redact_cdp_output(value: Any) -> Any:
     """Redact browser-originated CDP result data before returning it."""
@@ -42,13 +59,6 @@ def _redact_cdp_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _redact_cdp_output(item) for key, item in value.items()}
     return value
-
-# ``websockets`` is a direct hermes-agent dependency because the browser CDP
-# supervisor and browser_dialog tool import it during tool discovery. Wrap the
-# import so a clean error surfaces if an environment is stale or incomplete.
-try:
-    import websockets
-    from websockets.exceptions import WebSocketException
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
 # supervisor and browser_dialog tool import it during tool discovery. Keep the
@@ -133,7 +143,7 @@ def _sensitive_cdp_error(method: str) -> str:
     return tool_error(
         (
             f"CDP method {method!r} is blocked by default because it can read "
-            "browser credentials, mutate storage, or execute page JavaScript. "
+            "browser credentials, mutate storage, or change permissions. "
             "Dedicated browser tools should be used for ordinary page work. "
             "If this raw CDP access is intentionally trusted, set "
             "browser.allow_sensitive_cdp_methods: true in config.yaml."

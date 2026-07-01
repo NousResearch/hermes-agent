@@ -13902,6 +13902,19 @@ def _dashboard_plugin_config_identity(plugin_dir: Path, dashboard_name: str) -> 
     return config_name, plugin_dir.name
 
 
+def _dashboard_plugin_config_aliases(plugin: dict) -> set[str]:
+    aliases = {
+        str(value)
+        for value in (
+            plugin.get("name"),
+            plugin.get("_config_name"),
+            plugin.get("_key"),
+        )
+        if value
+    }
+    return aliases
+
+
 def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
     """Validate the manifest's ``api`` field for the plugin loader.
 
@@ -14086,15 +14099,16 @@ async def get_dashboard_plugins():
 
     def _is_active(p: dict) -> bool:
         name = p.get("name", "")
+        aliases = _dashboard_plugin_config_aliases(p)
         if name in hidden:
             return False
         if p.get("source") == "user":
-            if name in disabled_set:
+            if aliases & disabled_set:
                 return False
-            if name not in enabled_set:
+            if not (aliases & enabled_set):
                 return False
         elif p.get("source") == "bundled":
-            if name in disabled_set:
+            if aliases & disabled_set:
                 return False
         return True
 
@@ -14435,10 +14449,12 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         enabled_set = set()
         disabled_set = set()
     if plugin.get("source") == "user":
-        if plugin_name in disabled_set or plugin_name not in enabled_set:
+        aliases = _dashboard_plugin_config_aliases(plugin)
+        if aliases & disabled_set or not (aliases & enabled_set):
             raise HTTPException(status_code=404, detail="Plugin not found")
     elif plugin.get("source") == "bundled":
-        if plugin_name in disabled_set:
+        aliases = _dashboard_plugin_config_aliases(plugin)
+        if aliases & disabled_set:
             raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])
@@ -14526,21 +14542,22 @@ def _mount_plugin_api_routes():
         # plugins.disabled before we import their Python code.
         # Bundled plugins are trusted (they ship with the release) but
         # still respect an explicit disable.
+        plugin_aliases = _dashboard_plugin_config_aliases(plugin)
         if plugin.get("source") == "user":
-            if plugin_name in disabled_set:
+            if plugin_aliases & disabled_set:
                 _log.debug(
                     "Plugin %s: skipping API mount (explicitly disabled)",
                     plugin_name,
                 )
                 continue
-            if plugin_name not in enabled_set:
+            if not (plugin_aliases & enabled_set):
                 _log.debug(
                     "Plugin %s: skipping API mount (not in plugins.enabled)",
                     plugin_name,
                 )
                 continue
         elif plugin.get("source") == "bundled":
-            if plugin_name in disabled_set:
+            if plugin_aliases & disabled_set:
                 _log.debug(
                     "Plugin %s: skipping API mount (explicitly disabled)",
                     plugin_name,

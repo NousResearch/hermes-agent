@@ -5174,12 +5174,15 @@ class APIServerAdapter(BasePlatformAdapter):
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
+            self._close_response_store()
             return False
 
         if not self._api_key_passes_startup_guard():
+            self._close_response_store()
             return False
 
         if not self._port_is_available():
+            self._close_response_store()
             return False
 
         try:

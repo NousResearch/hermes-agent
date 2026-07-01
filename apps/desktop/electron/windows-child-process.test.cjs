@@ -97,6 +97,16 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   assert.doesNotMatch(quitSnippet, /hermesProcess\.kill\('SIGTERM'\)/)
 })
 
+test('bootstrap repair waits for backend teardown before renderer reloads', () => {
+  const source = readElectronFile('main.cjs')
+  const repairIndex = source.indexOf("ipcMain.handle('hermes:bootstrap:repair'")
+  assert.notEqual(repairIndex, -1, 'missing bootstrap repair handler')
+  const repairSnippet = source.slice(repairIndex, repairIndex + 900)
+
+  assert.match(repairSnippet, /await teardownPrimaryBackendAndWait\(\)/)
+  assert.doesNotMatch(repairSnippet, /resetHermesConnection\(\)/)
+})
+
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.cjs')
 

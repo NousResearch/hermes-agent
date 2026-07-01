@@ -1207,6 +1207,41 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
+  /** Desktop auth boot-gate: the full-window login screen + bottom-left account
+   *  panel (Codex-faithful, minimal). Chinese-first (China-first Desktop V0.2). */
+  auth: {
+    /** Login screen. */
+    login: {
+      /** Hero line under the logo ("开始使用"). */
+      title: string
+      /** Primary button — sign in with the Apex account. */
+      signInApex: string
+      /** Secondary button — quick sign-in with Google. */
+      signInGoogle: string
+      /** In-flight label while a browser sign-in is pending. */
+      signingIn: string
+      /** Generic sign-in failure line. */
+      failed: string
+      /** Account-abnormal (403 account_disabled) message shown on the gate. */
+      accountDisabled: string
+      /** Session-expired / login-lost (401) message shown on the gate. */
+      sessionExpired: string
+    }
+    /** Bottom-left account panel + its popover menu. */
+    account: {
+      /** Fallback display name when no email/name is known (e.g. "账户"). */
+      fallbackName: string
+      /** Menu item — open profile. */
+      profile: string
+      /** Menu item — open settings. */
+      settings: string
+      /** Menu item — remaining usage / quota. */
+      usage: string
+      /** Menu item — sign out. */
+      logout: string
+    }
+  }
+
   modelPicker: {
     title: string
     current: string

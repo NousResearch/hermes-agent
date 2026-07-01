@@ -78,6 +78,7 @@ const {
 } = require('./connection-config.cjs')
 const {
   accessTokenFromLogin,
+  accountFromLogin,
   apexWebLoginUrl,
   buildManagedModelConfig,
   defaultModelPath,
@@ -4543,27 +4544,38 @@ function readManagedConfig() {
   }
 }
 
-// The stored managed config: { key, baseUrl, model }. key is '' when none is
-// stored / managed is disabled. Centralizes the "do we have a managed
+// Normalize the stored (clear, non-secret) account descriptor for the account
+// panel. Missing → empty object so callers can read fields safely.
+function readManagedAccount(stored) {
+  const account = stored && typeof stored.account === 'object' && stored.account ? stored.account : {}
+  const str = value => (typeof value === 'string' ? value.trim() : '')
+  return { email: str(account.email), name: str(account.name), plan: str(account.plan) }
+}
+
+// The stored managed config: { key, baseUrl, model, account }. key is '' when
+// none is stored / managed is disabled. Centralizes the "do we have a managed
 // credential?" question for the boot seed, onboarding gate, and IPC status. The
 // server is the source of truth for baseUrl/model (from provision-key); env
-// defaults only fill gaps.
+// defaults only fill gaps. `account` is display-only identity (email/name/plan),
+// never a secret.
 function resolveManagedConfig() {
   if (!isManagedEnabled(process.env)) {
-    return { key: '', baseUrl: '', model: '' }
+    return { key: '', baseUrl: '', model: '', account: { email: '', name: '', plan: '' } }
   }
   const endpoints = resolveApexEndpoints(process.env)
   const stored = readManagedConfig()
+  const account = readManagedAccount(stored)
   // An explicit env key (e.g. a CI/dev/admin-provisioned key for real-machine
   // testing) wins over stored state, using env/default base_url + model.
   const fromEnv = String(process.env.APEXNODES_RELAY_KEY || '').trim()
   if (fromEnv) {
-    return { key: fromEnv, baseUrl: endpoints.relayBaseUrl, model: endpoints.model }
+    return { key: fromEnv, baseUrl: endpoints.relayBaseUrl, model: endpoints.model, account }
   }
   return {
     key: decryptDesktopSecret(stored.relayKey),
     baseUrl: String(stored.baseUrl || '').trim() || endpoints.relayBaseUrl,
-    model: String(stored.model || '').trim() || endpoints.model
+    model: String(stored.model || '').trim() || endpoints.model,
+    account
   }
 }
 
@@ -4573,15 +4585,20 @@ function resolveManagedRelayCredential() {
   return resolveManagedConfig().key
 }
 
-// Persist the provision-key result. Pass null/empty to clear.
+// Persist the provision-key result. Pass null/empty to clear. `provisioned` may
+// carry an optional display-only `account` ({ email, name, plan }) captured from
+// the login response / JWT claims — stored in clear (it is not a secret) so the
+// account panel can render who is signed in.
 function writeManagedConfig(provisioned) {
   fs.mkdirSync(path.dirname(DESKTOP_MANAGED_CONFIG_PATH), { recursive: true })
   const key = provisioned && typeof provisioned.apiKey === 'string' ? provisioned.apiKey.trim() : ''
+  const account = provisioned && provisioned.account ? readManagedAccount({ account: provisioned.account }) : null
   const next = key
     ? {
         relayKey: encryptDesktopSecret(key),
         baseUrl: String(provisioned.baseUrl || '').trim(),
         model: String(provisioned.model || '').trim(),
+        ...(account && (account.email || account.name || account.plan) ? { account } : {}),
         savedAt: Date.now()
       }
     : {}
@@ -4679,13 +4696,17 @@ function apexAuthPostJson(url, { body, bearer, timeoutMs = 12_000 } = {}) {
 //   - ok=true, hasRelayKey=true  → key + base_url + model stored; managed live.
 //   - ok=true, hasRelayKey=false → token valid but provision-key unavailable —
 //     caller falls back to BYOK.
-async function provisionManagedFromAccessToken(accessToken) {
+async function provisionManagedFromAccessToken(accessToken, account = null) {
   const token = String(accessToken || '').trim()
   if (!token) {
     throw new Error('ApexNodes sign-in did not return an access token.')
   }
 
   const endpoints = resolveApexEndpoints(process.env)
+  // Display-only identity for the account panel. Prefer a caller-supplied
+  // account (email from the login body); always fold in the JWT claims as a
+  // fallback so a browser-flow sign-in (no login body) still gets an email.
+  const resolvedAccount = accountFromLogin(account || {}, token)
 
   let provisioned = null
   try {
@@ -4702,7 +4723,7 @@ async function provisionManagedFromAccessToken(accessToken) {
   }
 
   if (provisioned) {
-    writeManagedConfig(provisioned)
+    writeManagedConfig({ ...provisioned, account: resolvedAccount })
     return { ok: true, hasRelayKey: true }
   }
   return { ok: true, hasRelayKey: false }
@@ -4727,10 +4748,14 @@ async function apexManagedSignIn({ email, password }) {
   const cleanPassword = String(password || '')
 
   let accessToken = ''
+  // The auth-response body (login or register) is the best source of the user's
+  // email/plan for the account panel; keep it to fold into the stored account.
+  let authBody = null
   try {
     const loginBody = await apexAuthPostJson(endpoints.loginUrl, {
       body: { email: cleanEmail, password: cleanPassword }
     })
+    authBody = loginBody
     accessToken = accessTokenFromLogin(loginBody) || ''
   } catch (error) {
     // Only a 401 means "wrong creds OR unknown email" — try registering. Any
@@ -4747,6 +4772,7 @@ async function apexManagedSignIn({ email, password }) {
         wrongCreds.code = 'INVALID_CREDENTIALS'
         throw wrongCreds
       })
+      authBody = registerBody
       accessToken = accessTokenFromLogin(registerBody) || ''
       if (!accessToken) {
         // register returned 2xx but no token (e.g. 202 magic-link path) → treat
@@ -4760,7 +4786,9 @@ async function apexManagedSignIn({ email, password }) {
     }
   }
 
-  return provisionManagedFromAccessToken(accessToken)
+  // The typed email is always a valid identity fallback even if the body omits it.
+  const account = { email: cleanEmail, ...(authBody && typeof authBody === 'object' ? authBody : {}) }
+  return provisionManagedFromAccessToken(accessToken, account)
 }
 
 // Returns the desktop's chosen profile name, or null when unset. "default" is
@@ -6175,6 +6203,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 ipcMain.handle('hermes:managed:status', async () => {
   const endpoints = resolveApexEndpoints(process.env)
   const managed = resolveManagedConfig()
+  const account = managed.account || { email: '', name: '', plan: '' }
   return {
     enabled: isManagedEnabled(process.env),
     signedIn: Boolean(managed.key),
@@ -6183,7 +6212,12 @@ ipcMain.handle('hermes:managed:status', async () => {
     model: managed.model || endpoints.model,
     modelDisplay: endpoints.modelDisplay,
     provider: endpoints.provider,
-    baseUrl: managed.baseUrl || endpoints.relayBaseUrl
+    baseUrl: managed.baseUrl || endpoints.relayBaseUrl,
+    // Display-only identity for the account panel (empty strings when unknown /
+    // signed out). Never a secret — the relay key stays encrypted on disk.
+    email: account.email || '',
+    name: account.name || '',
+    plan: account.plan || ''
   }
 })
 // Shape a managed sign-in result into the IPC payload the renderer applies. When
@@ -6445,6 +6479,49 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   return { ...base, sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
+// Both fetchJson and fetchJsonViaOauthSession reject with a message shaped
+// `"<statusCode>: <body>"`. Parse the leading status code (fetchJsonViaOauthSession
+// also attaches err.statusCode). Returns null when it isn't an HTTP-status error.
+function httpStatusFromError(error) {
+  if (error && typeof error.statusCode === 'number') {
+    return error.statusCode
+  }
+  const message = error && error.message ? String(error.message) : ''
+  const match = /^(\d{3}):/.exec(message)
+  return match ? Number(match[1]) : null
+}
+
+// Continuous auth gate: when a backend call comes back 401 (login lost / token
+// invalid) or 403 account_disabled (account abnormal), tell every renderer so it
+// can clear auth and return to the login screen. The 403 case is narrowed to an
+// `account_disabled` body so an ordinary permission 403 doesn't sign the user
+// out. Best-effort + never throws — a broadcast failure must not break the call's
+// own error handling.
+function broadcastAuthGate(error) {
+  try {
+    const statusCode = httpStatusFromError(error)
+    if (statusCode !== 401 && statusCode !== 403) {
+      return
+    }
+    const message = error && error.message ? String(error.message) : ''
+    const body = message.replace(/^\d{3}:\s*/, '')
+    const disabled = /account_disabled/i.test(body)
+    // A 403 that is NOT an account-disabled signal is a routine authorization
+    // error, not a login-lost event — leave the session intact.
+    if (statusCode === 403 && !disabled) {
+      return
+    }
+    const reason = statusCode === 403 ? 'account_disabled' : 'unauthorized'
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('hermes:auth-gate', { statusCode, reason })
+      }
+    }
+  } catch {
+    // Never let the gate broadcast interfere with the caller's error path.
+  }
+}
+
 ipcMain.handle('hermes:api', async (_event, request) => {
   // Remote-profile session requests would otherwise hit the local primary off
   // each profile's on-disk state.db — fine for local profiles, but a remote
@@ -6469,18 +6546,25 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // the OAuth partition — route through Electron's net stack bound to that
   // session so the cookie attaches automatically. Token/local modes keep using
   // the static session-token header.
-  if (connection.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, {
+  try {
+    if (connection.authMode === 'oauth') {
+      return await fetchJsonViaOauthSession(url, {
+        method: request?.method,
+        body: request?.body,
+        timeoutMs
+      })
+    }
+    return await fetchJson(url, connection.token, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
+  } catch (error) {
+    // Fire the continuous auth gate on 401 / 403 account_disabled, then rethrow
+    // so the caller's own error handling is unchanged.
+    broadcastAuthGate(error)
+    throw error
   }
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    timeoutMs
-  })
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {

@@ -53,6 +53,10 @@ declare global {
         browserSignIn: (payload: { provider: 'apex' | 'google' }) => Promise<DesktopManagedSignInResult>
         signOut: () => Promise<{ ok: boolean }>
       }
+      // Continuous auth gate: fires when a backend call returns 401 (login lost)
+      // or 403 account_disabled (account abnormal). The renderer clears auth and
+      // returns to the login screen. See electron/main.cjs broadcastAuthGate.
+      onAuthGate?: (callback: (payload: DesktopAuthGateEvent) => void) => () => void
       // Runtime 3-end consistency — desktop opt-in engine update (R5/R6).
       // checkUpdate compares the installed engine (bootstrap marker) against the
       // admin-set default; applyUpdate re-points the pin and re-runs bootstrap
@@ -333,16 +337,32 @@ export interface DesktopManagedStatus {
   // The relay base_url the managed config points at (e.g.
   // https://apex-nodes.com/relay/v1).
   baseUrl: string
+  // Signed-in user's email, for the account panel. '' when unknown / signed out.
+  // Display-only — never a secret (the relay key stays encrypted on disk).
+  email: string
   // True when the managed-LLM default path is enabled for this build.
   enabled: boolean
   // Real routed model id (e.g. deepseek-v4-pro).
   model: string
   // UI display label for the model (e.g. deepseek-v4-pro-APEX).
   modelDisplay: string
+  // Signed-in user's display name, if the backend/JWT provided one. '' otherwise.
+  name: string
+  // Signed-in user's plan/tier label (e.g. 'free', 'pro'), if available. ''
+  // otherwise — the account panel omits the plan badge when empty.
+  plan: string
   // Runtime provider slug used for the relay (custom).
   provider: string
   // True when a relay key is on disk (user already signed in to managed).
   signedIn: boolean
+}
+
+// Payload of the continuous auth-gate broadcast (hermes:auth-gate). `reason`
+// distinguishes a lost/expired login (401) from an abnormal account (403
+// account_disabled) so the login screen can show the right message.
+export interface DesktopAuthGateEvent {
+  reason: 'account_disabled' | 'unauthorized'
+  statusCode: number
 }
 
 export interface DesktopManagedSignInResult {

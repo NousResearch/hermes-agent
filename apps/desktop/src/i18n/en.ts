@@ -1614,6 +1614,25 @@ export const en: Translations = {
     docs: provider => `${provider} docs`
   },
 
+  auth: {
+    login: {
+      title: 'Get started',
+      signInApex: 'Sign in with ApexNodes',
+      signInGoogle: 'Continue with Google',
+      signingIn: 'Signing in…',
+      failed: 'Sign-in failed. Please try again.',
+      accountDisabled: 'Your account is unavailable. Please sign in again or contact support.',
+      sessionExpired: 'Your session has expired. Please sign in again.'
+    },
+    account: {
+      fallbackName: 'Account',
+      profile: 'Profile',
+      settings: 'Settings',
+      usage: 'Usage',
+      logout: 'Sign out'
+    }
+  },
+
   modelPicker: {
     title: 'Switch model',
     current: 'current:',

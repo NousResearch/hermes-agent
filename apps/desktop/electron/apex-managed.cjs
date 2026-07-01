@@ -566,6 +566,55 @@ function accessTokenFromLogin(body) {
   return token || null
 }
 
+/**
+ * Decode a JWT's payload (the middle base64url segment) WITHOUT verifying its
+ * signature. We only read a few display claims (email / plan) for the account
+ * panel — the token is never TRUSTED for authorization here (the relay validates
+ * the minted key server-side; this is cosmetic identity for the signed-in user).
+ * Pure + dependency-free (Buffer only), returns {} on any malformed input so a
+ * weird token can never throw into the sign-in path.
+ *
+ * @param {string} token
+ * @returns {Record<string, unknown>}
+ */
+function decodeJwtClaims(token) {
+  const raw = String(token || '').trim()
+  const parts = raw.split('.')
+  if (parts.length < 2 || !parts[1]) return {}
+  try {
+    // base64url → base64, then decode. Buffer tolerates missing padding.
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = Buffer.from(b64, 'base64').toString('utf8')
+    const claims = JSON.parse(json)
+    return claims && typeof claims === 'object' ? claims : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Build the display-only account descriptor persisted alongside the relay key so
+ * the desktop account panel can show who is signed in. Reads the email + plan
+ * from the login/register response body first, then falls back to the JWT
+ * claims (the cloud auth route encodes `email`/`sub` and may include a
+ * plan/tier). Everything is optional — a missing field just renders a generic
+ * label. NEVER includes the token or any secret; this object is stored in clear.
+ *
+ * @param {unknown} loginBody   response of /auth/login or /auth/register
+ * @param {string} [accessToken] the JWT (claims used as a fallback source)
+ * @returns {{ email: string, name: string, plan: string }}
+ */
+function accountFromLogin(loginBody, accessToken = '') {
+  const body = loginBody && typeof loginBody === 'object' ? loginBody : {}
+  const claims = decodeJwtClaims(accessToken)
+  const str = value => (typeof value === 'string' ? value.trim() : '')
+  // Tolerate the couple of shapes the backend / JWT might use for each field.
+  const email = str(body.email) || str(claims.email) || str(claims.sub && String(claims.sub).includes('@') ? claims.sub : '')
+  const name = str(body.name) || str(body.display_name) || str(claims.name)
+  const plan = str(body.plan) || str(body.tier) || str(claims.plan) || str(claims.tier)
+  return { email, name, plan }
+}
+
 module.exports = {
   DEFAULT_AUTH_BASE,
   DEFAULT_API_BASE,
@@ -584,8 +633,10 @@ module.exports = {
   GOOGLE_START_PATH,
   WEB_LOGIN_PATH,
   accessTokenFromLogin,
+  accountFromLogin,
   apexWebLoginUrl,
   buildManagedModelConfig,
+  decodeJwtClaims,
   defaultModelPath,
   googleStartUrl,
   isLoopbackUrl,

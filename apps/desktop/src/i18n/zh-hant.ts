@@ -1676,6 +1676,25 @@ export const zhHant = defineLocale({
     docs: provider => `${provider} 文件`
   },
 
+  auth: {
+    login: {
+      title: '開始使用',
+      signInApex: '登入 ApexNodes 帳戶',
+      signInGoogle: '使用 Google 登入',
+      signingIn: '登入中…',
+      failed: '登入失敗,請重試',
+      accountDisabled: '帳戶狀態異常,請重新登入或聯絡客服',
+      sessionExpired: '登入已過期,請重新登入'
+    },
+    account: {
+      fallbackName: '帳戶',
+      profile: '個人資料',
+      settings: '設定',
+      usage: '剩餘用量',
+      logout: '登出'
+    }
+  },
+
   modelPicker: {
     title: '切換模型',
     current: '目前：',

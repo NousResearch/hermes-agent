@@ -21,8 +21,10 @@ const {
   MANAGED_PROVIDER,
   MANAGED_PROVIDER_NAME,
   accessTokenFromLogin,
+  accountFromLogin,
   apexWebLoginUrl,
   buildManagedModelConfig,
+  decodeJwtClaims,
   defaultModelPath,
   googleStartUrl,
   isLoopbackUrl,
@@ -449,4 +451,55 @@ test('isLoopbackUrl is true only for http loopback hosts', () => {
   assert.equal(isLoopbackUrl('http://example.com/cb'), false)
   assert.equal(isLoopbackUrl('http://169.254.169.254/cb'), false)
   assert.equal(isLoopbackUrl('not a url'), false)
+})
+
+// Build a JWT-shaped string (header.payload.sig) from a claims object; only the
+// payload segment is read by decodeJwtClaims (signature never verified here).
+function makeJwt(claims) {
+  const payload = Buffer.from(JSON.stringify(claims))
+    .toString('base64')
+    .replace(/=+$/, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+  return `header.${payload}.sig`
+}
+
+test('decodeJwtClaims reads the payload segment without verifying the signature', () => {
+  const token = makeJwt({ email: 'jane@apex-nodes.com', plan: 'pro', sub: 'u_123' })
+  assert.deepEqual(decodeJwtClaims(token), { email: 'jane@apex-nodes.com', plan: 'pro', sub: 'u_123' })
+})
+
+test('decodeJwtClaims returns {} for malformed / empty input (never throws)', () => {
+  assert.deepEqual(decodeJwtClaims(''), {})
+  assert.deepEqual(decodeJwtClaims('not-a-jwt'), {})
+  assert.deepEqual(decodeJwtClaims('a.b'), {}) // "b" isn't valid base64 JSON
+  assert.deepEqual(decodeJwtClaims(null), {})
+  assert.deepEqual(decodeJwtClaims(undefined), {})
+})
+
+test('accountFromLogin prefers the response body, falls back to JWT claims', () => {
+  // Body wins when present.
+  const token = makeJwt({ email: 'claims@apex-nodes.com', plan: 'free' })
+  assert.deepEqual(accountFromLogin({ email: 'body@apex-nodes.com', plan: 'pro', name: 'Jane' }, token), {
+    email: 'body@apex-nodes.com',
+    name: 'Jane',
+    plan: 'pro'
+  })
+})
+
+test('accountFromLogin falls back to JWT email/plan when the body omits them', () => {
+  const token = makeJwt({ email: 'claims@apex-nodes.com', tier: 'pro' })
+  assert.deepEqual(accountFromLogin({}, token), { email: 'claims@apex-nodes.com', name: '', plan: 'pro' })
+})
+
+test('accountFromLogin uses an @-shaped JWT sub as an email fallback', () => {
+  const token = makeJwt({ sub: 'sub@apex-nodes.com' })
+  assert.equal(accountFromLogin({}, token).email, 'sub@apex-nodes.com')
+  // A non-email sub (opaque id) is NOT used as an email.
+  assert.equal(accountFromLogin({}, makeJwt({ sub: 'u_123' })).email, '')
+})
+
+test('accountFromLogin returns empty strings when nothing is available', () => {
+  assert.deepEqual(accountFromLogin(null, ''), { email: '', name: '', plan: '' })
+  assert.deepEqual(accountFromLogin(undefined, undefined), { email: '', name: '', plan: '' })
 })

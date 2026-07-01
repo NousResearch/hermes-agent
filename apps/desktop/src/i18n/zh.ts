@@ -1782,6 +1782,25 @@ export const zh: Translations = {
     docs: provider => `${provider} 文档`
   },
 
+  auth: {
+    login: {
+      title: '开始使用',
+      signInApex: '登录 ApexNodes 账户',
+      signInGoogle: '使用 Google 登录',
+      signingIn: '登录中…',
+      failed: '登录失败,请重试',
+      accountDisabled: '账户状态异常,请重新登录或联系客服',
+      sessionExpired: '登录已过期,请重新登录'
+    },
+    account: {
+      fallbackName: '账户',
+      profile: '个人资料',
+      settings: '设置',
+      usage: '剩余用量',
+      logout: '退出登录'
+    }
+  },
+
   modelPicker: {
     title: '切换模型',
     current: '当前：',

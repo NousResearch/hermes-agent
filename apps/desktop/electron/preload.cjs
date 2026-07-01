@@ -26,6 +26,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     browserSignIn: payload => ipcRenderer.invoke('hermes:managed:browserSignIn', payload),
     signOut: () => ipcRenderer.invoke('hermes:managed:signOut')
   },
+  // Continuous auth gate: main broadcasts when a backend call returns 401
+  // (login lost) or 403 account_disabled (account abnormal). The renderer
+  // clears auth and returns to the login screen. See main.cjs broadcastAuthGate.
+  onAuthGate: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:auth-gate', listener)
+    return () => ipcRenderer.removeListener('hermes:auth-gate', listener)
+  },
   // Runtime 3-end consistency — desktop opt-in engine update (R5). checkUpdate
   // compares the installed runtime against the admin-set default; applyUpdate
   // re-points the pin and re-runs bootstrap (renderer reloads when

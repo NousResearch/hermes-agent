@@ -100,6 +100,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { AccountPanel } from './account-panel'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { resolveManualSessionOrderIds } from './order'
 import { ProfileRail } from './profile-switcher'
@@ -1080,6 +1081,10 @@ export function ChatSidebar({
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
+            {/* Bottom-left account panel (avatar + name + plan → popover menu),
+                above the profile rail. Renders only on managed builds when
+                signed in; the auth gate covers the signed-out case. */}
+            <AccountPanel />
             <ProfileRail />
           </div>
         )}

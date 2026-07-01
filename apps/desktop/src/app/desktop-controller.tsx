@@ -22,6 +22,7 @@ import {
   normalizeSessionSource
 } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
+import { $authState } from '../store/auth'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
@@ -97,6 +98,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { DesktopAuthGate } from './desktop-auth-gate'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -200,6 +202,7 @@ export function DesktopController() {
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
+  const authState = useStore($authState)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -957,7 +960,28 @@ export function DesktopController() {
   const overlays = (
     <>
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
+      {/* Hard auth gate: after env is ready, block the chat UI with a full-window
+          login screen until the user is signed in. Also catches mid-session
+          401 / 403 account_disabled and returns here. Rendered before the
+          onboarding overlay so login is the primary gate; the login screen's
+          higher z-index keeps it above onboarding if both ever mount. */}
       {!isSecondaryWindow() && (
+        <DesktopAuthGate
+          enabled={gatewayState === 'open'}
+          onSignedIn={() => {
+            void refreshHermesConfig()
+            void refreshCurrentModel()
+            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+          }}
+          requestGateway={requestGateway}
+        />
+      )}
+      {/* Hold onboarding (BYOK provider config + its own managed panel) until the
+          auth gate has let the user through: on a managed build it mounts only
+          once signed in, so it never races the login screen underneath. On a
+          managed-disabled build the gate reports signed-in immediately, so
+          onboarding behaves exactly as before (BYOK-first). */}
+      {!isSecondaryWindow() && (authState.enabled === false || authState.status === 'signed-in') && (
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}
           onCompleted={() => {

@@ -1710,6 +1710,25 @@ export const ja = defineLocale({
     docs: provider => `${provider} ドキュメント`
   },
 
+  auth: {
+    login: {
+      title: 'はじめる',
+      signInApex: 'ApexNodes アカウントでログイン',
+      signInGoogle: 'Google でログイン',
+      signingIn: 'ログイン中…',
+      failed: 'ログインに失敗しました。もう一度お試しください。',
+      accountDisabled: 'アカウントが利用できません。再度ログインするかサポートにお問い合わせください。',
+      sessionExpired: 'セッションの有効期限が切れました。再度ログインしてください。'
+    },
+    account: {
+      fallbackName: 'アカウント',
+      profile: 'プロフィール',
+      settings: '設定',
+      usage: '使用量',
+      logout: 'ログアウト'
+    }
+  },
+
   modelPicker: {
     title: 'モデルを切り替え',
     current: '現在:',

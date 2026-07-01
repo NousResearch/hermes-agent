@@ -31,6 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -130,6 +133,231 @@ def _stamp_worker_session_metadata(
     stamped = dict(metadata or {})
     stamped["worker_session_id"] = session_id
     return stamped
+
+
+def _split_git_output(stdout: str) -> list[str]:
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
+def _parse_authorized_files(body: str) -> list[str]:
+    lines = body.splitlines()
+    authorized: list[str] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Authorized Files:":
+            collecting = True
+            continue
+        if collecting:
+            if stripped.startswith("- "):
+                authorized.append(stripped[2:].strip())
+                continue
+            if stripped:
+                break
+    return authorized
+
+
+def _normalize_repo_relative_path(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _derive_canonical_prefix(raw: dict[str, Any], workspace_root: Path) -> str | None:
+    canonical_prefix = raw.get("canonicalPrefix")
+    if isinstance(canonical_prefix, str) and canonical_prefix.strip():
+        return _normalize_repo_relative_path(canonical_prefix)
+
+    if (workspace_root / "apps" / "mission-control").is_dir():
+        return "apps/mission-control"
+
+    source_repo_path = raw.get("sourceRepoPath")
+    workspace_path = raw.get("workspacePath")
+    if not isinstance(source_repo_path, str) or not source_repo_path.strip():
+        return None
+    if not isinstance(workspace_path, str) or not workspace_path.strip():
+        return None
+
+    source_repo = Path(source_repo_path).expanduser().resolve()
+    workspace = Path(workspace_path).expanduser().resolve()
+    try:
+        relative_parts = workspace.relative_to(source_repo).parts
+    except ValueError:
+        return None
+
+    if not relative_parts:
+        return None
+    if relative_parts[0] == "apps" and len(relative_parts) >= 2:
+        return "/".join(relative_parts[:2])
+
+    return relative_parts[0]
+
+
+def _canonicalize_mc_scope_path(value: str, canonical_prefix: str) -> str:
+    normalized = _normalize_repo_relative_path(value)
+    if not normalized:
+        return ""
+    canonical_prefix = _normalize_repo_relative_path(canonical_prefix)
+    canonical_prefix_with_slash = f"{canonical_prefix}/"
+    embedded_index = normalized.rfind(canonical_prefix_with_slash)
+    if embedded_index >= 0:
+        return normalized[embedded_index:]
+    if normalized == canonical_prefix or normalized.startswith(canonical_prefix_with_slash):
+        return normalized
+    if normalized.startswith("apps/"):
+        return normalized
+    return f"{canonical_prefix}/{normalized}"
+
+
+def _scope_entry_has_wildcard(value: str) -> bool:
+    return any(token in value for token in ("*", "?", "["))
+
+
+def _matches_authorized_scope_path(changed_path: str, scope_entry: str) -> bool:
+    if not scope_entry:
+        return False
+    if not _scope_entry_has_wildcard(scope_entry):
+        return changed_path == scope_entry
+
+    if scope_entry.endswith("/**"):
+        prefix = scope_entry[:-3].rstrip("/")
+        return changed_path == prefix or changed_path.startswith(f"{prefix}/")
+
+    return fnmatchcase(changed_path, scope_entry)
+
+
+def _is_mc_changed_file_authorized(changed_path: str, authorized_files: set[str]) -> bool:
+    return any(_matches_authorized_scope_path(changed_path, scope_entry) for scope_entry in authorized_files)
+
+
+def _load_mc_attempt_workspace_metadata(workspace_root: Path) -> tuple[str, str]:
+    stem = workspace_root.name
+    worktree_parent = workspace_root.parent
+    metadata_dir = worktree_parent.parent / ".mc-attempt-metadata"
+    metadata_path = metadata_dir / f"{stem}.json"
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"attempt workspace metadata could not be loaded from {metadata_path}: {exc}"
+        ) from exc
+
+    base_commit_sha = raw.get("baseCommitSha")
+    if not isinstance(base_commit_sha, str) or not base_commit_sha.strip():
+        base_commit_sha = raw.get("baseSha")
+    canonical_prefix = _derive_canonical_prefix(raw, workspace_root)
+    if not isinstance(base_commit_sha, str) or not base_commit_sha.strip():
+        raise RuntimeError(f"attempt workspace metadata at {metadata_path} is missing baseCommitSha")
+    if not isinstance(canonical_prefix, str) or not canonical_prefix.strip():
+        raise RuntimeError(f"attempt workspace metadata at {metadata_path} is missing canonicalPrefix")
+    return base_commit_sha.strip(), _normalize_repo_relative_path(canonical_prefix)
+
+
+def _governed_workspace_changed_files(workspace_root: Path, base_commit_sha: str) -> list[str]:
+    tracked = subprocess.run(
+        ["git", "diff", "--name-only", base_commit_sha, "--"],
+        cwd=str(workspace_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    tracked_created = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=A", base_commit_sha, "--"],
+        cwd=str(workspace_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=str(workspace_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    changed = {
+        _normalize_repo_relative_path(value)
+        for value in [
+            *_split_git_output(tracked.stdout),
+            *_split_git_output(tracked_created.stdout),
+            *_split_git_output(untracked.stdout),
+        ]
+        if _normalize_repo_relative_path(value)
+    }
+    return sorted(changed)
+
+
+def _validate_mc_execute_workspace_scope(body: str) -> str | None:
+    workspace_raw = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    if not workspace_raw:
+        return (
+            "Mission Control execute tasks require HERMES_KANBAN_WORKSPACE so the "
+            "governed worktree can be validated. Block the task instead."
+        )
+    try:
+        workspace_root = Path(workspace_raw).expanduser().resolve()
+    except (OSError, ValueError):
+        return (
+            "Mission Control execute task workspace could not be resolved. "
+            "Block the task instead."
+        )
+    try:
+        base_commit_sha, canonical_prefix = _load_mc_attempt_workspace_metadata(workspace_root)
+        changed_files = _governed_workspace_changed_files(workspace_root, base_commit_sha)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        return (
+            "Mission Control execute task workspace validation failed: "
+            f"{stderr or exc}. Clean up the governed worktree or block the task instead."
+        )
+    except Exception as exc:
+        return (
+            "Mission Control execute task workspace validation failed: "
+            f"{exc}. Clean up the governed worktree or block the task instead."
+        )
+
+    if not changed_files:
+        return (
+            "Mission Control execute tasks must leave changed files in the governed "
+            "worktree since the attempt baseline before completion. No changed files were found under "
+            "$HERMES_KANBAN_WORKSPACE. Apply the change there or block the task instead."
+        )
+
+    authorized_files = {
+        _canonicalize_mc_scope_path(value, canonical_prefix)
+        for value in _parse_authorized_files(body)
+    }
+    if not authorized_files:
+        return (
+            "Mission Control execute task scope could not be validated because the card "
+            "body does not declare Authorized Files. Clean up or block the task instead."
+        )
+
+    out_of_prefix = [
+        value
+        for value in changed_files
+        if value != canonical_prefix and not value.startswith(f"{canonical_prefix}/")
+    ]
+    if out_of_prefix:
+        return (
+            "Mission Control execute task has out-of-scope file drift outside the canonical prefix "
+            f"{canonical_prefix}: {', '.join(out_of_prefix)}. Clean up those files or block the task instead."
+        )
+
+    out_of_scope = [
+        value for value in changed_files
+        if not _is_mc_changed_file_authorized(value, authorized_files)
+    ]
+    if out_of_scope:
+        return (
+            "Mission Control execute task has out-of-scope file drift in the governed "
+            f"worktree: {', '.join(out_of_scope)}. Clean up those files or block the task instead."
+        )
+    return None
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -598,6 +826,7 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+            body = str(task.body or "") if task else ""
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
@@ -622,6 +851,32 @@ def _handle_complete(args: dict, **kw) -> str:
                         f"or (2) create continuation tasks with parents=[{tid}] "
                         f"and keep this task alive."
                     )
+
+            is_mc_execute = "Task Type: execution" in body and "MC Task ID:" in body
+            if is_mc_execute:
+                if not isinstance(result, str) or not result.strip():
+                    return tool_error(
+                        "Mission Control execute tasks must complete with "
+                        "result=<raw execution_result JSON>. "
+                        "Do not complete with summary only; resubmit with "
+                        "kind='execution_result' or block the task instead."
+                    )
+                try:
+                    parsed = json.loads(result)
+                except Exception:
+                    return tool_error(
+                        "Mission Control execute tasks must provide valid "
+                        "JSON in result. Expected an execution_result payload."
+                    )
+                if not isinstance(parsed, dict) or parsed.get("kind") != "execution_result":
+                    return tool_error(
+                        "Mission Control execute task result must be a JSON "
+                        "object with kind='execution_result'. Resubmit with "
+                        "raw execution_result JSON or block the task instead."
+                    )
+                workspace_scope_error = _validate_mc_execute_workspace_scope(body)
+                if workspace_scope_error:
+                    return tool_error(workspace_scope_error)
 
             try:
                 ok = kb.complete_task(

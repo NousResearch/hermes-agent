@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -691,6 +693,400 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
         assert kb.get_task(conn2, goal_task_id).status == "done"
     finally:
         conn2.close()
+
+
+def _init_git_workspace(workspace: Path) -> str:
+    workspace.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "Codex"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=workspace, check=True, capture_output=True, text=True)
+    tracked = workspace / "apps" / "mission-control" / "src"
+    tracked.mkdir(parents=True, exist_ok=True)
+    (tracked / "tracked.ts").write_text("export const tracked = 1;\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=workspace, check=True, capture_output=True, text=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _create_attempt_workspace(tmp_path: Path, monkeypatch, *, authorized_file: str = "apps/mission-control/src/tracked.ts", absolute_authorized: bool = False):
+    workspace_root = tmp_path / "kanban"
+    workspace = workspace_root / "mc-attempt-worktrees" / "mc-task-1-attempt-1"
+    base_commit_sha = _init_git_workspace(workspace)
+    metadata_dir = workspace_root / ".mc-attempt-metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = metadata_dir / "mc-task-1-attempt-1.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "taskId": "mc-task-1",
+                "attemptNumber": 1,
+                "branchName": "objective/test",
+                "baseCommitSha": base_commit_sha,
+                "canonicalPrefix": "apps/mission-control",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    if absolute_authorized:
+        return workspace, str(workspace / "apps" / "mission-control" / "src" / "tracked.ts")
+    return workspace, authorized_file
+
+
+def _create_legacy_attempt_workspace(tmp_path: Path, monkeypatch):
+    workspace_root = tmp_path / "kanban"
+    workspace = workspace_root / "mc-attempt-worktrees" / "mc-task-1-attempt-1"
+    base_commit_sha = _init_git_workspace(workspace)
+    metadata_dir = workspace_root / ".mc-attempt-metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = metadata_dir / "mc-task-1-attempt-1.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "taskId": "mc-task-1",
+                "attemptNumber": 1,
+                "branchName": "objective/test",
+                "baseSha": base_commit_sha,
+                "workspacePath": str(workspace),
+                "sourceRepoPath": str(workspace),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    return workspace
+
+
+def _create_mc_execute_task(monkeypatch, tmp_path, *, body_suffix: str = "", authorized_file: str = "apps/mission-control/src/tracked.ts") -> str:
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "william")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="execute-task",
+            assignee="william",
+            body=(
+                "Task Type: execution\n"
+                "MC Task ID: mc-task-1\n"
+                "Authorized Files:\n"
+                f"- {authorized_file}\n"
+                f"{body_suffix}"
+            ),
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    return tid
+
+
+def test_complete_rejects_mc_execute_with_summary_only(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "william")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="execute-task",
+            assignee="william",
+            body="Task Type: execution\nMC Task ID: mc-task-1\n",
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "Implemented the change."})
+    assert "execution_result JSON" in json.loads(out)["error"]
+
+
+def test_complete_rejects_mc_execute_with_invalid_json_result(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "william")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="execute-task",
+            assignee="william",
+            body="Task Type: execution\nMC Task ID: mc-task-1\n",
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "Implemented the change.", "result": "not-json"})
+    assert "valid JSON" in json.loads(out)["error"]
+
+
+def test_complete_rejects_mc_execute_with_wrong_result_kind(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "william")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="execute-task",
+            assignee="william",
+            body="Task Type: execution\nMC Task ID: mc-task-1\n",
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": "{\"kind\":\"not_execution\"}",
+    })
+    assert "kind='execution_result'" in json.loads(out)["error"]
+
+
+def test_complete_accepts_mc_execute_with_structured_result(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    workspace, authorized_file = _create_attempt_workspace(tmp_path, monkeypatch)
+    tid = _create_mc_execute_task(monkeypatch, tmp_path, authorized_file=authorized_file)
+    (workspace / "apps" / "mission-control" / "src" / "tracked.ts").write_text(
+        "export const tracked = 2;\n",
+        encoding="utf-8",
+    )
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({
+            "kind": "execution_result",
+            "statusNote": "Implemented the change.",
+        }),
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.result
+        assert json.loads(task.result)["kind"] == "execution_result"
+    finally:
+        conn.close()
+
+
+def test_complete_accepts_mc_execute_with_absolute_authorized_path_and_committed_changes(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    workspace, authorized_file = _create_attempt_workspace(tmp_path, monkeypatch, absolute_authorized=True)
+    tid = _create_mc_execute_task(monkeypatch, tmp_path, authorized_file=authorized_file)
+    tracked = workspace / "apps" / "mission-control" / "src" / "tracked.ts"
+    tracked.write_text("export const tracked = 3;\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "update tracked"], cwd=workspace, check=True, capture_output=True, text=True)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({
+            "kind": "execution_result",
+            "statusNote": "Implemented the change.",
+        }),
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.result
+        assert json.loads(task.result)["kind"] == "execution_result"
+    finally:
+        conn.close()
+
+
+def test_complete_accepts_legacy_attempt_metadata_shape(monkeypatch, tmp_path):
+    workspace = _create_legacy_attempt_workspace(tmp_path, monkeypatch)
+    _create_mc_execute_task(monkeypatch, tmp_path)
+    (workspace / "apps" / "mission-control" / "src" / "tracked.ts").write_text(
+        "export const tracked = 4;\n",
+        encoding="utf-8",
+    )
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({
+            "kind": "execution_result",
+            "statusNote": "Implemented the change.",
+        }),
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+
+def test_complete_rejects_mc_execute_with_no_workspace_changes(monkeypatch, tmp_path):
+    _create_attempt_workspace(tmp_path, monkeypatch)
+    _create_mc_execute_task(monkeypatch, tmp_path)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    assert "No changed files were found" in json.loads(out)["error"]
+
+
+def test_complete_rejects_mc_execute_with_out_of_scope_drift(monkeypatch, tmp_path):
+    workspace, _ = _create_attempt_workspace(tmp_path, monkeypatch)
+    _create_mc_execute_task(monkeypatch, tmp_path)
+    (workspace / "package-lock.json").write_text("{\"lockfileVersion\":3}\n", encoding="utf-8")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    assert "out-of-scope file drift" in json.loads(out)["error"]
+    assert "package-lock.json" in json.loads(out)["error"]
+
+
+def test_complete_accepts_mc_execute_with_recursive_authorized_glob(monkeypatch, tmp_path):
+    workspace, _ = _create_attempt_workspace(tmp_path, monkeypatch)
+    _create_mc_execute_task(
+        monkeypatch,
+        tmp_path,
+        body_suffix="- apps/mission-control/src/components/objectives/**\n",
+    )
+    objectives_dir = workspace / "apps" / "mission-control" / "src" / "components" / "objectives"
+    objectives_dir.mkdir(parents=True, exist_ok=True)
+    (objectives_dir / "types.ts").write_text("export type ObjectiveId = string;\n", encoding="utf-8")
+    (objectives_dir / "cards" / "detail.tsx").parent.mkdir(parents=True, exist_ok=True)
+    (objectives_dir / "cards" / "detail.tsx").write_text("export const Detail = () => null;\n", encoding="utf-8")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    assert json.loads(out)["ok"] is True
+
+
+def test_complete_rejects_mc_execute_for_sibling_path_outside_authorized_glob(monkeypatch, tmp_path):
+    workspace, _ = _create_attempt_workspace(tmp_path, monkeypatch)
+    _create_mc_execute_task(
+        monkeypatch,
+        tmp_path,
+        body_suffix="- apps/mission-control/src/components/objectives/**\n",
+    )
+    other_dir = workspace / "apps" / "mission-control" / "src" / "components" / "other"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    (other_dir / "panel.tsx").write_text("export const Panel = () => null;\n", encoding="utf-8")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    error = json.loads(out)["error"]
+    assert "out-of-scope file drift" in error
+    assert "apps/mission-control/src/components/other/panel.tsx" in error
+
+
+def test_complete_accepts_mc_execute_with_absolute_authorized_glob(monkeypatch, tmp_path):
+    workspace, _ = _create_attempt_workspace(tmp_path, monkeypatch)
+    absolute_glob = (
+        workspace
+        / "apps"
+        / "mission-control"
+        / "src"
+        / "components"
+        / "objectives"
+    )
+    _create_mc_execute_task(
+        monkeypatch,
+        tmp_path,
+        body_suffix=f"- {absolute_glob}/**\n",
+    )
+    objectives_dir = workspace / "apps" / "mission-control" / "src" / "components" / "objectives"
+    objectives_dir.mkdir(parents=True, exist_ok=True)
+    (objectives_dir / "status-buttons.tsx").write_text("export const Buttons = () => null;\n", encoding="utf-8")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    assert json.loads(out)["ok"] is True
+
+
+def test_complete_rejects_mc_execute_without_authorized_files_scope(monkeypatch, tmp_path):
+    workspace, _ = _create_attempt_workspace(tmp_path, monkeypatch)
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "william")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="execute-task",
+            assignee="william",
+            body="Task Type: execution\nMC Task ID: mc-task-1\n",
+        )
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    (workspace / "apps" / "mission-control" / "src" / "tracked.ts").write_text(
+        "export const tracked = 5;\n",
+        encoding="utf-8",
+    )
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "Implemented the change.",
+        "result": json.dumps({"kind": "execution_result"}),
+    })
+    assert "Authorized Files" in json.loads(out)["error"]
 
 
 def test_block_happy_path(worker_env):

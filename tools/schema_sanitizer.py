@@ -329,7 +329,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
         if not valid:
-            out.pop("required", None)
+            out["required"] = []
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 

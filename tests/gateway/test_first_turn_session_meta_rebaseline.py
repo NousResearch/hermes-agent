@@ -68,8 +68,12 @@ def _bootstrap(monkeypatch, tmp_path, db):
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
-    # REAL SessionDB so the guard's get_session(...).message_count is live.
-    runner._session_db = db
+    # REAL SessionDB behind the async facade the gateway holds — the
+    # production re-baseline does ``await self._session_db.get_session(...)``,
+    # so it must be the AsyncSessionDB wrapper, not the raw sync DB.
+    from hermes_state import AsyncSessionDB
+
+    runner._session_db = AsyncSessionDB(db)
     runner._recover_telegram_topic_thread_id = lambda _source: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True

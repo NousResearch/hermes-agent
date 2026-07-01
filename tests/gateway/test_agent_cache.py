@@ -1715,7 +1715,8 @@ class TestAgentCacheMessageCountRebaseline:
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
 
-    def test_in_band_followup_reuses_cached_agent(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_in_band_followup_reuses_cached_agent(self, tmp_path):
         """Behavioral regression for the in-band queued (/queue) follow-up.
 
         #46237 re-baselines the snapshot only on the EXTERNAL-turn boundary
@@ -1755,7 +1756,7 @@ class TestAgentCacheMessageCountRebaseline:
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
         # The fix: re-baseline at the follow-up boundary.
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
 
         # The in-band follow-up now REUSES the cached, warm-prefix agent.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
@@ -1768,18 +1769,20 @@ class TestAgentCacheMessageCountRebaseline:
         The behavioral test above proves the re-baseline makes the in-band
         follow-up reuse the cached agent, but it calls the helper directly —
         it would still pass if the production call were deleted.  This guards
-        the actual call site: inside ``_run_agent`` the queued (/queue)
-        follow-up recurses via ``followup_result = await self._run_agent(...)``
-        and the re-baseline MUST run BEFORE that recursion (running it only
-        after, like the external-turn site at 8888, is too late for the
-        in-band path — the follow-up would already have rebuilt).
+        the actual call site: the queued (/queue) follow-up recurses via
+        ``followup_result = await self._run_agent(...)`` inside
+        ``_run_agent_inner`` and the re-baseline MUST run BEFORE that
+        recursion (running it only after, like the external-turn site, is too
+        late for the in-band path — the follow-up would already have rebuilt).
         """
         import inspect
         from gateway.run import GatewayRunner
 
-        src = inspect.getsource(GatewayRunner._run_agent)
+        # The recursion + pre-recursion re-baseline live in the extracted
+        # ``_run_agent_inner`` (older trees had them inline in ``_run_agent``).
+        src = inspect.getsource(GatewayRunner._run_agent_inner)
         marker = "followup_result = await self._run_agent("
-        assert marker in src, "in-band queued follow-up recursion not found in _run_agent"
+        assert marker in src, "in-band queued follow-up recursion not found in _run_agent_inner"
         before_recursion = src[: src.index(marker)]
         assert "_refresh_agent_cache_message_count" in before_recursion, (
             "the in-band queued follow-up recursion must be preceded by a "

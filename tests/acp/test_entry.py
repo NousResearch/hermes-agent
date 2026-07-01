@@ -23,6 +23,32 @@ def test_main_enables_unstable_protocol(monkeypatch):
     assert calls["kwargs"]["use_unstable_protocol"] is True
 
 
+def test_main_evidence_no_tools_skips_startup_mcp_discovery(monkeypatch):
+    calls = {}
+
+    async def fake_run_agent(agent, **kwargs):
+        calls["agent"] = agent
+        calls["kwargs"] = kwargs
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            calls["agent_kwargs"] = kwargs
+
+    def fail_discovery():
+        raise AssertionError("MCP discovery must not run in evidence no-tools mode")
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", fail_discovery)
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", FakeAgent)
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main(["--evidence-no-tools"])
+
+    assert calls["agent_kwargs"] == {"evidence_no_tools": True}
+    assert calls["kwargs"]["use_unstable_protocol"] is True
+
+
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(entry, "_setup_logging", lambda: (_ for _ in ()).throw(AssertionError("started server")))
 

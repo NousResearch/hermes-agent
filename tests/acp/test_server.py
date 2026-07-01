@@ -1481,6 +1481,17 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/model", state)
         assert "test-model" in result
 
+    def test_evidence_no_tools_tools_command_does_not_rebuild_surface(self, mock_manager):
+        state = self._make_state(mock_manager)
+        state.agent.acp_evidence_no_tools = True
+        evidence_agent = HermesACPAgent(session_manager=mock_manager, evidence_no_tools=True)
+
+        with patch("model_tools.get_tool_definitions") as mock_defs:
+            result = evidence_agent._handle_slash_command("/tools", state)
+
+        assert result == "No tools available."
+        mock_defs.assert_not_called()
+
     def test_context_empty(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = []
@@ -1720,6 +1731,18 @@ class TestRegisterSessionMcpServers:
         # Should not raise
         await agent._register_session_mcp_servers(state, None)
         await agent._register_session_mcp_servers(state, [])
+
+    @pytest.mark.asyncio
+    async def test_evidence_no_tools_rejects_session_mcp_servers(self, mock_manager):
+        """Evidence mode fails closed before registering ACP-provided MCP servers."""
+        from acp.schema import McpServerStdio
+
+        agent = HermesACPAgent(session_manager=mock_manager, evidence_no_tools=True)
+        state = mock_manager.create_session(cwd="/tmp")
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with pytest.raises(RuntimeError, match="evidence no-tool/no-MCP mode"):
+            await agent._register_session_mcp_servers(state, [server])
 
     @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):

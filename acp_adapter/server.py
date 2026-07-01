@@ -514,9 +514,20 @@ class HermesACPAgent(acp.Agent):
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(
+        self,
+        session_manager: SessionManager | None = None,
+        evidence_no_tools: bool = False,
+    ):
         super().__init__()
-        self.session_manager = session_manager or SessionManager()
+        self.evidence_no_tools = bool(
+            evidence_no_tools or getattr(session_manager, "evidence_no_tools", False)
+        )
+        self.session_manager = session_manager or SessionManager(
+            evidence_no_tools=self.evidence_no_tools
+        )
+        if self.evidence_no_tools:
+            self.session_manager.evidence_no_tools = True
         self._conn: Optional[acp.Client] = None
 
     # ---- Connection lifecycle -----------------------------------------------
@@ -793,6 +804,10 @@ class HermesACPAgent(acp.Agent):
         """Register ACP-provided MCP servers and refresh the agent tool surface."""
         if not mcp_servers:
             return
+        if self.evidence_no_tools:
+            raise RuntimeError(
+                "ACP evidence no-tool/no-MCP mode rejects session MCP servers"
+            )
 
         try:
             from tools.mcp_tool import register_mcp_servers
@@ -1779,6 +1794,8 @@ class HermesACPAgent(acp.Agent):
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
+        if self.evidence_no_tools or getattr(state.agent, "acp_evidence_no_tools", False):
+            return "No tools available."
         try:
             from model_tools import get_tool_definitions
             from types import SimpleNamespace

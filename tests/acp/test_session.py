@@ -322,6 +322,71 @@ class TestPersistence:
 
         assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
 
+    def test_evidence_no_tools_session_ignores_configured_mcp_toolsets(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.model = kwargs.get("model")
+                self.enabled_toolsets = kwargs.get("enabled_toolsets")
+                self.tools = []
+                self.valid_tool_names = set()
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "mcp_servers": {
+                "olympus": {"command": "python", "enabled": True},
+                "exa": {"url": "https://exa.ai/mcp"},
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", FakeAgent):
+            manager = SessionManager(db=db, evidence_no_tools=True)
+            state = manager.create_session(cwd="/work")
+
+        assert captured["enabled_toolsets"] == []
+        assert state.agent.enabled_toolsets == []
+        assert state.agent.tools == []
+        assert state.agent.valid_tool_names == set()
+        assert state.agent.acp_evidence_no_tools is True
+        assert state.agent._skip_mcp_refresh is True
+
+    def test_evidence_no_tools_clears_agent_factory_tool_surface(self, tmp_path):
+        agent = SimpleNamespace(
+            model="factory-model",
+            enabled_toolsets=["hermes-acp", "mcp-leak"],
+            tools=[{"name": "leaked_tool"}],
+            valid_tool_names={"leaked_tool"},
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db, evidence_no_tools=True)
+
+        state = manager.create_session(cwd="/work")
+
+        assert state.agent is agent
+        assert state.agent.enabled_toolsets == []
+        assert state.agent.tools == []
+        assert state.agent.valid_tool_names == set()
+        assert state.agent.acp_evidence_no_tools is True
+        assert state.agent._skip_mcp_refresh is True
+
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")
         db = manager._get_db()

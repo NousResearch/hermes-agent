@@ -191,7 +191,7 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, evidence_no_tools: bool = False):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -199,11 +199,14 @@ class SessionManager:
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
+            evidence_no_tools: Create ACP sessions with an empty tool surface
+                           for reviewed governance evidence preflights.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self.evidence_no_tools = bool(evidence_no_tools)
 
     # ---- public API ---------------------------------------------------------
 
@@ -566,7 +569,7 @@ class SessionManager:
         api_mode: str | None = None,
     ):
         if self._agent_factory is not None:
-            return self._agent_factory()
+            return self._prepare_agent_for_session(self._agent_factory())
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
@@ -582,18 +585,23 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
-        configured_mcp_servers = [
-            name
-            for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
-        ]
+        if self.evidence_no_tools:
+            configured_mcp_servers = []
+            enabled_toolsets: list[str] = []
+        else:
+            configured_mcp_servers = [
+                name
+                for name, cfg in (config.get("mcp_servers") or {}).items()
+                if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+            ]
+            enabled_toolsets = _expand_acp_enabled_toolsets(
+                ["hermes-acp"],
+                mcp_server_names=configured_mcp_servers,
+            )
 
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": enabled_toolsets,
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
@@ -624,4 +632,14 @@ class SessionManager:
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print
+        self._prepare_agent_for_session(agent)
+        return agent
+
+    def _prepare_agent_for_session(self, agent):
+        if self.evidence_no_tools:
+            agent.acp_evidence_no_tools = True
+            agent._skip_mcp_refresh = True
+            agent.enabled_toolsets = []
+            agent.tools = []
+            agent.valid_tool_names = set()
         return agent

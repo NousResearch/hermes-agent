@@ -960,6 +960,15 @@ def create_job(
         context_from = None
 
     prompt_text = _coerce_job_text(prompt)
+
+    # Reject cron jobs that schedule gateway-lifecycle commands. Prevents
+    # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
+    # (#30719). Enforced here (not only in the CLI layer) so the agent's
+    # `cronjob` model tool — which calls create_job directly — is also
+    # covered, not just `hermes cron create`.
+    from cron.lifecycle_guard import check_gateway_lifecycle
+    check_gateway_lifecycle(prompt_text, normalized_script)
+
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(

@@ -6,7 +6,6 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -16,23 +15,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 
-# Patterns that indicate a cron job targets the gateway lifecycle.
-# Matches commands that restart/stop the gateway or its service manager.
-# Deliberately specific — a bare "gateway ... restart" catch-all would block
-# legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
-# the API gateway logs and report restart events").
-_GATEWAY_LIFECYCLE_PATTERNS = re.compile(
-    r"(?i)"
-    r"(hermes\s+gateway\s+(restart|stop|start))"
-    r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
-    r"|(p?kill\s+.*hermes.*gateway)"
+# Gateway-lifecycle command detection lives in ``cron.lifecycle_guard`` so it
+# can be shared across every job-creation path (CLI + the agent's ``cronjob``
+# model tool via ``cron.jobs.create_job``) without a circular import. Re-export
+# ``_contains_gateway_lifecycle_command`` here for back-compat: ``tools/
+# terminal_tool.py`` imports it from this module to hard-block the same
+# commands at execution time when ``_HERMES_GATEWAY=1``.
+from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
+    contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
-
-
-def _contains_gateway_lifecycle_command(text: str) -> bool:
-    """Return True if *text* contains a gateway lifecycle command pattern."""
-    return bool(_GATEWAY_LIFECYCLE_PATTERNS.search(text))
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
@@ -301,28 +292,12 @@ def _print_active_jobs_summary(jobs) -> None:
 
 
 def cron_create(args):
-    # Defense: reject cron jobs that contain gateway lifecycle commands.
-    # Prevents agents from scheduling their own restart/stop, which creates
-    # SIGTERM-respawn loops under launchd/systemd KeepAlive (#30719).
-    prompt = getattr(args, "prompt", None) or ""
-    script = getattr(args, "script", None)
-    combined = prompt
-    if script:
-        try:
-            script_text = Path(script).read_text(encoding="utf-8")
-            combined = f"{combined}\n{script_text}"
-        except (OSError, UnicodeDecodeError):
-            pass
-    if _contains_gateway_lifecycle_command(combined):
-        print(color(
-            "Blocked: cron job contains a gateway lifecycle command "
-            "(restart/stop/kill).\n"
-            "This is blocked to prevent restart loops (#30719).\n"
-            "Use `hermes gateway restart` from a shell outside the gateway.",
-            Colors.RED,
-        ))
-        return 1
-
+    # The gateway-lifecycle guard lives in cron.jobs.create_job so it fires on
+    # every job-creation path (this CLI subcommand AND the agent's `cronjob`
+    # model tool, which calls create_job directly). When it blocks, create_job
+    # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
+    # returns it as result["error"], and the `if not result.get("success")`
+    # branch below prints it in red and exits 1 — same UX as before.
     result = _cron_api(
         action="create",
         schedule=args.schedule,

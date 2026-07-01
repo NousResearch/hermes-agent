@@ -16191,7 +16191,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # Exception: Chatwoot private-note trace wants separate private
+            # notes (non_conversational metadata → adapter posts private:true).
+            _private_note_trace = bool(getattr(adapter, "_private_note_trace", False))
+            _no_edit = type(adapter).edit_message is BasePlatformAdapter.edit_message
+            if _no_edit and not _private_note_trace:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -16201,7 +16205,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            can_edit = (
+                progress_grouping != "separate"
+                and not _no_edit
+            )  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 

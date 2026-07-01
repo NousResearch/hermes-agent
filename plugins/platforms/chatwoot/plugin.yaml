@@ -23,7 +23,7 @@ requires_env:
     password: true
 optional_env:
   - name: CHATWOOT_AGENT_TOKEN
-    description: "User/agent access token for private notes (if the bot token cannot post private:true)"
+    description: "User/agent access token for private notes and typing indicator (if the bot token cannot)"
     prompt: "Agent (user) token for private notes"
     password: true
   - name: CHATWOOT_ACCOUNT_ID

@@ -225,19 +225,19 @@ class TestNotFoundBlastRadius:
     def test_is_chat_level_not_found_chat_level(self):
         from gateway.platforms.base import is_chat_level_not_found
 
-        assert is_chat_level_not_found("Bad Request: chat not found") is True
+        assert is_chat_level_not_found(error_text="Bad Request: chat not found") is True
 
     @pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
     def test_is_chat_level_not_found_subchat(self, message):
         from gateway.platforms.base import is_chat_level_not_found
 
-        assert is_chat_level_not_found(message) is False
+        assert is_chat_level_not_found(error_text=message) is False
 
     def test_subchat_marker_wins_when_both_present(self):
         from gateway.platforms.base import is_chat_level_not_found
 
         # Conservative: if a sub-chat marker is present, never kill the whole chat.
-        assert is_chat_level_not_found("chat not found; message thread not found") is False
+        assert is_chat_level_not_found(error_text="chat not found; message thread not found") is False
 
     def test_classify_dead_from_error_text_gates_not_found(self):
         from gateway.delivery import _classify_dead_from_error_text
@@ -246,3 +246,19 @@ class TestNotFoundBlastRadius:
         assert _classify_dead_from_error_text("Bad Request: chat not found") == "not_found"
         assert _classify_dead_from_error_text("Bad Request: message thread not found") is None
         assert _classify_dead_from_error_text("httpx.ReadTimeout: connection timed out") is None
+
+    def test_error_blob_is_shared_source_of_truth(self):
+        # Regression guard: classify_send_error and is_chat_level_not_found must
+        # both derive their match text from the SAME _error_blob helper (which
+        # includes the exception CLASS NAME), so they can never drift. Before
+        # this consolidation is_chat_level_not_found built its own blob from
+        # str(exc) only, omitting the class name classify_send_error included.
+        from gateway.platforms import base
+
+        class TopicDeleted(Exception):
+            pass
+
+        # Empty message: the only signal is the class name — _error_blob keeps it,
+        # with no stray leading space from an empty str(exc).
+        assert base._error_blob(TopicDeleted()) == "topicdeleted"
+        assert base._error_blob(TopicDeleted("boom")) == "boom topicdeleted"

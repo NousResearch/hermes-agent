@@ -133,7 +133,7 @@ def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
     # Only a whole-chat not_found means the target is dead — a deleted forum topic
     # or an edited-away message must not mark the entire chat (and all of its future
     # deliveries) dead.  See gateway.dead_targets' documented scope.
-    if kind == "not_found" and not is_chat_level_not_found(error_text):
+    if kind == "not_found" and not is_chat_level_not_found(error_text=error_text):
         return None
     return kind
 

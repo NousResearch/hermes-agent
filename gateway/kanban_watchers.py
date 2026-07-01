@@ -25,6 +25,22 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_notifier_agent_wake_enabled(load_config: Callable[[], Any]) -> bool:
+    """Return whether kanban notifications should wake an agent session.
+
+    Delivery notifications are safe by default; injecting a synthetic message
+    into the subscribed chat starts an agent loop and can make a notification
+    look like a new user instruction. Keep that behavior opt-in so a delivery
+    subscription cannot silently become cross-profile task takeover.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    return bool(kcfg.get("wake_agent_on_terminal_events", False))
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -491,7 +507,7 @@ class GatewayKanbanWatchersMixin:
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
-                        if _wake_kinds:
+                        if _wake_kinds and _resolve_notifier_agent_wake_enabled(_load_config):
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""
                                 if _session_key:

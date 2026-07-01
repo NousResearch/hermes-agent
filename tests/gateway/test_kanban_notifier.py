@@ -4,15 +4,20 @@ from pathlib import Path
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway.kanban_watchers import _resolve_notifier_agent_wake_enabled
 from hermes_cli import kanban_db as kb
 
 
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.handled = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
 
 
 class DisconnectedAdapters(dict):
@@ -43,10 +48,12 @@ def _make_runner(adapter):
     return runner
 
 
-def _create_completed_subscription(summary="done once"):
+def _create_completed_subscription(summary="done once", session_id=None):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="notify once", assignee="worker")
+        tid = kb.create_task(
+            conn, title="notify once", assignee="worker", session_id=session_id
+        )
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
         kb.complete_task(conn, tid, summary=summary)
         return tid
@@ -86,6 +93,53 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     assert len(adapter.sent) == 1
     assert "Kanban" in adapter.sent[0]["text"]
     assert tid in adapter.sent[0]["text"]
+
+
+def test_notifier_agent_wake_is_opt_in_by_default(tmp_path, monkeypatch):
+    """Terminal notifications should not also start an agent loop unless
+    explicitly configured; delivery subscription ownership is not task ownership."""
+    db_path = tmp_path / "wake-default-off.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    _create_completed_subscription(session_id="creator-session")
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
+def test_notifier_agent_wake_opt_in_still_injects_message(tmp_path, monkeypatch):
+    """Opt-in deployments keep the collaboration wake path."""
+    db_path = tmp_path / "wake-opt-in.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._resolve_notifier_agent_wake_enabled",
+        lambda _load_config: True,
+    )
+
+    tid = _create_completed_subscription(session_id="creator-session")
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+    assert tid in adapter.handled[0].text
+    assert adapter.handled[0].internal is True
+
+
+def test_resolve_notifier_agent_wake_enabled_defaults_safe():
+    assert _resolve_notifier_agent_wake_enabled(lambda: {"kanban": {}}) is False
+    assert _resolve_notifier_agent_wake_enabled(
+        lambda: {"kanban": {"wake_agent_on_terminal_events": True}}
+    ) is True
+    assert _resolve_notifier_agent_wake_enabled(lambda: (_ for _ in ()).throw(RuntimeError())) is False
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

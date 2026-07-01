@@ -2827,6 +2827,11 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # When true, terminal kanban notifications also inject an internal
+        # message into the subscribed chat to wake an agent session. Disabled
+        # by default: a delivery subscription should not silently become
+        # cross-profile task takeover on completed/gave_up/crashed events.
+        "wake_agent_on_terminal_events": False,
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

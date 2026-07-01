@@ -6,9 +6,9 @@ re-sourced before each command. CWD persists via in-band stdout markers (remote)
 or a temp file (local).
 """
 
-import codecs
 import json
 import logging
+import locale
 import os
 import select
 import shlex
@@ -38,6 +38,81 @@ if _DEBUG_INTERRUPT:
     # Force this module's own logger back to INFO so the trace is visible in
     # agent.log regardless of quiet-mode.  Scoped to the opt-in case only.
     logger.setLevel(logging.INFO)
+
+
+_UTF8_MOJIBAKE_MARKERS = (
+    "Рџ", "Рђ", "Р‘", "Р’", "Р“", "Р”", "Р•", "Р–", "Р—", "Р˜", "Р™",
+    "Рљ", "Р›", "Рњ", "Рќ", "Рћ", "Р°", "Р±", "Р²", "Рі", "Рґ",
+    "Рµ", "Р¶", "Р·", "Рё", "Р№", "Рє", "Р»", "Рј", "РЅ", "Рѕ", "Рї",
+    "СЂ", "СЃ", "С‚", "Сѓ", "С„", "С…", "С†", "С‡", "С€", "С‰", "СЉ",
+    "С‹", "СЊ", "СЌ", "СЋ", "СЏ", "Ð", "Ñ", "╨", "╤",
+)
+
+
+def _decode_process_output(data: bytes | bytearray | memoryview | str) -> str:
+    """Decode subprocess output bytes without losing Windows console Cyrillic.
+
+    Hermes normally expects UTF-8 because the local shell is Git Bash/MSYS and
+    remote/container backends are UTF-8.  On native Windows, however, commands
+    can still emit OEM/ANSI bytes (most commonly CP866 or CP1251). Decoding
+    those bytes as UTF-8 with ``errors='replace'`` turns Russian output into
+    replacement-character mojibake such as ``�ᯥ譮``.
+
+    Prefer strict UTF-8 when possible. If the byte stream is not valid UTF-8,
+    compare UTF-8-with-replacement against common Windows fallbacks and choose
+    the candidate with the least replacement/mojibake/control noise. This keeps
+    mostly-valid UTF-8 with a single bad tail byte as UTF-8, while recovering
+    genuine CP866/CP1251 terminal output.
+    """
+    if isinstance(data, str):
+        return data
+
+    raw = bytes(data)
+    if not raw:
+        return ""
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    encodings: list[str] = ["utf-8"]
+    preferred = locale.getpreferredencoding(False)
+    for encoding in (preferred, "cp65001", "cp866", "cp1251", "mbcs"):
+        if encoding and encoding not in encodings:
+            encodings.append(encoding)
+
+    def _score(text: str) -> float:
+        replacements = text.count("\ufffd")
+        controls = sum(
+            1
+            for ch in text
+            if ord(ch) < 32 and ch not in "\r\n\t\b\f"
+        )
+        mojibake = sum(text.count(marker) for marker in _UTF8_MOJIBAKE_MARKERS)
+        cyrillic = sum(1 for ch in text if "\u0400" <= ch <= "\u04ff")
+        printable = sum(1 for ch in text if ch.isprintable() or ch in "\r\n\t")
+        return (
+            replacements * 30
+            + controls * 15
+            + mojibake * 8
+            - cyrillic * 0.35
+            - printable * 0.02
+        )
+
+    candidates: list[tuple[float, int, str]] = []
+    for index, encoding in enumerate(encodings):
+        try:
+            text = raw.decode(encoding, errors="replace")
+        except LookupError:
+            continue
+        candidates.append((_score(text), index, text))
+
+    if not candidates:
+        return raw.decode("utf-8", errors="replace")
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
 
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
@@ -357,7 +432,7 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions, aliases, shell options.
+        # Full capture: env vars, functions (filtered), aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
@@ -551,7 +626,25 @@ class BaseEnvironment(ABC):
         an orphan with ``PPID=1`` when python is shut down mid-tool — the
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
-        output_chunks: list[str] = []
+        output_chunks: list[bytes | str] = []
+
+        def _joined_output() -> str:
+            parts: list[str] = []
+            pending_bytes = bytearray()
+
+            def flush_bytes() -> None:
+                if pending_bytes:
+                    parts.append(_decode_process_output(pending_bytes))
+                    pending_bytes.clear()
+
+            for chunk in output_chunks:
+                if isinstance(chunk, (bytes, bytearray, memoryview)):
+                    pending_bytes.extend(bytes(chunk))
+                else:
+                    flush_bytes()
+                    parts.append(str(chunk))
+            flush_bytes()
+            return "".join(parts)
 
         # Non-blocking drain via select().
         #
@@ -570,14 +663,10 @@ class BaseEnvironment(ABC):
         # Any output the grandchild writes after that point goes to an
         # orphaned pipe (harmless — the kernel reaps it when our end closes).
         #
-        # Decoding: we ``os.read()`` raw bytes in fixed-size chunks (4096)
-        # so a single multibyte UTF-8 character can split across reads.  An
-        # incremental decoder buffers partial sequences across chunks, and
-        # ``errors="replace"`` mirrors the baseline ``TextIOWrapper`` (which
-        # was constructed with ``encoding="utf-8", errors="replace"`` on
-        # ``Popen``) so binary or mis-encoded output is preserved with
-        # U+FFFD substitution rather than clobbering the whole buffer.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Decoding: collect raw bytes from the pipe and decode once when the
+        # command finishes. This avoids corrupting UTF-8 characters split
+        # across read boundaries and lets _decode_process_output recover native
+        # Windows console encodings such as CP866/CP1251 when UTF-8 is invalid.
 
         def _drain_iterable(stream):
             # Fallback path: ``stream`` is not backed by a real OS file
@@ -591,19 +680,12 @@ class BaseEnvironment(ABC):
                 for piece in stream:
                     if piece is None:
                         continue
-                    if isinstance(piece, bytes):
-                        output_chunks.append(decoder.decode(piece))
+                    if isinstance(piece, (bytes, bytearray, memoryview)):
+                        output_chunks.append(bytes(piece))
                     else:
                         output_chunks.append(str(piece))
             except Exception:
                 pass
-            finally:
-                try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output_chunks.append(tail)
-                except Exception:
-                    pass
 
         def _drain():
             # Resolve a real OS file descriptor up front.  Real subprocesses and
@@ -632,16 +714,9 @@ class BaseEnvironment(ABC):
                         chunk = os.read(fd, 4096)
                         if not chunk:
                             break
-                        output_chunks.append(decoder.decode(chunk))
+                        output_chunks.append(chunk)
                 except (ValueError, OSError):
                     pass
-                finally:
-                    try:
-                        tail = decoder.decode(b"", final=True)
-                        if tail:
-                            output_chunks.append(tail)
-                    except Exception:
-                        pass
                 return
             idle_after_exit = 0
             try:
@@ -657,7 +732,7 @@ class BaseEnvironment(ABC):
                             break
                         if not chunk:
                             break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
+                        output_chunks.append(chunk)
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # bash is gone and the pipe was idle for ~100ms.  Give
@@ -666,16 +741,8 @@ class BaseEnvironment(ABC):
                         idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
-            finally:
-                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
-                # this emits U+FFFD for any final incomplete sequence rather than
-                # raising.
-                try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output_chunks.append(tail)
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
@@ -719,7 +786,7 @@ class BaseEnvironment(ABC):
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     return {
-                        "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "output": _joined_output() + "\n[Command interrupted]",
                         "returncode": 130,
                     }
                 if time.monotonic() > deadline:
@@ -731,7 +798,7 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    partial = "".join(output_chunks)
+                    partial = _joined_output()
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
                         "output": partial + timeout_msg
@@ -812,7 +879,7 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": "".join(output_chunks), "returncode": proc.returncode}
+        return {"output": _joined_output(), "returncode": proc.returncode}
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""

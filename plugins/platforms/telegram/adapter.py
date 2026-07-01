@@ -3056,8 +3056,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Cancel deferred post-connect housekeeping (command-menu / DM-topic /
         # status-indicator Bot API calls) so it cannot fire into a half-torn-down
-        # bot client (#46298).
-        post_connect_task = self._post_connect_task
+        # bot client (#46298). getattr guards the object.__new__ test pattern
+        # where __init__ (which sets this attr) is never called.
+        post_connect_task = getattr(self, "_post_connect_task", None)
         if post_connect_task and not post_connect_task.done():
             post_connect_task.cancel()
             await asyncio.gather(post_connect_task, return_exceptions=True)

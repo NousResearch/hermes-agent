@@ -36,6 +36,7 @@ from agent.latest_user_task_guard import (
     enforce_latest_user_request_authority,
     record_latest_user_request_from_dispatch,
 )
+from agent.notion_healthcheck import require_fresh_notion_healthcheck
 from agent.no_progress_loop import (
     preflight_no_progress_block,
     record_no_progress_block,
@@ -1125,6 +1126,34 @@ def handle_function_call(
                 status="blocked",
                 error_type="latest_user_request_block",
                 error_message=latest_user_task_block,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            record_no_progress_observation(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+            )
+            return result
+
+        notion_health_block = require_fresh_notion_healthcheck(
+            action_label=function_name,
+            user_task=_user_task,
+        )
+        if notion_health_block is not None:
+            result = json.dumps({"error": notion_health_block}, ensure_ascii=False)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="notion_healthcheck_block",
+                error_message=notion_health_block,
                 middleware_trace=list(_tool_middleware_trace),
             )
             record_no_progress_observation(

@@ -925,6 +925,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_reaction(self, chat_id: str, message_id: str, reaction: str) -> bool:
+        """React to a message via the bridge's /reaction endpoint.
+
+        Used for WhatsApp self-send bridging: the gateway acks a self-chat
+        message with a "still working" emoji, then swaps it for a
+        success/failure emoji once the response has been delivered through
+        the home channel.
+        """
+        if not self._running or not self._http_session or not message_id:
+            return False
+        if await self._check_managed_bridge_exit():
+            return False
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/reaction",
+                json={"chatId": chat_id, "messageId": message_id, "reaction": reaction},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     async def _send_media_to_bridge(
         self,
         chat_id: str,

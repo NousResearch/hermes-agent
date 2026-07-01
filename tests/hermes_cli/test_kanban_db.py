@@ -241,6 +241,36 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_update_task_metadata_edits_fields(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="old", body="b0", priority=0)
+        ok = kb.update_task_metadata(conn, tid, title="new", body="b1", priority=5)
+        assert ok is True
+        t = kb.get_task(conn, tid)
+        assert (t.title, t.body, t.priority) == ("new", "b1", 5)
+        # Partial update leaves untouched fields alone.
+        kb.update_task_metadata(conn, tid, priority=9)
+        t = kb.get_task(conn, tid)
+        assert (t.title, t.priority) == ("new", 9)
+        # An "edited" event is recorded for the audit trail.
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "edited" in kinds
+
+
+def test_update_task_metadata_missing_task(kanban_home):
+    with kb.connect() as conn:
+        assert kb.update_task_metadata(conn, "t_ghost", title="x") is False
+
+
+def test_update_task_metadata_rejects_empty_title_and_noop(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="keep")
+        with pytest.raises(ValueError, match="title cannot be empty"):
+            kb.update_task_metadata(conn, tid, title="   ")
+        with pytest.raises(ValueError, match="no fields to update"):
+            kb.update_task_metadata(conn, tid)
+
+
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     with kb.connect() as conn:

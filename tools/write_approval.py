@@ -57,7 +57,15 @@ logger = logging.getLogger(__name__)
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
+# ``actions`` is the generic tool-call approval gate's pending store (see
+# tools/tool_gate.py). It reuses the same on-disk pending format and CRUD
+# helpers below, but is NOT governed by the per-subsystem ``write_approval``
+# boolean — its gating lives under ``approvals.tool_gate`` config — so it is
+# intentionally absent from the ``write_approval_enabled`` allowlist while
+# still being a recognised pending subsystem for list/count/discard.
+ACTIONS = "actions"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+_PENDING_SUBSYSTEMS = (MEMORY, SKILLS, ACTIONS)
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -187,6 +195,34 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
+
+
+def update_pending(subsystem: str, pending_id: str,
+                   updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Merge ``updates`` into a pending record's top-level fields and persist.
+
+    Returns the updated record, or ``None`` if it no longer exists. Uses the
+    same atomic write-then-rename as :func:`stage_write` so a concurrent
+    reader never sees a half-written file. Used by the tool-approval gate to
+    link a Kanban card id back into the staged action and to flip the
+    ``status`` field (``pending`` → ``executing`` → ``done``) for the
+    double-execution guard.
+    """
+    rec = get_pending(subsystem, pending_id)
+    if rec is None:
+        return None
+    rec.update(updates)
+    try:
+        d = _pending_dir(subsystem)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{pending_id}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as e:  # pragma: no cover - disk failure path
+        logger.error("Failed to update pending %s/%s: %s", subsystem, pending_id, e)
+        return None
+    return rec
 
 
 def pending_count(subsystem: str) -> int:

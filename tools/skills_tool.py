@@ -681,6 +681,57 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     return skills
 
 
+def _skill_file_ignored(name: str) -> bool:
+    """Backups + dotfiles aren't part of a skill's tracked content."""
+    return name.startswith(".") or ".bak" in name
+
+
+def read_skill_files(names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Live file contents for the named skills under the local ``SKILLS_DIR``.
+
+    Returns ``{skill_dir_name: [{path, content, binary, sha256}]}`` for each
+    requested name that exists as a top-level skill directory. Names with no
+    matching directory are omitted (this profile doesn't carry that skill).
+    Backups/dotfiles are skipped; binary files report ``binary: True`` with
+    ``content: None`` plus a ``sha256`` for identity comparison. Mirrors the
+    console's drift reader so a diff over the API matches a local one.
+
+    Scoped to explicit names (the caller's version-controlled set) so the
+    payload stays small — the full live hub is ~48 skills.
+    """
+    import hashlib
+
+    wanted = {n for n in names if n and "/" not in n and "\\" not in n and ".." not in n}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    if not wanted or not SKILLS_DIR.exists():
+        return out
+    for name in sorted(wanted):
+        skill_dir = SKILLS_DIR / name
+        if not skill_dir.is_dir():
+            continue
+        files: List[Dict[str, Any]] = []
+        for p in sorted(skill_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(skill_dir)
+            if any(_skill_file_ignored(part) for part in rel.parts):
+                continue
+            try:
+                raw = p.read_bytes()
+            except OSError:
+                continue
+            rec: Dict[str, Any] = {"path": rel.as_posix()}
+            if b"\x00" in raw[:2048]:
+                rec["binary"] = True
+                rec["content"] = None
+                rec["sha256"] = hashlib.sha256(raw).hexdigest()
+            else:
+                rec["content"] = raw.decode("utf-8", errors="replace")
+            files.append(rec)
+        out[name] = files
+    return out
+
+
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))

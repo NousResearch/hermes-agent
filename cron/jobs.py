@@ -260,6 +260,10 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # Always expose the responsibility link (the console coverage join reads it);
+    # unset = None = an untriaged routine. Storage is left untouched on read.
+    normalized["responsibility_id"] = job.get("responsibility_id")
+
     return normalized
 
 
@@ -1628,6 +1632,121 @@ def save_job_output(job_id: str, output: str):
     _prune_job_output(job_output_dir, _cron_output_keep())
 
     return output_file
+
+
+# =============================================================================
+# Cron run history (read-only)
+# =============================================================================
+# The scheduler writes one file per run to OUTPUT_DIR/<job_id>/<ts>.md — a
+# `## Response` section on success (body `[SILENT]` = nothing to report) or a
+# `## Error` section on failure. ``jobs.json`` keeps only the LATEST status, so
+# real health (failure rate, recurring cause) lives in these files. These
+# read-only helpers back the bearer API server's /api/jobs run-history routes,
+# so dashboards see per-run outcomes (and the actual output bodies) without
+# reading the cron output directory off disk.
+
+_RUN_FILE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.md$")
+_ERROR_HDR_RE = re.compile(r"(?m)^## Error\b")
+_RESP_HDR_RE = re.compile(r"(?m)^## Response\b")
+
+
+def _run_ts(name: str) -> Optional[str]:
+    """ISO-8601 timestamp parsed from a run-output filename, or None."""
+    m = _RUN_FILE_RE.match(name)
+    if not m:
+        return None
+    try:
+        return datetime(*(int(g) for g in m.groups())).isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def _output_section(text: str, header_re: "re.Pattern") -> str:
+    """Body of a `## <Header>` section, up to the next top-level `## `/`# `."""
+    m = header_re.search(text)
+    if not m:
+        return ""
+    rest = text[m.end():]
+    nxt = re.search(r"(?m)^#{1,2} ", rest)
+    return (rest[: nxt.start()] if nxt else rest).strip()
+
+
+def _classify_output(text: str) -> Tuple[str, Optional[str]]:
+    """(status, error_line) for one run-output body.
+
+    status ∈ ok | silent | failed. A `## Error` section ⇒ failed (error_line =
+    its first non-empty line, backticks stripped, capped). Otherwise success; a
+    `## Response` whose only content is `[SILENT]` ⇒ silent. `[SILENT]` is read
+    from the Response section only — the prompt body echoes the literal token.
+    """
+    if _ERROR_HDR_RE.search(text):
+        body = _output_section(text, _ERROR_HDR_RE)
+        for line in body.splitlines():
+            s = line.strip().strip("`")
+            if s:
+                return "failed", s[:240]
+        return "failed", None
+    resp = _output_section(text, _RESP_HDR_RE)
+    if any(line.strip() == "[SILENT]" for line in resp.splitlines()):
+        return "silent", None
+    return "ok", None
+
+
+def _run_files(job_id: str) -> List[Tuple[str, Path]]:
+    """(ts, path) for each run-output file of a job, newest first."""
+    try:
+        job_dir = _job_output_dir(job_id)
+    except ValueError:
+        return []
+    if not job_dir.is_dir():
+        return []
+    recs: List[Tuple[str, Path]] = []
+    for f in job_dir.iterdir():
+        if not f.is_file():
+            continue
+        ts = _run_ts(f.name)
+        if ts is not None:
+            recs.append((ts, f))
+    recs.sort(key=lambda r: r[0], reverse=True)
+    return recs
+
+
+def list_job_runs(
+    job_id: str,
+    *,
+    days: Optional[int] = None,
+    limit: Optional[int] = None,
+    include_content: bool = False,
+) -> List[Dict[str, Any]]:
+    """Per-run outcome records for a cron job, newest first.
+
+    Each record: ``{ts, status, error}``. With ``include_content`` the full
+    output-file body is added as ``content`` (the click-through log). ``days``
+    filters to the trailing window; ``limit`` caps the count. Filenames are
+    naive local time (the same clock that named them), so the cutoff is compared
+    naive.
+    """
+    cutoff: Optional[str] = None
+    if days is not None:
+        cutoff = (_hermes_now().replace(tzinfo=None) - timedelta(days=days)).isoformat(
+            timespec="seconds"
+        )
+    out: List[Dict[str, Any]] = []
+    for ts, f in _run_files(job_id):
+        if cutoff is not None and ts < cutoff:
+            break  # newest-first: once older than the window, the rest are too
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        status, error = _classify_output(text)
+        rec: Dict[str, Any] = {"ts": ts, "status": status, "error": error}
+        if include_content:
+            rec["content"] = text
+        out.append(rec)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
 
 
 # =============================================================================

@@ -1789,17 +1789,27 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
         """Replace the entire transcript for a session with new messages.
 
         Used by /retry, /undo, and /compress to persist modified conversation
         history. state.db is the canonical store.
+
+        Returns ``True`` when the write lands (or there is no DB to write to)
+        and ``False`` when the canonical write fails. Most callers can ignore
+        the result, but callers that would otherwise commit a destructive state
+        change on top of a failed write — e.g. /compress repointing the live
+        session onto a fresh session_id — must check it so they can surface an
+        error instead of silently dropping the conversation.
         """
-        if self._db:
-            try:
-                self._db.replace_messages(session_id, messages)
-            except Exception as e:
-                logger.debug("Failed to rewrite transcript in DB: %s", e)
+        if not self._db:
+            return True
+        try:
+            self._db.replace_messages(session_id, messages)
+            return True
+        except Exception as e:
+            logger.debug("Failed to rewrite transcript in DB: %s", e)
+            return False
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.

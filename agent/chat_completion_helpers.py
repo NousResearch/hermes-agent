@@ -1278,6 +1278,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    if not isinstance(fb, dict):
+        return agent._try_activate_fallback(reason)
     fb_key = _fallback_entry_key(fb)
     unavailable = getattr(agent, "_unavailable_fallback_keys", None)
     if unavailable is None:

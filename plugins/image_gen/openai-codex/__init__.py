@@ -14,6 +14,14 @@ Selection precedence for the tier (first hit wins):
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
+Selection precedence for image size (first valid hit wins):
+
+1. ``size=`` / ``resolution=`` direct provider kwargs
+2. ``OPENAI_CODEX_IMAGE_SIZE`` or ``OPENAI_IMAGE_SIZE`` env var
+3. ``image_gen.openai-codex.size`` / ``resolution`` in ``config.yaml``
+4. ``image_gen.size`` / ``resolution`` in ``config.yaml``
+5. Legacy ``aspect_ratio`` mapping — landscape/square/portrait
+
 Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 """
 
@@ -64,10 +72,45 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_MODEL = "gpt-image-2-medium"
 
+# Backward-compatible aspect-ratio aliases. Existing callers that pass only
+# ``aspect_ratio`` keep receiving these exact dimensions.
 _SIZES = {
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
+}
+
+SUPPORTED_SIZES: Tuple[str, ...] = (
+    "auto",
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
+    "2048x2048",
+    "2048x1152",
+    "3840x2160",
+    "2160x3840",
+)
+
+_SIZE_ALIASES = {
+    "square": "1024x1024",
+    "landscape": "1536x1024",
+    "portrait": "1024x1536",
+    "2k square": "2048x2048",
+    "2k-square": "2048x2048",
+    "2k_square": "2048x2048",
+    "2ksquare": "2048x2048",
+    "2k landscape": "2048x1152",
+    "2k-landscape": "2048x1152",
+    "2k_landscape": "2048x1152",
+    "2klandscape": "2048x1152",
+    "4k landscape": "3840x2160",
+    "4k-landscape": "3840x2160",
+    "4k_landscape": "3840x2160",
+    "4klandscape": "3840x2160",
+    "4k portrait": "2160x3840",
+    "4k-portrait": "2160x3840",
+    "4k_portrait": "2160x3840",
+    "4kportrait": "2160x3840",
 }
 
 # Codex Responses surface used for the request. The chat model itself is only
@@ -123,6 +166,59 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _normalize_size(value: Any) -> Optional[str]:
+    """Return a GPT Image 2 size literal, or None for invalid input."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if not candidate:
+        return None
+    candidate = candidate.replace(" ", "")
+    candidate = candidate.replace("×", "x")
+    if candidate in SUPPORTED_SIZES:
+        return candidate
+    return _SIZE_ALIASES.get(value.strip().lower()) or _SIZE_ALIASES.get(candidate)
+
+
+def _configured_size_from_mapping(cfg: Dict[str, Any]) -> Optional[str]:
+    """Read size/resolution keys from an ``image_gen`` config mapping."""
+    sub = cfg.get("openai-codex") if isinstance(cfg.get("openai-codex"), dict) else {}
+    if isinstance(sub, dict):
+        for key in ("size", "resolution"):
+            resolved = _normalize_size(sub.get(key))
+            if resolved:
+                return resolved
+
+    for key in ("size", "resolution"):
+        resolved = _normalize_size(cfg.get(key))
+        if resolved:
+            return resolved
+
+    return None
+
+
+def _resolve_size(aspect: str, overrides: Dict[str, Any]) -> str:
+    """Resolve the image size while preserving the legacy aspect fallback."""
+    import os
+
+    for key in ("size", "resolution", "image_size"):
+        resolved = _normalize_size(overrides.get(key))
+        if resolved:
+            return resolved
+
+    for env_name in ("OPENAI_CODEX_IMAGE_SIZE", "OPENAI_IMAGE_SIZE"):
+        resolved = _normalize_size(os.environ.get(env_name))
+        if resolved:
+            return resolved
+
+    cfg = _load_image_gen_config()
+    resolved = _configured_size_from_mapping(cfg)
+    if resolved:
+        return resolved
+
+    return _SIZES.get(aspect, _SIZES["square"])
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -392,7 +488,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        size = _resolve_size(aspect, kwargs)
 
         token = _read_codex_access_token()
         if not token:

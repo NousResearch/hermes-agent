@@ -1375,7 +1375,7 @@ DEFAULT_CONFIG = {
                                       # after live validation.
     },
 
-    # MongoDB tools (tools/mongodb_tool.py). Connection string is a secret in
+    # MongoDB settings for the app-chatbot plugin. Connection string is a secret in
     # ~/.hermes/.env (MONGODB_URI); limits live here.
     "mongodb": {
         "default_database": "",
@@ -3520,11 +3520,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "MONGODB_URI": {
-        "description": "MongoDB connection string for mongo_* tools",
+        "description": "MongoDB connection string for app-chatbot CRWD query tools",
         "prompt": "MongoDB URI (mongodb:// or mongodb+srv://)",
         "url": "https://www.mongodb.com/docs/manual/reference/connection-string/",
         "tools": [
-            "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_write",
             "get_active_gigs", "get_user_profile_by_id", "get_gig_details",
             "get_user_gig_history", "get_user_joined_gigs",
         ],

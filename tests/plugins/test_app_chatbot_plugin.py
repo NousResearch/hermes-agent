@@ -148,6 +148,13 @@ class TestRouter:
         assert "Current CLI user_id" in ctx
         assert "APP_CHATBOT_DEFAULT_USER_ID" in ctx
 
+    def test_format_router_context_includes_data_access_policy(self):
+        router = _load_module("router")
+        ctx = router.format_router_context("hello", default_user_id="69a6f191cb29b0b371b3a156")
+        assert "[Data access policy]" in ctx
+        assert "get_active_gigs" in ctx
+        assert "Do not attempt direct MongoDB queries" in ctx
+
 
 class TestQueries:
     def test_get_active_gigs_excludes_enrolled(self, monkeypatch):

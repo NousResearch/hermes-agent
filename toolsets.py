@@ -257,14 +257,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "mongodb": {
-        "description": "MongoDB database queries and writes (gated on MONGODB_URI)",
-        "tools": [
-            "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_write",
-        ],
-        "includes": [],
-    },
-
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

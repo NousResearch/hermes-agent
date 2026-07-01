@@ -78,7 +78,6 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-    ("mongodb",          "🍃 MongoDB",                  "query and write MongoDB documents"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -117,7 +116,7 @@ def gui_toolset_label(label: str) -> str:
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {
-    "homeassistant", "mongodb", "spotify", "discord", "discord_admin",
+    "homeassistant", "spotify", "discord", "discord_admin",
     "video", "video_gen", "x_search",
 }
 
@@ -586,7 +585,6 @@ TOOL_CATEGORIES = {
 # prompted or read for vision; it's purely a presence marker.
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "mongodb":    [("MONGODB_URI",          "https://www.mongodb.com/docs/manual/reference/connection-string/")],
 }
 
 

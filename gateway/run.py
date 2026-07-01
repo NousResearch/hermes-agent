@@ -17353,12 +17353,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
             ):
+                _sn_reason = (
+                    getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
+                )
+                _sn_reason_phrase = (
+                    "a gateway restart"
+                    if _sn_reason == "restart_timeout"
+                    else "a gateway shutdown"
+                    if _sn_reason == "shutdown_timeout"
+                    else "a gateway interruption"
+                )
                 message = (
-                    "[System note: The previous turn in this session was "
-                    "interrupted by a gateway restart. Review the conversation "
-                    "history above, finish any unfinished work, and summarize "
-                    "what was accomplished, then wait for the user's next "
-                    "message.]"
+                    f"[System note: The previous turn was interrupted by "
+                    f"{_sn_reason_phrase}; the gateway is now back online. "
+                    f"Any restart/shutdown command in the history has already "
+                    f"run — do NOT re-execute or verify it. Report to the user "
+                    f"that the session was restored successfully and ask what "
+                    f"they would like to do next. Do NOT re-execute old tool "
+                    f"calls — skip any unfinished work from the conversation "
+                    f"history.]"
                 )
 
             _approval_session_key = session_key or ""

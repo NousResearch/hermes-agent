@@ -339,6 +339,11 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
+        if minutes <= 0:
+            raise ValueError(
+                f"Interval must be at least 1 minute, got '{schedule}'. "
+                "Use 'every 1m' for the minimum recurring interval."
+            )
         return {
             "kind": "interval",
             "minutes": minutes,
@@ -395,6 +400,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
+        if minutes <= 0:
+            raise ValueError(
+                f"Duration must be at least 1 minute, got '{schedule}'."
+            )
         run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",

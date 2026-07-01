@@ -37,6 +37,14 @@ const POLL_INTERVAL_MS = 15_000;
 const STALE_AFTER_MS = 45_000;
 
 type FreshnessState = "mock" | "fresh" | "refreshing" | "stale" | "offline";
+type LogLevelFilter = LogLine["level"] | "all";
+
+const logLevelFilters: ReadonlyArray<{ key: LogLevelFilter; label: string }> = [
+  { key: "all", label: "Все" },
+  { key: "info", label: "Info" },
+  { key: "warn", label: "Warn" },
+  { key: "error", label: "Error" },
+];
 
 const refreshLabels: Record<FreshnessState, string> = {
   mock: "локальное превью",
@@ -175,6 +183,10 @@ function mapServerLog(item: LogPreviewItem): LogLine {
   };
 }
 
+function logLineKey(line: LogLine): string {
+  return `${line.time}-${line.level}-${line.message}`;
+}
+
 function SectionIntro({
   activeTab,
   freshness,
@@ -193,7 +205,7 @@ function SectionIntro({
   return (
     <section className="section-intro glass-card" aria-label="Текущий раздел">
       <div>
-        <p className="mono-label">M9 / LIVE READ-ONLY</p>
+        <p className="mono-label">M10 / LIVE READ-ONLY</p>
         <h2>{navTitles[activeTab]}</h2>
         <p>Данные обновляются только чтением. Ручное обновление не запускает команды и не меняет состояние Hermes.</p>
         <div className="freshness-row" data-state={freshness}>
@@ -279,23 +291,46 @@ function EmptyState({ title, text }: { title: string; text: string }) {
   );
 }
 
-function SessionsSection({ sessions }: { sessions: SessionPreview[] }) {
+function SessionsSection({ sessions, selectedId, onSelect }: { sessions: SessionPreview[]; selectedId: string; onSelect: (session: SessionPreview) => void }) {
   if (sessions.length === 0) {
     return <EmptyState title="Сессий нет" text="Сервер ответил пустым списком. Локальные mock-данные не подмешиваются после успешного обновления." />;
   }
 
+  const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
+
   return (
-    <section className="stack-list" aria-label="Сессии агентов">
-      {sessions.map((session) => (
-        <article className={`list-card glass-card tone-${session.tone}`} key={session.id}>
+    <section className="drilldown-workspace" aria-label="Сессии агентов">
+      <div className="stack-list compact-stack">
+        {sessions.map((session) => (
+          <button className={`list-card glass-card tap tone-${session.tone}`} data-selected={session.id === selected.id} key={session.id} type="button" onClick={() => onSelect(session)}>
+            <div>
+              <span className="mono-label">{session.time}</span>
+              <h2>{session.agent}</h2>
+              <p>{session.meta}</p>
+            </div>
+            <strong>{session.state}</strong>
+          </button>
+        ))}
+      </div>
+
+      <article className="drilldown-detail glass-card" aria-label="Деталь выбранной сессии">
+        <div className="section-heading compact">
           <div>
-            <span className="mono-label">{session.time}</span>
-            <h2>{session.agent}</h2>
-            <p>{session.meta}</p>
+            <p className="mono-label">M10 / SESSION DETAIL</p>
+            <h2>{selected.agent}</h2>
           </div>
-          <strong>{session.state}</strong>
-        </article>
-      ))}
+          <span className="risk risk-read_only">только чтение</span>
+        </div>
+        <p>{selected.meta}</p>
+        <div className="detail-meta">
+          <span>{selected.state}</span>
+          <span>{selected.time}</span>
+        </div>
+        <div className="readonly-note">
+          <strong>Наблюдение без команд</strong>
+          <small>Этот экран не открывает терминал, не меняет процессы и не отправляет команды агентам.</small>
+        </div>
+      </article>
     </section>
   );
 }
@@ -394,28 +429,83 @@ function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: Appr
   );
 }
 
-function LogsSection({ logs }: { logs: LogLine[] }) {
+function LogsSection({
+  logs,
+  selectedKey,
+  levelFilter,
+  onFilterChange,
+  onSelect,
+}: {
+  logs: LogLine[];
+  selectedKey: string;
+  levelFilter: LogLevelFilter;
+  onFilterChange: (level: LogLevelFilter) => void;
+  onSelect: (line: LogLine) => void;
+}) {
   if (logs.length === 0) {
     return <EmptyState title="Журнал пуст" text="Серверный журнал сейчас пуст. После live-ответа локальные демонстрационные события скрыты." />;
   }
 
+  const filteredLogs = levelFilter === "all" ? logs : logs.filter((line) => line.level === levelFilter);
+  const selected = filteredLogs.find((line) => logLineKey(line) === selectedKey) ?? filteredLogs[0] ?? null;
+
   return (
-    <section className="mini-panel glass-card full-panel" aria-label="Журнал событий">
-      <div className="section-heading compact">
-        <div>
-          <p className="mono-label">РЕДАКТИРОВАННАЯ ШКАЛА</p>
-          <h2>События без секретов</h2>
+    <section className="logs-workspace" aria-label="Журнал событий">
+      <div className="mini-panel glass-card full-panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="mono-label">РЕДАКТИРОВАННАЯ ШКАЛА</p>
+            <h2>События без секретов</h2>
+          </div>
+          <span className="risk risk-read_only">только чтение</span>
         </div>
-        <span className="risk risk-read_only">только чтение</span>
+        <div className="filter-chips" aria-label="Фильтр уровня логов">
+          {logLevelFilters.map((filter) => (
+            <button aria-pressed={levelFilter === filter.key} className="filter-chip tap" key={filter.key} type="button" onClick={() => onFilterChange(filter.key)}>
+              {filter.label}
+            </button>
+          ))}
+        </div>
+        {filteredLogs.length === 0 ? (
+          <div className="inline-empty">
+            <strong>Нет событий этого уровня</strong>
+            <small>Фильтр работает только по уже редактированным строкам, без запроса новых данных.</small>
+          </div>
+        ) : (
+          <div className="log-list expanded">
+            {filteredLogs.map((line) => {
+              const key = logLineKey(line);
+              return (
+                <button className={`log-line tap level-${line.level}`} data-selected={key === selectedKey} key={key} type="button" onClick={() => onSelect(line)}>
+                  <span>{line.time}</span>
+                  {line.message}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
-      <div className="log-list expanded">
-        {logs.map((line) => (
-          <p className={`log-line level-${line.level}`} key={`${line.time}-${line.message}`}>
-            <span>{line.time}</span>
-            {line.message}
-          </p>
-        ))}
-      </div>
+
+      {selected ? (
+        <article className="drilldown-detail glass-card" aria-label="Деталь выбранного события">
+          <div className="section-heading compact">
+            <div>
+              <p className="mono-label">M10 / LOG DETAIL</p>
+              <h2>{selected.level.toUpperCase()}</h2>
+            </div>
+            <span className={`risk risk-${selected.level === "info" ? "read_only" : selected.level === "warn" ? "disabled" : "critical"}`}>{selected.level}</span>
+          </div>
+          <p>{selected.message}</p>
+          <div className="detail-meta">
+            <span>{selected.time}</span>
+            <span>redacted</span>
+          </div>
+          <div className="readonly-note">
+            <strong>Секреты не показываются</strong>
+            <small>Mini App отображает только allowlisted preview строки, без raw логов, токенов, env и путей.</small>
+          </div>
+        </article>
+      ) : null}
     </section>
   );
 }
@@ -475,6 +565,9 @@ export function App() {
   const [apiState, setApiState] = useState<"mock" | "connecting" | "connected" | "offline">("mock");
   const [activeTab, setActiveTab] = useState<NavKey>(() => readStoredNavKey());
   const [selectedApprovalId, setSelectedApprovalId] = useState(() => readStoredApprovalId(approvalPreviews[0]?.id ?? ""));
+  const [selectedSessionId, setSelectedSessionId] = useState(() => sessionPreviews[0]?.id ?? "");
+  const [selectedLogKey, setSelectedLogKey] = useState(() => (recentLogs[0] ? logLineKey(recentLogs[0]) : ""));
+  const [logLevelFilter, setLogLevelFilter] = useState<LogLevelFilter>("all");
   const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
@@ -529,6 +622,27 @@ export function App() {
   }, [approvals, selectedApprovalId]);
 
   useEffect(() => {
+    if (sessions.length === 0) {
+      if (selectedSessionId) setSelectedSessionId("");
+      return;
+    }
+
+    const selectedExists = sessions.some((session) => session.id === selectedSessionId);
+    if (!selectedExists) setSelectedSessionId(sessions[0].id);
+  }, [sessions, selectedSessionId]);
+
+  useEffect(() => {
+    if (logs.length === 0) {
+      if (selectedLogKey) setSelectedLogKey("");
+      return;
+    }
+
+    const filteredLogs = logLevelFilter === "all" ? logs : logs.filter((line) => line.level === logLevelFilter);
+    const selectedExists = filteredLogs.some((line) => logLineKey(line) === selectedLogKey);
+    if (!selectedExists) setSelectedLogKey(filteredLogs[0] ? logLineKey(filteredLogs[0]) : "");
+  }, [logs, logLevelFilter, selectedLogKey]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -550,12 +664,22 @@ export function App() {
 
         setSnapshot(status);
         const mappedApprovals = approvals.items.map(mapServerApproval);
+        const mappedSessions = sessions.items.map(mapServerSession);
+        const mappedLogs = logs.items.map(mapServerLog);
         setServerApprovals(mappedApprovals);
-        setServerSessions(sessions.items.map(mapServerSession));
-        setServerLogs(logs.items.map(mapServerLog));
+        setServerSessions(mappedSessions);
+        setServerLogs(mappedLogs);
         setSelectedApprovalId((current) => {
           if (mappedApprovals.some((approval) => approval.id === current)) return current;
           return mappedApprovals[0]?.id ?? "";
+        });
+        setSelectedSessionId((current) => {
+          if (mappedSessions.some((session) => session.id === current)) return current;
+          return mappedSessions[0]?.id ?? "";
+        });
+        setSelectedLogKey((current) => {
+          if (mappedLogs.some((line) => logLineKey(line) === current)) return current;
+          return mappedLogs[0] ? logLineKey(mappedLogs[0]) : "";
         });
         const refreshedAt = Date.now();
         setLastSuccessAt(refreshedAt);
@@ -712,9 +836,17 @@ export function App() {
       />
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
-      {activeTab === "sessions" ? <SessionsSection sessions={sessions} /> : null}
+      {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
       {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
-      {activeTab === "logs" ? <LogsSection logs={logs} /> : null}
+      {activeTab === "logs" ? (
+        <LogsSection
+          logs={logs}
+          selectedKey={selectedLogKey}
+          levelFilter={logLevelFilter}
+          onFilterChange={setLogLevelFilter}
+          onSelect={(line) => setSelectedLogKey(logLineKey(line))}
+        />
+      ) : null}
 
       <nav className="bottom-nav" aria-label="Навигация">
         {navItems.map((item) => (

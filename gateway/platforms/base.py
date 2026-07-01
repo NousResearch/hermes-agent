@@ -791,9 +791,12 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
+    return _cleanup_cache_dir(get_image_cache_dir(), max_age_hours=max_age_hours)
+
+
+def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int = 24) -> int:
     import time
 
-    cache_dir = get_image_cache_dir()
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
@@ -938,6 +941,10 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    return _cleanup_cache_dir(get_video_cache_dir(), max_age_hours=max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -1565,19 +1572,13 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
-    import time
+    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours=max_age_hours)
 
-    cache_dir = get_document_cache_dir()
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+
+def cleanup_screenshot_cache(max_age_hours: int = 24) -> int:
+    cache_dir = _resolve_cache_dir("SCREENSHOT_CACHE_DIR", "cache/screenshots", "browser_screenshots")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return _cleanup_cache_dir(cache_dir, max_age_hours=max_age_hours)
 
 
 # ---------------------------------------------------------------------------

@@ -322,14 +322,60 @@ class TestSyncBackFileLock:
         assert fcntl.LOCK_EX in lock_ops
         assert fcntl.LOCK_UN in lock_ops
 
-    def test_sync_back_skips_flock_when_fcntl_none(self, tmp_path):
-        """On Windows (fcntl=None), sync_back should skip file locking."""
+    def test_sync_back_uses_msvcrt_when_fcntl_none(self, tmp_path):
+        """On Windows (fcntl=None), sync_back should use msvcrt locking."""
+        download_fn = _make_download_fn({})
+        mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
+        fake_msvcrt = MagicMock()
+        fake_msvcrt.LK_LOCK = 1
+        fake_msvcrt.LK_UNLCK = 2
+
+        with patch("tools.environments.file_sync.fcntl", None), \
+             patch("tools.environments.file_sync.msvcrt", fake_msvcrt):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        lock_ops = [call.args[1] for call in fake_msvcrt.locking.call_args_list]
+        assert lock_ops == [fake_msvcrt.LK_LOCK, fake_msvcrt.LK_UNLCK]
+
+    def test_sync_back_waits_for_busy_msvcrt_lock(self, tmp_path):
+        """Windows locking should retry until the byte-range lock is free."""
+        import errno
+
+        download_fn = _make_download_fn({})
+        mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
+        fake_msvcrt = MagicMock()
+        fake_msvcrt.LK_LOCK = 1
+        fake_msvcrt.LK_UNLCK = 2
+        fake_msvcrt.locking.side_effect = [
+            OSError(errno.EACCES, "locked"),
+            None,
+            None,
+        ]
+
+        with patch("tools.environments.file_sync.fcntl", None), \
+             patch("tools.environments.file_sync.msvcrt", fake_msvcrt), \
+             patch("tools.environments.file_sync._sleep") as sleep:
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        sleep.assert_called_once_with(0.1)
+        lock_ops = [call.args[1] for call in fake_msvcrt.locking.call_args_list]
+        assert lock_ops == [
+            fake_msvcrt.LK_LOCK,
+            fake_msvcrt.LK_LOCK,
+            fake_msvcrt.LK_UNLCK,
+        ]
+
+    def test_sync_back_warns_when_no_locking_module_available(self, tmp_path, caplog):
+        """If neither fcntl nor msvcrt exists, sync_back logs the unlocked path."""
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
 
-        with patch("tools.environments.file_sync.fcntl", None):
-            # Should not raise — locking is skipped
+        with patch("tools.environments.file_sync.fcntl", None), \
+             patch("tools.environments.file_sync.msvcrt", None), \
+             caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert any("without serialization" in r.message for r in caplog.records)
 
 
 class TestInferHostPath:

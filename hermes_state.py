@@ -814,7 +814,7 @@ class SessionDB:
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
-    _CHECKPOINT_EVERY_N_WRITES = 50
+    _CHECKPOINT_EVERY_N_WRITES = 10
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -826,6 +826,10 @@ class SessionDB:
         self._trigram_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        # Set True by _init_schema when FTS tables exist but rows need backfilling.
+        # Cleared and spawned as a daemon thread after the schema commit completes.
+        self._fts_backfill_pending = False
+        self._fts_backfill_include_trigram = True
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -1120,7 +1124,7 @@ class SessionDB:
         happened inside the infrequent vacuum()).
 
         TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
+        _try_wal_checkpoint is called off the hot path (every 10
         writes) and already runs under ``self._lock``, so the
         additional hold time is negligible.
         """
@@ -1136,6 +1140,85 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+
+    @staticmethod
+    def _run_fts_backfill_inline(conn: "sqlite3.Connection", include_trigram: bool) -> None:
+        """FTS backfill using the caller's existing connection (small-DB sync path)."""
+        try:
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT OR IGNORE INTO messages_fts(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            if include_trigram:
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages_fts_trigram(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
+            conn.execute("COMMIT")
+        except Exception as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            logger.warning("FTS backfill (inline) failed: %s", e)
+
+    def _run_fts_backfill_background(self, include_trigram: bool) -> None:
+        """Backfill FTS indexes, using a fresh connection for the background-thread path.
+
+        Runs after the schema migration commits so tables and triggers exist.
+        New messages written after startup are indexed via triggers; this
+        backfills rows that pre-date the migration.
+
+        When called from the main thread (small DB path), opens its own
+        connection to avoid re-entering the shared self._conn. In either case
+        a failure is logged and silently swallowed — FTS is best-effort.
+        """
+        try:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=60.0,
+                isolation_level=None,
+            )
+            count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            if count > 0:
+                logger.info(
+                    "FTS backfill: indexing %d existing messages%s...",
+                    count,
+                    " in background" if threading.current_thread() is not threading.main_thread() else "",
+                )
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT OR IGNORE INTO messages_fts(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            if include_trigram:
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages_fts_trigram(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
+            conn.execute("COMMIT")
+            conn.close()
+            if count > 0:
+                logger.info("FTS backfill: completed (%d messages indexed)", count)
+        except Exception as e:
+            logger.warning("FTS backfill failed: %s", e)
 
     def close(self):
         """Close the database connection.
@@ -1365,27 +1448,16 @@ class SessionDB:
                         base_fts_ok = self._ensure_fts_schema(
                             cursor, "messages_fts", FTS_SQL
                         )
-                        if base_fts_ok:
-                            cursor.execute(
-                                "INSERT INTO messages_fts(rowid, content) "
-                                "SELECT id, "
-                                "COALESCE(content, '') || ' ' || "
-                                "COALESCE(tool_name, '') || ' ' || "
-                                "COALESCE(tool_calls, '') "
-                                "FROM messages"
-                            )
                         trigram_ok = self._ensure_fts_schema(
                             cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                         )
-                        if trigram_ok:
-                            cursor.execute(
-                                "INSERT INTO messages_fts_trigram(rowid, content) "
-                                "SELECT id, "
-                                "COALESCE(content, '') || ' ' || "
-                                "COALESCE(tool_name, '') || ' ' || "
-                                "COALESCE(tool_calls, '') "
-                                "FROM messages"
-                            )
+                        if base_fts_ok:
+                            # Defer the full-table-scan backfill to a daemon thread
+                            # so large databases don't freeze startup. Triggers on
+                            # the newly-created tables keep new messages indexed;
+                            # existing rows are backfilled in the background.
+                            self._fts_backfill_pending = True
+                            self._fts_backfill_include_trigram = trigram_ok
                         if not base_fts_ok:
                             fts_migrations_complete = False
                         # Track trigram availability for CJK LIKE fallback.
@@ -1463,12 +1535,35 @@ class SessionDB:
                 )
                 self._trigram_available = trigram_enabled
                 if triggers_need_repair:
-                    self._rebuild_fts_indexes(
-                        cursor,
-                        include_trigram=trigram_enabled,
-                    )
+                    # Defer full-table rebuild to a background thread so startup
+                    # is not blocked on large databases.
+                    self._fts_backfill_pending = True
+                    self._fts_backfill_include_trigram = trigram_enabled
 
         self._conn.commit()
+        if self._fts_backfill_pending:
+            self._fts_backfill_pending = False
+            _include = self._fts_backfill_include_trigram
+            try:
+                _msg_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM messages"
+                ).fetchone()[0]
+            except Exception:
+                _msg_count = 0
+            if _msg_count >= 500:
+                # Large database — defer to background so startup doesn't freeze.
+                _t = threading.Thread(
+                    target=self._run_fts_backfill_background,
+                    args=(_include,),
+                    daemon=True,
+                    name="hermes-fts-backfill",
+                )
+                _t.start()
+            else:
+                # Small database — run synchronously using the existing connection
+                # (avoids a second concurrent connection which can hit locking
+                # issues in non-WAL environments like test tmp databases).
+                self._run_fts_backfill_inline(self._conn, _include)
 
     # =========================================================================
     # Session lifecycle

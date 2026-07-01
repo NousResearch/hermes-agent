@@ -16,6 +16,7 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -1007,6 +1008,76 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
 
+        # Pre-warm: background thread that starts summary generation before
+        # compression is required, so compress() waits milliseconds instead
+        # of 2–10 seconds when the context approaches the threshold.
+        self._prewarm_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="hermes-summary-prewarm"
+        )
+        self._prewarm_future: Optional[concurrent.futures.Future] = None
+        self._prewarm_fingerprint: Optional[str] = None
+
+    def _turns_fingerprint(self, turns: List[Dict[str, Any]]) -> str:
+        """Cheap fingerprint of a turns list for prewarm cache matching."""
+        if not turns:
+            return ""
+        first = str(turns[0].get("content", ""))[:120]
+        last = str(turns[-1].get("content", ""))[:120]
+        return hashlib.md5(f"{len(turns)}:{first}:{last}".encode()).hexdigest()
+
+    def prewarm_if_approaching_threshold(
+        self, messages: List[Dict[str, Any]], current_tokens: int
+    ) -> None:
+        """Start summary generation in background when context is at 80% of threshold.
+
+        Called post-response so the LLM network round-trip happens while the
+        user is reading the reply, hiding compression latency on the next turn.
+        """
+        if current_tokens < int(self.threshold_tokens * 0.80):
+            return
+        if time.monotonic() < self._summary_failure_cooldown_until:
+            return
+        # Run phases 1-2 of compress() on a copy to find the window to summarize.
+        try:
+            msgs_copy, _ = self._prune_old_tool_results(
+                list(messages),
+                protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=self.tail_token_budget,
+            )
+            compress_start = self._protect_head_size(msgs_copy)
+            compress_start = self._align_boundary_forward(msgs_copy, compress_start)
+            compress_end = self._find_tail_cut_by_tokens(msgs_copy, compress_start)
+            if compress_start >= compress_end:
+                return
+            turns_to_summarize = msgs_copy[compress_start:compress_end]
+            # Rehydrate iterative-summary state from existing handoff if present.
+            summary_search_start = 1 if msgs_copy and msgs_copy[0].get("role") == "system" else 0
+            summary_idx, summary_body = self._find_latest_context_summary(
+                msgs_copy, summary_search_start, compress_end
+            )
+            if summary_idx is not None:
+                if summary_body and not self._previous_summary:
+                    self._previous_summary = summary_body
+                turns_to_summarize = msgs_copy[max(compress_start, summary_idx + 1):compress_end]
+            elif self._previous_summary:
+                self._previous_summary = None
+        except Exception:
+            return
+
+        fp = self._turns_fingerprint(turns_to_summarize)
+        if self._prewarm_future is not None and self._prewarm_fingerprint == fp:
+            return  # Already warming for these exact turns.
+        # Cancel any stale prewarm for a different window.
+        if self._prewarm_future is not None and not self._prewarm_future.done():
+            self._prewarm_future.cancel()
+        self._prewarm_fingerprint = fp
+        focus = self._derive_auto_focus_topic(msgs_copy)
+        self._prewarm_future = self._prewarm_executor.submit(
+            self._generate_summary, turns_to_summarize, focus
+        )
+        logger.debug("Context compressor: pre-warming summary for %d turns (%.0f%% of threshold)",
+                     len(turns_to_summarize), 100 * current_tokens / self.threshold_tokens)
+
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
@@ -1132,7 +1203,9 @@ class ContextCompressor(ContextEngine):
         if not messages:
             return messages, 0
 
-        result = [m.copy() for m in messages]
+        # Shallow list copy — individual dicts are only copied on write (below),
+        # so the O(n) deep-copy cost is replaced by O(k) where k = modified count.
+        result = list(messages)
         pruned = 0
 
         # Build index: tool_call_id -> (tool_name, arguments_json)
@@ -2687,7 +2760,27 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        fp = self._turns_fingerprint(turns_to_summarize)
+        if (self._prewarm_future is not None
+                and self._prewarm_fingerprint == fp
+                and not self._prewarm_future.cancelled()):
+            if not self._prewarm_future.done():
+                logger.info("Context compression: pre-warmed summary still running, joining...")
+            try:
+                summary = self._prewarm_future.result(timeout=180)
+            except Exception as _prewarm_err:
+                logger.debug(
+                    "Pre-warmed summary failed (%s), falling back to synchronous generation",
+                    _prewarm_err,
+                )
+                summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+            finally:
+                self._prewarm_future = None
+                self._prewarm_fingerprint = None
+        else:
+            self._prewarm_future = None
+            self._prewarm_fingerprint = None
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

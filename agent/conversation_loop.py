@@ -1969,6 +1969,16 @@ def run_conversation(
                     }
                     agent.context_compressor.update_from_response(usage_dict)
 
+                    # Pre-warm context summary in background if approaching threshold,
+                    # so compress() joins a nearly-done future instead of blocking cold.
+                    if getattr(agent, "compression_enabled", True):
+                        try:
+                            agent.context_compressor.prewarm_if_approaching_threshold(
+                                api_messages, prompt_tokens or approx_tokens
+                            )
+                        except Exception:
+                            pass
+
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed
                     # from the error message), not guessed probe tiers.

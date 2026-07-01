@@ -1820,6 +1820,20 @@ AUTHOR_MAP = {
     "afnlegion01@gmail.com": "Afnath-max",  # PR #49129 salvage (opencode-zen catalog refresh + uncapped/live-first picker)
     "sharma.priyanshu96@gmail.com": "ipriyaaanshu",  # PR #51488 salvage (clear stale base_url on gateway model switches; #25107)
     "290881485+mrparker0980@users.noreply.github.com": "mrparker0980",  # @file context-ref expansion anchored to canonical read deny-list
+    # v0.18.0 additions
+    "3483421977@qq.com": "AetherAgents",  # direct email match
+    "SJWATTS89@OUTLOOK.COM": "lEWFkRAD",  # PR #45610 (Windows scheduled task reboot survival)
+    "andhika.prakasiwi@gmail.com": "p-andhika",  # PR #53312 co-author (setup guide button)
+    "annguyen@nousresearch.com": "annguyenNous",  # PR #52844 co-author
+    "carlitosdiazplaza@gmail.com": "talmax1124",  # direct email match
+    "christianpersico98@gmail.com": "chrispersico",  # commit 135f2351 PR author
+    "daniel.laforce@argobox.com": "KeyArgo",  # co-author
+    "joeykerp@gmail.com": "spjoes",  # direct email match
+    "keyargo@argobox.com": "KeyArgo",  # PR #45638 author
+    "lucas.nicolas@proton.me": "Lucas Nicolas",  # PR #54210 co-author (display name)
+    "max.petrusenko.agent@gmail.com": "maxpetrusenko",  # PR #54128 co-author
+    "poli.koltsova@gmail.com": "wnuuee1",  # commit 9fd2b2cb PR author
+    "yosapol@jitrak.dev": "Eji4h",  # direct email match
 }
 
 

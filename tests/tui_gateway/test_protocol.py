@@ -1707,6 +1707,29 @@ def test_dispatch_session_compress_does_not_block_fast_handler(server):
     released.set()
 
 
+def test_dispatch_prompt_submit_does_not_block_fast_handler(server):
+    """A prompt turn can run tools, so it must not block the TUI RPC loop."""
+    released = threading.Event()
+
+    def slow_submit(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"done": True})
+
+    server._methods["prompt.submit"] = slow_submit
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "prompt.submit", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind prompt.submit"
+
+    released.set()
+
+
 def test_dispatch_long_handler_exception_produces_error_response(capture):
     """An exception inside a pool-dispatched handler still yields a JSON-RPC error."""
     server, buf = capture

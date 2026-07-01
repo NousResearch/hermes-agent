@@ -212,6 +212,7 @@ _LONG_HANDLERS = frozenset(
         "projects.for_cwd",
         "projects.tree",
         "projects.project_sessions",
+        "prompt.submit",
         "session.branch",
         "session.compress",
         "session.list",

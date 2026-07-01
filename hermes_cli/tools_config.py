@@ -966,6 +966,8 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
                 if result.stderr:
                     _print_info(f"      {result.stderr.strip()[:200]}")
+                else:
+                    _print_info(f"      subprocess exited with code {result.returncode}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
             return
@@ -1069,6 +1071,10 @@ def _run_post_setup(post_setup_key: str):
                 _print_success("    Camofox installed")
             else:
                 _print_warning("    npm install failed - run manually: npm install --workspaces=false")
+                if result.stderr:
+                    _print_info(f"      {result.stderr.strip()[:200]}")
+                else:
+                    _print_info(f"      subprocess exited with code {result.returncode}")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")

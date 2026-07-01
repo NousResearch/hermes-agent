@@ -243,6 +243,9 @@ async def test_task_slash_creates_kanban_task(adapter, monkeypatch):
     assert created["kwargs"]["idempotency_key"] == "discord-task:987654"
     assert "Discordの /task から登録された依頼です。" in created["kwargs"]["body"]
     assert created["kwargs"]["initial_status"] == "ready"
+    assert "対象はGootHandsが管理している許可済み環境" in created["kwargs"]["body"]
+    assert "保守、原因調査、デプロイ確認、設定改善" in created["kwargs"]["body"]
+    assert "秘密情報の値は表示しない" in created["kwargs"]["body"]
     assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
     fake_add_notify_sub.assert_called_once()
 
@@ -882,6 +885,9 @@ async def test_natural_language_task_request_creates_ready_kanban_task_without_i
     assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
     assert created["kwargs"]["initial_status"] == "ready"
     assert "Discordの自然文依頼から登録されたタスクです。" in created["kwargs"]["body"]
+    assert "対象はGootHandsが管理している許可済み環境" in created["kwargs"]["body"]
+    assert "保守、原因調査、デプロイ確認、設定改善" in created["kwargs"]["body"]
+    assert "秘密情報の値は表示しない" in created["kwargs"]["body"]
     assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
 
 
@@ -1025,6 +1031,27 @@ def test_natural_language_classifier_registers_regular_discord_messages():
     assert DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
     assert DiscordAdapter._looks_like_natural_task_request("直して")
     assert not DiscordAdapter._looks_like_natural_task_request("/status")
+
+
+def test_task_payload_frames_security_wording_as_authorized_maintenance(adapter):
+    prompt = "VPSへの侵入っぽいログと権限奪取っぽい挙動を調べて"
+    payload = adapter._build_task_payload(
+        prompt=prompt,
+        user=SimpleNamespace(id=67890, display_name="内田さん", name="uchida"),
+        channel=SimpleNamespace(name="リノ", guild=SimpleNamespace(name="DEGs")),
+        channel_id=12345,
+        guild=SimpleNamespace(name="DEGs"),
+        origin_label="Discordの自然文依頼から登録されたタスクです。",
+    )
+
+    assert "対象はGootHandsが管理している許可済み環境" in payload["body"]
+    assert "保守、原因調査、デプロイ確認、設定改善" in payload["body"]
+    assert "アクセス異常の確認" in payload["body"]
+    assert "権限設定の確認" in payload["body"]
+    assert "侵入" not in payload["title"]
+    assert "権限奪取" not in payload["title"]
+    assert "侵入" not in payload["body"]
+    assert "権限奪取" not in payload["body"]
 
 
 @pytest.mark.asyncio

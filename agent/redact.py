@@ -411,10 +411,11 @@ def redact_cdp_url(value: object) -> str:
     that must never reach the logs. So for CDP URLs we opt INTO the two URL
     redactors that the global pass leaves off.
 
-    This is the single source of truth for CDP-URL log redaction. Every site
-    that emits a resolved CDP URL to a log or exception message -- the browser
-    tool's session/discovery logs and the supervisor's attach-timeout error --
-    routes through here so the policy can never drift between call sites.
+    This is the single source of truth for redacting a CDP URL that is passed
+    *directly* to a log or error message. Callers that instead need to redact an
+    exception whose text embeds the URL (e.g. a ``websockets`` connect error)
+    should route that through their own error-text helper, which delegates here
+    -- see ``tools.browser_supervisor._redact_cdp_error_text``.
     """
     text = redact_sensitive_text("" if value is None else str(value))
     if not text:

@@ -3586,13 +3586,13 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
 
             if "api.githubcopilot.com" in str(base_url or "").lower():
-                return _httpx.Client()
+                return _httpx.Client(verify=verify)
 
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
             if hasattr(_socket, "TCP_KEEPIDLE"):
@@ -3607,8 +3607,9 @@ class AIAgent:
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_httpx.HTTPTransport(socket_options=_sock_opts, verify=verify),
                 proxy=_proxy,
+                verify=verify,
             )
         except Exception:
             return None

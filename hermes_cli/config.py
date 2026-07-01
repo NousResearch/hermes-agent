@@ -4225,7 +4225,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4324,6 +4324,16 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
+    ssl_ca_cert = entry.get("ssl_ca_cert")
+    if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
+        normalized["ssl_ca_cert"] = ssl_ca_cert.strip()
+
+    ssl_verify = entry.get("ssl_verify")
+    if isinstance(ssl_verify, bool):
+        normalized["ssl_verify"] = ssl_verify
+    elif isinstance(ssl_verify, str) and ssl_verify.strip():
+        normalized["ssl_verify"] = ssl_verify.strip()
+
     return normalized
 
 
@@ -4351,6 +4361,8 @@ def _custom_provider_entry_to_provider_config(
         "rate_limit_delay",
         "discover_models",
         "extra_body",
+        "ssl_ca_cert",
+        "ssl_verify",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -4425,6 +4437,66 @@ def get_compatible_custom_providers(
         _append_if_new(entry)
 
     return compatible
+
+
+def _coerce_ssl_verify(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+    return None
+
+
+def get_custom_provider_tls_settings(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return TLS settings from a matching ``custom_providers`` / ``providers`` entry."""
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return {}
+
+    target_url = (base_url or "").rstrip("/")
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        out: Dict[str, Any] = {}
+        ca = entry.get("ssl_ca_cert")
+        if isinstance(ca, str) and ca.strip():
+            out["ssl_ca_cert"] = ca.strip()
+        verify = _coerce_ssl_verify(entry.get("ssl_verify"))
+        if verify is not None:
+            out["ssl_verify"] = verify
+        return out
+    return {}
+
+
+def apply_custom_provider_tls_to_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Attach per-provider TLS knobs to OpenAI client kwargs when matched."""
+    tls = get_custom_provider_tls_settings(base_url, custom_providers, config)
+    if tls.get("ssl_ca_cert"):
+        client_kwargs["ssl_ca_cert"] = tls["ssl_ca_cert"]
+    if "ssl_verify" in tls:
+        client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
 def get_custom_provider_context_length(
@@ -4552,6 +4624,7 @@ _KNOWN_ROOT_KEYS = {
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

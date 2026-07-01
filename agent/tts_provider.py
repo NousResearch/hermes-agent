@@ -46,7 +46,10 @@ expects.
 from __future__ import annotations
 
 import abc
+import io
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -253,6 +256,67 @@ class TTSProvider(abc.ABC):
         Default: False (safe — providers opt in explicitly).
         """
         return False
+
+
+
+class FuelIXTTSProvider(TTSProvider):
+    name = "fuelix"
+
+    @property
+    def display_name(self) -> str:
+        return "FuelIX"
+
+    def is_available(self) -> bool:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            api_key = (
+                cfg.get("providers", {})
+                .get("api.fuelix.ai", {})
+                .get("api_key", "")
+            )
+            return bool(str(api_key).strip())
+        except Exception:
+            return False
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: str,
+        *,
+        voice: Optional[str] = None,
+        model: Optional[str] = None,
+        speed: Optional[float] = None,
+        format: str = DEFAULT_OUTPUT_FORMAT,
+        **extra: Any,
+    ) -> str:
+        import requests
+
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        api_key = (
+            cfg.get("providers", {})
+            .get("api.fuelix.ai", {})
+            .get("api_key", "")
+        )
+        if not api_key:
+            raise ValueError("FuelIX API key missing in config.providers.'api.fuelix.ai'.api_key")
+
+        voice = voice or "alloy"
+        model = model or "tts-1"
+        payload = {"model": model, "input": text, "voice": voice}
+        headers = {"Authorization": f"Bearer {api_key}"}
+        response = requests.post(
+            "https://api.fuelix.ai/v1/audio/speech",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        Path(output_path).write_bytes(response.content)
+        return output_path
 
 
 # ---------------------------------------------------------------------------

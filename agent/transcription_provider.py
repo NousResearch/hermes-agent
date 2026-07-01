@@ -191,3 +191,89 @@ class TranscriptionProvider(abc.ABC):
             **extra: Forward-compat parameters future schema versions
                 may expose. Implementations should ignore unknown keys.
         """
+
+
+# ---------------------------------------------------------------------------
+# Built-in fallback provider: FuelIX
+# ---------------------------------------------------------------------------
+#
+# Not registered via ``register_provider`` / ``BUILTIN_STT_PROVIDERS`` — this
+# is invoked directly by ``tools.transcription_tools.transcribe_audio`` as a
+# same-request fallback when the user's configured primary STT provider
+# raises or times out (Phase 4: FuelIX media fallback). It is also reachable
+# explicitly via ``stt.provider: fuelix``.
+
+
+class FuelIXTranscriptionProvider(TranscriptionProvider):
+    """Speech-to-text fallback backed by FuelIX's ``whisper-1`` endpoint."""
+
+    @property
+    def name(self) -> str:
+        return "fuelix"
+
+    @property
+    def display_name(self) -> str:
+        return "FuelIX"
+
+    def is_available(self) -> bool:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            api_key = (
+                cfg.get("providers", {})
+                .get("api.fuelix.ai", {})
+                .get("api_key", "")
+            )
+            return bool(str(api_key).strip())
+        except Exception:
+            return False
+
+    def transcribe(
+        self,
+        file_path: str,
+        *,
+        model: Optional[str] = None,
+        language: Optional[str] = None,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        try:
+            import requests
+
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            api_key = (
+                cfg.get("providers", {})
+                .get("api.fuelix.ai", {})
+                .get("api_key", "")
+            )
+            if not api_key:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "FuelIX API key missing in config.providers.'api.fuelix.ai'.api_key",
+                    "provider": self.name,
+                }
+
+            resolved_model = model or "whisper-1"
+            with open(file_path, "rb") as fh:
+                response = requests.post(
+                    "https://api.fuelix.ai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    files={"file": fh},
+                    data={"model": resolved_model},
+                    timeout=60,
+                )
+            response.raise_for_status()
+            data = response.json()
+            text = str(data.get("text") or "")
+            return {"success": True, "transcript": text, "provider": self.name}
+        except Exception as exc:
+            logger.error("FuelIX STT transcription failed: %s", exc, exc_info=True)
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"FuelIX STT transcription failed: {exc}",
+                "provider": self.name,
+            }

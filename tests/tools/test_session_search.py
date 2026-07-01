@@ -638,3 +638,31 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+class TestSemanticSearchAdditive:
+    def test_semantic_search_scores_results(self, db):
+        db.create_session("s_sem_1", source="cli")
+        db.append_message("s_sem_1", role="user", content="How do I fix semantic search ranking with embeddings?")
+        db.append_message("s_sem_1", role="assistant", content="Use cosine similarity on stored vectors.")
+        db.create_session("s_sem_2", source="cli")
+        db.append_message("s_sem_2", role="user", content="What is the best way to bake sourdough?")
+        db.append_message("s_sem_2", role="assistant", content="Feed starter and score the loaf.")
+        db._conn.commit()
+
+        from tools.session_search_tool import _create_embedding_table, _store_embedding
+        _create_embedding_table(db)
+        _store_embedding(db, 1, [1.0, 0.0, 0.0])
+        _store_embedding(db, 2, [0.9, 0.1, 0.0])
+        _store_embedding(db, 3, [0.0, 1.0, 0.0])
+        _store_embedding(db, 4, [0.0, 0.9, 0.1])
+        db._conn.commit()
+
+        from tools import session_search_tool
+        def fake_embedding(text):
+            return [1.0, 0.0, 0.0]
+        session_search_tool.get_embedding = fake_embedding
+        result = json.loads(session_search(query="semantic search", semantic=True, db=db, limit=2))
+        assert result["success"] is True
+        assert result["results"]
+        print("SEMANTIC_RESULTS", result["results"][0]["session_id"], result["results"][0].get("semantic_score"), result["results"][0]["snippet"][:80])

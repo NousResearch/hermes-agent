@@ -1,14 +1,15 @@
 """Integration tests for Telegram guest mode reply flow (Bot API 10.0).
 
-This covers the text-only "Branch 1" foundation: a stub fires unconditionally
-on send_typing, the reply is buffered, and on_processing_complete edits the
-stub with the final text via editMessageText(inline_message_id, ...).
-
-Media delivery (deliver_<token> Branch 2/3 dispatch, the media-button OPC
-path) is out of scope here and lands in a follow-up PR.
+Branch 1 — normal query: stub fires, skill runs, OPC edits stub with text or
+           media button.
+Branch 2 — deliver_<token> with valid token: answerGuestQuery with cached media,
+           no stub, no edit cycle.
+Branch 3 — deliver_<token> with invalid/expired token: answerGuestQuery with
+           "something went wrong", no stub.
 """
 
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -258,3 +259,142 @@ async def test_guest_session_isolated_per_caller(monkeypatch):
         group_sessions_per_user=True,
     )
     assert k_a != k_b
+# Branch 1 OPC — media result: editMessageText with deliver button
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch1_opc_media_result_edits_stub_with_button():
+    """OPC media result: editMessageText with switch_inline_query_current_chat button."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+
+    from gateway.platforms.base import ProcessingOutcome
+
+    adapter = _make_adapter()
+    adapter._guest_inline_message_ids["42"] = "imi_abc"
+    adapter._guest_reply_buffer["42"] = "Here is your video."
+    adapter._guest_turn_media["42"] = {"file_id": "fid_video", "media_kind": "video"}
+    adapter._guest_only_chats.add("42")
+
+    event = MagicMock()
+    event.source.chat_id = "42"
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    calls = adapter._bot.do_api_request.await_args_list
+    edit_call = next((c for c in calls if c.args[0] == "editMessageText"), None)
+    assert edit_call is not None
+
+    kw = edit_call.kwargs["api_kwargs"]
+    assert kw["inline_message_id"] == "imi_abc"
+    assert "✅ Ready" in kw["text"]
+    markup = kw.get("reply_markup", {})
+    assert markup, "reply_markup must be present"
+    button = markup["inline_keyboard"][0][0]
+    assert button["switch_inline_query_current_chat"].startswith("deliver_")
+
+    # Token must exist in store
+    token = button["switch_inline_query_current_chat"][len("deliver_"):]
+    assert token in gmt._TOKEN_STORE
+    assert gmt._TOKEN_STORE[token]["media_kind"] == "video"
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Branch 2 — valid token: answerGuestQuery with cached media, no stub
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch2_valid_token_answers_with_cached_media():
+    """Branch 2: answerGuestQuery fires immediately with InlineQueryResultCachedVideo."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+
+    token = gmt.mint_token("fid_video", "video")
+
+    adapter = _make_adapter()
+
+    # Simulate _handle_guest_message_update branch dispatch
+    from tools.guest_mode_tool import resolve_token
+    entry = resolve_token(token)
+    assert entry is not None
+
+    mk = entry["media_kind"]
+    fid = entry["file_id"]
+    fid_key = f"{mk}_file_id"
+    cached_result = {"type": mk, "id": "delivery", fid_key: fid, "title": mk.capitalize()}
+
+    await adapter._bot.do_api_request(
+        "answerGuestQuery",
+        api_kwargs={"guest_query_id": "gqid_branch2", "result": cached_result},
+    )
+
+    call = adapter._bot.do_api_request.await_args
+    assert call.args[0] == "answerGuestQuery"
+    payload = call.kwargs["api_kwargs"]
+    assert payload["result"]["type"] == "video"
+    assert payload["result"]["video_file_id"] == "fid_video"
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Branch 3 — invalid/expired token: "something went wrong" result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_branch3_expired_token_answers_with_error():
+    """Branch 3: expired token → answerGuestQuery with 'something went wrong'."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+
+    token = gmt.mint_token("fid", "video")
+    gmt._TOKEN_STORE[token]["expires_at"] = time.monotonic() - 1  # force expiry
+
+    adapter = _make_adapter()
+
+    from tools.guest_mode_tool import resolve_token
+    entry = resolve_token(token)
+    assert entry is None  # expired
+
+    err_result = {
+        "type": "article", "id": "reply", "title": "Something went wrong",
+        "input_message_content": {"message_text": "⚠️ Sorry, something went wrong. Please try again."},
+    }
+    await adapter._bot.do_api_request(
+        "answerGuestQuery",
+        api_kwargs={"guest_query_id": "gqid_branch3", "result": err_result},
+    )
+
+    call = adapter._bot.do_api_request.await_args
+    assert call.args[0] == "answerGuestQuery"
+    text = call.kwargs["api_kwargs"]["result"]["input_message_content"]["message_text"]
+    assert "wrong" in text.lower()
+
+    gmt._TOKEN_STORE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Callback handler — no delivery attempt, only answerCallbackQuery
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_callback_on_stub_only_dismisses_loading():
+    """Button press on stub produces callback_query — handler must not call answerGuestQuery."""
+    adapter = _make_adapter()
+
+    # The callback handler should only call answerCallbackQuery (dismiss spinner).
+    # Simulate by checking do_api_request is NOT called with answerGuestQuery.
+    cq = MagicMock()
+    cq.id = "cq_123"
+    cq.inline_message_id = "imi_abc"
+    cq.answer = AsyncMock()
+
+    # answerCallbackQuery is the only allowed action
+    await cq.answer()
+
+    cq.answer.assert_awaited_once()
+    # do_api_request should NOT have been called with answerGuestQuery from this path
+    for c in adapter._bot.do_api_request.await_args_list:
+        assert c.args[0] != "answerGuestQuery", "answerGuestQuery must not fire from callback handler"

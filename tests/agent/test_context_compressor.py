@@ -3104,3 +3104,103 @@ class TestCooldownReentryAbort:
         )
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
+
+
+
+
+class TestDoubleCompactionSummaryRole:
+    """PR #52160 (salvaged from #52167): when only the system prompt is
+    protected, the summary must lead with role=user (Anthropic/Bedrock send
+    system as a separate param, so the summary is the first visible message)."""
+
+    def test_double_compaction_summary_must_be_user_when_only_system_protected(self):
+        """After the first compression, protect_first_n decays to 0.
+
+        On the second compression the only protected head message is the
+        system prompt (role=system).  The summary becomes the first
+        *visible* message in the API request because adapters like
+        Anthropic and Bedrock send the system prompt as a separate
+        ``system`` parameter.  The summary MUST be role=user or the
+        provider rejects with HTTP 400 (#52160).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of earlier turns"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        # Simulate second compression: protect_first_n decays to 0.
+        c.compression_count = 1
+
+        # compress_start will be 1 (system only), last_head_role = "system".
+        # Without the fix, summary_role would be "assistant".
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        # The system message must still be at index 0.
+        assert result[0]["role"] == "system"
+        # The summary (first non-system message) must be role=user.
+        non_system = [m for m in result if m.get("role") != "system"]
+        assert non_system, "expected at least one non-system message"
+        assert non_system[0]["role"] == "user", (
+            f"first non-system message must be role=user for Anthropic "
+            f"compatibility, got role={non_system[0]['role']!r}"
+        )
+
+    def test_double_compaction_user_tail_merges_into_tail(self):
+        """When the summary is forced to role=user (system-only head) and
+        the first tail message is also user, the summary must merge into
+        the tail rather than flipping back to assistant (#52160).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of earlier turns"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        c.compression_count = 1  # decay protect_first_n
+
+        # tail starts with user → would collide with forced summary_role=user.
+        # The fix should merge into tail instead of flipping to assistant.
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},       # tail start (user)
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        # No standalone summary message should exist (merged into tail).
+        summary_msgs = [
+            m for m in result
+            if m.get("_compressed_summary") and "msg 5" not in (m.get("content") or "")
+        ]
+        assert len(summary_msgs) == 0, (
+            "summary should be merged into tail, not standalone"
+        )
+        # The first non-system message must be role=user.
+        non_system = [m for m in result if m.get("role") != "system"]
+        assert non_system[0]["role"] == "user"
+        # The merged tail should contain the summary text.
+        assert any(
+            "summary of earlier turns" in (m.get("content") or "")
+            for m in result
+        )

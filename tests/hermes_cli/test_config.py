@@ -619,6 +619,23 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("GLM_API_KEY=")
         assert result[1].startswith("LM_API_KEY=")
 
+    def test_value_embedding_known_key_not_split(self):
+        """A single valid line whose value embeds a known KEY= (e.g. a URL with
+        a query parameter) must be preserved verbatim — not truncated into a
+        bogus pair."""
+        lines = [
+            "OPENAI_BASE_URL=https://proxy.example.com/v1?TAVILY_API_KEY=sk-embedded\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"embedded key in value corrupted the secret: {result}"
+
+    def test_leading_text_before_first_key_not_dropped(self):
+        """When the first known KEY= is not at the line start, the leading text
+        must not be silently dropped."""
+        lines = ["export OPENAI_API_KEY=sk1ANTHROPIC_API_KEY=sk2\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"leading text was dropped: {result}"
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"

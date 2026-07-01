@@ -472,8 +472,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         If *target* already contains a semicolon (raw GUID format like
         ``iMessage;-;user@example.com``), it is returned as-is.  Otherwise
-        the adapter queries the BlueBubbles chat list and matches on
-        ``chatIdentifier`` or participant address.
+        the adapter queries the BlueBubbles chat list and matches strictly
+        on ``chatIdentifier`` / ``identifier``.
+
+        Participant membership is intentionally NOT used as a fallback:
+        the same contact can appear in a 1:1 DM and in any number of group
+        chats, so a participant match would let an outbound DM reply leak
+        into a group thread (see #24157). When no exact chat identity
+        matches, return ``None`` and let the caller create a fresh DM
+        explicitly via ``_create_chat_for_handle``.
         """
         target = (target or "").strip()
         if not target:
@@ -487,7 +494,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         try:
             payload = await self._api_post(
                 "/api/v1/chat/query",
-                {"limit": 100, "offset": 0, "with": ["participants"]},
+                {"limit": 100, "offset": 0},
             )
             for chat in payload.get("data", []) or []:
                 guid = chat.get("guid") or chat.get("chatGuid")
@@ -498,12 +505,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         while len(self._guid_cache) > _GUID_CACHE_SIZE:
                             self._guid_cache.popitem(last=False)
                     return guid
-                for part in chat.get("participants", []) or []:
-                    if (part.get("address") or "").strip() == target and guid:
-                        self._guid_cache[target] = guid
-                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                            self._guid_cache.popitem(last=False)
-                        return guid
         except Exception:
             pass
         return None

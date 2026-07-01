@@ -410,7 +410,10 @@ class TestWebToolPolicy:
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         # Allow test URLs past SSRF check so website policy is what gets tested
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
         monkeypatch.setattr(firecrawl_provider, "is_safe_url", lambda url: True)
 
@@ -454,7 +457,10 @@ class TestWebToolPolicy:
         from tools import web_tools
         from plugins.web.firecrawl import provider as firecrawl_provider
 
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
         monkeypatch.setattr(
             firecrawl_provider,
@@ -485,7 +491,7 @@ class TestWebToolPolicy:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
 
         assert checked_urls == ["https://allowed.test"]
         assert result["results"][0]["url"] == "http://169.254.169.254/latest/meta-data/"

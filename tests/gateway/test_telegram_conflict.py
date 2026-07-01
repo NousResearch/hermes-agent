@@ -314,16 +314,17 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_connect_disable_fallback_skips_config_and_doh(monkeypatch):
-    adapter = TelegramAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="***",
-            extra={"fallback_ips": ["149.154.167.220"]},
-        )
-    )
+async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
+    """Regression for #46298.
 
-    monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "1")
+    Command-menu registration and DM-topic setup make Bot API calls that can
+    stall for certain tokens. If they run inside connect() (which the gateway
+    wraps in a connect timeout), one slow call blows the whole connect and the
+    adapter never comes up. connect() must return as soon as polling/webhook is
+    live and defer that housekeeping to a cancellable background task.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
     monkeypatch.setattr(
         "gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
@@ -332,16 +333,13 @@ async def test_connect_disable_fallback_skips_config_and_doh(monkeypatch):
         "gateway.status.release_scoped_lock",
         lambda scope, identity: None,
     )
-    monkeypatch.setattr(
-        adapter,
-        "_fallback_ips",
-        MagicMock(side_effect=AssertionError("fallback config read")),
-    )
 
-    async def fail_discovery():
-        raise AssertionError("fallback discovery called")
+    async def _hang_forever(*args, **kwargs):
+        await asyncio.Future()
 
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", fail_discovery)
+    # Make the entire housekeeping coroutine hang. connect() must still return
+    # promptly and expose the still-running task; disconnect() must cancel it.
+    monkeypatch.setattr(adapter, "_run_post_connect_housekeeping", _hang_forever)
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(),
@@ -358,6 +356,9 @@ async def test_connect_disable_fallback_skips_config_and_doh(monkeypatch):
         add_handler=MagicMock(),
         initialize=AsyncMock(),
         start=AsyncMock(),
+        running=True,
+        stop=AsyncMock(),
+        shutdown=AsyncMock(),
     )
     builder = MagicMock()
     builder.token.return_value = builder
@@ -365,14 +366,22 @@ async def test_connect_disable_fallback_skips_config_and_doh(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
 
-    ok = await adapter.connect()
+    # A tight timeout: if connect() awaited the hanging set_my_commands this
+    # would raise TimeoutError instead of returning.
+    ok = await asyncio.wait_for(adapter.connect(), timeout=0.5)
 
     assert ok is True
-    adapter._fallback_ips.assert_not_called()
+    assert adapter._post_connect_task is not None
+    assert not adapter._post_connect_task.done()
+
+    # disconnect() must cancel the still-hanging housekeeping task cleanly.
+    await adapter.disconnect()
+    assert adapter._post_connect_task is None
+    await _cancel_heartbeat(adapter)
 
 
 @pytest.mark.asyncio

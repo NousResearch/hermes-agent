@@ -9,6 +9,7 @@ from tools.url_safety import (
     async_is_safe_url,
     is_always_blocked_url,
     normalize_url_for_request,
+    redirect_target_from_response,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -641,3 +642,62 @@ class TestIPv4MappedIPv6SSRF:
             (10, 1, 6, "", ("::ffff:100.100.100.200", 0, 0, 0)),
         ]):
             assert is_safe_url("http://aliyun-metadata.internal/") is False
+
+
+class _FakeResponse:
+    """Minimal stand-in for an httpx response as seen inside a response hook."""
+
+    def __init__(self, *, is_redirect, location=None, url="", next_request=None):
+        self.is_redirect = is_redirect
+        self.headers = {"location": location} if location else {}
+        self.url = url
+        self.next_request = next_request
+
+
+class _FakeNextRequest:
+    def __init__(self, url):
+        self.url = url
+
+
+class TestRedirectTargetFromResponse:
+    """redirect_target_from_response is the SSRF-guard boundary for httpx hooks.
+
+    Inside httpx AsyncClient response hooks, ``response.next_request`` is often
+    ``None`` even for a real redirect, so a guard keyed only on it silently
+    never fires. Resolving from the ``Location`` header closes that hole.
+    """
+
+    def test_absolute_location_without_next_request(self):
+        # The exact bypass: redirect present, next_request unset, private target.
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="http://169.254.169.254/latest/meta-data",
+            url="https://public.example/image.png",
+        )
+        assert (
+            redirect_target_from_response(resp)
+            == "http://169.254.169.254/latest/meta-data"
+        )
+
+    def test_relative_location_is_resolved_against_response_url(self):
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="/redir",
+            url="https://public.example/image.png",
+        )
+        assert redirect_target_from_response(resp) == "https://public.example/redir"
+
+    def test_non_redirect_returns_none(self):
+        resp = _FakeResponse(is_redirect=False, location="http://169.254.169.254/")
+        assert redirect_target_from_response(resp) is None
+
+    def test_falls_back_to_next_request_when_no_location(self):
+        resp = _FakeResponse(
+            is_redirect=True,
+            next_request=_FakeNextRequest("http://10.0.0.1/meta"),
+        )
+        assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+
+    def test_no_location_no_next_request_returns_none(self):
+        resp = _FakeResponse(is_redirect=True)
+        assert redirect_target_from_response(resp) is None

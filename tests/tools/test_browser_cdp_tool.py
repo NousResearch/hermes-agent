@@ -253,6 +253,21 @@ def test_browser_level_success(cdp_server):
     assert "sessionId" not in calls[0]
 
 
+def test_browser_level_redacts_secret_result(cdp_server):
+    fake_key = "sk-" + "CDPSECRETRESULT1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {"result": {"type": "string", "value": fake_key}},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+
+    assert result["success"] is True
+    serialized = json.dumps(result)
+    assert "CDPSECRETRESULT" not in serialized
+    assert result["result"]["result"]["value"].startswith("sk-")
+
+
 def test_empty_params_sends_empty_object(cdp_server):
     cdp_server.on("Browser.getVersion", lambda params, sid: {"product": "Mock/1.0"})
     json.loads(browser_cdp_tool.browser_cdp(method="Browser.getVersion"))

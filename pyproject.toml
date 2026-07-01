@@ -195,7 +195,7 @@ dev = [
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py==2.7.1", "PyNaCl==1.6.2", "davey==0.1.4", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2", "tornado==6.5.7"]  # aiohttp: 3.14.x CVE batch; tornado: GHSA-3x9g-8vmp-wqvf (telegram webhooks); discord voice deps kept explicit so PyNaCl can use the patched line.
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.14.1"]
-matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -279,6 +279,7 @@ ai-scientist = [
   "google-generativeai==0.8.6",
 ]
 bedrock = ["boto3==1.42.89"]
+vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.

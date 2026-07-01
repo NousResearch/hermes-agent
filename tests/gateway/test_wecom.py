@@ -336,6 +336,21 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-1", "user-2") is False
         assert adapter._is_group_allowed("group-2", "user-1") is False
 
+    def test_pairing_group_policy_blocks_without_explicit_group_allow_from(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"group_policy": "pairing"})
+        )
+
+        assert adapter._is_group_allowed("group-1", "user-1") is False
+
+    def test_pairing_dm_policy_strict_auth_denies_unknown(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+        assert adapter._is_dm_allowed("user-1") is False
+        assert adapter._is_dm_intake_allowed("user-1") is True
 
 class TestMediaHelpers:
     def test_detect_wecom_media_type(self):
@@ -706,7 +721,12 @@ class TestInboundMessages:
     async def test_on_message_builds_event(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
@@ -738,7 +758,12 @@ class TestInboundMessages:
     async def test_on_message_preserves_quote_context(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
@@ -866,7 +891,12 @@ class TestWeComZombieSessionFix:
     async def test_on_message_caches_last_req_id_per_chat(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))

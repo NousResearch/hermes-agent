@@ -510,6 +510,9 @@ async def test_matrix_resume_all_lists_room_names():
         source_b,
         [_entry(source_a, "session-a", "Project A Plan"), _entry(source_b, "session-b", "Project B Plan")],
     )
+    # Cross-room `/resume --all` listing is admin-gated (IDOR scoping), so this
+    # cross-room listing test must run as a configured admin.
+    runner._resume_caller_is_admin = lambda _src: True
 
     result = await runner._handle_resume_command(_event("/resume --all", source_b))
 

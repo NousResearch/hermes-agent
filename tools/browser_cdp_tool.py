@@ -28,25 +28,27 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-_SENSITIVE_CDP_METHODS = frozenset({
-    "Browser.grantPermissions",
-    "Browser.resetPermissions",
-    "Browser.setPermission",
-    "Network.clearBrowserCache",
-    "Network.clearBrowserCookies",
-    "Network.deleteCookies",
-    "Network.getAllCookies",
-    "Network.getCookies",
-    "Network.setCookie",
-    "Network.setCookies",
-    "Page.addScriptToEvaluateOnNewDocument",
-    "Runtime.callFunctionOn",
-    "Runtime.evaluate",
-    "Storage.clearCookies",
-    "Storage.clearDataForOrigin",
-    "Storage.getCookies",
-    "Storage.setCookies",
-})
+
+def _redact_cdp_output(value: Any) -> Any:
+    """Redact browser-originated CDP result data before returning it."""
+    from agent.redact import redact_sensitive_text
+
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, list):
+        return [_redact_cdp_output(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_cdp_output(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_cdp_output(item) for key, item in value.items()}
+    return value
+
+# ``websockets`` is a direct hermes-agent dependency because the browser CDP
+# supervisor and browser_dialog tool import it during tool discovery. Wrap the
+# import so a clean error surfaces if an environment is stale or incomplete.
+try:
+    import websockets
+    from websockets.exceptions import WebSocketException
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
 # supervisor and browser_dialog tool import it during tool discovery. Keep the
@@ -469,7 +471,7 @@ def browser_cdp(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "result": result,
+        "result": _redact_cdp_output(result),
     }
     if target_id:
         payload["target_id"] = target_id

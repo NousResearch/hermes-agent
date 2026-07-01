@@ -28,7 +28,8 @@ import logging
 import os
 import socket
 import asyncio
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+from typing import Any, Optional
+from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from utils import is_truthy_value
 
@@ -76,6 +77,64 @@ def normalize_url_for_request(url: str) -> str:
     fragment = quote(parsed.fragment, safe="/%:@!$&'()*+,;=?")
 
     return urlunsplit((parsed.scheme, netloc, path, query, fragment))
+
+
+# Query parameter names that are unambiguously credential-bearing. Kept
+# deliberately narrow: bare English words that double as normal page facets
+# (``code`` on promo/challenge pages, ``key``/``auth``/``session``/``sig`` as
+# search or routing params) are intentionally EXCLUDED to avoid blocking
+# ordinary browsing. Prefix-based token redaction (``is_safe_url``) still
+# catches recognizable vendor key shapes; this set is the belt-and-suspenders
+# for opaque secrets that carry an explicit credential-named parameter.
+_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "authorization",
+    "awsaccesskeyid",
+    "client_secret",
+    "credential",
+    "credentials",
+    "jwt",
+    "password",
+    "passwd",
+    "secret",
+    "session_id",
+    "signature",
+    "token",
+    "x_amz_security_token",
+    "x_amz_signature",
+    "x-amz-security-token",
+    "x-amz-signature",
+})
+
+
+def sensitive_query_param_name(url: str) -> Optional[str]:
+    """Return the first sensitive query parameter name in ``url``, if any.
+
+    Used before handing URLs to third-party fetch/browser backends. Prefix-based
+    token redaction catches known credential shapes; this catches opaque magic
+    links, OAuth codes, signed URL signatures, and custom ``?token=...`` values
+    that do not have a recognizable vendor prefix.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.query:
+        return None
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES:
+            return key
+    return None
+
+
+def has_sensitive_query_params(url: str) -> bool:
+    """Return True when ``url`` carries likely credential-bearing query params."""
+    return sensitive_query_param_name(url) is not None
 
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
@@ -414,11 +473,31 @@ async def async_is_safe_url(url: str) -> bool:
             timeout=_DNS_RESOLUTION_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        logger.warning(
-            "Blocked request - DNS resolution timed out during URL safety check: %s",
-            url,
-        )
         return False
-    except Exception as exc:
-        logger.warning("Blocked request - async URL safety check error for %s: %s", url, exc)
-        return False
+
+
+def redirect_target_from_response(response: Any) -> Optional[str]:
+    """Return the redirect target visible from inside an httpx response hook.
+
+    In ``httpx.AsyncClient`` response event hooks, ``response.next_request`` is
+    frequently ``None`` even for a genuine redirect (it is populated later by
+    the redirect-following machinery). Relying on ``next_request`` alone means
+    an SSRF redirect guard silently never fires: a public URL that 302s to
+    ``http://169.254.169.254/`` gets followed anyway. The ``Location`` header,
+    however, is already present on the response, so resolve the target from it
+    first (handling relative Locations via ``urljoin``) and only fall back to
+    ``next_request`` when no ``Location`` header is set.
+    """
+    if not getattr(response, "is_redirect", False):
+        return None
+
+    headers = getattr(response, "headers", {}) or {}
+    location = headers.get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+
+    next_request = getattr(response, "next_request", None)
+    if next_request:
+        return str(next_request.url)
+
+    return None

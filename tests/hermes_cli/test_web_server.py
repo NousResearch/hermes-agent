@@ -78,6 +78,24 @@ def _install_example_plugin(_isolate_hermes_home):
         shutil.rmtree(dst)
     shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
 
+    # The dashboard now gates user-plugin asset serving + backend import
+    # behind the ``plugins.enabled`` allow-list (GHSA-mcfc-hp25-cjv7).
+    # An installed-but-not-enabled user plugin has its API mount skipped
+    # and its assets 404'd — which is the whole point of the gate. These
+    # fixtures exist to exercise the *serving* paths, so opt the example
+    # plugin in exactly as a real operator would with `hermes plugins
+    # enable example`.
+    from hermes_cli.config import load_config, save_config
+    _cfg = load_config()
+    _plugins_cfg = _cfg.setdefault("plugins", {})
+    _enabled = _plugins_cfg.get("enabled")
+    if not isinstance(_enabled, list):
+        _enabled = []
+    if "example" not in _enabled:
+        _enabled.append("example")
+    _plugins_cfg["enabled"] = _enabled
+    save_config(_cfg)
+
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.
     #   2. Restore the original list on teardown — otherwise leftover

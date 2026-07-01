@@ -324,18 +324,9 @@ class TestSessionOps:
         update = call.kwargs["update"]
         assert isinstance(update, AvailableCommandsUpdate)
         assert update.session_update == "available_commands_update"
-        assert [cmd.name for cmd in update.available_commands] == [
-            "help",
-            "model",
-            "tools",
-            "skill",
-            "context",
-            "reset",
-            "compact",
-            "steer",
-            "queue",
-            "version",
-        ]
+        cmd_names = [cmd.name for cmd in update.available_commands]
+        for expected in ("help", "model", "tools", "skill", "context", "reset", "compact", "steer", "queue", "version"):
+            assert expected in cmd_names, f"Missing command: {expected}"
         model_cmd = next(
             cmd for cmd in update.available_commands if cmd.name == "model"
         )

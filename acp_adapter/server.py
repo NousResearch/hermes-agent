@@ -1886,6 +1886,35 @@ class HermesACPAgent(acp.Agent):
     # ---- Slash commands (headless) -------------------------------------------
 
     @classmethod
+    def _skill_commands(cls) -> list[AvailableCommand]:
+        """Dynamically enumerate registered skills as ACP slash commands.
+
+        Matches OpenCode behaviour where each skill appears as its own
+        entry in the ``/`` command picker (instead of a single ``/skill``
+        umbrella command).
+        """
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            cmds = get_skill_commands()
+            return [
+                AvailableCommand(
+                    name=info.get("name", raw.lstrip("/")),
+                    description=info.get("description", ""),
+                    field_meta={
+                        "displayName": info.get("display_name")
+                        or info.get("name", raw.lstrip("/")),
+                        "toolTip": info.get("description", ""),
+                        "icon": "wand",
+                    },
+                )
+                for raw, info in cmds.items()
+                if isinstance(info, dict)
+            ]
+        except Exception:
+            return []
+
+    @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
         commands: list[AvailableCommand] = []
         for spec in cls._ADVERTISED_COMMANDS:
@@ -1904,6 +1933,8 @@ class HermesACPAgent(acp.Agent):
                     else None,
                 )
             )
+        # Dynamically append each registered skill as its own `/` command
+        commands.extend(cls._skill_commands())
         return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
@@ -1959,6 +1990,20 @@ class HermesACPAgent(acp.Agent):
         }.get(cmd)
 
         if handler is None:
+            # Check if the command matches a registered skill name —
+            # if so, load and run it directly (like OpenCode).
+            try:
+                from agent.skill_commands import get_skill_commands
+
+                skill_cmds = get_skill_commands()
+                # Keys are /skill-name; values include {"name": "skill-name"}
+                for raw_key, skill_info in skill_cmds.items():
+                    if isinstance(skill_info, dict):
+                        skill_name = skill_info.get("name", raw_key.lstrip("/"))
+                        if cmd == skill_name:
+                            return self._cmd_skill(f"load {skill_name}", state)
+            except Exception:
+                pass
             return None  # not a known command — let the LLM handle it
 
         try:
@@ -1972,6 +2017,26 @@ class HermesACPAgent(acp.Agent):
         for cmd, desc in self._SLASH_COMMANDS.items():
             lines.append(f"  /{cmd:10s}  {desc}")
         lines.append("")
+        # Append registered skills as discoverable commands
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            skill_cmds = get_skill_commands()
+            skill_lines = []
+            for raw_key, info in skill_cmds.items():
+                if isinstance(info, dict):
+                    name = info.get("name", raw_key.lstrip("/"))
+                    desc = info.get("description", "")
+                    if desc:
+                        skill_lines.append(f"  /{name:20s}  {desc}")
+                    else:
+                        skill_lines.append(f"  /{name}")
+            if skill_lines:
+                lines.append("Skills (type /<skill-name> to load):")
+                lines.extend(skill_lines)
+                lines.append("")
+        except Exception:
+            pass
         lines.append("Unrecognized /commands are sent to the model as normal messages.")
         return "\n".join(lines)
 

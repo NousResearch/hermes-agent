@@ -457,6 +457,22 @@ DANGEROUS_PATTERNS = [
     # Remote content executed via command substitution: eval/source/. $(curl ...)
     # or `wget ...`. Equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Decode-and-execute: encoded/transformed content piped to a shell. Without
+    # these, `echo <base64> | base64 -d | bash` silently runs `rm -rf /` or any
+    # other command because the raw text carries no dangerous keywords.
+    (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe decoded content to shell (possible command obfuscation)"),
+    # xxd reverse hex dump to shell (xxd uses -r for decode, not -d).
+    (r'\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe xxd-decoded content to shell (possible command obfuscation)"),
+    # Character transformation via tr piped to shell:
+    # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
+    (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe tr-transformed output to shell (possible command obfuscation)"),
+    # openssl decode piped to shell:
+    # `echo <base64> | openssl base64 -d | bash` decodes arbitrary commands.
+    (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+     "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),

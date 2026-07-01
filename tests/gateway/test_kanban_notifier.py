@@ -294,6 +294,55 @@ def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypat
     assert [ev.kind for ev in _unseen_terminal_events_for(tid, "chat-beta")] == ["completed"]
 
 
+def test_notifier_claims_platform_only_a_secondary_profile_owns(tmp_path, monkeypatch):
+    """A subscription owned by a secondary profile on a platform the DEFAULT
+    profile never connected must still be claimed and delivered.
+
+    Regression: the ``_collect()`` pre-filter built ``active_platforms``
+    solely from ``self.adapters`` (the default profile). A sub owned by
+    profile "beta" on "discord", where beta genuinely has a live discord
+    adapter but the default profile has no discord adapter at all, was
+    dropped by that pre-filter (``platform not in active_platforms``)
+    before ``claim_unseen_events_for_sub`` ever ran — unlike the
+    disconnected-adapter path, an unclaimed event is never rewound, so this
+    was a permanent, silent notification loss, not a retryable one. This
+    directly contradicts the feature's own purpose (routing notifications
+    via the owning profile), and is the same cross-profile-adapter-lookup
+    class the delivery-side chokepoint in
+    ``test_notifier_owning_profile_adapter_no_default_fallback`` already
+    guards — just one gate earlier.
+    """
+    db_path = tmp_path / "secondary-only-platform.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="owned by beta on discord", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="chat-beta",
+            notifier_profile="beta",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    beta_adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    # Default profile has NO discord adapter at all.
+    runner.adapters = {Platform.TELEGRAM: RecordingAdapter()}
+    # Secondary profile "beta" has a live discord adapter.
+    runner._profile_adapters = {"beta": {Platform.DISCORD: beta_adapter}}
+    runner._kanban_sub_fail_counts = {}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(beta_adapter.sent) == 1, (
+        f"beta's discord adapter should have received the notification; got {beta_adapter.sent!r}"
+    )
+
+
 def _unseen_terminal_events_for(tid, chat_id):
     conn = kb.connect()
     try:

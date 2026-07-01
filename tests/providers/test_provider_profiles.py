@@ -97,6 +97,180 @@ class TestWandbProfile:
             assert eb == {}
             assert tl == {}
 
+    def test_no_model_defaults_to_glm_dialect(self):
+        """Unset model falls back to the GLM dialect (this profile's
+        fallback_models entry and Hermes' bundled config.yaml default)."""
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"}, model=None
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "high"
+
+    def test_glm_5_1_uses_same_dialect_as_5_2(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="zai-org/GLM-5.1",
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "high"
+
+
+class TestWandbDeepSeekDialect:
+    """DeepSeek reasoning family (V3.1, V4-*) — distinct toggle key from GLM.
+
+    Confirmed live: chat_template_kwargs.thinking (not enable_thinking) is
+    the only key that reliably turns reasoning on for this family; no
+    granular effort is observed so reasoning_effort is never emitted.
+    """
+
+    def test_disabled_sends_thinking_false(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="deepseek-ai/DeepSeek-V3.1",
+        )
+        assert eb == {"chat_template_kwargs": {"thinking": False}}
+        assert tl == {}
+
+    def test_enabled_sends_thinking_true_no_effort(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek-ai/DeepSeek-V3.1",
+        )
+        assert eb == {"chat_template_kwargs": {"thinking": True}}
+        assert tl == {}
+
+    def test_v4_flash_and_pro_use_same_dialect(self):
+        p = get_provider_profile("wandb")
+        for model in ("deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro"):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True}, model=model
+            )
+            assert eb == {"chat_template_kwargs": {"thinking": True}}, model
+            assert tl == {}, model
+
+    def test_none_effort_disables(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"effort": "none"},
+            model="deepseek-ai/DeepSeek-V3.1",
+        )
+        assert eb == {"chat_template_kwargs": {"thinking": False}}
+
+
+class TestWandbGranularToggleDialect:
+    """Qwen3.5/3.6, Gemma-4, Nemotron-3 — enable_thinking + granular effort.
+
+    Unlike GLM, these models honour low/medium/high distinctly (confirmed:
+    distinct reasoning-token counts per level on Qwen3.6-35B-A3B).
+    """
+
+    def test_disabled_sends_enable_thinking_false(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="Qwen/Qwen3.6-35B-A3B",
+        )
+        assert eb == {"chat_template_kwargs": {"enable_thinking": False}}
+        assert tl == {}
+
+    def test_medium_passes_through_verbatim(self):
+        """Unlike GLM (which collapses medium->high), this family honours
+        medium as its own distinct level."""
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="Qwen/Qwen3.6-35B-A3B",
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "medium"
+
+    def test_xhigh_maps_to_max(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            model="Qwen/Qwen3.6-27B",
+        )
+        assert tl["reasoning_effort"] == "max"
+
+    def test_gemma_and_nemotron_use_same_dialect(self):
+        p = get_provider_profile("wandb")
+        for model in (
+            "google/gemma-4-31B-it",
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+        ):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "low"}, model=model
+            )
+            assert eb == {}, model
+            assert tl["reasoning_effort"] == "low", model
+
+
+class TestWandbAlwaysOnDialect:
+    """gpt-oss, MiniMax-M2.5, Kimi-K2.x, Qwen3-235B-Thinking — cannot be
+    disabled (W&B docs: "Always on"), but effort still modulates depth
+    (confirmed: gpt-oss-20b reasoning_len 127 default vs 20 at effort=low).
+    """
+
+    def test_disable_request_is_a_noop(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="openai/gpt-oss-20b",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_effort_still_passes_through(self):
+        p = get_provider_profile("wandb")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model="openai/gpt-oss-20b",
+        )
+        assert eb == {}
+        assert tl["reasoning_effort"] == "low"
+
+    def test_kimi_and_minimax_and_thinking_qwen_share_dialect(self):
+        p = get_provider_profile("wandb")
+        for model in (
+            "moonshotai/Kimi-K2.5",
+            "moonshotai/Kimi-K2.6",
+            "moonshotai/Kimi-K2.7-Code",
+            "MiniMaxAI/MiniMax-M2.5",
+            "Qwen/Qwen3-235B-A22B-Thinking-2507",
+            "openai/gpt-oss-120b",
+        ):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"}, model=model
+            )
+            assert eb == {}, model
+            assert tl["reasoning_effort"] == "high", model
+
+
+class TestWandbNoReasoningDialect:
+    """Llama, Phi, non-thinking Qwen3-Instruct, IBM Granite, Mellum2 — no
+    reasoning support at all; every dispatch branch must no-op."""
+
+    def test_no_reasoning_models_are_noop(self):
+        p = get_provider_profile("wandb")
+        for model in (
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "meta-llama/Llama-3.1-8B-Instruct",
+            "microsoft/Phi-4-mini-instruct",
+            "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            "ibm-granite/granite-4.1-8b",
+            "JetBrains/Mellum2-12B-A2.5B-Instruct",
+        ):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"}, model=model
+            )
+            assert eb == {}, model
+            assert tl == {}, model
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):

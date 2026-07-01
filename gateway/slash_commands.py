@@ -2311,6 +2311,37 @@ class GatewaySlashCommandsMixin:
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
+    async def _handle_claude_code_command(self, event: MessageEvent) -> str:
+        """Handle /cc <repo> — launch Claude Code Remote Control in tmux."""
+        repo_query = event.get_command_args().strip()
+        if not repo_query:
+            return "Usage: /cc <repo-name-or-path>"
+
+        def _launch():
+            from gateway.claude_code_command import find_repo, launch_claude_code
+
+            repo_path, error = find_repo(repo_query, self.config)
+            if error or repo_path is None:
+                return None, error or "Repo not found."
+            try:
+                return launch_claude_code(repo_path, repo_query), None
+            except Exception as exc:
+                return None, str(exc)
+
+        result, error = await asyncio.to_thread(_launch)
+        if error or result is None:
+            return f"❌ Could not launch Claude Code: {error}"
+
+        return (
+            "✅ Claude Code Remote Control launched.\n"
+            f"Repo: `{result.repo_path}`\n"
+            f"Remote name: `{result.remote_name}`\n"
+            f"tmux: `{result.tmux_session}`\n\n"
+            "Open the Claude official app and connect to the remote-control "
+            "session. Server-side session command:\n"
+            f"`{result.command}`"
+        )
+
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 

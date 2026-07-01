@@ -101,6 +101,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
+    CommandDef("cc", "Launch a Claude Code Remote Control session for a repo", "Session",
+               gateway_only=True, args_hint="<repo-name-or-path>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("journey", "Open the learning journey timeline",
@@ -369,6 +371,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "agents",
         "approve",
         "background",
+        "cc",
         "commands",
         "deny",
         "help",
@@ -1163,7 +1166,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - cc: starts a host-side Claude Code tmux session; reached via /hermes cc on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "cc"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

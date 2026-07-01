@@ -2779,6 +2779,20 @@ DEFAULT_CONFIG = {
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
         },
+
+        # /cc <repo> launches a detached Claude Code Remote Control tmux session
+        # with --dangerously-skip-permissions. These are the roots searched when
+        # the user passes a repo name instead of an absolute path.
+        "claude_code": {
+            "workspace_roots": [
+                "~/work",
+                "~/worktrees",
+                "~/projects",
+                "~/repos",
+                "~/src",
+                "~/.hermes/hermes-agent",
+            ],
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

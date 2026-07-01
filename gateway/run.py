@@ -8581,6 +8581,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /cc launches an external Claude Code tmux session and must not
+            # interrupt or queue the active Hermes run.
+            if _cmd_def_inner and _cmd_def_inner.name == "cc":
+                return await self._handle_claude_code_command(event)
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -9096,6 +9101,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "cc":
+            return await self._handle_claude_code_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.

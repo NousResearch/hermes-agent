@@ -77,26 +77,28 @@ def normalize_url_for_request(url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, path, query, fragment))
 
 
+# Query parameter names that are unambiguously credential-bearing. Kept
+# deliberately narrow: bare English words that double as normal page facets
+# (``code`` on promo/challenge pages, ``key``/``auth``/``session``/``sig`` as
+# search or routing params) are intentionally EXCLUDED to avoid blocking
+# ordinary browsing. Prefix-based token redaction (``is_safe_url``) still
+# catches recognizable vendor key shapes; this set is the belt-and-suspenders
+# for opaque secrets that carry an explicit credential-named parameter.
 _SENSITIVE_QUERY_PARAM_NAMES = frozenset({
     "access_token",
     "api_key",
     "apikey",
-    "auth",
     "auth_token",
     "authorization",
     "awsaccesskeyid",
     "client_secret",
-    "code",
     "credential",
     "credentials",
-    "key",
     "jwt",
     "password",
     "passwd",
     "secret",
-    "session",
     "session_id",
-    "sig",
     "signature",
     "token",
     "x_amz_security_token",

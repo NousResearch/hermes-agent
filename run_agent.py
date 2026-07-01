@@ -245,6 +245,21 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
 
 _MAX_TOOL_WORKERS = 8
 
+# Intrinsic marker stamped on a message dict once it has been written to the
+# SQLite session store.  Used by ``_flush_messages_to_session_db`` to decide
+# what is already durable.  An object-identity (``id(msg)``) dedup set cannot be
+# trusted across turns: once a flushed message dict is dropped from the live
+# list (e.g. by scaffolding rewind or in-place compaction) and garbage-
+# collected, CPython is free to hand its address to a brand-new assistant/tool
+# message, whose ``id()`` then collides with the stale entry and the real turn
+# is silently never persisted.  A marker bound to the dict itself cannot be
+# aliased that way.  The ``_`` prefix is mandatory: the wire sanitizers
+# (agent/transports/chat_completions.py, agent/chat_completion_helpers.py) strip
+# every top-level ``_``-prefixed key before the request leaves the process, so
+# this never reaches a strict OpenAI-compatible gateway.
+_DB_PERSISTED_MARKER = "_db_persisted"
+
+
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
@@ -1714,19 +1729,30 @@ class AIAgent:
             # larger than len(messages); the slice is then empty and delivered
             # assistant responses never reach state.db (#46053).
             #
-            # Track object identities instead. `messages` is a shallow copy of
-            # `conversation_history`, so history dicts are skipped by identity,
-            # and new dicts appended during this turn are written once even if
-            # repair compacts the list around them.
+            # Track persistence with an intrinsic per-message marker rather than
+            # id(msg). `messages` is a shallow copy of `conversation_history`, so
+            # history dicts are skipped by identity, and new dicts appended
+            # during this turn are written once even if repair compacts the list
+            # around them. Unlike an id()-keyed set, a marker bound to the dict
+            # cannot be aliased onto a freed-then-reused address, so a real turn
+            # can never be silently skipped (see _DB_PERSISTED_MARKER).
+            #
+            # `self._flushed_db_message_ids` is still honoured as a *one-shot*
+            # seed: external callers (gateway shutdown, tests) populate it with
+            # {id(m) for m in already_persisted} immediately before the flush,
+            # while those objects are alive — so the ids are valid at that
+            # instant. We translate the seed into durable markers and then clear
+            # the set, so stale ids can never accumulate across turns and alias a
+            # future message.
             current_session_id = getattr(self, "session_id", None)
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
-                self._flushed_db_message_ids = set()
-                self._flushed_db_message_session_id = current_session_id
-            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
-            if not isinstance(flushed_ids, set):
-                flushed_ids = set()
-                self._flushed_db_message_ids = flushed_ids
+                seed_ids = set()
+            else:
+                seed_ids = getattr(self, "_flushed_db_message_ids", None)
+                if not isinstance(seed_ids, set):
+                    seed_ids = set()
+            self._flushed_db_message_session_id = current_session_id
             history_ids = {
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
@@ -1746,11 +1772,13 @@ class AIAgent:
                 # the synthetic pair buried mid-list, not just at the tail.
                 if _is_ephemeral_scaffolding(msg):
                     continue
-                msg_id = id(msg)
-                if msg_id in flushed_ids:
+                if msg.get(_DB_PERSISTED_MARKER):
                     continue
-                if msg_id in history_ids:
-                    flushed_ids.add(msg_id)
+                # Already-durable messages: either carried over from the loaded
+                # history copy, or seeded by a caller. Stamp them so future
+                # flushes skip them without consulting any id() set again.
+                if id(msg) in history_ids or id(msg) in seed_ids:
+                    msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -1791,7 +1819,11 @@ class AIAgent:
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=msg.get("timestamp"),
                 )
-                flushed_ids.add(msg_id)
+                msg[_DB_PERSISTED_MARKER] = True
+            # The intrinsic markers are now the sole source of truth. Reset the
+            # one-shot seed so no id() outlives this flush to alias a message
+            # allocated next turn at a recycled address.
+            self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

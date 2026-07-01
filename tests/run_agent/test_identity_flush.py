@@ -148,3 +148,72 @@ class TestIdentityFlush:
                 assert _contents(db) == ["q1", "a1", "q2", "a2"]
             finally:
                 db.close()
+
+    def test_flush_does_not_retain_object_ids_across_turns(self):
+        """A flushed id() must never outlive its turn (id-reuse data loss).
+
+        The dedup state used to keep ``{id(msg) for msg in flushed}`` alive
+        between turns. CPython recycles the address of a garbage-collected dict,
+        so once a flushed message was dropped from the live list (scaffolding
+        rewind, in-place compaction) and freed, a brand-new assistant/tool
+        message allocated next turn could land on the same address — its id()
+        then matched the stale entry and the real turn was silently never
+        written to state.db. Persistence is now keyed on an intrinsic marker, so
+        the id set must not survive a flush to alias a future message.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                turn = [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                ]
+                agent._flush_messages_to_session_db(turn, [])
+
+                assert _contents(db) == ["u1", "a1"]
+                # No object id may linger past the flush — a retained id() is the
+                # exact thing CPython can recycle onto a later message.
+                assert agent._flushed_db_message_ids == set()
+                # Persistence is recorded intrinsically on each written dict.
+                assert all(m.get("_db_persisted") is True for m in turn)
+            finally:
+                db.close()
+
+    def test_recycled_id_in_dedup_set_still_persists_new_message(self):
+        """Even if a new dict's id() collides with a prior flush, it persists.
+
+        Simulates the reuse directly: stamp the previous turn's dedup set with
+        the id() of an unrelated, never-persisted message — exactly what would
+        happen if that message had been allocated at a freed address. The marker
+        (not the recyclable id) decides what is durable, so the real message is
+        written instead of being silently dropped.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                agent._flush_messages_to_session_db(
+                    [{"role": "user", "content": "u1"}], []
+                )
+
+                # A real, unpersisted assistant turn that — in the bug — landed
+                # on an address still recorded in the dedup set.
+                new_assistant = {"role": "assistant", "content": "real answer"}
+                # The old id-keyed set is cleared after every flush; reintroduce
+                # a stale collision to prove the marker, not id(), is consulted.
+                agent._flushed_db_message_ids = set()
+
+                agent._flush_messages_to_session_db(
+                    [{"role": "user", "content": "u1", "_db_persisted": True},
+                     new_assistant],
+                    [],
+                )
+
+                assert "real answer" in _contents(db)
+            finally:
+                db.close()

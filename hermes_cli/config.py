@@ -1391,11 +1391,8 @@ DEFAULT_CONFIG = {
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # Set enabled: false as an escape hatch for strict providers that reject
-    # cache_control markers; cache_ttl must be "5m" or "1h" (Anthropic-supported
-    # tiers), other values are ignored.
+    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
-        "enabled": True,
         "cache_ttl": "5m",
     },
 

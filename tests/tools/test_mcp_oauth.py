@@ -250,7 +250,25 @@ class TestUtilities:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(os, "name", "posix")
+        # An interactive TTY is now a precondition for opening a browser
+        # (daemon/gateway contexts must never spawn tabs — see
+        # _can_open_browser). Simulate the interactive desktop case.
+        monkeypatch.setattr("tools.mcp_oauth._is_interactive", lambda: True)
         assert _can_open_browser() is True
+
+    def test_can_open_browser_false_without_tty(self, monkeypatch):
+        # Regression guard for the OAuth tab-flood failure mode: even on a
+        # macOS desktop with a display, a non-interactive process (launchd/
+        # systemd daemon, gateway service, piped stdin) must NOT open a
+        # browser — otherwise an OAuth reconnect loop can spawn unbounded
+        # login tabs and exhaust host memory.
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Darwin"})())
+        monkeypatch.setattr("tools.mcp_oauth._is_interactive", lambda: False)
+        assert _can_open_browser() is False
 
 
 class TestRedirectHandlerSshHint:

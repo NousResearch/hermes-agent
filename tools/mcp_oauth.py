@@ -174,6 +174,16 @@ def suppress_interactive_oauth():
 
 def _can_open_browser() -> bool:
     """Return True if opening a browser is likely to work."""
+    # No interactive user present (launchd/systemd daemon, gateway service,
+    # piped stdin) → nobody can complete a browser-based login, so opening a
+    # browser is not just useless but actively harmful: a background service
+    # stuck in an OAuth reconnect loop calls webbrowser.open() on every retry,
+    # with no throttle and no dedup. With no user to finish the login, this can
+    # spawn an unbounded number of browser tabs pointing at the same provider
+    # login page until the host runs out of memory. Gate the whole decision on
+    # having an interactive TTY first.
+    if not _is_interactive():
+        return False
     # Explicit SSH session → no local display
     if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
         return False

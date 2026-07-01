@@ -165,6 +165,55 @@ def check_setup_pi2_minimal(repo: Path, failures: FailureCollector) -> None:
             )
 
 
+def check_iot_optional_deps(repo: Path, failures: FailureCollector) -> None:
+    """Keep IoT extras useful but out of the Pi2/core dependency path."""
+    pyproject = repo / "pyproject.toml"
+    if not pyproject.exists():
+        return
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    deps = project.get("dependencies", []) or []
+    optional = project.get("optional-dependencies", {}) or {}
+    core_packages = {normalize_dep(dep) for dep in deps}
+    if "paho-mqtt" in core_packages:
+        failures.add("paho-mqtt must stay out of project.dependencies; MQTT should remain optional/lazy on Pi2")
+    mqtt_extra = {normalize_dep(dep) for dep in optional.get("mqtt", []) or []}
+    if "paho-mqtt" not in mqtt_extra:
+        failures.add("pyproject.toml should expose optional-dependencies.mqtt with paho-mqtt")
+
+    lazy_deps = repo / "tools" / "lazy_deps.py"
+    if lazy_deps.exists() and "tool.mqtt" not in lazy_deps.read_text(encoding="utf-8"):
+        failures.add("tools/lazy_deps.py should lazy-install paho-mqtt through the tool.mqtt feature")
+
+
+def check_pi2_context_templates(repo: Path, failures: FailureCollector) -> None:
+    """Guard the low-resource context-floor optimization from regressions."""
+    expected = {
+        "config.pi2-core.yaml": 2048,
+        "config.pi2-native.yaml": 8192,
+        "config.pi2-rag.yaml": 8192,
+    }
+    try:
+        import yaml  # type: ignore
+    except Exception as exc:  # pragma: no cover - CI/dev envs have PyYAML
+        failures.add(f"PyYAML is required to validate Pi2 config templates: {exc}")
+        return
+
+    for filename, expected_floor in expected.items():
+        path = repo / "templates" / filename
+        if not path.exists():
+            failures.add(f"{path.relative_to(repo)} is missing")
+            continue
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        agent_cfg = data.get("agent") or {}
+        actual = agent_cfg.get("minimum_tool_context_length")
+        if actual != expected_floor:
+            failures.add(
+                f"{path.relative_to(repo)} agent.minimum_tool_context_length should be "
+                f"{expected_floor}, got {actual!r}"
+            )
+
+
 def check_web_server(repo: Path, failures: FailureCollector) -> None:
     web_server = repo / "hermes_cli" / "web_server.py"
     if not web_server.exists():
@@ -198,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
     check_lazy_deps(repo, failures)
     check_setup_pi2(repo, failures)
     check_setup_pi2_minimal(repo, failures)
+    check_iot_optional_deps(repo, failures)
+    check_pi2_context_templates(repo, failures)
     check_web_server(repo, failures)
     failures.report()
     return failures.exit_code()

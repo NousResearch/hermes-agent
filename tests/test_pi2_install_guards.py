@@ -18,13 +18,14 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi==0.133.1", "uvicorn==0.41.0"]
+mqtt = ["paho-mqtt==2.1.0"]
 """.strip()
         + "\n",
         encoding="utf-8",
     )
     (root / "tools").mkdir()
     (root / "tools" / "lazy_deps.py").write_text(
-        'LAZY_DEPS = {"tool.dashboard": ("fastapi==0.133.1", "uvicorn==0.41.0")}\n',
+        'LAZY_DEPS = {"tool.dashboard": ("fastapi==0.133.1", "uvicorn==0.41.0"), "tool.mqtt": ("paho-mqtt==2.1.0",)}\n',
         encoding="utf-8",
     )
     (root / "hermes_cli").mkdir()
@@ -64,6 +65,17 @@ fi
         + "\n",
         encoding="utf-8",
     )
+    templates = root / "templates"
+    templates.mkdir()
+    for name, floor in {
+        "config.pi2-core.yaml": 2048,
+        "config.pi2-native.yaml": 8192,
+        "config.pi2-rag.yaml": 8192,
+    }.items():
+        (templates / name).write_text(
+            f"agent:\n  minimum_tool_context_length: {floor}\n",
+            encoding="utf-8",
+        )
 
 
 class Pi2InstallGuardTests(unittest.TestCase):

@@ -195,12 +195,23 @@ def _simulate_note_injection(
         and resume_entry is not None
         and getattr(resume_entry, "resume_pending", False)
     ):
+        sn_reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
+        sn_reason_phrase = (
+            "a gateway restart"
+            if sn_reason == "restart_timeout"
+            else "a gateway shutdown"
+            if sn_reason == "shutdown_timeout"
+            else "a gateway interruption"
+        )
         message = (
-            "[System note: The previous turn in this session was "
-            "interrupted by a gateway restart. Review the conversation "
-            "history above, finish any unfinished work, and summarize "
-            "what was accomplished, then wait for the user's next "
-            "message.]"
+            f"[System note: The previous turn was interrupted by "
+            f"{sn_reason_phrase}; the gateway is now back online. "
+            f"Any restart/shutdown command in the history has already "
+            f"run — do NOT re-execute or verify it. Report to the user "
+            f"that the session was restored successfully and ask what "
+            f"they would like to do next. Do NOT re-execute old tool "
+            f"calls — skip any unfinished work from the conversation "
+            f"history.]"
         )
     return message
 

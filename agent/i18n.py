@@ -51,10 +51,41 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 
+_MUTABLE_CATEGORIES = frozenset({"progress", "lifecycle", "info"})
+# Only notification messages whose callers treat an empty string as "do not
+# send" belong here. Errors, approvals and command replies remain visible.
+GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
+    "gateway.long_running": "progress",
+    "gateway.no_activity_warning": "progress",
+    "gateway.subagent_working": "progress",
+    "gateway.queued_next_turn": "progress",
+    "gateway.interrupting_task": "progress",
+    "gateway.steered_into_run": "progress",
+    "gateway.restart_success": "lifecycle",
+    "gateway.gateway_online": "lifecycle",
+    "gateway.shutdown_restarting": "lifecycle",
+    "gateway.shutdown_shutting_down": "lifecycle",
+    "gateway.codex_gpt55_autoraise_notice": "info",
+    "gateway.kanban_done": "info",
+    "gateway.kanban_blocked": "info",
+    "gateway.kanban_crashed": "info",
+    "gateway.kanban_gave_up": "info",
+    "gateway.kanban_timed_out": "info",
+    "gateway.compression_aux_unavailable": "info",
+    "gateway.compression_no_provider": "info",
+    "gateway.compress_aux_model_failed": "info",
+    "gateway.preflight_compression": "info",
+    "gateway.stale_connections_cleaned": "info",
+    "gateway.iteration_budget_exhausted": "info",
+    "gateway.thinking_prefill_retry": "info",
+}
+
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 _overrides_cache: dict[str, dict[str, str]] = {}
 _overrides_lock = threading.Lock()
+_suppress_cache: dict[str, frozenset[str]] = {}
+_suppress_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
@@ -194,6 +225,29 @@ def _gateway_overrides() -> dict[str, str]:
         return _overrides_cache.setdefault(profile_key, overrides)
 
 
+def _suppressed_categories() -> frozenset[str]:
+    """Return active-profile notification categories muted by configuration."""
+    profile_key = _profile_cache_key()
+    with _suppress_lock:
+        cached = _suppress_cache.get(profile_key)
+        if cached is not None:
+            return cached
+    raw = (_config_dict().get("gateway") or {}).get("system_messages") or {}
+    spec = raw.get("suppress") if isinstance(raw, dict) else None
+    values = [spec] if isinstance(spec, str) else spec if isinstance(spec, list) else []
+    result: set[str] = set()
+    for value in values:
+        if value == "all":
+            result.update(_MUTABLE_CATEGORIES)
+        elif value in _MUTABLE_CATEGORIES:
+            result.add(value)
+        elif value is not None:
+            logger.warning("Ignoring non-suppressible system-message category %r", value)
+    frozen = frozenset(result)
+    with _suppress_lock:
+        return _suppress_cache.setdefault(profile_key, frozen)
+
+
 class _MissingField(str):
     """A format placeholder that remains visible when an override omits data."""
 
@@ -317,6 +371,8 @@ def reset_language_cache() -> None:
         _catalog_cache.clear()
     with _overrides_lock:
         _overrides_cache.clear()
+    with _suppress_lock:
+        _suppress_cache.clear()
 
 
 def get_language() -> str:
@@ -337,6 +393,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     ``format_kwargs`` are applied with ``str.format``. Falls back to English,
     then to the bare key; a format failure returns the unformatted string.
     """
+    category = GATEWAY_MESSAGE_CATEGORIES.get(key)
+    if category in _suppressed_categories():
+        return ""
     target = _normalize_lang(lang) if lang else get_language()
     value = _gateway_overrides().get(key) if key.startswith("gateway.") else None
     if value is None:
@@ -352,6 +411,6 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 
 
 __all__ = [
-    "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language",
+    "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "GATEWAY_MESSAGE_CATEGORIES", "t", "get_language",
     "localize_gateway_message", "reset_language_cache", "agent_display_name",
 ]

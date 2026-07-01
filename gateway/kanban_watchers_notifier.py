@@ -565,14 +565,15 @@ class _KanbanNotification:
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
-        _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        # SendResult(success=False) without an exception is a FAILED delivery
-        # (else the event is lost); None / non-SendResult keeps the
-        # "no exception == delivered" contract.
-        if getattr(_send_res, "success", True) is False:
-            raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
-        logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                     ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
+        if msg and msg.strip():
+            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+            # SendResult(success=False) without an exception is a FAILED delivery
+            # (else the event is lost); None / non-SendResult keeps the
+            # "no exception == delivered" contract.
+            if getattr(_send_res, "success", True) is False:
+                raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
+            logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                         ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
         # Upload artifact paths from the handoff payload / legacy result as
         # native files. Both handoff kinds stage files for exactly this: a
         # review-bound card's files exist precisely so the human sees them at

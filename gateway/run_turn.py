@@ -3928,17 +3928,25 @@ class GatewayTurnMixin:
             _heartbeat_text = (
                 disp._generic_status_phrase("status")
                 if _long_running_mode == "generic"
-                else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                else t(
+                    "gateway.long_running",
+                    minutes=_elapsed_mins,
+                    status_detail=_status_detail,
+                )
             )
+            # The generic display phrase is not itself catalogued; use the
+            # category-owned key as the suppression gate for both variants.
+            if not t("gateway.long_running", minutes=_elapsed_mins, status_detail=_status_detail).strip():
+                continue
             try:
                 _notify_res = None
-                if _heartbeat_msg_id:
+                if _heartbeat_msg_id and _heartbeat_text.strip():
                     try:
                         _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
                     except Exception as _ee:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
-                if not (_notify_res and getattr(_notify_res, "success", False)):
+                if _heartbeat_text.strip() and not (_notify_res and getattr(_notify_res, "success", False)):
                     # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
                     # a fresh "Working" bubble after it reads as a contradiction (#10990).
                     if not self._should_emit_long_running_notification(

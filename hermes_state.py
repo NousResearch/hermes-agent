@@ -124,6 +124,11 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 17
 
+# Cap on user-controlled FTS5 query input before regex/sanitizer processing.
+# Search queries do not need to be arbitrarily large, and bounding them keeps
+# sanitizer/runtime behavior predictable under adversarial input.
+MAX_FTS5_QUERY_CHARS = 2_048
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -3906,15 +3911,36 @@ class SessionDB:
           matches them as exact phrases instead of splitting on the
           hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
+        # Cap user-controlled FTS input before any regex processing. Search
+        # queries do not need to be arbitrarily large, and bounding them keeps
+        # sanitizer/runtime behavior predictable under adversarial input.
+        query = query[:MAX_FTS5_QUERY_CHARS]
+
         # Step 1: Extract balanced double-quoted phrases and protect them
-        # from further processing via numbered placeholders.
+        # from further processing via numbered placeholders. Do this with a
+        # single linear scan rather than a regex so pathological quote runs
+        # cannot induce backtracking.
         _quoted_parts: list = []
+        pieces: list[str] = []
+        i = 0
+        while i < len(query):
+            ch = query[i]
+            if ch != '"':
+                pieces.append(ch)
+                i += 1
+                continue
+            end = query.find('"', i + 1)
+            if end == -1:
+                # Unmatched quote: replace with whitespace like the old
+                # sanitizer's special-char stripping step.
+                pieces.append(" ")
+                i += 1
+                continue
+            _quoted_parts.append(query[i:end + 1])
+            pieces.append(f"\x00Q{len(_quoted_parts) - 1}\x00")
+            i = end + 1
 
-        def _preserve_quoted(m: re.Match) -> str:
-            _quoted_parts.append(m.group(0))
-            return f"\x00Q{len(_quoted_parts) - 1}\x00"
-
-        sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+        sanitized = "".join(pieces)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters.  ``:`` is
         # FTS5's column-filter operator (``col:term``); since the FTS table has a

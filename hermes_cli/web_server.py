@@ -7638,6 +7638,14 @@ def _minimax_poller(session_id: str) -> None:
             sess["error_message"] = str(e)
 
 
+def _coerce_codex_device_poll_interval(value: Any) -> int:
+    try:
+        interval = int(value)
+    except (TypeError, ValueError, OverflowError):
+        interval = 5
+    return max(3, interval)
+
+
 def _codex_full_login_worker(session_id: str) -> None:
     """Run the complete OpenAI Codex device-code flow.
 
@@ -7674,7 +7682,9 @@ def _codex_full_login_worker(session_id: str) -> None:
         device_data = resp.json()
         user_code = device_data.get("user_code", "")
         device_auth_id = device_data.get("device_auth_id", "")
-        poll_interval = max(3, int(device_data.get("interval", "5")))
+        poll_interval = _coerce_codex_device_poll_interval(
+            device_data.get("interval")
+        )
         if not user_code or not device_auth_id:
             raise RuntimeError("device-code response missing user_code or device_auth_id")
         verification_url = f"{issuer}/codex/device"

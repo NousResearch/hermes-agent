@@ -14,6 +14,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # merge_group: the merge queue creates a temporary batched branch and fires
+  # this event; the required checks must run on it or the queue wedges forever.
+  # On merge_group the detect-changes classifier fails open (EVENT_NAME !=
+  # pull_request -> empty diff -> every lane true), so the FULL matrix runs on
+  # the batched candidate — the queue never merges narrowed/untested code.
+  merge_group:
 
 permissions:
   contents: read

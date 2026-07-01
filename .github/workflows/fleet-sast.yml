@@ -6,6 +6,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # merge_group: required by the merge queue — the batched candidate must get a
+  # sast result or the queue wedges. (semgrep full-tree at --severity=ERROR.)
+  merge_group:
 
 permissions:
   contents: read

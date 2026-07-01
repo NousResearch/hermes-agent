@@ -27,7 +27,11 @@ concurrency:
 jobs:
   lint-diff:
     name: ruff + ty diff
-    if: inputs.event_name == 'pull_request'
+    # Runs on pull_request AND merge_group. This is a REQUIRED check, so on the
+    # merge queue's batched branch it must actually run (not skip) or the queue
+    # wedges on a pending required context. The advisory diff is exit-zero
+    # always; the base-ref else-branch (HEAD~1) below covers the merge_group case.
+    if: inputs.event_name == 'pull_request' || inputs.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

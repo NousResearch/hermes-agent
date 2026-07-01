@@ -321,6 +321,163 @@ def test_reply_missing_required_fields():
 
 
 # ---------------------------------------------------------------------------
+# Discord thread wiring (gap #1)
+# ---------------------------------------------------------------------------
+
+
+def test_thread_context_threaded_into_spawn(monkeypatch):
+    """When a live Discord turn resolves a thread context, the handler must set
+    ``parent_chat_id`` on the SpawnRequest and pass ``thread_creator`` to
+    spawn_session — so spawn.py step 6 creates the project thread."""
+    import session_orchestration.spawn_tool as st
+
+    sentinel_creator = lambda pcid, name: "thread-123"  # noqa: E731
+
+    monkeypatch.setattr(
+        st, "_resolve_discord_thread_context",
+        lambda: ("channel-999", sentinel_creator),
+    )
+
+    captured = {}
+
+    def mock_spawn(request: SpawnRequest, **kw) -> SpawnResult:
+        captured["request"] = request
+        captured["kw"] = kw
+        return _make_fake_spawn_result(thread_id="thread-123")
+
+    registry = _make_fake_registry(_make_resolved_repo())
+
+    reply = st.spawn_tool_handler(
+        {"repo": "myrepo", "prompt": "do stuff"},
+        _repo_registry=registry,
+        _spawn_fn=mock_spawn,
+    )
+
+    assert captured["request"].parent_chat_id == "channel-999", (
+        "resolved parent chat id must be set on the SpawnRequest"
+    )
+    assert captured["kw"].get("thread_creator") is sentinel_creator, (
+        "resolved thread_creator must be forwarded to spawn_session"
+    )
+    # The reply should surface the created thread link.
+    assert "thread-123" in reply
+
+
+def test_thread_context_absent_spawns_threadless(monkeypatch):
+    """Off Discord / no live gateway, the resolver returns (None, None); the
+    handler must still spawn, with parent_chat_id=None and thread_creator=None
+    (prior behavior — never block a spawn on thread wiring)."""
+    import session_orchestration.spawn_tool as st
+
+    monkeypatch.setattr(st, "_resolve_discord_thread_context", lambda: (None, None))
+
+    captured = {}
+
+    def mock_spawn(request: SpawnRequest, **kw) -> SpawnResult:
+        captured["request"] = request
+        captured["kw"] = kw
+        return _make_fake_spawn_result(thread_id=None)
+
+    registry = _make_fake_registry(_make_resolved_repo())
+
+    reply = st.spawn_tool_handler(
+        {"repo": "myrepo", "prompt": "do stuff"},
+        _repo_registry=registry,
+        _spawn_fn=mock_spawn,
+    )
+
+    assert captured["request"].parent_chat_id is None
+    assert captured["kw"].get("thread_creator") is None
+    assert "No project thread" in reply
+
+
+def test_resolver_is_discord_gated(monkeypatch):
+    """_resolve_discord_thread_context must short-circuit to (None, None) for a
+    non-Discord platform without touching the gateway runner."""
+    import session_orchestration.spawn_tool as st
+    from gateway import session_context as sc
+
+    monkeypatch.setattr(
+        sc, "get_session_env",
+        lambda name, default="": "telegram" if name == "HERMES_SESSION_PLATFORM" else default,
+    )
+    # If gating fails, this would blow up rather than return cleanly.
+    assert st._resolve_discord_thread_context() == (None, None)
+
+
+def test_resolver_adopts_existing_thread(monkeypatch):
+    """When the Discord turn is already in a thread (the Hermès window), the
+    resolver must ADOPT that thread — return it as the target and a no-op
+    creator that yields the same id — without creating a new thread or needing
+    the live gateway/adapter."""
+    import session_orchestration.spawn_tool as st
+    from gateway import session_context as sc
+
+    def fake_env(name, default=""):
+        return {
+            "HERMES_SESSION_PLATFORM": "discord",
+            "HERMES_SESSION_CHAT_ID": "1521983360040304871",
+            "HERMES_SESSION_THREAD_ID": "1521983360040304871",
+        }.get(name, default)
+
+    monkeypatch.setattr(sc, "get_session_env", fake_env)
+    # Guard: if the adopt path wrongly fell through to creation it would call
+    # _gateway_runner_ref; make that explode so the test fails loudly instead.
+    import gateway.run as gr
+    monkeypatch.setattr(
+        gr, "_gateway_runner_ref",
+        lambda: (_ for _ in ()).throw(AssertionError("must not reach create path")),
+    )
+
+    target, creator = st._resolve_discord_thread_context()
+    assert target == "1521983360040304871", "must adopt the window thread as target"
+    assert creator("ignored-parent", "ignored-name") == "1521983360040304871", (
+        "adopt creator must return the existing thread id, not create a new one"
+    )
+
+
+def test_discord_user_id_captured_onto_request(monkeypatch):
+    """The handler must read HERMES_SESSION_USER_ID (Discord turn) and set it as
+    discord_user_id on the SpawnRequest, so the row can @-mention the user."""
+    import session_orchestration.spawn_tool as st
+
+    monkeypatch.setattr(st, "_resolve_discord_thread_context", lambda: (None, None))
+    monkeypatch.setattr(st, "_resolve_discord_user_id", lambda: "555000111")
+
+    captured = {}
+
+    def mock_spawn(request: SpawnRequest, **kw) -> SpawnResult:
+        captured["request"] = request
+        return _make_fake_spawn_result()
+
+    registry = _make_fake_registry(_make_resolved_repo())
+
+    st.spawn_tool_handler(
+        {"repo": "myrepo", "prompt": "do stuff"},
+        _repo_registry=registry,
+        _spawn_fn=mock_spawn,
+    )
+
+    assert captured["request"].discord_user_id == "555000111"
+
+
+def test_user_id_resolver_is_discord_gated(monkeypatch):
+    """_resolve_discord_user_id must return None off Discord even if a user id
+    is present in the session context."""
+    import session_orchestration.spawn_tool as st
+    from gateway import session_context as sc
+
+    def fake_env(name, default=""):
+        return {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_USER_ID": "999",
+        }.get(name, default)
+
+    monkeypatch.setattr(sc, "get_session_env", fake_env)
+    assert st._resolve_discord_user_id() is None
+
+
+# ---------------------------------------------------------------------------
 # Tool registration smoke-test
 # ---------------------------------------------------------------------------
 

@@ -174,6 +174,31 @@ class TestPushTurnChange:
             )
         ]
 
+    def test_waiting_user_notice_at_mentions_requesting_user(self):
+        """When the row carries discord_user_id, the thread notice must lead
+        with an <@uid> mention so the user is actually pinged."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-mention", thread_id="thread-333")
+        row["discord_user_id"] = "555000111"
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            result = push_turn_change(
+                "t-mention",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-001",
+            )
+
+        assert result is True
+        assert tracker.calls == [
+            (
+                "thread-333",
+                "<@555000111> 🔔 **[claude] t-mention** needs your input | my-project\n"
+                "State: `RUNNING` → `WAITING_USER`",
+            )
+        ], "notice must be prefixed with the user mention"
+
     def test_transition_to_paused_handoff_posts_once_to_thread(self):
         tracker = _FakePostTracker()
         row = _make_row(task_id="t-002", thread_id="thread-222")

@@ -283,6 +283,10 @@ def spawn_session(
         workdir=request.workdir,
         state="RUNNING",
         last_output_ts=handle.launch_ts.timestamp(),
+        # Persist the requesting user so attention notices can @-mention them.
+        # Previously dropped here even though SpawnRequest carried it, leaving
+        # every row's discord_user_id empty and the WAITING_USER ping silent.
+        discord_user_id=request.discord_user_id,
     )
     logger.info("spawn: registry row created task_id=%s repo=%s", task_id, repo)
 

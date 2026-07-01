@@ -278,6 +278,28 @@ def test_spawn_session_writes_registry_row_source_spawn(registry):
     assert row["tmux_session"] is not None
 
 
+def test_spawn_session_persists_discord_user_id(registry):
+    """spawn_session must write discord_user_id onto the row so attention
+    notices can @-mention the requesting user."""
+    adapter = _FakeAdapter()
+    relay = _FakeRelay()
+
+    request = SpawnRequest(
+        prompt="do the thing",
+        agent="omp",
+        workdir="/tmp/project",
+        discord_user_id="555000111",
+    )
+
+    result = spawn_session(request, adapter=adapter, registry=registry, relay=relay)
+
+    row = registry.get(result.task_id)
+    assert row is not None
+    assert row["discord_user_id"] == "555000111", (
+        "discord_user_id must be persisted on the spawned row"
+    )
+
+
 def test_spawn_session_registry_row_has_correct_task_id(registry):
     fixed_id = str(uuid.uuid4())
     adapter = _FakeAdapter(fixed_session_id=fixed_id)

@@ -501,8 +501,14 @@ def push_turn_change(
         icon = "⏸️"
         verb = "paused — handoff detected"
 
+    # @-mention the requesting user so the notice actually pings them. An
+    # @-mention in the (bot-created) task thread notifies the user AND adds
+    # them to the thread even if they were never subscribed. Without this the
+    # notice posts silently and the user has no signal to check the feed.
+    uid = row.get("discord_user_id")
+    mention = f"<@{uid}> " if uid else ""
     message = (
-        f"{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
+        f"{mention}{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
         f"State: `{old_state}` → `{new_state}`"
     )
 

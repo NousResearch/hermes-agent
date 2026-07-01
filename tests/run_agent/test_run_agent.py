@@ -2683,6 +2683,9 @@ class TestConcurrentToolExecution:
             def submit(self, *args, **kwargs):
                 raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 
+            def shutdown(self, *args, **kwargs):
+                pass
+
         tc1 = _mock_tool_call(name="web_search", arguments='{"q": "alpha"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"q": "beta"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2695,6 +2698,47 @@ class TestConcurrentToolExecution:
         assert messages[0]["tool_call_id"] == "c1"
         assert messages[1]["tool_call_id"] == "c2"
         assert all("Python interpreter is shutting down" in m["content"] for m in messages)
+
+    def test_concurrent_timeout_returns_finished_tools_without_hanging(self, agent, monkeypatch):
+        """A wedged worker must not freeze the whole concurrent tool batch."""
+        import threading
+        import time as _time
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        blocker = threading.Event()
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "fast"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "slow"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        flushed = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            if args.get("q") == "slow":
+                blocker.wait(5)
+                return "late"
+            return "fast-result"
+
+        def record_flush(flush_messages, conversation_history=None):
+            flushed.append([m.copy() for m in flush_messages if m.get("role") == "tool"])
+
+        agent._flush_messages_to_session_db = MagicMock(side_effect=record_flush)
+
+        start = _time.monotonic()
+        try:
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+        finally:
+            blocker.set()
+
+        assert _time.monotonic() - start < 1.0
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert "fast-result" in messages[0]["content"]
+        assert messages[1]["tool_call_id"] == "c2"
+        assert "timed out after" in messages[1]["content"]
+        assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
+        assert "fast-result" in flushed[0][-1]["content"]
+        assert "timed out after" in flushed[1][-1]["content"]
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""

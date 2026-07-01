@@ -165,6 +165,16 @@ except (ValueError, TypeError):
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_PUSH_EVENT_TYPES = frozenset(
+    {
+        "approval.request",
+        "clarify.request",
+        "message.complete",
+        "subagent.complete",
+        "background.complete",
+        "preview.restart.complete",
+    }
+)
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -999,6 +1009,28 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    _queue_push_notification(event, sid, payload or {})
+
+
+def _queue_push_notification(event: str, sid: str, payload: dict) -> None:
+    if event not in _PUSH_EVENT_TYPES:
+        return
+    session = _sessions.get(sid) or {}
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return
+    try:
+        from gateway.push_notifications import notify_event
+
+        notify_event(
+            event,
+            session_key=session_key,
+            live_session_id=sid,
+            payload=payload,
+            raw_config=_load_cfg(),
+        )
+    except Exception as exc:
+        logger.warning("Failed to queue push notification intent for %s: %s", event, exc)
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
@@ -9707,6 +9739,87 @@ def _(rid, params: dict) -> dict:
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"task_id": task_id})
+
+
+# ── Methods: push notifications ──────────────────────────────────────
+
+
+@method("push.register")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    try:
+        from gateway.push_notifications import PushRegistrationError, register_device
+
+        return _ok(
+            rid,
+            register_device(
+                params,
+                session_key=session.get("session_key") or "",
+                live_session_id=params.get("session_id") or "",
+                raw_config=_load_cfg(),
+            ),
+        )
+    except PushRegistrationError as exc:
+        return _err(rid, 4002, str(exc))
+    except Exception as exc:
+        return _err(rid, 5004, str(exc))
+
+
+@method("push.unregister")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    try:
+        from gateway.push_notifications import PushRegistrationError, unregister_device
+
+        return _ok(
+            rid,
+            unregister_device(
+                params.get("device_id") or "",
+                session_key=session.get("session_key") or "",
+                raw_config=_load_cfg(),
+            ),
+        )
+    except PushRegistrationError as exc:
+        return _err(rid, 4002, str(exc))
+    except Exception as exc:
+        return _err(rid, 5004, str(exc))
+
+
+@method("push.list")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    try:
+        from gateway.push_notifications import (
+            list_registrations,
+            load_push_config,
+            relay_configured,
+        )
+
+        cfg = load_push_config(_load_cfg())
+        return _ok(
+            rid,
+            {
+                "registrations": list_registrations(
+                    session_key=session.get("session_key") or "",
+                    raw_config=_load_cfg(),
+                ),
+                "relay": {
+                    "enabled": cfg.enabled,
+                    "configured": relay_configured(cfg),
+                    "url_configured": bool(cfg.relay_url),
+                    "token_env": cfg.relay_token_env,
+                    "token_configured": bool(cfg.relay_token),
+                },
+            },
+        )
+    except Exception as exc:
+        return _err(rid, 5004, str(exc))
 
 
 # ── Methods: respond ─────────────────────────────────────────────────

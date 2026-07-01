@@ -1391,6 +1391,26 @@ DEFAULT_CONFIG = {
         "auto_subscribe_on_create": True,
     },
 
+    # Generic push-notification intent relay used by mobile clients such as
+    # SeaClaw. Hermes stores device registrations and POSTs intent envelopes to
+    # a relay service that owns APNs credentials; APNs keys never live here.
+    "push_notifications": {
+        "enabled": False,
+        "relay_url": "",
+        "relay_token_env": "HERMES_PUSH_RELAY_TOKEN",
+        "registration_store": "push_devices.json",
+        "redact_body": True,
+        "timeout_seconds": 3,
+        "events": [
+            "approval.request",
+            "clarify.request",
+            "message.complete",
+            "subagent.complete",
+            "background.complete",
+            "preview.restart.complete",
+        ],
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -4169,6 +4189,14 @@ OPTIONAL_ENV_VARS = {
     "API_SERVER_KEY": {
         "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
         "prompt": "API server auth key",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "HERMES_PUSH_RELAY_TOKEN": {
+        "description": "Bearer token Hermes uses to authenticate notification intents with a configured push relay. The relay owns APNs credentials.",
+        "prompt": "Push relay bearer token",
         "url": None,
         "password": True,
         "category": "messaging",

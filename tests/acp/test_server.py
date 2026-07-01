@@ -1251,6 +1251,37 @@ class TestPrompt:
         assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
 
     @pytest.mark.asyncio
+    async def test_prompt_binds_interactive_mode_with_contextvar_not_env(self, agent, monkeypatch):
+        """ACP must use context-local interactive approval state."""
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+        from tools.approval import _is_interactive_cli
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, object] = {}
+
+        def mock_run(*args, **kwargs):
+            captured["env"] = os.environ.get("HERMES_INTERACTIVE")
+            captured["context_interactive"] = _is_interactive_cli()
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["env"] is None
+        assert captured["context_interactive"] is True
+        assert os.environ.get("HERMES_INTERACTIVE") is None
+        assert _is_interactive_cli() is False
+
+    @pytest.mark.asyncio
     async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
         """If ACP already streamed response chunks, final_response should not be sent again."""
         new_resp = await agent.new_session(cwd=".")

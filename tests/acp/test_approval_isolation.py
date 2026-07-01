@@ -13,6 +13,7 @@ Both fixed together by:
    threads don't collide.
 """
 
+import os
 import threading
 
 
@@ -193,19 +194,10 @@ class TestThreadLocalApprovalCallback:
 
 
 class TestAcpExecAskGate:
-    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
-    that tools.approval.check_all_command_guards takes the CLI-interactive
-    path (consults the registered callback via prompt_dangerous_approval)
-    instead of the non-interactive auto-approve shortcut.
-
-    (HERMES_EXEC_ASK takes the gateway-queue path which requires a
-    notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
-    which uses a direct callback shape.)"""
+    """GHSA-96vc-wcxf-jjff: ACP must route dangerous commands to callbacks."""
 
     def test_interactive_env_var_routes_to_callback(self, monkeypatch):
-        """When HERMES_INTERACTIVE is set and an approval callback is
-        registered, a dangerous command must route through the callback."""
-        # Clean env
+        """The legacy HERMES_INTERACTIVE env fallback still works."""
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -219,7 +211,6 @@ class TestAcpExecAskGate:
             called_with.append((command, description))
             return "once"
 
-        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called
         result = check_all_command_guards(
             "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
         )
@@ -229,7 +220,6 @@ class TestAcpExecAskGate:
             "path should fire without consulting the callback"
         )
 
-        # With HERMES_INTERACTIVE: callback IS called, approval flows through it
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         called_with.clear()
         result = check_all_command_guards(
@@ -237,7 +227,42 @@ class TestAcpExecAskGate:
         )
         assert called_with, (
             "with HERMES_INTERACTIVE the approval path should consult the "
-            "registered callback — this was the ACP bypass in "
-            "GHSA-96vc-wcxf-jjff"
+            "registered callback"
+        )
+        assert result["approved"] is True
+
+    def test_interactive_contextvar_routes_to_callback_without_env(self, monkeypatch):
+        """ACP should not need process-global HERMES_INTERACTIVE for approvals."""
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from tools.approval import (
+            check_all_command_guards,
+            reset_hermes_interactive_context,
+            set_hermes_interactive_context,
+        )
+
+        called_with = []
+
+        def fake_cb(command, description, *, allow_permanent=True):
+            called_with.append((command, description))
+            return "once"
+
+        token = set_hermes_interactive_context(True)
+        try:
+            result = check_all_command_guards(
+                "rm -rf /tmp/test-contextvar-approval",
+                "local",
+                approval_callback=fake_cb,
+            )
+        finally:
+            reset_hermes_interactive_context(token)
+
+        assert os.environ.get("HERMES_INTERACTIVE") is None
+        assert called_with, (
+            "context-local interactive approval should consult the registered "
+            "callback without mutating process-global HERMES_INTERACTIVE"
         )
         assert result["approved"] is True

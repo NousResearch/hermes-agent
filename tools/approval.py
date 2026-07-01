@@ -47,6 +47,10 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
 )
+_hermes_interactive_ctx: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "hermes_interactive_ctx",
+    default=None,
+)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -106,6 +110,30 @@ def reset_current_observability_context(
     turn_token, tool_token = tokens
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+def set_hermes_interactive_context(enabled: bool) -> contextvars.Token[bool | None]:
+    """Bind interactive approval mode to the current execution context.
+
+    ACP and gateway worker pools run concurrent turns in shared executor
+    threads. Use a ContextVar for this flag so one session cannot clear another
+    session's interactive approval state through process-global environment
+    mutation.
+    """
+    return _hermes_interactive_ctx.set(bool(enabled))
+
+
+def reset_hermes_interactive_context(token: contextvars.Token[bool | None]) -> None:
+    """Restore the previous context-local interactive approval mode."""
+    _hermes_interactive_ctx.reset(token)
+
+
+def _is_interactive_cli() -> bool:
+    """Return whether approval checks should use interactive CLI callbacks."""
+    interactive = _hermes_interactive_ctx.get()
+    if interactive is not None:
+        return bool(interactive)
+    return env_var_enabled("HERMES_INTERACTIVE")
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -1344,7 +1372,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1604,7 +1632,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 

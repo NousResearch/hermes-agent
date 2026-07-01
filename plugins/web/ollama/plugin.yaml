@@ -1,0 +1,7 @@
+name: web-ollama
+version: 1.0.0
+description: "Ollama Cloud web search + web fetch. Uses Ollama's official web_search and web_fetch APIs. Requires OLLAMA_API_KEY."
+author: agent
+kind: backend
+provides_web_providers:
+  - ollama

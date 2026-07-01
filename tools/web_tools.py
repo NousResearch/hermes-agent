@@ -144,7 +144,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "ollama"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -160,6 +160,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
+        ("ollama", _has_env("OLLAMA_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -235,6 +236,8 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "ollama":
+        return _has_env("OLLAMA_API_KEY")
     return False
 
 
@@ -281,6 +284,7 @@ def _web_requires_env() -> list[str]:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
+        "OLLAMA_API_KEY",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",

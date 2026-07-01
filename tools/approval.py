@@ -1704,7 +1704,33 @@ def check_all_command_guards(command: str, env_type: str,
                             ),
                         }
                 except ImportError:
-                    pass  # tirith not installed — allow
+                    # Tirith not installed. Honour security.tirith_fail_open:
+                    # the default (True) allows as before, but when an operator
+                    # has explicitly opted into fail-closed the command cannot
+                    # be silently allowed — and a cron session has no user to
+                    # approve it, so fail-closed means block (mirrors the
+                    # fail-closed synthesis in the main flow below; see #20733).
+                    _cron_fail_open = True  # safe default if config is unreadable
+                    try:
+                        from hermes_cli.config import load_config as _load_cfg
+                        _sec = (_load_cfg() or {}).get("security", {}) or {}
+                        if _sec.get("tirith_enabled", True):
+                            _cron_fail_open = _sec.get("tirith_fail_open", True)
+                    except Exception:
+                        pass
+                    if not _cron_fail_open:
+                        return {
+                            "approved": False,
+                            "message": (
+                                "BLOCKED: the Tirith security scanner could not be "
+                                "imported and security.tirith_fail_open is false, "
+                                "so this command cannot be silently allowed — and "
+                                "cron jobs run without a user present to approve it. "
+                                "Find an alternative approach, install tirith, or set "
+                                "approvals.cron_mode: approve in config.yaml."
+                            ),
+                        }
+                    # else: tirith_fail_open is True — allow as before
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---

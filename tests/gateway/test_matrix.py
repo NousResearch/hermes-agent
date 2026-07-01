@@ -106,7 +106,7 @@ def _make_fake_mautrix():
             self.crypto = None
             self._event_handlers = {}
 
-        def add_event_handler(self, event_type, handler):
+        def add_event_handler(self, event_type, handler, **kwargs):
             self._event_handlers.setdefault(event_type, []).append(handler)
 
         def add_dispatcher(self, dispatcher_type):
@@ -2727,13 +2727,20 @@ class TestMatrixEncryptedEventHandler:
                     with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
                         assert await adapter.connect() is True
 
-        # Verify event handlers were registered.
-        # In mautrix the order is: add_event_handler(EventType, callback)
+        # Verify inbound event handlers were registered as sync-awaited
+        # callbacks. mautrix only returns waited handler tasks from
+        # handle_sync(), so background-only handlers leave _dispatch_sync()
+        # without a completion point for Hermes' Matrix intake.
         handler_calls = mock_client.add_event_handler.call_args_list
-        registered_types = [call.args[0] for call in handler_calls]
+        waited_types = {
+            str(call.args[0])
+            for call in handler_calls
+            if call.kwargs.get("wait_sync") is True
+        }
 
-        # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE
-        assert len(handler_calls) >= 3
+        assert "m.room.message" in waited_types
+        assert "m.reaction" in waited_types
+        assert "internal.invite" in waited_types
 
         await adapter.disconnect()
 

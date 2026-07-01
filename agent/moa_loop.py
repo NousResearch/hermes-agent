@@ -26,6 +26,27 @@ logger = logging.getLogger(__name__)
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
 
+
+class _RefAccounting:
+    """Per-reference token usage + estimated cost, carried as the third slot
+    of a reference-output tuple.
+
+    Kept as a tiny object (not a bare CanonicalUsage) because an advisor may
+    run on a different model/provider than the aggregator, so its cost MUST be
+    priced at its OWN model's rate — folding advisor tokens into the
+    aggregator's usage and pricing the sum at the aggregator's rate would
+    misprice every advisor. ``usage`` feeds accurate token counts;
+    ``cost_usd`` feeds accurate cost.
+    """
+
+    __slots__ = ("usage", "cost_usd", "cost_status", "cost_source")
+
+    def __init__(self, usage: Any, cost_usd: Any = None, cost_status: str | None = None, cost_source: str | None = None):
+        self.usage = usage
+        self.cost_usd = cost_usd
+        self.cost_status = cost_status
+        self.cost_source = cost_source
+
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
 # verbatim per reference per tool-loop step would blow the reference model's
@@ -125,8 +146,8 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
-) -> tuple[str, str]:
-    """Call one reference model and return ``(label, text)``.
+) -> tuple[str, str, Any]:
+    """Call one reference model and return ``(label, text, usage)``.
 
     The slot is resolved to its provider's real runtime (via ``_slot_runtime``)
     and called through the same ``call_llm`` request-building path any model
@@ -137,12 +158,23 @@ def _run_reference(
     real maximum); ``temperature`` is only the user's configured preset value,
     which call_llm may still override per model.
 
+    The reference's token usage is normalized with the slot's OWN resolved
+    provider/api_mode (advisors may run on a different provider than the
+    aggregator, with different usage wire shapes) and returned as a
+    ``CanonicalUsage`` so the caller can fold advisor spend into session
+    accounting. Without this, the entire reference fan-out — often the bulk of
+    a MoA turn's token spend — is invisible to cost tracking, which only ever
+    saw the aggregator's usage.
+
     Never raises: a failed reference becomes a labelled note so the aggregator
     can still act with partial context. Designed to run inside a thread pool —
     ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
     """
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
+
     label = _slot_label(slot)
+    runtime = _slot_runtime(slot)
     try:
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
@@ -154,12 +186,44 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            **_slot_runtime(slot),
+            **runtime,
         )
-        return label, _extract_text(response) or "(empty response)"
+        usage = CanonicalUsage()
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage:
+            try:
+                usage = normalize_usage(
+                    raw_usage,
+                    provider=runtime.get("provider"),
+                    api_mode=runtime.get("api_mode"),
+                )
+            except Exception:  # pragma: no cover - defensive
+                usage = CanonicalUsage()
+        # Price this advisor at ITS OWN model/provider rate (with correct
+        # cache-read/cache-write split), not the aggregator's. This is why
+        # advisor cost is summed as dollars rather than by folding tokens into
+        # the aggregator's usage.
+        cost_usd = None
+        cost_status = None
+        cost_source = None
+        try:
+            cost = estimate_usage_cost(
+                slot.get("model") or "",
+                usage,
+                provider=runtime.get("provider"),
+                base_url=runtime.get("base_url"),
+                api_key=runtime.get("api_key"),
+            )
+            cost_usd = cost.amount_usd
+            cost_status = cost.status
+            cost_source = cost.source
+        except Exception:  # pragma: no cover - defensive
+            pass
+        acct = _RefAccounting(usage, cost_usd, cost_status, cost_source)
+        return label, _extract_text(response) or "(empty response)", acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
-        return label, f"[failed: {exc}]"
+        return label, f"[failed: {exc}]", _RefAccounting(CanonicalUsage())
 
 
 def _run_references_parallel(
@@ -168,7 +232,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
     Like ``delegate_task``'s batch mode, every reference is dispatched at once
@@ -176,11 +240,16 @@ def _run_references_parallel(
     the aggregator. Output order matches ``reference_models`` so the
     ``Reference {idx}`` labelling stays stable. MoA presets that reference
     another MoA preset are skipped here (recursion guard) with a labelled note.
+
+    Each element is ``(label, text, usage)`` where usage is a
+    ``CanonicalUsage`` (zeroed for skipped/failed references).
     """
+    from agent.usage_pricing import CanonicalUsage
+
     if not reference_models:
         return []
 
-    results: list[tuple[str, str] | None] = [None] * len(reference_models)
+    results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
     futures = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -189,6 +258,7 @@ def _run_references_parallel(
                 results[idx] = (
                     _slot_label(slot),
                     "[skipped: MoA presets cannot recursively reference MoA]",
+                    _RefAccounting(CanonicalUsage()),
                 )
                 continue
             futures[
@@ -390,7 +460,7 @@ def aggregate_moa_context(
     sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
     here previously truncated long aggregator syntheses.
     """
-    reference_outputs: list[tuple[str, str]] = []
+    reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
     reference_outputs = _run_references_parallel(
         reference_models,
@@ -401,7 +471,7 @@ def aggregate_moa_context(
 
     joined = "\n\n".join(
         f"Reference {idx} — {label}:\n{text}"
-        for idx, (label, text) in enumerate(reference_outputs, start=1)
+        for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
     )
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
@@ -465,7 +535,33 @@ class MoAChatCompletions:
         # re-run, no re-emit). This gives "fire on every user/tool response"
         # for free, without re-firing on a pure no-op re-call.
         self._ref_cache_key: tuple | None = None
-        self._ref_cache_outputs: list[tuple[str, str]] = []
+        self._ref_cache_outputs: list[tuple[str, str, Any]] = []
+        # Token usage + estimated cost of the reference fan-out from the most
+        # recent cache-MISS create() call, awaiting consumption by session
+        # accounting. Set on every create() (zeroed on a cache HIT so per-turn
+        # advisor spend is counted exactly once). Consumed via
+        # ``consume_reference_usage``.
+        from agent.usage_pricing import CanonicalUsage
+
+        self._pending_reference_usage: Any = CanonicalUsage()
+        self._pending_reference_cost: Any = None
+
+    def consume_reference_usage(self) -> tuple[Any, Any]:
+        """Pop pending reference-fan-out usage + cost, resetting both to empty.
+
+        Returns ``(CanonicalUsage, cost_usd_or_None)`` for the most recent
+        ``create()`` and clears the pending values, so a subsequent read (e.g.
+        a streaming retry re-entering accounting) cannot double-count. Usage is
+        always a ``CanonicalUsage`` (zeroed if none); cost is a summed-dollars
+        float or ``None`` when no advisor could be priced.
+        """
+        from agent.usage_pricing import CanonicalUsage
+
+        usage = self._pending_reference_usage or CanonicalUsage()
+        cost = self._pending_reference_cost
+        self._pending_reference_usage = CanonicalUsage()
+        self._pending_reference_cost = None
+        return usage, cost
 
     def _emit(self, event: str, **kwargs: Any) -> None:
         cb = self.reference_callback
@@ -497,7 +593,9 @@ class MoAChatCompletions:
         if not preset.get("enabled", True):
             reference_models = []
 
-        reference_outputs: list[tuple[str, str]] = []
+        from agent.usage_pricing import CanonicalUsage
+
+        reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
 
         # Turn-scoped cache: only run + display references when the advisory
@@ -514,6 +612,12 @@ class MoAChatCompletions:
 
         if _refs_from_cache:
             reference_outputs = list(self._ref_cache_outputs)
+            # References already ran (and were accounted) earlier this turn;
+            # this create() is a repeat tool-iteration reusing the cached
+            # advice. Charging their tokens/cost again here would multiply
+            # advisor spend by the tool-iteration count, so pending is zero.
+            self._pending_reference_usage = CanonicalUsage()
+            self._pending_reference_cost = None
         else:
             reference_outputs = _run_references_parallel(
                 reference_models,
@@ -523,6 +627,24 @@ class MoAChatCompletions:
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
+            # Sum the advisor fan-out's token usage AND cost so the caller can
+            # fold advisor spend into session accounting exactly once per turn.
+            # Only the freshly run references (cache MISS) contribute; a cache
+            # HIT above zeroes this. Token counts sum directly (each already
+            # normalized per-advisor provider/api_mode); cost sums in dollars
+            # because each advisor was priced at its OWN model rate — advisors
+            # may be cheaper/pricier than the aggregator, so their tokens must
+            # NOT be repriced at the aggregator's rate.
+            _ref_usage = CanonicalUsage()
+            _ref_cost: Any = None
+            for _lbl, _txt, _acct in reference_outputs:
+                if isinstance(_acct, _RefAccounting):
+                    if isinstance(_acct.usage, CanonicalUsage):
+                        _ref_usage = _ref_usage + _acct.usage
+                    if _acct.cost_usd is not None:
+                        _ref_cost = (_ref_cost or 0) + _acct.cost_usd
+            self._pending_reference_usage = _ref_usage
+            self._pending_reference_cost = _ref_cost
 
             # Surface each reference model's answer to the display BEFORE the
             # aggregator acts — once per turn (only on the iteration that
@@ -531,7 +653,7 @@ class MoAChatCompletions:
             # visible rather than a silent pause. Best-effort: never blocks the
             # turn.
             _ref_count = len(reference_outputs)
-            for _idx, (_label, _text) in enumerate(reference_outputs, start=1):
+            for _idx, (_label, _text, _usage) in enumerate(reference_outputs, start=1):
                 self._emit(
                     "moa.reference",
                     index=_idx,
@@ -550,13 +672,13 @@ class MoAChatCompletions:
         if reference_outputs:
             joined = "\n\n".join(
                 f"Reference {idx} — {label}:\n{text}"
-                for idx, (label, text) in enumerate(reference_outputs, start=1)
+                for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
             )
             guidance = (
                 "[Mixture of Agents reference context]\n"
                 f"Preset: {self.preset_name}\n"
                 f"Aggregator/acting model: {_slot_label(aggregator)}\n"
-                f"References: {', '.join(label for label, _ in reference_outputs)}\n\n"
+                f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
                 "answer the user directly or call tools as needed.\n\n"
                 f"{joined}"
@@ -614,3 +736,11 @@ class MoAClient:
     def __init__(self, preset_name: str, reference_callback: Any = None):
         self.chat = type("_MoAChat", (), {})()
         self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+
+    def consume_reference_usage(self) -> Any:
+        """Pop the pending reference-fan-out usage from the completions facade.
+
+        Lets session accounting fold the MoA advisor tokens into the turn's
+        usage without reaching into ``.chat.completions`` internals.
+        """
+        return self.chat.completions.consume_reference_usage()

@@ -9980,6 +9980,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
 
         new_mcp = new_cfg.get("mcp_servers") or {}
+        # Expand ${VAR} templates before comparison so the watcher compares
+        # the same data representation as self._config_mcp_servers (which was
+        # initialised from the expanded config).  Without this, every
+        # save_config_value() triggers a false-positive MCP reload because the
+        # raw YAML template never matches the expanded value.
+        from hermes_cli.config import _expand_env_vars
+        new_mcp = _expand_env_vars(new_mcp)
         if new_mcp == self._config_mcp_servers:
             return  # mcp_servers unchanged (some other section was edited)
 

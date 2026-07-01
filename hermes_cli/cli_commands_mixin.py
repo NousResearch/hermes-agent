@@ -2481,7 +2481,8 @@ class CLICommandsMixin:
             return
 
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        if self.agent is not None:
+            self.agent.reasoning_config = parsed
 
         if save_config_value("agent.reasoning_effort", arg):
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
@@ -2569,7 +2570,13 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
-        self.agent = None  # Force agent re-init with new service-tier config
+        if self.agent is not None:
+            if self.service_tier == "priority":
+                from hermes_cli.models import resolve_fast_mode_overrides
+                agent_model = getattr(self.agent, "model", None) or self.model
+                self.agent.request_overrides = resolve_fast_mode_overrides(agent_model)
+            else:
+                self.agent.request_overrides = None
         if save_config_value("agent.service_tier", saved_value):
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
         else:

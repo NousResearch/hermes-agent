@@ -85,7 +85,9 @@ class TestHandleFastCommand(unittest.TestCase):
 
         mock_save.assert_called_once_with("agent.service_tier", "normal")
         self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
+        # Agent is no longer destroyed; request_overrides is cleared instead
+        self.assertIsNotNone(stub.agent)
+        self.assertIsNone(stub.agent.request_overrides)
 
     def test_unsupported_model_does_not_expose_fast(self):
         cli_mod = _import_cli()

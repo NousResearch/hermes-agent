@@ -210,6 +210,22 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Kanban dispatcher observability hook. Fired once per dispatcher tick,
+    # AFTER the tick's write txn is done and the board dispatch lock is
+    # released, so subscribers never run inside the SQLite writer critical
+    # section. Observers only: return values are ignored.
+    #
+    # Fires in the DISPATCHER process (gateway-embedded dispatcher or
+    # ``hermes kanban dispatch``). A plugin that wants to publish tick
+    # summaries to an external observability backend subscribes here — the
+    # core stays coupling-free.
+    #
+    # Kwargs: board: str | None, dry_run: bool,
+    #   outcome: "ok" | "skipped_locked" | "idle",
+    #   result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed,
+    #     promoted, crashed, stale, timed_out, auto_blocked,
+    #     skipped_per_profile_capped, skipped_unassigned, …).
+    "kanban_dispatch_tick",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

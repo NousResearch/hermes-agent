@@ -162,6 +162,59 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
+def _fire_dispatch_tick_hook(
+    result: "DispatchResult",
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> None:
+    """Fire the ``kanban_dispatch_tick`` plugin hook after each dispatcher tick.
+
+    Board-scoped observability primitive: subscribers get a summary of what a
+    single dispatcher tick did (spawned, reclaimed, promoted, crashed, blocked,
+    per-profile-capped, etc.). Kept as a plugin hook — not a hardcoded
+    telemetry sink — so third-party observability backends stay out-of-tree
+    per the project's plugin policy.
+
+    Called AFTER the tick's write txn is done and the dispatch lock is
+    released, so subscribers never run inside the SQLite writer critical
+    section. Any exception from a subscriber is swallowed: a misbehaving
+    observer must never break the dispatcher.
+
+    Payload fields:
+        board:     resolved board slug (``None`` = default board)
+        dry_run:   whether this tick was a plan-only pass
+        outcome:   ``"ok"`` | ``"skipped_locked"`` | ``"idle"``
+        result:    the ``DispatchResult`` itself (subscribers can drill in)
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+        outcome = "ok"
+        if getattr(result, "skipped_locked", False):
+            outcome = "skipped_locked"
+        elif not any((
+            result.spawned,
+            result.reclaimed,
+            result.promoted,
+            result.crashed,
+            result.stale,
+            result.timed_out,
+            result.auto_blocked,
+            result.skipped_per_profile_capped,
+            result.skipped_unassigned,
+        )):
+            outcome = "idle"
+        invoke_hook(
+            "kanban_dispatch_tick",
+            board=board,
+            dry_run=bool(dry_run),
+            outcome=outcome,
+            result=result,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban dispatch tick hook failed: %s", exc)
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -6964,7 +7017,7 @@ def dispatch_once(
         # Path resolution should never fail, but if it somehow does we
         # must not lose the tick — fall through to an unguarded dispatch
         # rather than dropping work.
-        return _dispatch_once_locked(
+        result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
             ttl_seconds=ttl_seconds,
@@ -6977,22 +7030,27 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
+        _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        return result
     with _dispatch_tick_lock(db_path) as held:
         if not held:
-            return DispatchResult(skipped_locked=True)
-        return _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
+            result = DispatchResult(skipped_locked=True)
+        else:
+            result = _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+        _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        return result
 
 
 def _dispatch_once_locked(

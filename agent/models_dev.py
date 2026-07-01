@@ -324,15 +324,11 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-    if not mdev_provider_id:
+    result = _get_provider_data(provider)
+    if result is None:
         return None
 
-    data = fetch_models_dev()
-    provider_data = data.get(mdev_provider_id)
-    if not isinstance(provider_data, dict):
-        return None
-
+    mdev_provider_id, provider_data = result
     models = provider_data.get("models", {})
     if not isinstance(models, dict):
         return None
@@ -374,6 +370,15 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
                 if ctx:
                     return ctx
 
+    # Provider-level model name that maps to a whole catalog (e.g.
+    # ``kimi-for-coding``).  Resolve to a representative model entry.
+    if mdev_provider_id and model.lower() == mdev_provider_id.lower():
+        entry = _pick_representative_model(models)
+        if entry is not None:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+
     return None
 
 
@@ -410,10 +415,12 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
-    """Resolve a Hermes provider ID to its models dict from models.dev.
+def _get_provider_data(provider: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Resolve a Hermes provider ID to its models.dev entry.
 
-    Returns the models dict or None if the provider is unknown or has no data.
+    Returns a tuple of (models.dev provider ID, provider data dict) or None if
+    the provider is unknown or has no data.  Includes a case-insensitive fallback
+    for upstream registry variations.
     """
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
@@ -421,9 +428,30 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
     data = fetch_models_dev()
     provider_data = data.get(mdev_provider_id)
+    # Case-insensitive fallback: provider catalog keys should generally be
+    # lowercase, but tolerate variations in the upstream registry.
+    if not isinstance(provider_data, dict):
+        target = mdev_provider_id.lower()
+        for pid, pdata in data.items():
+            if isinstance(pdata, dict) and pid.lower() == target:
+                provider_data = pdata
+                break
     if not isinstance(provider_data, dict):
         return None
 
+    return mdev_provider_id, provider_data
+
+
+def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+    """Resolve a Hermes provider ID to its models dict from models.dev.
+
+    Returns the models dict or None if the provider is unknown or has no data.
+    """
+    result = _get_provider_data(provider)
+    if result is None:
+        return None
+
+    _provider_id, provider_data = result
     models = provider_data.get("models", {})
     if not isinstance(models, dict):
         return None
@@ -447,6 +475,65 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     return None
 
 
+def _model_version_key(model_id: str) -> Tuple[Any, ...]:
+    """Natural-sort key for model IDs.
+
+    Splits the ID into alternating text and integer parts so that versioned
+    IDs like ``k2p5``, ``k2p9``, ``k2p10`` order numerically rather than
+    lexicographically (where ``k2p9`` > ``k2p10``).
+    """
+    parts: List[Any] = []
+    text_buf: List[str] = []
+    digit_buf: List[str] = []
+    for ch in model_id:
+        if ch.isdigit():
+            if text_buf:
+                parts.append("".join(text_buf).lower())
+                text_buf = []
+            digit_buf.append(ch)
+        else:
+            if digit_buf:
+                parts.append(int("".join(digit_buf)))
+                digit_buf = []
+            text_buf.append(ch)
+    if text_buf:
+        parts.append("".join(text_buf).lower())
+    if digit_buf:
+        parts.append(int("".join(digit_buf)))
+    return tuple(parts)
+
+
+def _pick_representative_model(models: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pick a representative model from a provider catalog.
+
+    Prefer the latest vision-capable model so image routing reports native
+    vision when the provider supports it.  Fall back to the alphabetically
+    first model in the catalog if no vision model is found.
+    """
+    vision_entries: List[Tuple[str, Dict[str, Any]]] = []
+    valid_entries: List[Tuple[str, Dict[str, Any]]] = []
+
+    for mid, mdata in models.items():
+        if not isinstance(mdata, dict):
+            continue
+        valid_entries.append((mid, mdata))
+        mods = mdata.get("modalities")
+        if isinstance(mods, dict):
+            inputs = mods.get("input")
+            if isinstance(inputs, list) and "image" in inputs:
+                vision_entries.append((mid, mdata))
+
+    if vision_entries:
+        vision_entries.sort(key=lambda item: _model_version_key(item[0]), reverse=True)
+        return vision_entries[0][1]
+
+    if valid_entries:
+        valid_entries.sort(key=lambda item: _model_version_key(item[0]))
+        return valid_entries[0][1]
+
+    return None
+
+
 def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilities]:
     """Look up full capability metadata from models.dev cache.
 
@@ -461,11 +548,23 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
-    models = _get_provider_models(provider)
-    if models is None:
+    result = _get_provider_data(provider)
+    if result is None:
         return None
 
+    mdev_provider_id, provider_data = result
+    models = provider_data.get("models", {})
+    if not isinstance(models, dict):
+        return None
+
+    # Some provider APIs accept a provider-level model name (e.g.
+    # ``kimi-for-coding``) that maps to a whole model catalog in models.dev.
+    # When the model string matches the provider catalog ID, resolve to a
+    # representative model from that catalog for capability detection. The
+    # actual API endpoint still decides which model runs.
     entry = _find_model_entry(models, model)
+    if entry is None and mdev_provider_id and model.lower() == mdev_provider_id.lower():
+        entry = _pick_representative_model(models)
     if entry is None:
         return None
 
@@ -698,16 +797,16 @@ def get_model_info(
     """Get full model metadata from models.dev.
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
-    case-insensitive fallback.  Returns None if not found.
+    case-insensitive fallback.  If ``model_id`` matches the provider catalog
+    ID, resolves to a representative model from that catalog.  Returns None
+    if not found.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
-
-    data = fetch_models_dev()
-    pdata = data.get(mdev_id)
-    if not isinstance(pdata, dict):
+    result = _get_provider_data(provider_id)
+    if result is None:
         return None
 
-    models = pdata.get("models", {})
+    mdev_id, provider_data = result
+    models = provider_data.get("models", {})
     if not isinstance(models, dict):
         return None
 
@@ -721,5 +820,12 @@ def get_model_info(
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
             return _parse_model_info(mid, mdata, mdev_id)
+
+    # Provider-level model name that maps to a whole catalog (e.g.
+    # ``kimi-for-coding``).  Resolve to a representative model entry.
+    if model_id.lower() == mdev_id.lower():
+        entry = _pick_representative_model(models)
+        if entry is not None:
+            return _parse_model_info(model_id, entry, mdev_id)
 
     return None

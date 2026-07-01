@@ -743,8 +743,106 @@ class ChatwootAdapter(BasePlatformAdapter):
             fh.write(payload)
         return tmp, True
 
+    async def handle_message(self, event: "MessageEvent") -> None:
+        """Fire CRWD contact/Honcho enrichment, then run the normal pipeline.
+
+        Enrichment is spawned as a background task so it runs concurrently with
+        the agent turn and never delays the reply. It self-gates (idempotent)
+        and swallows its own errors.
+        """
+        try:
+            from plugins.platforms.chatwoot import enrichment
+            task = asyncio.create_task(enrichment.enrich(self, event))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            logger.debug("[chatwoot] failed to spawn enrichment task", exc_info=True)
+        await super().handle_message(event)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "direct", "chat_id": chat_id}
+
+    # -- contact enrichment (CRWD Mongo → Chatwoot) --------------------------
+    #
+    # Read/write the Chatwoot Contacts API so the enrichment path can hydrate
+    # a contact from the CRWD database.  All three helpers reuse the adapter's
+    # live aiohttp session, base URL, account id, and admin token; they return
+    # plain dicts (never raise) so enrichment stays best-effort.
+
+    def _contacts_endpoint(self, account_id: str, contact_id: str = "") -> str:
+        base = f"{self._base_url}/api/v1/accounts/{account_id}/contacts"
+        return f"{base}/{contact_id}" if contact_id else base
+
+    async def get_contact(self, account_id: str, contact_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a contact record. Returns the contact payload dict or None."""
+        if self._session is None:
+            return None
+        url = self._contacts_endpoint(account_id, contact_id)
+        try:
+            async with self._session.get(url, headers=self._headers()) as resp:
+                if 200 <= resp.status < 300:
+                    data = await resp.json()
+                    if isinstance(data, dict):
+                        # Show responses wrap the record under "payload".
+                        return data.get("payload", data)
+                    return None
+                logger.debug("[chatwoot] get_contact %s → HTTP %s", contact_id, resp.status)
+                return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("[chatwoot] get_contact %s failed: %s", contact_id, exc)
+            return None
+
+    async def update_contact(
+        self, account_id: str, contact_id: str, fields: Dict[str, Any]
+    ) -> bool:
+        """PUT contact fields (name/email/phone_number/avatar_url/attributes)."""
+        if self._session is None or not fields:
+            return False
+        url = self._contacts_endpoint(account_id, contact_id)
+        try:
+            async with self._session.put(
+                url, json=fields, headers=self._headers()
+            ) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+                detail = await resp.text()
+                logger.warning(
+                    "[chatwoot] update_contact %s → HTTP %s: %s",
+                    contact_id, resp.status, detail[:200],
+                )
+                return False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[chatwoot] update_contact %s failed: %s", contact_id, exc)
+            return False
+
+    async def add_contact_labels(
+        self, account_id: str, contact_id: str, labels: List[str]
+    ) -> bool:
+        """POST the contact's label set (Chatwoot replaces the full list)."""
+        if self._session is None or not labels:
+            return False
+        url = f"{self._contacts_endpoint(account_id, contact_id)}/labels"
+        try:
+            async with self._session.post(
+                url, json={"labels": labels}, headers=self._headers()
+            ) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+                detail = await resp.text()
+                logger.warning(
+                    "[chatwoot] add_contact_labels %s → HTTP %s: %s",
+                    contact_id, resp.status, detail[:200],
+                )
+                return False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[chatwoot] add_contact_labels %s failed: %s", contact_id, exc)
+            return False
 
 
 # ── out-of-process cron delivery ─────────────────────────────────────────────

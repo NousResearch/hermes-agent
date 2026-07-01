@@ -1782,6 +1782,17 @@ class AIAgent:
                     # it is durably persisted — no later re-persist needed.
                     if msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON:
                         repersisted_ids.add(msg_id)
+                elif msg.get("finish_reason") == _INTERRUPT_CLOSE_FINISH_REASON:
+                    # Load-bearing: without a row id we cannot later re-persist an
+                    # in-place interrupt_close mutation, so a lost flag would fall
+                    # back to the old "skip unfinished work" resume behavior.
+                    # append_message returns cursor.lastrowid (an int) in prod;
+                    # a non-int here means a mock/altered return — make it loud.
+                    logger.warning(
+                        "flush: append_message returned non-int row id (%r) for an "
+                        "interrupt_close message; in-place re-persist will be skipped",
+                        _row_id,
+                    )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

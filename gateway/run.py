@@ -690,7 +690,16 @@ def _clear_resume_summary_only_for_human_turn(
     is_resume_pending: bool,
     message: Any,
 ) -> None:
-    """Clear the summarize-only interlock at the next normal inbound turn."""
+    """Clear the summarize-only interlock at the next normal inbound turn.
+
+    Intentional None-vs-empty-string distinction: an empty string ("") is a
+    real human turn with no text (it clears the interlock), whereas message is
+    None means "no message event" (a non-human trigger) and must NOT count as a
+    human turn. This is fail-safe either way — the elif/else branches at the
+    resume-dispatch site also reset the flag explicitly, so a None turn never
+    leaves the interlock wrongly sticky in practice; the guard just keeps a
+    non-human event from being treated as the user's "go".
+    """
     if is_resume_pending or message is None:
         return
     try:

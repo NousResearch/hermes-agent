@@ -1444,9 +1444,23 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
-                ).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(
+                        chat_id, team_id=self._metadata_team_id(metadata)
+                    ).chat_postMessage(**kwargs)
+                except Exception as e:
+                    if kwargs.get("blocks") and self._is_block_payload_rejection(e):
+                        retry_kwargs = dict(kwargs)
+                        retry_kwargs.pop("blocks", None)
+                        logger.info(
+                            "[Slack] Block Kit payload rejected; retrying send without blocks: %s",
+                            e,
+                        )
+                        last_result = await self._get_client(
+                            chat_id, team_id=self._metadata_team_id(metadata)
+                        ).chat_postMessage(**retry_kwargs)
+                    else:
+                        raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1542,9 +1556,26 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks = self._maybe_blocks(content)
                 if blocks:
                     update_kwargs["blocks"] = blocks
-            await self._get_client(
-                chat_id, team_id=self._metadata_team_id(metadata)
-            ).chat_update(**update_kwargs)
+            try:
+                await self._get_client(
+                    chat_id, team_id=self._metadata_team_id(metadata)
+                ).chat_update(**update_kwargs)
+            except Exception as e:
+                if update_kwargs.get("blocks") and self._is_block_payload_rejection(e):
+                    retry_kwargs = dict(update_kwargs)
+                    # Explicitly clear any stale blocks when falling back to the
+                    # flat text update path; otherwise Slack can preserve the
+                    # prior block layout for an edited message.
+                    retry_kwargs["blocks"] = []
+                    logger.info(
+                        "[Slack] Block Kit payload rejected; retrying edit without blocks: %s",
+                        e,
+                    )
+                    await self._get_client(
+                        chat_id, team_id=self._metadata_team_id(metadata)
+                    ).chat_update(**retry_kwargs)
+                else:
+                    raise
             if finalize:
                 await self.stop_typing(chat_id, metadata=metadata)
             return SendResult(success=True, message_id=message_id)
@@ -1989,6 +2020,31 @@ class SlackAdapter(BasePlatformAdapter):
         return self._is_retryable_error(body)
 
     # ----- Markdown → mrkdwn conversion -----
+
+    @staticmethod
+    def _is_block_payload_rejection(error: BaseException) -> bool:
+        """Return True for Slack errors recoverable by removing ``blocks``.
+
+        Rich Block Kit output is a progressive enhancement over the plain
+        ``text`` fallback. If Slack rejects the structured payload as invalid
+        or too large, retrying the same content without blocks is safe and
+        prevents a formatting bug from dropping the whole response.
+        """
+        recoverable_codes = {
+            "invalid_blocks",
+            "msg_too_long",
+            "too_many_blocks",
+        }
+        response = getattr(error, "response", None)
+        response_get = getattr(response, "get", None)
+        if callable(response_get):
+            try:
+                if response_get("error") in recoverable_codes:
+                    return True
+            except Exception:
+                pass
+        message = str(error)
+        return any(code in message for code in recoverable_codes)
 
     def _rich_blocks_enabled(self) -> bool:
         """Whether to render outbound agent messages as Slack Block Kit blocks.

@@ -4932,17 +4932,27 @@ class AIAgent:
             max_dimension=max_dimension,
         )
 
-    def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
+    def _try_strip_image_parts_from_tool_messages(
+        self,
+        api_messages: list,
+        *,
+        remember_model: bool = True,
+    ) -> bool:
         """Downgrade list-type tool messages to text summaries in-place.
 
         Recovery path for providers that reject list-type tool message content
         (e.g. Xiaomi MiMo's 400 "text is not set"; see issue #27344).  Walks
         ``api_messages`` for any ``role: "tool"`` message whose ``content`` is
         a list containing image parts, replaces the content with the existing
-        text part(s) (or a minimal placeholder if none survive), and records
-        the active (provider, model) in ``self._no_list_tool_content_models``
-        so subsequent ``_tool_result_content_for_active_model`` calls in this
-        session preemptively downgrade screenshots without a round-trip.
+        text part(s) (or a minimal placeholder if none survive), and by default
+        records the active (provider, model) in
+        ``self._no_list_tool_content_models`` so subsequent
+        ``_tool_result_content_for_active_model`` calls in this session
+        preemptively downgrade screenshots without a round-trip.
+
+        413 payload-size recovery passes ``remember_model=False`` because that
+        error means this request body was too large, not that the provider/model
+        rejects list-type tool content in general.
 
         Returns True when at least one tool message was downgraded — the
         caller (the 400 recovery branch in ``agent.conversation_loop``) uses
@@ -4952,15 +4962,16 @@ class AIAgent:
         if not isinstance(api_messages, list):
             return False
 
-        # Record (provider, model) so we don't relearn this lesson.
-        key = (
-            (getattr(self, "provider", "") or "").strip().lower(),
-            (getattr(self, "model", "") or "").strip(),
-        )
-        if not hasattr(self, "_no_list_tool_content_models"):
-            self._no_list_tool_content_models = set()
-        if key[1]:  # only record when we actually have a model id
-            self._no_list_tool_content_models.add(key)
+        if remember_model:
+            # Record (provider, model) so we don't relearn this lesson.
+            key = (
+                (getattr(self, "provider", "") or "").strip().lower(),
+                (getattr(self, "model", "") or "").strip(),
+            )
+            if not hasattr(self, "_no_list_tool_content_models"):
+                self._no_list_tool_content_models = set()
+            if key[1]:  # only record when we actually have a model id
+                self._no_list_tool_content_models.add(key)
 
         changed = False
         for msg in api_messages:

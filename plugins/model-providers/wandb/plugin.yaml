@@ -1,0 +1,5 @@
+name: wandb-provider
+kind: model-provider
+version: 1.0.0
+description: W&B Inference / GLM-5.2
+author: Nous Research

@@ -1,5 +1,6 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import contextlib
 import json
 import logging
 import os
@@ -966,7 +967,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1012,7 +1014,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1055,7 +1058,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1095,7 +1099,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1132,7 +1137,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1169,7 +1175,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1191,13 +1198,28 @@ class TestRunJobSessionPersistence:
         assert success is True
         cleanup_mock.assert_called_once()
 
-    def _make_run_job_patches(self, tmp_path):
-        """Common patches for run_job tests."""
+    @contextlib.contextmanager
+    def _run_job_patches(self, tmp_path, extra=()):
+        """Apply every patch run_job tests need, as one bundle.
+
+        Yields ``(fake_db, mock_agent_cls)``. Using an ExitStack that enters
+        the whole list means a caller can never silently drop a patch by
+        index — the previous positional-list form let a seam split shift
+        ``resolve_runtime_provider`` off the end of the applied slice, so the
+        real resolver ran and (only on a dev machine with ambient creds) hid
+        an auth failure that CI then caught. Every test enters all patches.
+
+        ``extra`` is an iterable of additional context managers (e.g. a
+        per-test ``_get_platform_tools`` patch) entered alongside the base set.
+        """
         fake_db = MagicMock()
-        return fake_db, [
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        base = [
             patch("cron.scheduler._hermes_home", tmp_path),
             patch("cron.scheduler._resolve_origin", return_value=None),
-            patch("dotenv.load_dotenv"),
+            patch("hermes_cli.env_loader.load_hermes_dotenv"),
+            patch("hermes_cli.env_loader.reset_secret_source_cache"),
             patch("hermes_state.SessionDB", return_value=fake_db),
             patch(
                 "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1208,7 +1230,14 @@ class TestRunJobSessionPersistence:
                     "api_mode": "chat_completions",
                 },
             ),
+            patch("run_agent.AIAgent", return_value=mock_agent),
         ]
+        with contextlib.ExitStack() as stack:
+            entered = [stack.enter_context(cm) for cm in base]
+            for cm in extra:
+                stack.enter_context(cm)
+            mock_agent_cls = entered[-1]  # the AIAgent patch
+            yield fake_db, mock_agent_cls
 
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
@@ -1217,12 +1246,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["web", "terminal", "file"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1251,12 +1275,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["web", "terminal", "file"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1278,12 +1297,7 @@ class TestRunJobSessionPersistence:
             "name": "test",
             "prompt": "hello",
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1304,18 +1318,10 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
             "enabled_toolsets": ["terminal"],
         }
-        fake_db, patches = self._make_run_job_patches(tmp_path)
         # Even if the user has ``hermes tools`` configured to enable web+file
         # for cron, the per-job override wins.
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch(
-                 "hermes_cli.tools_config._get_platform_tools",
-                 return_value={"web", "file"},
-             ):
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
+        extra = [patch("hermes_cli.tools_config._get_platform_tools", return_value={"web", "file"})]
+        with self._run_job_patches(tmp_path, extra=extra) as (_fake_db, mock_agent_cls):
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1336,7 +1342,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1412,7 +1419,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1451,7 +1459,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1493,7 +1502,8 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1613,6 +1623,53 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):
+        """Each run must clear the secret-source cache before re-reading the
+        env, so a long-running gateway re-resolves Bitwarden/BSM-backed secrets
+        instead of leaving the startup .env placeholder in place (#33465).
+
+        A bare ``load_dotenv`` re-load can't do this: startup already recorded
+        this HERMES_HOME in ``_APPLIED_HOMES``, so the external-secret pull
+        no-ops and only the placeholder is re-applied. The scheduler must call
+        ``reset_secret_source_cache()`` (forcing the re-pull) and route through
+        ``load_hermes_dotenv`` (which then re-applies external secret sources).
+        """
+        job = {"id": "bsm-job", "name": "bsm", "prompt": "hello"}
+        fake_db = MagicMock()
+        call_order = []
+
+        def _record_reset():
+            call_order.append("reset")
+
+        def _record_load(*args, **kwargs):
+            call_order.append("load")
+            return []
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache", _record_reset), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv", _record_load), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _output, _final, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        # reset MUST precede the reload, else _APPLIED_HOMES no-ops the re-pull.
+        assert call_order[:2] == ["reset", "load"], call_order
+
     def test_run_job_clears_stale_auto_delivery_thread_id_between_jobs(self, tmp_path, monkeypatch):
         jobs = [
             {
@@ -1709,7 +1766,8 @@ class TestRunJobConfigLogging:
         # (>30s wall clock) under load. See PR #33661 follow-up.
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"provider": "openrouter", "api_key": "x",
                                  "base_url": "https://example.invalid",
@@ -1743,7 +1801,8 @@ class TestRunJobConfigLogging:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"provider": "openrouter", "api_key": "x",
                                  "base_url": "https://example.invalid",
@@ -1781,7 +1840,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1814,7 +1874,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1844,7 +1905,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1863,6 +1925,36 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
 
+    def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
+        """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-4o-mini\n"
+            "fallback_model:\n"
+            "  provider: anthropic\n"
+            "  model: claude-sonnet-4-6\n"
+        )
+
+        job = {"id": "fb-merge", "name": "fallback merge", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        fb = mock_agent_cls.call_args.kwargs.get("fallback_model") or []
+        models = [e.get("model") for e in fb if isinstance(e, dict)]
+        assert models == ["gpt-4o-mini", "claude-sonnet-4-6"]
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
@@ -1873,7 +1965,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1917,7 +2010,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1941,7 +2035,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1973,7 +2068,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1996,7 +2092,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -2025,7 +2122,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -2051,7 +2149,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -2081,7 +2180,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -2105,7 +2205,8 @@ class TestRunJobModelResolution:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -2147,7 +2248,8 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -2207,7 +2309,8 @@ class TestRunJobSkillBacked:
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("tools.credential_files._resolve_hermes_home", return_value=tmp_path), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -2245,7 +2348,8 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -2291,7 +2395,8 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -2464,6 +2569,46 @@ class TestSilentDelivery:
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
         )
+
+
+class TestOneShotDispatchClaim:
+    """run_one_job must claim a finite one-shot's dispatch BEFORE run_job so a
+    tick that dies mid-execution can't re-fire it forever (issue #38758)."""
+
+    def _oneshot(self):
+        return {
+            "id": "monitor-job",
+            "name": "monitor",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
+            "repeat": {"times": 1, "completed": 0},
+        }
+
+    def test_claim_runs_before_run_job(self):
+        order = []
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
+             patch("cron.scheduler.claim_dispatch", side_effect=lambda _id: order.append("claim") or True), \
+             patch("cron.scheduler.run_job", side_effect=lambda _j: order.append("run") or (True, "# out", "ok", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        assert order == ["claim", "run"]  # claim strictly before side effect
+
+    def test_refused_claim_skips_run_job(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
+             patch("cron.scheduler.claim_dispatch", return_value=False), \
+             patch("cron.scheduler.run_job") as run_mock, \
+             patch("cron.scheduler.save_job_output"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+        run_mock.assert_not_called()
+        deliver_mock.assert_not_called()
+        mark_mock.assert_not_called()
 
 
 class TestBuildJobPromptSilentHint:
@@ -4028,3 +4173,328 @@ class TestCronDeliveryMirror:
             )
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
+
+
+class TestCronContinuableSurfaceInChannel:
+    """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
+    into a channel (no dedicated thread), so a plain channel reply continues the
+    job via the shared-channel session (platform, chat_id, None).
+
+    Design: decisions.md D1/D2/D6 + F5. The scheduler reads the per-platform key
+    generically from pconfig.extra; the in_channel branch is gated on the
+    adapter capability flag ``supports_inchannel_continuable`` (Slack=True,
+    others fail SAFE to thread). In in_channel mode the thread-open branch is
+    SKIPPED (thread_id stays None), then ``_seed_cron_channel_session`` CREATES
+    the flat shared-channel session and mirrors the brief into it (the shipped
+    mirror only APPENDS to an existing session, and the flat channel row is
+    otherwise absent for a chat_postMessage delivery).
+    """
+
+    def _slack_cfg(self, extra):
+        """A mock GatewayConfig with a Slack pconfig carrying ``extra``."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = extra
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        return mock_cfg
+
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+        """Drive _deliver_result down the live-adapter path for a Slack
+        channel-origin job with the given ``extra`` config. Returns the
+        _open_continuable_cron_thread mock and the mirror_to_session mock."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        mock_cfg = self._slack_cfg(extra)
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                import asyncio as _asyncio
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "name": "Daily Brief",
+            "deliver": "origin",
+            # Channel origin: no thread_id (flat channel message scheduled it).
+            # Carries the scheduling user's id — the in_channel seed must key
+            # the flat channel session to THIS user (see build_session_key).
+            "origin": origin or {"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN"},
+            # Opt into the continuable mirror.
+            "attach_to_session": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+        return open_thread_mock, mirror_mock
+
+    def _slack_adapter(self, supports_inchannel=True, with_store=True):
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        # Capability flag read via getattr in the scheduler.
+        adapter.supports_inchannel_continuable = supports_inchannel
+        # A live session store so the in_channel seed can CREATE the flat row
+        # (the real bug: without a create step the mirror no-ops on a missing
+        # session and the brief is lost). Use a plain MagicMock store.
+        if with_store:
+            adapter._session_store = MagicMock()
+        return adapter
+
+    def test_in_channel_skips_thread_open(self):
+        """G2: in_channel mode must NOT open a handoff thread."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        open_thread_mock.assert_not_called()
+
+    def test_in_channel_seeds_shared_channel_session_flat(self):
+        """G3 (the real fix): in_channel CREATES the flat channel session row
+        (thread_id=None) via the adapter's live store AND mirrors the brief into
+        it. The prior implementation relied on the bare mirror, which no-ops
+        when the flat row doesn't already exist — so the brief was silently lost
+        (verified live). This asserts the create-then-mirror handoff."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # The flat session row must be CREATED (this is what was missing).
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None, "seed must be flat (thread_id=None)"
+        assert seeded.chat_type == "group", "a channel (non-D) keys as group"
+        assert str(seeded.chat_id) == "C123"
+        assert str(seeded.user_id) == "U_HUMAN", (
+            "channel session key embeds user_id — the seed MUST use the origin "
+            "user's id or the inbound reply keys to a different session"
+        )
+        # Brief mirrored flat into that row.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args[0][0] == "slack"
+        assert mirror_mock.call_args[0][1] == "C123"
+        assert "Here is today's brief." in mirror_mock.call_args[0][2]
+
+    def test_in_channel_dm_seeds_dm_session(self):
+        """1:1 DM (chat_id starts with 'D'): the flat session is created with
+        chat_type='dm'. The DM session key does NOT embed user_id, so any
+        user_id resolves to the same session — but chat_type must be 'dm' so the
+        key prefix matches the inbound DM reply's key."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={"platform": "slack", "chat_id": "D999", "user_id": "U_HUMAN"},
+        )
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.chat_type == "dm", "a DM (chat_id starts with 'D') keys as dm"
+        assert seeded.thread_id is None
+        assert str(seeded.chat_id) == "D999"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_thread_mode_default_still_opens_thread(self):
+        """G1 regression: the default (thread) mode is byte-identical — the
+        thread-open branch still fires when no surface key is set."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery({}, adapter)
+        open_thread_mock.assert_called_once()
+
+    def test_explicit_thread_value_opens_thread(self):
+        """An explicit cron_continuable_surface: thread is the default path."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "thread"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    def test_in_channel_on_unsupported_platform_fails_safe_to_thread(self):
+        """D6 fail-safe: in_channel on an adapter WITHOUT the capability flag
+        falls back to the thread path (a threaded continuation ≈ today), never
+        a dropped continuation."""
+        adapter = self._slack_adapter(supports_inchannel=False)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # Capability absent → treated as thread → thread-open still attempted.
+        open_thread_mock.assert_called_once()
+
+    def test_unrecognised_surface_value_coerces_to_thread(self):
+        """Any non-'in_channel' value is the default thread path (fail safe)."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "bogus"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    # --- _seed_cron_channel_session: the create-then-mirror unit + the
+    #     KEY-MATCH invariant (seed key must equal the inbound reply's key) ---
+
+    def test_seed_channel_session_key_matches_inbound_channel_reply(self):
+        """The whole point: the flat session the seed CREATES must be keyed
+        identically to what a plain inbound channel reply resolves to. Assert
+        the invariant directly via build_session_key, not just call args."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1", "name": "Brief"}, adapter, "slack", "C123",
+                "Daily brief", is_dm=False, user_id="U_HUMAN", chat_name="ops",
+            )
+        assert ok is True
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        seed_key = build_session_key(seeded_source)
+
+        # What a plain top-level channel reply (reply_in_thread:false → thread
+        # None) from the same user resolves to:
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="C123", chat_type="group",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert seed_key == build_session_key(inbound), (
+            f"seed key {seed_key} != inbound reply key {build_session_key(inbound)} "
+            "— the reply would NOT continue the seeded session"
+        )
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_seed_channel_session_key_matches_inbound_dm_reply(self):
+        """DM case: seeded key (chat_type=dm) equals the inbound DM reply key.
+        The DM key ignores user_id, so a system id would also match — but
+        chat_type MUST be 'dm' so the prefix aligns."""
+        from cron.scheduler import _seed_cron_channel_session
+        from gateway.session import build_session_key, SessionSource
+        from gateway.config import Platform
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True):
+            _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "D999", "Daily brief",
+                is_dm=True, user_id="U_HUMAN",
+            )
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        inbound = SessionSource(
+            platform=Platform.SLACK, chat_id="D999", chat_type="dm",
+            user_id="U_HUMAN", thread_id=None,
+        )
+        assert build_session_key(seeded_source) == build_session_key(inbound)
+        assert seeded_source.chat_type == "dm"
+
+    def test_seed_channel_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_channel_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1"}, adapter, "slack", "C123", "   ",
+                is_dm=False, user_id="U_HUMAN",
+            )
+        assert ok is False
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()
+
+
+class TestMultiTargetDeliveryContinuesOnFailure:
+    """When delivery to one target fails inside the standalone thread-pool
+    fallback, the loop must continue to the remaining targets (#47163).
+
+    The fallback runs inside the `except RuntimeError` block of
+    `_deliver_result`. Before the fix, an exception raised there (SMTP
+    ConnectionError, future.result timeout) escaped the function entirely —
+    it is NOT caught by the sibling `except Exception` — crashing the loop
+    and silently dropping every subsequent target.
+    """
+
+    def _email_cfg(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+        return mock_cfg
+
+    def test_first_target_failure_does_not_crash_loop(self):
+        """First email target fails in the fallback; the second is still attempted."""
+        job = {
+            "id": "multi-email-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("SMTP connection refused")
+            ok_future = MagicMock()
+            ok_future.result.return_value = {"success": True}
+            mock_pool.submit.side_effect = [fail_future, ok_future]
+
+            result = _deliver_result(job, "Report content")
+
+        # Both targets attempted — the loop did not crash after the first failure.
+        assert mock_pool.submit.call_count == 2, (
+            f"expected 2 delivery attempts, got {mock_pool.submit.call_count}"
+        )
+        # First target's failure is surfaced in the returned error string.
+        assert result is not None
+        assert "a@example.com" in result
+        assert "SMTP connection refused" in result
+
+    def test_all_targets_fail_returns_combined_errors(self):
+        """When every target fails, the result reports all of them."""
+        job = {
+            "id": "all-fail-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("connection refused")
+            mock_pool.submit.return_value = fail_future
+
+            result = _deliver_result(job, "Report content")
+
+        assert result is not None
+        assert "a@example.com" in result
+        assert "b@example.com" in result
+        assert mock_pool.submit.call_count == 2

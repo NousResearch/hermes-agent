@@ -477,6 +477,51 @@ class TestCompactionRollupReproduction:
 # ---------------------------------------------------------------------------
 
 
+class TestFindLastUserMessageIdxSkipsSummaryMarker:
+    """A context-compaction handoff banner is inserted with ``role="user"``
+    when the head ends in an assistant/tool message (see the summary-role
+    selection in ``compress``). ``_find_last_user_message_idx`` must NOT treat
+    that banner as the latest user turn — otherwise, on a resumed or
+    multi-compaction session, ``_ensure_last_user_message_in_tail`` anchors the
+    tail to the summary and rolls the genuine last user message into the next
+    compaction, re-triggering the active-task loss the anchor exists to prevent.
+    (Salvaged from #36626 / issue #36624.)
+    """
+
+    def test_skips_user_role_context_summary_marker(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "REAL current task"},
+            {"role": "assistant", "content": "working on it"},
+            # A handoff summary re-inserted as a user-role message after resume.
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Active Task\nold"},
+            {"role": "assistant", "content": "continuing from the real task"},
+        ]
+        # Latest *real* user message is index 1, not the summary at index 3.
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == 1
+
+    def test_returns_real_user_when_no_summary_present(self, compressor):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == 3
+
+    def test_all_user_messages_are_summaries_returns_minus_one(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nhandoff"},
+        ]
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == -1
+
+
 class TestSourceGuardrail:
     @pytest.fixture
     def source(self) -> str:

@@ -3388,3 +3388,163 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestLaunchctlBootstrapEioRetry:
+    """`_launchctl_bootstrap` must recover from a stale already-loaded label.
+
+    On macOS, ``launchctl bootstrap`` of a label that is still registered in
+    the domain fails with ``5: Input/output error`` (EIO). That is the *already
+    loaded* case — recoverable by booting the leftover out and retrying — not a
+    sign the domain is unmanageable. The regression this guards against
+    misclassified a stale registration as "launchd cannot manage this macOS
+    version" and needlessly degraded the gateway to a detached process.
+    """
+
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    DOMAIN = "gui/501"
+    LABEL = "ai.hermes.gateway"
+
+    def test_bootstrap_succeeds_first_try_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+    def test_eio_triggers_bootout_then_retry(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            bootstrap_calls = [c for c in calls if c[1] == "bootstrap"]
+            # First bootstrap hits EIO; bootout clears it; retry succeeds.
+            if cmd[1] == "bootstrap" and len(bootstrap_calls) == 1:
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+            ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
+            ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+        ]
+
+    def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
+        # When the retry also fails, the error must propagate so callers apply
+        # their _launchctl_domain_unsupported fallback (degrade to detached).
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 5
+
+    def test_non_eio_failure_reraises_without_bootout(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(125, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert excinfo.value.returncode == 125
+        # A non-EIO failure is not the already-loaded case: no bootout/retry.
+        assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
+
+
+class TestRetryLaunchctlBootstrapUntilRegistered:
+    """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
+
+    Covers the three review findings the salvage hardens: retry until the
+    label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
+    is retried (not escaped leaving the service unloaded), and the retry is
+    bounded by a wall-clock deadline rather than a fixed short window.
+    """
+
+    DOMAIN = "gui/501"
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    LABEL = "ai.hermes.gateway"
+
+    def test_returns_true_once_label_is_registered(self, monkeypatch):
+        """Success requires launchctl list to confirm registration, not just
+        a zero bootstrap exit."""
+        list_results = iter([1, 0])  # first check: not registered, second: registered
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=next(list_results))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+
+    def test_timeout_expired_is_retried_not_escaped(self, monkeypatch):
+        """A bootstrap that times out must be retried — it leaves the service
+        unloaded, so it must not escape the retry/log path (finding #2)."""
+        attempts = {"bootstrap": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap":
+                attempts["bootstrap"] += 1
+                if attempts["bootstrap"] == 1:
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["launchctl", "list"]:
+                # registered only after the second (successful) bootstrap
+                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+        assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
+
+    def test_returns_false_when_deadline_exhausts(self, monkeypatch):
+        """When the label never registers, the loop stops at the deadline and
+        returns False (so the caller logs the persistent orphan)."""
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=1)  # never registered
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(1, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        # Deadline already in the past → exactly one attempt, then give up.
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() - 1,
+        )
+        assert ok is False

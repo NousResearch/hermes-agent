@@ -1517,6 +1517,35 @@ class TestBankIdTemplate:
         )
         assert result == "hermes-coder"
 
+    def test_resolve_with_chat_placeholder(self):
+        # {chat} resolves to the platform chat_id (Telegram chat_id, etc.)
+        # — a stable numeric id recommended for per-chat isolation over {user}
+        # which is a (potentially renaming) handle.
+        result = _resolve_bank_id_template(
+            "hermes-{chat}", fallback="hermes",
+            profile="", workspace="", platform="", user="", session="",
+            chat="999000001",
+        )
+        assert result == "hermes-999000001"
+
+    def test_resolve_chat_with_profile(self):
+        # {chat} and {profile} can be combined.
+        result = _resolve_bank_id_template(
+            "hermes-{profile}-{chat}", fallback="hermes",
+            profile="coder", workspace="", platform="", user="", session="",
+            chat="999000002",
+        )
+        assert result == "hermes-coder-999000002"
+
+    def test_resolve_chat_empty_collapses(self):
+        # Empty {chat} renders as "" and "hermes-{chat}" collapses to "hermes".
+        result = _resolve_bank_id_template(
+            "hermes-{chat}", fallback="fallback",
+            profile="", workspace="", platform="", user="", session="",
+            chat="",
+        )
+        assert result == "hermes"
+
     def test_resolve_with_multiple_placeholders(self):
         result = _resolve_bank_id_template(
             "{workspace}-{profile}-{platform}",

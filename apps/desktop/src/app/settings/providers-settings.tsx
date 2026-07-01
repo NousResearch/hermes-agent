@@ -10,7 +10,7 @@ import {
   ProviderRow,
   providerTitle,
   sortProviders
-} from '@/components/desktop-onboarding-overlay'
+} from '@/components/onboarding'
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'

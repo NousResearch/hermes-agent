@@ -147,6 +147,15 @@ def _get_backend() -> str:
     if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
         return configured
 
+    # Plugin-registered backends — accept if a provider exists
+    try:
+        from agent.web_search_registry import get_provider  # type: ignore[import-untyped]
+
+        if get_provider(configured) is not None:
+            return configured
+    except Exception:
+        pass
+
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Explicit user credentials (TAVILY_API_KEY etc.)
     # beat the managed-tool-gateway probe so a deliberate setup is not
@@ -235,6 +244,16 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+
+    # Plugin-registered backends — consult the provider itself
+    try:
+        from agent.web_search_registry import get_provider  # type: ignore[import-untyped]
+
+        provider = get_provider(backend)
+        if provider is not None:
+            return provider.is_available()
+    except Exception:
+        pass
     return False
 
 
@@ -854,6 +873,16 @@ def check_web_api_key() -> bool:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
         return _is_backend_available(configured)
+
+    # Plugin-registered backends
+    try:
+        from agent.web_search_registry import get_provider  # type: ignore[import-untyped]
+
+        if get_provider(configured) is not None:
+            return _is_backend_available(configured)
+    except Exception:
+        pass
+
     return any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")

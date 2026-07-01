@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -241,14 +241,37 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(self, action: str, target: str, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
+        if not self._store:
+            return
+        try:
+            category = "user_pref" if target == "user" else "general"
+            if action == "add" and content:
                 self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+            elif action == "replace" and content:
+                old_text = (metadata or {}).get("old_text")
+                fact_id = self._find_fact_id_by_content(old_text) if old_text else None
+                if fact_id is not None:
+                    self._store.update_fact(fact_id, content=content)
+                else:
+                    self._store.add_fact(content, category=category)
+            elif action == "remove":
+                old_text = (metadata or {}).get("old_text")
+                if old_text:
+                    fact_id = self._find_fact_id_by_content(old_text)
+                    if fact_id is not None:
+                        self._store.remove_fact(fact_id)
+        except Exception as e:
+            logger.warning("Holographic memory_write mirror failed: %s", e)
+
+    def _find_fact_id_by_content(self, text: str) -> Optional[int]:
+        """Find a fact ID by exact content match."""
+        with self._store._lock:
+            row = self._store._conn.execute(
+                "SELECT fact_id FROM facts WHERE content = ?", (text.strip(),)
+            ).fetchone()
+        return int(row["fact_id"]) if row else None
 
     def shutdown(self) -> None:
         # Close the SQLite connection deterministically instead of leaking it

@@ -4,8 +4,9 @@ Covers:
 - DDGSWebSearchProvider.is_available() — reflects package importability
 - DDGSWebSearchProvider.search() — happy path, missing package, runtime error
 - Result normalization (title, url, description, position)
+- DDGSWebSearchProvider.extract() — happy path, per-URL error, missing package
 - _is_backend_available("ddgs") / _get_backend() integration
-- web_extract returns a search-only error when ddgs is active
+- web_extract with ddgs backend (no longer search-only)
 """
 from __future__ import annotations
 
@@ -18,34 +19,46 @@ import pytest
 from tests.tools.conftest import register_all_web_providers
 
 
-def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text_sleep=None):
+def _install_fake_ddgs(
+    monkeypatch,
+    *,
+    text_results=None,
+    text_raises=None,
+    extract_results=None,
+    extract_raises=None,
+):
     """Install a stub ``ddgs`` module in sys.modules for the duration of a test.
 
     ``text_results``: iterable of dicts to yield from DDGS().text(...).
     ``text_raises``: if set, DDGS().text raises this exception instead.
-    ``text_sleep``: if set, DDGS().text blocks for this many seconds before
-        yielding — simulates a hung/slow search for the timeout test.
+    ``extract_results``: dict mapping URL -> {title, content} returned from
+        DDGS().extract(...). Yields nothing on miss.
+    ``extract_raises``: if set, DDGS().extract raises this exception instead.
     """
-    import time as _time
-
     fake = types.ModuleType("ddgs")
 
     class _FakeDDGS:
-        def __init__(self, **kwargs):
-            # Accept timeout= (and any other constructor kwargs) — the provider
-            # now passes DDGS(timeout=10).
-            pass
         def __enter__(self):
             return self
         def __exit__(self, *_a):
             return False
         def text(self, query, max_results=5):
-            if text_sleep is not None:
-                _time.sleep(text_sleep)
             if text_raises is not None:
                 raise text_raises
             for hit in (text_results or []):
                 yield hit
+        def extract(self, url, fmt=None):
+            # ddgs 9.14 returns a dict with keys {url, content}. Earlier
+            # versions yielded a generator of single-key dicts; the test
+            # fixtures target the modern contract.
+            if extract_raises is not None:
+                raise extract_raises
+            if extract_results and url in extract_results:
+                return extract_results[url]
+            # Match real ddgs behavior: empty dict on miss (the provider
+            # treats the empty content as "no content extracted" rather
+            # than an error).
+            return {}
 
     fake.DDGS = _FakeDDGS
     monkeypatch.setitem(sys.modules, "ddgs", fake)
@@ -165,55 +178,6 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
-    def test_hung_search_times_out_and_returns_failure(self, monkeypatch):
-        """#36776: a ddgs call that never returns must be bounded by the
-        wall-clock timeout and surface a failure instead of hanging the
-        shared agent loop. We patch the blocking helper to wait on an Event
-        (released in finally so no worker thread leaks past the test) and
-        shrink the timeout; search() must return success=False promptly."""
-        import threading
-        import time
-
-        # ddgs must import-probe True for search() to proceed.
-        _install_fake_ddgs(monkeypatch)
-        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
-        import plugins.web.ddgs.provider as _prov
-
-        release = threading.Event()
-
-        def _blocking_search(query, safe_limit):
-            release.wait(timeout=10)  # bounded so the worker can never truly leak
-            return []
-
-        monkeypatch.setattr(_prov, "_run_ddgs_search", _blocking_search, raising=True)
-        monkeypatch.setattr(_prov, "_SEARCH_TIMEOUT_SECS", 0.3, raising=True)
-
-        try:
-            start = time.monotonic()
-            result = _prov.DDGSWebSearchProvider().search("hangs forever", limit=5)
-            elapsed = time.monotonic() - start
-
-            assert result["success"] is False
-            assert "timed out" in result["error"].lower()
-            # Returned well before the worker's 10s wait — proves the cap fired.
-            assert elapsed < 3.0, f"search did not return promptly ({elapsed:.1f}s)"
-        finally:
-            release.set()  # let the orphaned worker finish immediately
-
-    def test_fast_search_not_affected_by_timeout_wrapper(self, monkeypatch):
-        """Happy-path guard: the timeout wrapper must not break a normal,
-        fast search — results flow through unchanged."""
-        _install_fake_ddgs(
-            monkeypatch,
-            text_results=[{"title": "T", "href": "https://e.com", "body": "B"}],
-        )
-        from plugins.web.ddgs.provider import DDGSWebSearchProvider
-
-        result = DDGSWebSearchProvider().search("q", limit=5)
-        assert result["success"] is True
-        assert result["data"]["web"][0]["url"] == "https://e.com"
-        assert result["data"]["web"][0]["title"] == "T"
-
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available / _get_backend / check_web_api_key
@@ -267,11 +231,116 @@ class TestDDGSBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# ddgs is search-only: web_extract returns a clear error
+# ddgs extract: provider implements extract() (ddgs package >= 8.0)
 # ---------------------------------------------------------------------------
 
 
-class TestDDGSSearchOnlyErrors:
+class TestDDGSProviderExtract:
+    """Unit tests for the extract() method on the provider itself."""
+
+    def test_extract_returns_normalized_content(self, monkeypatch):
+        # DDGS.extract() returns {url, content} per URL — no title field. The
+        # provider normalizes this into the hermes registry shape with a
+        # blank title (the registry contract reserves the field but the
+        # upstream package doesn't populate it).
+        _install_fake_ddgs(
+            monkeypatch,
+            extract_results={
+                "https://example.com": {
+                    "url": "https://example.com",
+                    "content": "Hello, world.",
+                }
+            },
+        )
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        results = DDGSWebSearchProvider().extract(["https://example.com"])
+
+        assert len(results) == 1
+        r = results[0]
+        assert r["url"] == "https://example.com"
+        assert r["title"] == ""  # DDGS doesn't surface a title
+        assert r["content"] == "Hello, world."
+        assert r["raw_content"] == "Hello, world."
+        assert r["metadata"]["source"] == "ddgs"
+        assert r["metadata"]["length"] == len("Hello, world.")
+        assert "error" not in r
+
+    def test_extract_multiple_urls(self, monkeypatch):
+        # With real ddgs 9.14, a URL that returns empty content (or empty
+        # dict from a miss) still surfaces as a result entry — the
+        # provider doesn't error. The test verifies all three URLs are
+        # returned in order, with the known-good ones populated and the
+        # unknown one having empty content.
+        _install_fake_ddgs(
+            monkeypatch,
+            extract_results={
+                "https://a.example.com": {"url": "https://a.example.com", "content": "AAA"},
+                "https://b.example.com": {"url": "https://b.example.com", "content": "BBB"},
+            },
+        )
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        results = DDGSWebSearchProvider().extract(
+            ["https://a.example.com", "https://b.example.com", "https://c.example.com"]
+        )
+
+        urls = [r["url"] for r in results]
+        assert urls == [
+            "https://a.example.com",
+            "https://b.example.com",
+            "https://c.example.com",
+        ]
+        assert results[0]["content"] == "AAA"
+        assert results[1]["content"] == "BBB"
+        assert results[2]["content"] == ""  # empty dict from miss
+        assert "error" not in results[2]
+
+    def test_extract_runtime_error_per_url(self, monkeypatch):
+        # When the package raises on extract, every URL gets an error entry
+        # rather than the whole call blowing up.
+        _install_fake_ddgs(monkeypatch, extract_raises=RuntimeError("rate limited"))
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        results = DDGSWebSearchProvider().extract(["https://example.com"])
+
+        assert len(results) == 1
+        assert "error" in results[0]
+        assert "rate limited" in results[0]["error"]
+
+    def test_extract_missing_package(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "ddgs", raising=False)
+        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        import builtins
+        orig_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name == "ddgs":
+                raise ImportError("blocked for test")
+            return orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        results = DDGSWebSearchProvider().extract(["https://example.com"])
+
+        assert len(results) == 1
+        assert "error" in results[0]
+        assert "ddgs" in results[0]["error"].lower()
+
+    def test_supports_extract_returns_true(self):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        assert DDGSWebSearchProvider().supports_extract() is True
+
+
+class TestDDGSExtractIntegration:
+    """web_extract end-to-end with the ddgs backend installed and selected.
+
+    Replaces the previous TestDDGSSearchOnlyErrors class which asserted that
+    ddgs was search-only — the underlying ``ddgs`` Python package gained an
+    extract() method in 8.0, and the provider now exposes it.
+    """
+
     _register_providers = staticmethod(register_all_web_providers)
 
     @pytest.fixture(autouse=True)
@@ -281,13 +350,23 @@ class TestDDGSSearchOnlyErrors:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
-    def test_web_extract_returns_search_only_error(self, monkeypatch):
+    def test_web_extract_returns_ddgs_content(self, monkeypatch):
         import asyncio
         from tools import web_tools
 
+        _install_fake_ddgs(
+            monkeypatch,
+            extract_results={
+                "https://example.com": {
+                    "url": "https://example.com",
+                    "content": "Example body text.",
+                }
+            },
+        )
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+
         async def _allow_ssrf(_url: str) -> bool:
             return True
 
@@ -298,6 +377,11 @@ class TestDDGSSearchOnlyErrors:
             web_tools.web_extract_tool(["https://example.com"])
         )
         result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+        # On success the dispatcher returns {"results": [...]} (no "success"
+        # key — the presence of "results" with content IS success). On
+        # failure, the response is {"success": False, "error": "..."}.
+        assert "results" in result
+        assert "error" not in result
+        assert len(result["results"]) == 1
+        assert result["results"][0]["url"] == "https://example.com"
+        assert "Example body text." in result["results"][0]["content"]

@@ -2155,6 +2155,35 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
+async def get_model_context_length_async(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Async variant of get_model_context_length.
+
+    Offloads the entire synchronous resolution chain (which contains
+    blocking HTTP calls via ``requests``) to a background thread so it
+    does not freeze the asyncio event loop and cause Discord heartbeat
+    timeouts.
+
+    Shares all logic with the sync version — no code duplication.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        get_model_context_length,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
+
+
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate (~4 chars/token) for pre-flight checks.
 

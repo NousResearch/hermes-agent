@@ -131,18 +131,33 @@ def run_eval(
     if is_openrouter and not user_model.startswith("openrouter/"):
         user_model = f"openrouter/{user_model}"
 
+    # For local/custom endpoints (non-OpenRouter), litellm needs the openai/ prefix
+    # if no provider prefix is specified
+    is_custom_endpoint = base_url and not is_openrouter
+    if is_custom_endpoint and not model.startswith("openrouter/") and not model.startswith("openai/") and "/" not in model:
+        model = f"openai/{model}"
+
     # Resolve API key for agent
     if is_openrouter:
         api_key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if api_key and not os.environ.get("OPENAI_API_KEY"):
             os.environ["OPENAI_API_KEY"] = api_key
     else:
-        api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        # For custom endpoints (e.g., local vLLM), litellm needs an api_key.
+        # Use provided key, env OPENAI_API_KEY, or "dummy" if not set.
+        api_key = api_key or os.environ.get("OPENAI_API_KEY") or "dummy"
+        if not os.environ.get("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = api_key
 
     # Resolve user sim auth — user sim may use OpenRouter even when agent is local.
     # Check if user_model has openrouter/ prefix or OPENROUTER_API_KEY is set.
     user_model_is_openrouter = user_model.startswith("openrouter/")
     if not user_model_is_openrouter and "openrouter" in user_model.lower():
+        user_model = f"openrouter/{user_model}"
+        user_model_is_openrouter = True
+    # If user_model looks like an OpenRouter model (contains a slash and isn't openai/), add prefix
+    elif not user_model_is_openrouter and "/" in user_model and not user_model.startswith("openai/"):
+        # Check if it's a known OpenRouter model format (provider/model)
         user_model = f"openrouter/{user_model}"
         user_model_is_openrouter = True
 
@@ -180,12 +195,24 @@ def run_eval(
 
     # Pass auth to user sim. User sim may be on OpenRouter even if agent is local.
     user_llm_args: dict = {}
+    # If user model uses openrouter prefix, use OpenRouter auth regardless of agent base_url
     if user_model_is_openrouter and openrouter_key:
         user_llm_args["api_key"] = openrouter_key
         user_llm_args["base_url"] = OPENROUTER_BASE_URL
     elif is_openrouter and api_key:
         user_llm_args["api_key"] = api_key
         user_llm_args["base_url"] = base_url
+    # If user_model has no openrouter prefix but agent is on openrouter, use agent's auth
+    elif is_openrouter and api_key and not user_model_is_openrouter:
+        user_llm_args["api_key"] = api_key
+        user_llm_args["base_url"] = base_url
+    # If user_model looks like an OpenRouter model (e.g. provider/model:version without openrouter/ prefix)
+    # and we have an OpenRouter key, use OpenRouter
+    elif openrouter_key and "/" in user_model and ":" in user_model and not user_model_is_openrouter:
+        user_model = f"openrouter/{user_model}"
+        user_model_is_openrouter = True
+        user_llm_args["api_key"] = openrouter_key
+        user_llm_args["base_url"] = OPENROUTER_BASE_URL
 
     config = TextRunConfig(
         domain=env_name,

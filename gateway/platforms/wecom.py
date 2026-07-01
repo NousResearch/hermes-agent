@@ -309,7 +309,8 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _wait_for_handshake(self, req_id: str) -> Dict[str, Any]:
         """Wait for the subscribe acknowledgement."""
-        if not self._ws:
+
+        if not self._ws or getattr(self._ws, "closed", False):
             raise RuntimeError("WebSocket not initialized")
 
         deadline = asyncio.get_running_loop().time() + CONNECT_TIMEOUT_SECONDS
@@ -360,7 +361,8 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
-        if not self._ws:
+
+        if not self._ws or getattr(self._ws, "closed", False):
             raise RuntimeError("WebSocket not connected")
 
         while self._running and self._ws and not self._ws.closed:

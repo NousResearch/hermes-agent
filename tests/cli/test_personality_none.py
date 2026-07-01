@@ -209,16 +209,3 @@ class TestPersonalityDictFormat:
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality helper")
         assert cli.system_prompt == "You are helpful."
-
-    def test_resolve_prompt_dict_no_tone_no_style(self):
-        from cli import HermesCLI
-        result = HermesCLI._resolve_personality_prompt({
-            "description": "A helper",
-            "system_prompt": "You are helpful.",
-        })
-        assert result == "You are helpful."
-
-    def test_resolve_prompt_string(self):
-        from cli import HermesCLI
-        result = HermesCLI._resolve_personality_prompt("You are helpful.")
-        assert result == "You are helpful."

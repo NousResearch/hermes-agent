@@ -1911,6 +1911,11 @@ class SlashCommandCompleter(Completer):
     def _personality_completions(sub_text: str, sub_lower: str):
         """Yield completions for /personality from configured personalities."""
         try:
+            from agent.personality import (
+                PersonalityConfigError,
+                PersonalityDefinition,
+            )
+
             # Resolve from the same source the runtime applies personalities —
             # agent.personalities via the CLI config (which ships the built-ins).
             # load_config()'s schema has no agent.personalities, so the completer
@@ -1927,10 +1932,11 @@ class SlashCommandCompleter(Completer):
                 )
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
-                    if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                    else:
-                        meta = str(prompt)[:50]
+                    try:
+                        definition = PersonalityDefinition.parse(str(name), prompt)
+                    except PersonalityConfigError:
+                        continue
+                    meta = definition.description or definition.system_prompt[:50]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),

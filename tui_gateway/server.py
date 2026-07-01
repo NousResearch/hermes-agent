@@ -26,6 +26,11 @@ from hermes_constants import (
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
+from agent.personality import (
+    PersonalityNotFoundError,
+    is_personality_clear_request,
+    resolve_personality,
+)
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.transport import (
@@ -3559,7 +3564,7 @@ def _probe_config_health(cfg: dict) -> str:
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
         if (
             personality
-            and personality not in {"default", "none", "neutral"}
+            and not is_personality_clear_request(personality)
             and isinstance(agent_cfg, dict)
             and agent_cfg.get("personalities") is None
         ):
@@ -4295,17 +4300,6 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
 
 
-def _render_personality_prompt(value) -> str:
-    if isinstance(value, dict):
-        parts = [value.get("system_prompt", "")]
-        if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
-        if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
-        return "\n".join(p for p in parts if p)
-    return str(value)
-
-
 def _available_personalities(cfg: dict | None = None) -> dict:
     try:
         from cli import load_cli_config
@@ -4323,13 +4317,14 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     raw = str(value or "").strip()
-    name = raw.lower()
-    if not name or name in {"none", "default", "neutral"}:
+    if is_personality_clear_request(raw):
         return "", ""
 
     personalities = _available_personalities(cfg)
-    if name not in personalities:
-        names = sorted(personalities)
+    try:
+        return resolve_personality(raw, personalities)
+    except PersonalityNotFoundError as exc:
+        names = sorted(exc.available_names)
         available = ", ".join(f"`{n}`" for n in names)
         base = f"Unknown personality: `{raw}`."
         if available:
@@ -4337,8 +4332,6 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
         else:
             base += "\n\nNo personalities configured."
         raise ValueError(base)
-
-    return name, _render_personality_prompt(personalities[name])
 
 
 def _prompt_text(value) -> str:

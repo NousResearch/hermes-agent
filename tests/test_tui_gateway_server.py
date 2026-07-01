@@ -5086,6 +5086,51 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
     assert "Unknown personality" in resp["error"]["message"]
 
 
+def test_config_set_personality_rejects_invalid_definition_without_mutation(
+    monkeypatch,
+):
+    writes = []
+    agent = types.SimpleNamespace(
+        ephemeral_system_prompt="before",
+        _cached_system_prompt="cached",
+    )
+    session = _session(agent=agent, history=[])
+    server._sessions["sid"] = session
+    monkeypatch.setattr(
+        server,
+        "_available_personalities",
+        lambda cfg=None: {"broken": {"tone": 42}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda path, value: writes.append((path, value)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "broken",
+                },
+            }
+        )
+
+        assert "Invalid personality 'broken'" in resp["error"]["message"]
+        assert writes == []
+        assert server._sessions["sid"] is session
+        assert session["agent"] is agent
+        assert agent.ephemeral_system_prompt == "before"
+        assert agent._cached_system_prompt == "cached"
+        assert session["history"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     agent = types.SimpleNamespace(
         ephemeral_system_prompt=None, _cached_system_prompt="old"

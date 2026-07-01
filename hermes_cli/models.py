@@ -288,12 +288,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-nano-30b-a3b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
+        # Third-party agentic models hosted on build.nvidia.com.
+        # Keep current build.nvidia.com free endpoints here so the picker shows
+        # them near the top instead of burying live-only entries beyond the
+        # Telegram row limit.
+        "minimaxai/minimax-m3",
+        "minimaxai/minimax-m2.7",
         "qwen/qwen3.5-397b-a17b",
         "deepseek-ai/deepseek-v3.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
         "z-ai/glm5",
         "openai/gpt-oss-120b",
     ],
@@ -527,6 +530,83 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3-235b-a22b-fp8",
     ],
 }
+
+
+# NVIDIA NIM's ``/v1/models`` catalog is a flat list with very little metadata
+# (no pricing, no tool-call capability flags, no model quality hints). For the
+# picker this means utility/safety/embedding models can easily crowd out the
+# public trial models people actually want to drive Hermes with. Keep a short,
+# provider-specific priority list for the strongest agentic/coding picks, push
+# clearly non-chat utility models to the bottom, and preserve the provider's
+# original order within each tier so newly-added neutral models still surface
+# without requiring a Hermes release.
+_NVIDIA_PICKER_PRIORITY_SUBSTRINGS: tuple[str, ...] = (
+    "minimaxai/minimax-m3",
+    "deepseek-ai/deepseek-v4-pro",
+    "deepseek-ai/deepseek-v4-flash",
+    "nvidia/nemotron-3-ultra-550b",
+    "nvidia/nemotron-3-super-120b",
+    "minimaxai/minimax-m2.7",
+    "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.1",
+    "z-ai/glm5",
+    "qwen/qwen3.5-397b-a17b",
+    "qwen/qwen3-next-80b",
+    "meta/llama-4-maverick",
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+    "openai/gpt-oss-120b",
+)
+
+_NVIDIA_PICKER_UTILITY_SUBSTRINGS: tuple[str, ...] = (
+    "embed",
+    "retriever",
+    "rerank",
+    "guard",
+    "safety",
+    "topic-control",
+    "content-safety",
+    "parse",
+    "asr",
+    "tts",
+    "transcrib",
+)
+
+
+def _rank_nvidia_model_ids(model_ids: list[str]) -> list[str]:
+    """Return a picker-friendly ordering for NVIDIA NIM model IDs.
+
+    Tier 0: short provider-specific priority list for the strongest public
+    agentic/coding models.
+    Tier 1: everything else, preserving the provider's original order.
+    Tier 2: obvious utility/non-chat models (embeddings, safety, parser, ASR,
+    TTS, retrievers).
+    """
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in model_ids:
+        mid = str(raw or "").strip()
+        if not mid:
+            continue
+        key = mid.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(mid)
+
+    def _bucket(model_id: str) -> tuple[int, int]:
+        lower = model_id.lower()
+        for idx, needle in enumerate(_NVIDIA_PICKER_PRIORITY_SUBSTRINGS):
+            if needle in lower:
+                return (0, idx)
+        if any(needle in lower for needle in _NVIDIA_PICKER_UTILITY_SUBSTRINGS):
+            return (2, 0)
+        return (1, 0)
+
+    ranked = sorted(
+        enumerate(unique),
+        key=lambda item: (_bucket(item[1])[0], _bucket(item[1])[1], item[0]),
+    )
+    return [model_id for _idx, model_id in ranked]
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
@@ -2474,17 +2554,26 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())
+                        if normalized == "nvidia":
+                            return _rank_nvidia_model_ids(merged)
                         return merged
+                    if normalized == "nvidia":
+                        return _rank_nvidia_model_ids(live)
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:
-                return list(_p.fallback_models)
+                fallback = list(_p.fallback_models)
+                if normalized == "nvidia":
+                    return _rank_nvidia_model_ids(fallback)
+                return fallback
     except Exception:
         pass
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)
+    if normalized == "nvidia":
+        return _rank_nvidia_model_ids(curated_static)
     return curated_static
 
 

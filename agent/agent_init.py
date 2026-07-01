@@ -521,10 +521,7 @@ def init_agent(
         from hermes_cli.config import load_config as _load_pc_cfg
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
-        if isinstance(_pc_cfg, dict) and _pc_cfg.get("enabled") is False:
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-        _ttl = _pc_cfg.get("cache_ttl", "5m") if isinstance(_pc_cfg, dict) else "5m"
+        _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
     except Exception:

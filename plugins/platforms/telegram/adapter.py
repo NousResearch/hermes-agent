@@ -412,6 +412,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._drop_delayed_deliveries = False
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -423,6 +424,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # also probes get_webhook_info().pending_update_count and escalates to
         # recovery after two consecutive stuck probes (#42909).
         self._polling_pending_stuck_count: int = 0
+        # Consecutive heartbeat probes that found the updater stopped entirely
+        # (running=False) while we are in polling mode with no reconnect in
+        # flight. Distinct from the wedged-but-running case above: the long-poll
+        # task is simply gone, so neither the connectivity probe nor PTB's
+        # error_callback ever fires and the gateway silently stops receiving
+        # messages with the process still alive (#55769).
+        self._polling_not_running_count: int = 0
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -491,6 +499,27 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+
+    def _mark_connected(self) -> None:
+        self._drop_delayed_deliveries = False
+        super()._mark_connected()
+
+    def _mark_disconnected(self) -> None:
+        self._drop_delayed_deliveries = True
+        super()._mark_disconnected()
+
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+        self._drop_delayed_deliveries = True
+        super()._set_fatal_error(code, message, retryable=retryable)
+
+    def _should_drop_delayed_delivery(self) -> bool:
+        """True once teardown/fatal-error started — delayed flushes must drop.
+
+        Buffered text/photo/media-group flushes sit behind an asyncio.sleep().
+        If disconnect wins the race, dispatching them spawns an agent on a
+        torn-down session, producing stale/duplicate deliveries.
+        """
+        return bool(getattr(self, "_drop_delayed_deliveries", False))
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1879,20 +1908,61 @@ class TelegramAdapter(BasePlatformAdapter):
         not trip a needless recovery. Recovery reuses
         ``_handle_polling_network_error`` — the same ladder PTB's own
         ``error_callback`` feeds — so no new restart machinery is introduced.
+
+        This also covers the harsher case where the updater has stopped
+        entirely (``running=False``) with no reconnect in flight: the long-poll
+        task is gone rather than wedged, so even ``get_webhook_info`` can't
+        report a queue against a live consumer. We detect the stopped updater
+        directly and feed the same ladder (#55769).
         """
-        # Only meaningful in polling mode with a running updater; in webhook
-        # mode Telegram pushes updates and holds no server-side queue.
+        # Only meaningful in polling mode; in webhook mode Telegram pushes
+        # updates and holds no server-side queue.
         if self._webhook_mode:
             return
+        # A reconnect already in flight owns recovery — don't double-trigger,
+        # and don't misread its brief stop()->start_polling() window (where
+        # updater.running is transiently False) as a dead updater below.
+        if self._polling_error_task and not self._polling_error_task.done():
+            self._polling_not_running_count = 0
+            return
         updater = getattr(self._app, "updater", None) if self._app else None
-        if updater is None or not getattr(updater, "running", False):
+        if updater is None:
             self._polling_pending_stuck_count = 0
             return
+        if not getattr(updater, "running", False):
+            # We are in polling mode with no reconnect in flight, yet PTB's
+            # updater has stopped entirely. This is distinct from the
+            # wedged-but-running consumer handled below: the long-poll task is
+            # gone, get_me()/get_webhook_info() on the general request path
+            # still succeed, so no error_callback or connectivity probe ever
+            # fires and the gateway silently stops receiving messages while the
+            # process stays alive (#55769). Escalate through the same reconnect
+            # ladder as a wedged consumer, debounced over two consecutive probes
+            # so a just-starting updater never trips it.
+            self._polling_pending_stuck_count = 0
+            self._polling_not_running_count += 1
+            logger.warning(
+                "[%s] Telegram polling heartbeat: updater stopped while in "
+                "polling mode (stuck probe %d/2)",
+                self.name, self._polling_not_running_count,
+            )
+            if self._polling_not_running_count >= 2:
+                self._polling_not_running_count = 0
+                logger.warning(
+                    "[%s] Telegram updater is not running (long-poll task "
+                    "gone); triggering polling restart",
+                    self.name,
+                )
+                loop = asyncio.get_running_loop()
+                self._polling_error_task = loop.create_task(
+                    self._handle_polling_network_error(
+                        RuntimeError("Telegram updater stopped while in polling mode")
+                    )
+                )
+            return
+        self._polling_not_running_count = 0
         get_webhook_info = getattr(bot, "get_webhook_info", None)
         if not callable(get_webhook_info):
-            return
-        # A reconnect already in flight owns recovery — don't double-trigger.
-        if self._polling_error_task and not self._polling_error_task.done():
             return
         try:
             info = await asyncio.wait_for(get_webhook_info(), probe_timeout)  # type: ignore[arg-type]
@@ -2867,8 +2937,60 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, text, e,
             )
 
+    async def _cancel_pending_delivery_tasks(self) -> None:
+        """Cancel every delayed-delivery task family before disconnect completes.
+
+        Covers media-group, photo-batch and text-batch flush tasks plus the
+        polling-error recovery task. Each sits behind an ``asyncio.sleep()``;
+        if teardown leaves them running they dispatch ``handle_message`` into a
+        torn-down session. Skips the current task so the coroutine driving
+        teardown does not cancel itself.
+        """
+        current_task = asyncio.current_task()
+        pending_tasks: list[asyncio.Task] = []
+        awaitable_tasks: list[asyncio.Task] = []
+        seen: set[int] = set()
+
+        def collect(task: Optional[asyncio.Task]) -> None:
+            if not task or task.done() or task is current_task:
+                return
+            marker = id(task)
+            if marker in seen:
+                return
+            seen.add(marker)
+            pending_tasks.append(task)
+            if asyncio.isfuture(task) or asyncio.iscoroutine(task):
+                awaitable_tasks.append(task)
+
+        for task in list(self._media_group_tasks.values()):
+            collect(task)
+        for task in list(self._pending_photo_batch_tasks.values()):
+            collect(task)
+        for task in list(self._pending_text_batch_tasks.values()):
+            collect(task)
+        collect(self._polling_error_task)
+
+        for task in pending_tasks:
+            task.cancel()
+        if awaitable_tasks:
+            await asyncio.gather(*awaitable_tasks, return_exceptions=True)
+
+        self._media_group_tasks.clear()
+        self._media_group_events.clear()
+        self._pending_photo_batch_tasks.clear()
+        self._pending_photo_batches.clear()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+        if self._polling_error_task is not current_task:
+            self._polling_error_task = None
+
     async def disconnect(self) -> None:
-        """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
+        # Mark disconnected first so the drop guard short-circuits any flush
+        # that wins the race against teardown and prevents new delayed tasks
+        # from being scheduled by late update handlers.
+        self._mark_disconnected()
+
         # Cancel the heartbeat before tearing down the app so the probe task
         # cannot fire get_me() into a half-shutdown bot client.
         if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
@@ -2889,13 +3011,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-        pending_media_group_tasks = list(self._media_group_tasks.values())
-        for task in pending_media_group_tasks:
-            task.cancel()
-        if pending_media_group_tasks:
-            await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
-        self._media_group_tasks.clear()
-        self._media_group_events.clear()
+        await self._cancel_pending_delivery_tasks()
 
         if self._app:
             try:
@@ -2909,13 +3025,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
         self._release_platform_lock()
 
-        for task in self._pending_photo_batch_tasks.values():
-            if task and not task.done():
-                task.cancel()
-        self._pending_photo_batch_tasks.clear()
-        self._pending_photo_batches.clear()
-
-        self._mark_disconnected()
         self._app = None
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)
@@ -6826,6 +6935,10 @@ class TelegramAdapter(BasePlatformAdapter):
         concatenates them and waits for a short quiet period before
         dispatching the combined message.
         """
+        if self._should_drop_delayed_delivery():
+            logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
+            return
+
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
@@ -6885,6 +6998,9 @@ class TelegramAdapter(BasePlatformAdapter):
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
+            if self._should_drop_delayed_delivery():
+                logger.debug("[Telegram] Dropping text batch flush after disconnect started")
+                return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
@@ -6919,6 +7035,9 @@ class TelegramAdapter(BasePlatformAdapter):
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
                 return
+            if self._should_drop_delayed_delivery():
+                logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
+                return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
         finally:
@@ -6927,6 +7046,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
+        if self._should_drop_delayed_delivery():
+            logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            return
+
         existing = self._pending_photo_batches.get(batch_key)
         if existing is None:
             self._pending_photo_batches[batch_key] = event
@@ -7231,6 +7354,10 @@ class TelegramAdapter(BasePlatformAdapter):
         new user message and interrupts the first. We debounce briefly and merge the
         attachments into a single MessageEvent.
         """
+        if self._should_drop_delayed_delivery():
+            logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            return
+
         existing = self._media_group_events.get(media_group_id)
         if existing is None:
             self._media_group_events[media_group_id] = event
@@ -7249,15 +7376,20 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
+        current_task = asyncio.current_task()
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
             if event is not None:
+                if self._should_drop_delayed_delivery():
+                    logger.debug("[Telegram] Dropping media group flush after disconnect started")
+                    return
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
         finally:
-            self._media_group_tasks.pop(media_group_id, None)
+            if self._media_group_tasks.get(media_group_id) is current_task:
+                self._media_group_tasks.pop(media_group_id, None)
 
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """

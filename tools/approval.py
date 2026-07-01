@@ -48,6 +48,47 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="",
 )
 
+# Interactive-CLI flag. Concurrent ACP sessions run on a shared
+# ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
+# os.environ["HERMES_INTERACTIVE"] races: one session's restore in `finally`
+# can clobber another session's set mid-run, dropping it onto the
+# non-interactive auto-approve path so a dangerous command executes without
+# the approval callback firing (GHSA-96vc-wcxf-jjff). A contextvar is
+# thread/task-local, so each executor worker (or asyncio task) sees only its
+# own value. None = unset → fall back to the env var for legacy
+# single-threaded CLI callers that still export HERMES_INTERACTIVE.
+_hermes_interactive_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "hermes_interactive",
+    default=None,
+)
+
+
+def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
+    """Bind interactive mode for the current context (thread or asyncio task).
+
+    Use this instead of mutating ``os.environ["HERMES_INTERACTIVE"]`` from
+    concurrent executor threads. When unset (default), interactive detection
+    falls back to the ``HERMES_INTERACTIVE`` env var for legacy callers.
+    """
+    return _hermes_interactive_ctx.set("1" if interactive else "")
+
+
+def reset_hermes_interactive_context(token: contextvars.Token) -> None:
+    """Restore the prior value from :func:`set_hermes_interactive_context`."""
+    _hermes_interactive_ctx.reset(token)
+
+
+def _is_interactive_cli() -> bool:
+    """True when running an interactive CLI/ACP session.
+
+    Prefers the context-local flag (set by concurrent ACP sessions) and falls
+    back to the ``HERMES_INTERACTIVE`` env var for single-threaded callers.
+    """
+    ctx_val = _hermes_interactive_ctx.get()
+    if ctx_val is not None:
+        return is_truthy_value(ctx_val)
+    return env_var_enabled("HERMES_INTERACTIVE")
+
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
@@ -385,7 +426,7 @@ DANGEROUS_PATTERNS = [
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
+    (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
     (r'\bdd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
@@ -424,8 +465,10 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    # terminates all running agents mid-work.  Allow global flags between
+    # `hermes` and `gateway` (e.g. `hermes -p ade gateway restart`) so a
+    # profile flag can't slip the agent past the guard.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
@@ -497,10 +540,16 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
+    # shell commands without triggering the `bash -c` pattern above. The
+    # inner commands may not individually match any dangerous pattern (e.g.
+    # data-exfiltration pipelines using curl/cat) yet are still executed in
+    # a full shell context.
+    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
@@ -995,9 +1044,17 @@ def prompt_dangerous_approval(command: str, description: str,
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    # Redact secrets before any user-visible rendering. The original
+    # `command` is still what executes after approval; only the displayed
+    # copy is scrubbed. Reuses the same redaction module used for memory
+    # and log sanitization so tokens mask consistently across surfaces.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_description = redact_sensitive_text(description)
+
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
+            return approval_callback(display_command, display_description,
                                      allow_permanent=allow_permanent)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -1037,8 +1094,8 @@ def prompt_dangerous_approval(command: str, description: str,
         from agent.i18n import t
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=description)}")
-            print(f"      {command}")
+            print(f"  {t('approval.dangerous_header', description=display_description)}")
+            print(f"      {display_command}")
             print()
             if allow_permanent:
                 print(t("approval.choose_long"))
@@ -1344,7 +1401,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1604,7 +1661,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
@@ -1751,11 +1808,19 @@ def check_all_command_guards(command: str, env_type: str,
             # Block the agent thread until the user responds; the notify +
             # heartbeat wait loop is shared with check_execute_code_guard via
             # _await_gateway_decision().
+            #
+            # Redact secrets in the notified payload: the gateway renders this
+            # dict directly to Discord/Slack/etc. and those messages are
+            # screenshottable. The raw `command` still executes after approval
+            # via the closure below, so redaction is display-only. Approval
+            # persistence keys off pattern_key (not the command text), so the
+            # allowlist is unaffected.
+            from agent.redact import redact_sensitive_text
             approval_data = {
-                "command": command,
+                "command": redact_sensitive_text(command),
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
-                "description": combined_desc,
+                "description": redact_sensitive_text(combined_desc),
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
@@ -1819,22 +1884,27 @@ def check_all_command_guards(command: str, env_type: str,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
-        # Return approval_required for backward compat.
+        # Return approval_required for backward compat. Redact secrets in the
+        # user-facing copy — the raw `command` is preserved for execution and
+        # the allowlist keys off pattern_key, so redaction is display-only.
+        from agent.redact import redact_sensitive_text
+        _disp_command = redact_sensitive_text(command)
+        _disp_combined_desc = redact_sensitive_text(combined_desc)
         submit_pending(session_key, {
-            "command": command,
+            "command": _disp_command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
-            "description": combined_desc,
+            "description": _disp_combined_desc,
         })
         return {
             "approved": False,
             "pattern_key": primary_key,
             "status": "pending_approval",
             "approval_pending": True,
-            "command": command,
-            "description": combined_desc,
+            "command": _disp_command,
+            "description": _disp_combined_desc,
             "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
             ),
         }
 
@@ -2117,6 +2187,17 @@ def check_execute_code_guard(code: str, env_type: str,
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
+    # Redacted copies for user-visible rendering only. An execute_code script
+    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
+    # this payload directly to Discord/Slack — those messages are
+    # screenshottable. The raw `command`/`code` are still what get assessed by
+    # smart approval and executed; redaction is display-only. Approval
+    # persistence keys off pattern_key, so the allowlist is unaffected.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_code = redact_sensitive_text(code)
+    display_description = redact_sensitive_text(description)
+
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
@@ -2155,29 +2236,29 @@ def check_execute_code_guard(code: str, env_type: str,
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
         submit_pending(session_key, {
-            "command": command,
+            "command": display_command,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
-            "description": description,
+            "description": display_description,
         })
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "pending_approval",
             "approval_pending": True,
-            "command": command,
-            "description": description,
+            "command": display_command,
+            "description": display_description,
             "message": (
-                f"⚠️ {description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{code}\n```"
+                f"⚠️ {display_description}. Asking the user for approval.\n\n"
+                f"**Code:**\n```python\n{display_code}\n```"
             ),
         }
 
     approval_data = {
-        "command": command,
+        "command": display_command,
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
-        "description": description,
+        "description": display_description,
     }
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"

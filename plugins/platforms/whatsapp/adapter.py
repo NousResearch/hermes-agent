@@ -35,6 +35,10 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
+# Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
+# transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
+_OWNER_REPLY_PREFIX = "[owner reply] "
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -268,10 +272,6 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
-    IMAGE_CACHE_DIR,
-    AUDIO_CACHE_DIR,
-    VIDEO_CACHE_DIR,
-    DOCUMENT_CACHE_DIR,
 )
 from utils import env_int
 
@@ -292,7 +292,23 @@ def _is_allowed_bridge_path(url: str) -> bool:
         resolved = Path(url).resolve()
     except (OSError, ValueError):
         return False
-    for root in (IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR):
+    # Resolve the cache roots per-call via the getters (not the import-time
+    # constants) so this validator follows the active profile override; under a
+    # profile override the inbound bridge writes media into that profile's
+    # cache, which the frozen constants would not match.
+    from gateway.platforms.base import (
+        get_audio_cache_dir,
+        get_document_cache_dir,
+        get_image_cache_dir,
+        get_video_cache_dir,
+    )
+
+    for root in (
+        get_image_cache_dir(),
+        get_audio_cache_dir(),
+        get_video_cache_dir(),
+        get_document_cache_dir(),
+    ):
         try:
             if resolved.is_relative_to(Path(root).resolve()):
                 return True
@@ -1332,6 +1348,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            metadata: Dict[str, Any] = {}
+            # The bridge sets ``fromOwner: true`` on inbound fromMe messages
+            # that look owner-typed (linked-device send, not echoed from our
+            # own /send).  Surfaced under a platform-prefixed key so plugins
+            # can detect "owner just replied in this customer chat" without
+            # having to peek at raw_message.  We also prefix ``MessageEvent.text``
+            # with ``[owner reply] `` here so the marker survives any downstream
+            # failure (e.g. handover-rule errors that bypass silent_ingest).
+            # Gated by ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer;
+            # metadata + text tagging are unconditional when the flag is present
+            # so a future producer can set it without adapter changes.
+            if data.get("fromOwner"):
+                metadata["whatsapp_from_owner"] = True
+                if not body.startswith(_OWNER_REPLY_PREFIX):
+                    body = f"{_OWNER_REPLY_PREFIX}{body}"
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1340,6 +1372,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                metadata=metadata,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

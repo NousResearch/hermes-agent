@@ -1,0 +1,7 @@
+name: web-camofox
+version: 1.0.0
+description: "Camofox web content extraction — self-hosted anti-detect browser server. Requires CAMOFOX_URL pointing at your instance."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - camofox

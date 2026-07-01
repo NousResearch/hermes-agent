@@ -340,6 +340,14 @@ TOOL_CATEGORIES = {
         # See PR #25182 for the migration rationale.
         "providers": [
             {
+                "name": "Local Web Stack",
+                "badge": "★ free · self-hosted",
+                "tag": "SearXNG search + Firecrawl extract + Camofox browser (auto-installs)",
+                "web_backend": "searxng",
+                "env_vars": [],
+                "post_setup": "local_web_stack",
+            },
+            {
                 "name": "Nous Subscription",
                 "badge": "subscription",
                 "tag": "Managed Firecrawl billed to your subscription",
@@ -940,7 +948,24 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key in {"agent_browser", "browserbase"}:
+    if post_setup_key == "local_web_stack":
+        script = PROJECT_ROOT / "scripts" / "setup_local_web_stack.sh"
+        if script.exists():
+            _print_info("    Installing local web stack (SearXNG + Firecrawl + Camofox)...")
+            import subprocess
+            result = subprocess.run(
+                ["/bin/bash", str(script), "setup"],
+                cwd=str(PROJECT_ROOT),
+            )
+            if result.returncode == 0:
+                _print_success("    Local web stack installed and started")
+            else:
+                _print_warning("    Local web stack setup failed. Run manually:")
+                _print_info(f"      {script} setup")
+        else:
+            _print_warning("    Local web stack setup script not found:")
+            _print_info(f"      {script}")
+    elif post_setup_key in {"agent_browser", "browserbase"}:
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         npm_bin = shutil.which("npm")
         npx_bin = shutil.which("npx")

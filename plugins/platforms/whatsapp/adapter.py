@@ -1147,10 +1147,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         When WhatsApp delivers rapid-fire messages (e.g. forwarded
         batches), this concatenates them and waits for a short quiet
         period before dispatching the combined message.
+
+        Standalone slash commands flush any pending batch immediately so
+        commands like /side are not concatenated onto a previous message.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
+
+        is_slash_command = bool(event.text and event.text.strip().startswith("/"))
+        if is_slash_command and existing is not None:
+            # Flush the pending batch first, then enqueue the command separately.
+            prior_task = self._pending_text_batch_tasks.pop(key, None)
+            if prior_task and not prior_task.done():
+                prior_task.cancel()
+            flushed = self._pending_text_batches.pop(key, None)
+            if flushed is not None:
+                asyncio.create_task(self.handle_message(flushed))
+            existing = None
+
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
@@ -1298,6 +1313,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if len(quoted_text) > 300:
                     quoted_text = quoted_text[:297] + "..."
                 body = f"[Replying to: \"{quoted_text}\"]\n{body}"
+            # If the quoted message had media, include the cached media path so
+            # vision/audio tools can inspect the original content.
+            quoted_media_urls = data.get("quotedMediaUrls") or []
+            quoted_media_type = data.get("quotedMediaType") or ""
+            if quoted_media_urls:
+                body = f"[Replying to {quoted_media_type or 'media'}: {', '.join(quoted_media_urls)}]\n{body}"
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
@@ -1347,6 +1368,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
+                reply_to_message_id=data.get("quotedMessageId") or None,
                 media_urls=cached_urls,
                 media_types=media_types,
                 metadata=metadata,

@@ -2860,6 +2860,36 @@ class BasePlatformAdapter(ABC):
         """
         self._session_store = session_store
     
+    def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
+        """Return media paths already delivered in prior turns of this session.
+
+        Loads the persisted transcript, drops the most recent assistant entry
+        (which belongs to the current response), and scans the remaining history
+        for MEDIA: tags and image_generate JSON payloads.  Used to prevent the
+        model from re-delivering the same file when it echoes an old MEDIA tag.
+        """
+        if not getattr(self, "_session_store", None):
+            return None
+        try:
+            transcript = self._session_store.load_transcript(session_key)
+        except Exception:
+            return None
+        if not transcript:
+            return None
+        # Exclude the current turn's assistant message, which has already been
+        # persisted by the time we reach delivery but must not be treated as
+        # "history" for dedup purposes.
+        history = list(transcript)
+        for msg in reversed(history):
+            if msg.get("role") == "assistant":
+                history.remove(msg)
+                break
+        if not history:
+            return None
+        # Avoid circular import: gateway.run already imports this module.
+        from gateway.run import _collect_history_media_paths
+        return _collect_history_media_paths(history)
+
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -4904,6 +4934,18 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
+                # Deduplicate against media already delivered in prior turns.
+                # The model may echo a previous MEDIA: tag or bare file path in
+                # a later response; without this guard the same file is sent
+                # repeatedly.
+                _history_media_paths = self._history_media_paths_for_session(session_key)
+                if _history_media_paths:
+                    media_files = [
+                        (path, is_voice)
+                        for path, is_voice in media_files
+                        if path not in _history_media_paths
+                    ]
+
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
@@ -4922,6 +4964,8 @@ class BasePlatformAdapter(ABC):
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
                     local_files = self.filter_local_delivery_paths(local_files)
+                    if _history_media_paths:
+                        local_files = [p for p in local_files if p not in _history_media_paths]
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 

@@ -45,6 +45,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "CAMOFOX_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -77,6 +78,7 @@ class TestBundledPluginsRegister:
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "camofox",
             "ddgs",
             "exa",
             "firecrawl",
@@ -90,6 +92,7 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
+            ("camofox", False, True),
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
@@ -116,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "camofox", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "camofox", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -244,6 +247,17 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_camofox_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Camofox needs CAMOFOX_URL to be available."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("camofox")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         assert p.is_available() is True
 
 

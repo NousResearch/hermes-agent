@@ -236,13 +236,13 @@ def test_overview_drops_session_rows_but_keeps_counts_and_previews():
 
 def test_overview_default_preview_does_not_make_history_look_capped_at_three():
     resolve = _resolver({"/repo": ("/repo", "/repo")})
-    sessions = [_session("/repo", branch="main") for _ in range(4)]
+    sessions = [_session("/repo", branch="main") for _ in range(11)]
 
     tree = pt.build_tree([], sessions, [], resolve, hydrate=False)
     project = tree["projects"][0]
 
-    assert project["sessionCount"] == 4
-    assert len(project["previewSessions"]) == 4
+    assert project["sessionCount"] == 11
+    assert len(project["previewSessions"]) == 10
     assert pt.PROJECT_OVERVIEW_PREVIEW_LIMIT == 10
 
 

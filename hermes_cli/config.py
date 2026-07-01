@@ -7301,7 +7301,7 @@ def show_config():
         coder_api_key = get_env_value('CODER_API_KEY')
         print(f"  Coder URL:    {coder_url or '(not set)'}")
         print(f"  Organization: {coder_organization or '(default)'}")
-        print(f"  Workspace:    {coder_workspace or '(per-session)'}")
+        print(f"  Workspace:    {coder_workspace or '(required; not set)'}")
         print(f"  API key:      {'configured' if coder_api_key else '(not set)'}")
 
     # Timezone

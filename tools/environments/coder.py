@@ -158,7 +158,10 @@ class CoderEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
         self.base_url = base_url.rstrip("/")
         self.task_id = task_id
-        self.workspace = workspace_name or coder_workspace_name_for_task(task_id)
+        workspace = (workspace_name or "").strip()
+        if not workspace:
+            raise ValueError("Coder environment requires explicit workspace_name (CODER_WORKSPACE)")
+        self.workspace = workspace
         self.api_key = api_key
         self._workspace_startup_timeout = self._snapshot_timeout
         if workspace_startup_timeout is not None:

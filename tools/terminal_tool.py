@@ -1526,13 +1526,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     elif env_type == "coder":
-        if not cc.get("coder_url") or not cc.get("coder_api_key"):
-            raise ValueError("Coder environment requires CODER_URL and CODER_API_KEY")
+        if not cc.get("coder_url") or not cc.get("coder_api_key") or not cc.get("coder_workspace"):
+            raise ValueError("Coder environment requires CODER_URL, CODER_API_KEY, and CODER_WORKSPACE")
         return _CoderEnvironment(
             base_url=cc["coder_url"],
             task_id=task_id,
             api_key=cc["coder_api_key"],
-            workspace_name=cc.get("coder_workspace") or None,
+            workspace_name=cc["coder_workspace"],
             cwd=cwd,
             timeout=timeout,
             forward_env=cc.get("coder_forward_env", []),
@@ -2877,9 +2877,9 @@ def check_terminal_requirements() -> bool:
             return os.getenv("DAYTONA_API_KEY") is not None
 
         elif env_type == "coder":
-            if not config.get("coder_url") or not config.get("coder_api_key"):
+            if not config.get("coder_url") or not config.get("coder_api_key") or not config.get("coder_workspace"):
                 logger.error(
-                    "Coder backend selected but CODER_URL and CODER_API_KEY must both be set."
+                    "Coder backend selected but CODER_URL, CODER_API_KEY, and CODER_WORKSPACE must all be set."
                 )
                 return False
             return True

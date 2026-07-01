@@ -195,6 +195,9 @@ def test_config_schema_exposes_coder_terminal_backend_and_fields():
 
     assert fields["terminal.coder_organization"]["type"] == "string"
     assert fields["terminal.coder_workspace"]["type"] == "string"
+    assert fields["terminal.coder_workspace"].get("required") is True
+    assert "required" in fields["terminal.coder_workspace"]["description"].lower()
+    assert "per-session" not in fields["terminal.coder_workspace"]["description"].lower()
     assert fields["terminal.coder_forward_env"]["type"] == "list"
     assert fields["terminal.coder_workspace_startup_timeout"]["type"] == "number"
     assert "startup" in fields["terminal.coder_workspace_startup_timeout"]["description"].lower()

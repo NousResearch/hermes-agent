@@ -73,6 +73,47 @@ def test_get_env_config_reads_coder_workspace_startup_timeout(monkeypatch):
     assert config["coder_workspace_startup_timeout"] == 240
 
 
+def test_coder_requirements_missing_workspace_fails(monkeypatch, caplog):
+    monkeypatch.setenv("TERMINAL_ENV", "coder")
+    monkeypatch.setenv("CODER_URL", "https://coder.example")
+    monkeypatch.setenv("CODER_API_KEY", "secret-token")
+    monkeypatch.delenv("CODER_WORKSPACE", raising=False)
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+    assert ok is False
+    assert any("CODER_WORKSPACE" in record.getMessage() for record in caplog.records)
+
+
+def test_create_environment_requires_coder_workspace(monkeypatch):
+    ctor = MagicMock()
+    monkeypatch.setattr(terminal_tool_module, "_CoderEnvironment", ctor)
+    with pytest.raises(ValueError, match="CODER_WORKSPACE"):
+        terminal_tool_module._create_environment(
+            env_type="coder",
+            image="ignored",
+            cwd="~",
+            timeout=30,
+            container_config={
+                "coder_url": "https://coder.example",
+                "coder_api_key": "secret-token",
+                "coder_workspace": "",
+            },
+            task_id="task-coder",
+        )
+    ctor.assert_not_called()
+
+
+def test_coder_environment_requires_explicit_workspace_name():
+    with pytest.raises(ValueError, match="workspace_name"):
+        CoderEnvironment(
+            base_url="https://coder.example",
+            task_id="task-coder",
+            api_key="secret-token",
+            workspace_name="",
+            init_session=False,
+        )
+
+
 def test_coder_environment_defaults_snapshot_timeout_to_three_minutes(monkeypatch):
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
@@ -83,6 +124,7 @@ def test_coder_environment_defaults_snapshot_timeout_to_three_minutes(monkeypatc
         base_url="https://coder.example",
         task_id="task-coder",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         init_session=False,
     )
 
@@ -99,6 +141,7 @@ def test_coder_environment_uses_workspace_startup_timeout(monkeypatch):
         base_url="https://coder.example",
         task_id="task-coder",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         workspace_startup_timeout=240,
         init_session=False,
     )
@@ -198,7 +241,7 @@ def test_coder_requirements_missing_api_key_logs_error(monkeypatch, caplog):
 
     assert ok is False
     assert any(
-        "Coder backend selected but CODER_URL and CODER_API_KEY must both be set"
+        "Coder backend selected but CODER_URL, CODER_API_KEY, and CODER_WORKSPACE must all be set"
         in record.getMessage()
         for record in caplog.records
     )
@@ -208,6 +251,7 @@ def test_coder_requirements_with_credentials_passes(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "coder")
     monkeypatch.setenv("CODER_URL", "https://coder.example")
     monkeypatch.setenv("CODER_API_KEY", "secret-token")
+    monkeypatch.setenv("CODER_WORKSPACE", "shared-dev")
 
     assert terminal_tool_module.check_terminal_requirements() is True
 
@@ -413,6 +457,7 @@ def test_coder_environment_execute_existing_workspace_then_reads_pty_until_eof(m
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         cwd="/root",
         timeout=5,
         init_session=False,
@@ -455,6 +500,7 @@ def test_coder_environment_rejects_pty_url_that_exceeds_http_query_limit(monkeyp
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -488,6 +534,7 @@ def test_coder_environment_reconnects_same_pty_after_empty_initial_eof(monkeypat
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -532,6 +579,7 @@ def test_coder_environment_reconnects_empty_eof_with_stdin_without_resending(mon
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -574,6 +622,7 @@ def test_coder_environment_recv_timeout_poll_does_not_fail_silent_command(monkey
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -614,6 +663,7 @@ def test_coder_environment_stdin_data_uses_binary_json_frames_and_eof(monkeypatc
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -643,6 +693,7 @@ def test_coder_environment_returns_nonzero_exit_code_from_pty_marker(monkeypatch
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -670,6 +721,7 @@ def test_coder_environment_missing_exit_marker_returns_backend_error(monkeypatch
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -717,6 +769,7 @@ def test_coder_resolve_agent_id_stops_rest_polling_after_cancel(monkeypatch):
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=30,
         workspace_startup_timeout=120,
         init_session=False,
@@ -765,6 +818,7 @@ def test_coder_workspace_startup_timeout_bounds_agent_ready_wait(monkeypatch):
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=30,
         workspace_startup_timeout=3,
         init_session=False,
@@ -817,6 +871,7 @@ def test_coder_process_kill_sends_ctrl_c_to_active_pty(monkeypatch):
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )
@@ -897,6 +952,7 @@ def test_coder_environment_autostarts_existing_stopped_workspace(monkeypatch):
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         init_session=False,
     )
 
@@ -970,6 +1026,7 @@ def test_resolve_agent_id_waits_for_agent_connected_and_ready_before_returning(m
         base_url="https://coder.example",
         task_id="20260521_180000_ef3456",
         api_key="secret-token",
+        workspace_name="hermes-20260521-173045-ab12cd",
         timeout=5,
         init_session=False,
     )

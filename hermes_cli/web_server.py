@@ -560,7 +560,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.coder_workspace": {
         "type": "string",
-        "description": "Coder workspace name (blank creates/uses a per-session workspace)",
+        "description": "Required Coder workspace name used to run terminal commands",
+        "required": True,
     },
     "terminal.coder_forward_env": {
         "type": "list",

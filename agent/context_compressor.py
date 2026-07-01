@@ -2350,6 +2350,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         (``messages[cut_idx:]``), walk ``cut_idx`` back to include it.  We
         then re-align backward one more time to avoid splitting any
         tool_call/result group that immediately precedes the user message.
+
+        Causal Coupling guard (#22523): the final ``max(last_user_idx,
+        head_end + 1)`` clamp can push the cut *past* the user message when
+        the user sits at ``head_end`` (the first compressible index) — the
+        only case where ``head_end + 1 > last_user_idx``.  That splits the
+        turn-pair: the user lands in the compressed region without its
+        assistant reply, so the summariser records it as a pending ask and
+        the next session re-executes the already-completed task.  When this
+        split is unavoidable, push the cut *forward* to ``pair_end`` so the
+        full pair (user + reply + tool results) is summarised together and
+        correctly marked as completed.
         """
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         if last_user_idx < 0:
@@ -2374,7 +2385,50 @@ This compaction should PRIORITISE preserving all information related to the focu
                 cut_idx,
             )
         # Safety: never go back into the head region.
-        return max(last_user_idx, head_end + 1)
+        adjusted = max(last_user_idx, head_end + 1)
+        if adjusted > last_user_idx:
+            # The clamp would leave the user in the compressed region without
+            # its reply.  Keep the pair intact by pushing the cut forward past
+            # the whole (user + assistant + tool results) turn-pair so it is
+            # summarised as a completed unit rather than a dangling ask.
+            pair_end = self._find_turn_pair_end(messages, last_user_idx)
+            if not self.quiet_mode:
+                logger.debug(
+                    "Causal Coupling: cut would split turn-pair at user %d; "
+                    "pushing cut forward to pair_end %d so the completed pair "
+                    "is summarised together (#22523)",
+                    last_user_idx,
+                    pair_end,
+                )
+            return max(pair_end, head_end + 1)
+        return adjusted
+
+    def _find_turn_pair_end(
+        self,
+        messages: List[Dict[str, Any]],
+        user_idx: int,
+    ) -> int:
+        """Return the index *after* the complete turn-pair starting at *user_idx*.
+
+        A turn-pair is: ``user`` -> ``assistant`` [-> zero-or-more ``tool``
+        results].  Returns the index of the first message that does *not*
+        belong to the pair, i.e. the natural cut point that keeps the pair
+        intact on one side of the boundary.
+
+        If *user_idx* is the last message (no assistant reply yet), returns
+        ``user_idx + 1`` so the user message itself is minimally covered.
+        """
+        n = len(messages)
+        idx = user_idx + 1
+        if idx >= n:
+            return idx  # user is the very last message — no reply yet
+        if messages[idx].get("role") != "assistant":
+            return idx  # no assistant reply immediately following
+        idx += 1
+        # Include any tool results that belong to this assistant turn.
+        while idx < n and messages[idx].get("role") == "tool":
+            idx += 1
+        return idx
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,

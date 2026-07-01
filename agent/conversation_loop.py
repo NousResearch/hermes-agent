@@ -2939,7 +2939,10 @@ def run_conversation(
                 }
                 _should_fallback = (
                     is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                    or (classified.reason == FailoverReason.overloaded
+                        and retry_count >= agent._overload_max_retries)
+                    or (classified.reason == FailoverReason.timeout
+                        and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -3822,7 +3825,16 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                if _retry_after:
+                    wait_time = _retry_after
+                elif classified.reason == FailoverReason.overloaded:
+                    wait_time = jittered_backoff(
+                        retry_count,
+                        base_delay=agent._overload_base_delay,
+                        max_delay=agent._overload_max_delay,
+                    )
+                else:
+                    wait_time = jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if is_rate_limited and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(

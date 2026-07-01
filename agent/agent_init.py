@@ -1358,6 +1358,28 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Overload (503/529) retry policy — configurable per #55540.
+    try:
+        _overload_retries = int(_agent_section.get("overload_max_retries", 2))
+        _overload_retries = max(_overload_retries, 0)  # 0 = immediate fallback
+    except (TypeError, ValueError):
+        _overload_retries = 2
+    agent._overload_max_retries = _overload_retries
+
+    try:
+        _overload_base = float(_agent_section.get("overload_base_delay", 2.0))
+        _overload_base = max(_overload_base, 0.1)
+    except (TypeError, ValueError):
+        _overload_base = 2.0
+    agent._overload_base_delay = _overload_base
+
+    try:
+        _overload_max = float(_agent_section.get("overload_max_delay", 60.0))
+        _overload_max = max(_overload_max, 1.0)
+    except (TypeError, ValueError):
+        _overload_max = 60.0
+    agent._overload_max_delay = _overload_max
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

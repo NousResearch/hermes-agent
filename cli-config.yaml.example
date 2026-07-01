@@ -638,6 +638,19 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Overload (503/529) retry policy. Controls how many retries to attempt
+  # before falling back (if fallback configured) or surfacing the error.
+  # Set to 0 for immediate fallback on first overload signal. Must be <=
+  # api_max_retries to take effect (the outer loop is the hard ceiling).
+  # overload_max_retries: 2
+
+  # Base delay (seconds) for the first overload retry. Subsequent retries
+  # use jittered exponential backoff: ~base * 2^(attempt-1), capped at max.
+  # overload_base_delay: 2.0
+
+  # Maximum delay cap (seconds) for overload retry backoff.
+  # overload_max_delay: 60.0
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

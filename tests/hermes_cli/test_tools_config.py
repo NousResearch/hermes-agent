@@ -114,6 +114,93 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_platform_toolset_disabled_globally_logs_conflict_warning(caplog):
+    """RCA regression: a toolset explicitly listed in platform_toolsets.<platform>
+    (e.g. 'terminal' for telegram) that is ALSO in agent.disabled_toolsets is
+    silently stripped with no signal anywhere. This must now log a WARNING
+    naming the platform and the toolset so the conflict is discoverable."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_toolset_conflicts.discard(("telegram", "terminal"))
+    config = {
+        "agent": {"disabled_toolsets": ["terminal"]},
+        "platform_toolsets": {"telegram": ["terminal", "web"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "telegram")
+
+    assert "terminal" not in enabled
+    assert "web" in enabled
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("telegram" in m and "terminal" in m for m in warnings), warnings
+
+
+def test_platform_toolset_conflict_warning_fires_once(caplog):
+    """Same dedup contract as the #38798 warning: one conflict warning per
+    (platform, toolset) pair per process, not once per resolution call."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_toolset_conflicts.discard(("cli", "memory"))
+    config = {
+        "agent": {"disabled_toolsets": ["memory"]},
+        "platform_toolsets": {"cli": ["web", "terminal", "memory"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+        _get_platform_tools(config, "cli")
+
+    hits = [r for r in caplog.records if "cli" in r.getMessage() and "memory" in r.getMessage()]
+    assert len(hits) == 1, f"expected exactly one conflict warning, got {len(hits)}"
+
+
+def test_no_conflict_warning_when_toolset_never_requested(caplog):
+    """A toolset that's globally disabled but never appears in this platform's
+    resolved set (explicit config or default composite) is not a conflict —
+    just an ordinary disablement — so no WARNING should fire."""
+    config = {
+        "agent": {"disabled_toolsets": ["homeassistant"]},
+        "platform_toolsets": {"cli": ["web", "terminal"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("homeassistant" in r.getMessage() for r in caplog.records)
+
+
+def test_print_tools_list_marks_suppressed_toolset(capsys):
+    """`hermes tools list` must visually distinguish 'suppressed by
+    agent.disabled_toolsets' from a plain 'never enabled' toolset, so an
+    operator staring at the list can actually see the RCA'd conflict."""
+    from hermes_cli.tools_config import _print_tools_list
+
+    config = {
+        "agent": {"disabled_toolsets": ["terminal"]},
+        "platform_toolsets": {"telegram": ["terminal", "web"]},
+    }
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    _print_tools_list(enabled, {}, "telegram", config=config)
+
+    out = capsys.readouterr().out
+    assert "terminal" in out
+    assert "suppressed" in out.lower()
+    assert "agent.disabled_toolsets" in out
+
+
+def test_print_tools_list_without_config_falls_back_to_plain_disabled(capsys):
+    """Callers that don't pass `config` (none exist today, but the parameter
+    is optional) must not crash and must keep the old plain-disabled output."""
+    from hermes_cli.tools_config import _print_tools_list
+
+    enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+    _print_tools_list(enabled, {}, "cli")
+
+    out = capsys.readouterr().out
+    assert "disabled" in out.lower()
+
+
 def test_agent_disabled_toolsets_empty_list_is_noop():
     """Empty or missing disabled_toolsets should not change behavior."""
     config_empty = {"agent": {"disabled_toolsets": []}}

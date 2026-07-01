@@ -1055,6 +1055,18 @@ def init_agent(
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
+    # Always logged (even in quiet_mode, unlike the prints above) so the
+    # requested vs. actually-resolved tool set can be correlated from logs
+    # alone — quiet_mode is the normal mode for gateway-driven sessions
+    # (Telegram, Discord, etc.), where the prints above never fire.
+    logger.info(
+        "Resolved %d tool(s) for session (enabled_toolsets=%s, disabled_toolsets=%s): %s",
+        len(agent.tools) if agent.tools else 0,
+        sorted(enabled_toolsets) if enabled_toolsets else None,
+        sorted(disabled_toolsets) if disabled_toolsets else None,
+        sorted(agent.valid_tool_names) if agent.valid_tool_names else [],
+    )
+
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
     # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).

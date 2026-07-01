@@ -1381,6 +1381,73 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestAgentInitResolvedToolsLogging:
+    """RCA regression: quiet_mode (the gateway's normal mode for Telegram,
+    Discord, etc.) used to suppress every print() showing the resolved tool
+    list, so a silently-stripped tool (e.g. 'terminal') left no trace in
+    agent.log. agent_init.py must always log the resolved tool set via
+    logging, independent of quiet_mode."""
+
+    def test_resolved_tools_logged_even_in_quiet_mode(self, caplog):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=[{"type": "function", "function": {"name": "terminal"}}],
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            with caplog.at_level(logging.INFO, logger="run_agent"):
+                a = AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://openrouter.ai/api/v1",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                    enabled_toolsets=["terminal"],
+                )
+            a.client = MagicMock()
+
+        matches = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and "Resolved" in r.getMessage() and "tool(s) for session" in r.getMessage()
+        ]
+        assert matches, "Expected an INFO log of the resolved tool set even in quiet_mode"
+        assert "terminal" in matches[0]
+        assert "enabled_toolsets=['terminal']" in matches[0]
+
+    def test_resolved_tools_log_names_disabled_toolsets_input(self, caplog):
+        """The log line must carry both enabled_toolsets and disabled_toolsets
+        inputs so a silent-override case (tool requested but absent from the
+        resolved list) can be diagnosed directly from this one line."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            with caplog.at_level(logging.INFO, logger="run_agent"):
+                a = AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://openrouter.ai/api/v1",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                    enabled_toolsets=["terminal"],
+                    disabled_toolsets=["terminal"],
+                )
+            a.client = MagicMock()
+
+        matches = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and "Resolved" in r.getMessage() and "tool(s) for session" in r.getMessage()
+        ]
+        assert matches
+        assert "enabled_toolsets=['terminal']" in matches[0]
+        assert "disabled_toolsets=['terminal']" in matches[0]
+
+
 class TestTaskCompletionGuidance:
     """Tests for the universal task-completion / no-fabrication guidance
     (config.yaml ``agent.task_completion_guidance``).

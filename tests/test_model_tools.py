@@ -536,3 +536,110 @@ class TestDisabledToolsetsPlatformBundle:
         from toolsets import bundle_non_core_tools
         # A non-existent bundle resolves to an empty set (no tools), not a crash.
         assert bundle_non_core_tools("hermes-does-not-exist") == set()
+
+
+class TestDisabledToolsetsConflictVisibility:
+    """Regression coverage for the Telegram-DM terminal-tool RCA: disabled_toolsets
+    always wins over enabled_toolsets (model_tools.py `_compute_tool_definitions`,
+    issue #17309), but that override used to be completely silent. These tests
+    verify the new INFO/WARNING logging that makes the silent override visible."""
+
+    def test_disabled_toolset_removal_logs_info(self, caplog):
+        """Any toolset actually stripped by disabled_toolsets logs its removed
+        tool names at INFO, regardless of quiet_mode."""
+        import logging
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["hermes-telegram"],
+                disabled_toolsets=["web"],
+                quiet_mode=True,
+            )
+
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any(
+            "disabled_toolsets removed toolset 'web'" in r.getMessage()
+            for r in info_records
+        ), f"Expected an INFO log about 'web' removal, got: {[r.getMessage() for r in info_records]}"
+
+    def test_toolset_enabled_and_disabled_simultaneously_logs_warning(self, caplog):
+        """The exact silent-override mechanism from the RCA: a toolset present
+        in BOTH enabled_toolsets and disabled_toolsets must emit a WARNING
+        naming the toolset, since disabled_toolsets wins without any other
+        signal to the caller."""
+        import logging
+        import model_tools
+        from model_tools import _compute_tool_definitions
+
+        # Clear dedup state so the warning isn't suppressed by an earlier test
+        # or an earlier call using the same toolset name.
+        model_tools._WARNED_TOOLSET_CONFLICTS.discard(("terminal",))
+
+        with caplog.at_level(logging.WARNING, logger="model_tools"):
+            tools = _compute_tool_definitions(
+                enabled_toolsets=["terminal"],
+                disabled_toolsets=["terminal"],
+                quiet_mode=True,
+            )
+
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" not in names, "disabled_toolsets must still win over enabled_toolsets"
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "'terminal' is both explicitly enabled" in r.getMessage()
+            for r in warning_records
+        ), f"Expected a conflict WARNING for 'terminal', got: {[r.getMessage() for r in warning_records]}"
+
+    def test_conflict_warning_fires_once_per_toolset(self, caplog):
+        """Dedup guard: repeated resolution with the same conflicting toolset
+        must not spam the log on every call."""
+        import logging
+        import model_tools
+        from model_tools import _compute_tool_definitions
+
+        model_tools._WARNED_TOOLSET_CONFLICTS.discard(("file",))
+
+        with caplog.at_level(logging.WARNING, logger="model_tools"):
+            for _ in range(3):
+                _compute_tool_definitions(
+                    enabled_toolsets=["file"],
+                    disabled_toolsets=["file"],
+                    quiet_mode=True,
+                )
+
+        matches = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "'file' is both explicitly enabled" in r.getMessage()
+        ]
+        assert len(matches) == 1, f"Expected exactly one conflict warning, got {len(matches)}"
+
+    def test_no_conflict_when_toolset_only_disabled(self, caplog):
+        """A toolset that is disabled but was never explicitly enabled is a
+        normal disablement, not a conflict — no WARNING should fire."""
+        import logging
+        from model_tools import _compute_tool_definitions
+
+        with caplog.at_level(logging.WARNING, logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["hermes-telegram"],
+                disabled_toolsets=["memory"],
+                quiet_mode=True,
+            )
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any(
+            "'memory' is both explicitly enabled" in r.getMessage()
+            for r in warning_records
+        )
+
+    def test_docstring_documents_unconditional_override(self):
+        """The docstring must state the real precedence (disabled_toolsets
+        always wins), not the old inaccurate 'only if enabled_toolsets is
+        None' wording that motivated this RCA."""
+        from model_tools import get_tool_definitions
+
+        doc = get_tool_definitions.__doc__ or ""
+        assert "always" in doc.lower()
+        assert "disabled_toolsets" in doc

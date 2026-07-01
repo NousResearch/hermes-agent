@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
 _WARNED_DISABLED_BUNDLES: set = set()
+_WARNED_TOOLSET_CONFLICTS: set = set()
 
 
 # =============================================================================
@@ -289,7 +290,12 @@ def get_tool_definitions(
 
     Args:
         enabled_toolsets: Only include tools from these toolsets.
-        disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
+        disabled_toolsets: Exclude tools from these toolsets. Applied as a final
+            subtraction step regardless of enabled_toolsets — a toolset listed
+            here is always stripped, even if it is also explicitly present in
+            enabled_toolsets (see issue #17309). Callers that want a toolset to
+            actually reach the model must ensure it is absent from
+            disabled_toolsets, not merely present in enabled_toolsets.
         quiet_mode: Suppress status prints.
         skip_tool_search_assembly: When True, return the pre-assembly tool list
             (raw schemas for every enabled tool). Used internally by the
@@ -363,6 +369,7 @@ def _compute_tool_definitions(
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    effective_enabled_toolsets: Optional[List[str]] = None
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
@@ -424,6 +431,29 @@ def _compute_tool_definitions(
                     tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                if resolved:
+                    logger.info(
+                        "agent.disabled_toolsets removed toolset '%s' (tools: %s) "
+                        "from the final tool list.",
+                        toolset_name,
+                        ", ".join(resolved),
+                    )
+                if effective_enabled_toolsets and toolset_name in effective_enabled_toolsets:
+                    conflict_key = (toolset_name,)
+                    if conflict_key not in _WARNED_TOOLSET_CONFLICTS:
+                        _WARNED_TOOLSET_CONFLICTS.add(conflict_key)
+                        logger.warning(
+                            "Toolset '%s' is both explicitly enabled (present in "
+                            "enabled_toolsets) and globally suppressed via "
+                            "agent.disabled_toolsets; the global suppression wins "
+                            "and the toolset's tools (%s) are NOT exposed to the "
+                            "model. This is a silent override — remove '%s' from "
+                            "agent.disabled_toolsets if it should actually be "
+                            "available.",
+                            toolset_name,
+                            ", ".join(resolved) if resolved else "none",
+                            toolset_name,
+                        )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)

@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 # every tool resolution for a persistently-corrupt config (#38798).
 _warned_invalid_platform_toolsets: Set[str] = set()
 
+# (platform, toolset) pairs already warned about being resolved for the
+# platform yet globally suppressed via agent.disabled_toolsets, so the warning
+# fires once per pair instead of on every tool resolution.
+_warned_toolset_conflicts: Set[tuple] = set()
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
@@ -1415,8 +1420,15 @@ def _get_platform_tools(
     platform: str,
     *,
     include_default_mcp_servers: bool = True,
+    _apply_disabled_toolsets: bool = True,
 ) -> Set[str]:
-    """Resolve which individual toolset names are enabled for a platform."""
+    """Resolve which individual toolset names are enabled for a platform.
+
+    ``_apply_disabled_toolsets=False`` skips the final global
+    ``agent.disabled_toolsets`` subtraction (and its conflict warning) so a
+    caller can diff the pre- and post-subtraction sets — used by
+    ``_print_tools_list`` to flag toolsets that are silently suppressed.
+    """
     from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
@@ -1651,8 +1663,33 @@ def _get_platform_tools(
     # last so it overrides everything above.
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
-    if disabled_toolsets:
+    if disabled_toolsets and _apply_disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
+        # A toolset resolved for this platform (explicitly listed in
+        # platform_toolsets.<platform>, or pulled in via the platform's
+        # default composite) that also sits in the global disabled_toolsets
+        # list is a silent override: the toggle looks "on" for this platform
+        # but the tool never reaches the model (see issue #49995 for the
+        # symmetric "saved but can't re-enable" case). Surface it once per
+        # platform+toolset instead of letting it disappear with no signal.
+        conflicts = enabled_toolsets & disabled_set
+        for ts_name in sorted(conflicts):
+            conflict_key = (platform, ts_name)
+            if conflict_key not in _warned_toolset_conflicts:
+                _warned_toolset_conflicts.add(conflict_key)
+                logger.warning(
+                    "platform '%s' resolves toolset '%s' (via platform_toolsets "
+                    "or its default composite), but agent.disabled_toolsets "
+                    "globally suppresses it — the global list wins and '%s' "
+                    "tools are NOT available on this platform. Remove '%s' from "
+                    "agent.disabled_toolsets if it should actually be enabled "
+                    "for '%s'.",
+                    platform,
+                    ts_name,
+                    ts_name,
+                    ts_name,
+                    platform,
+                )
         enabled_toolsets -= disabled_set
 
     # #38798: if this platform was explicitly configured but every toolset name
@@ -4152,7 +4189,8 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
+def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli",
+                       config: Optional[dict] = None):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
     effective = [
@@ -4161,13 +4199,34 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     ]
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
+    # Toolsets that would be resolved for this platform (explicit config or
+    # its default composite) but are silently stripped by the global
+    # agent.disabled_toolsets list — same conflict _get_platform_tools warns
+    # about, surfaced here so `hermes tools list` doesn't just show a plain
+    # "✗ disabled" that looks identical to "never configured".
+    suppressed: Set[str] = set()
+    if config is not None:
+        pre_disabled = _get_platform_tools(
+            config, platform, include_default_mcp_servers=False,
+            _apply_disabled_toolsets=False,
+        )
+        disabled_globally = {
+            str(ts) for ts in (config.get("agent") or {}).get("disabled_toolsets") or []
+        }
+        suppressed = pre_disabled & disabled_globally
+
+    def _status(ts_key: str) -> str:
+        if ts_key in enabled_toolsets:
+            return color("✓ enabled", Colors.GREEN)
+        if ts_key in suppressed:
+            return color("✗ suppressed (agent.disabled_toolsets)", Colors.YELLOW)
+        return color("✗ disabled", Colors.RED)
+
     print(f"Built-in toolsets ({platform}):")
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
-        status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                  else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        print(f"  {_status(ts_key)}  {ts_key}  {color(label, Colors.DIM)}")
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
@@ -4175,9 +4234,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            print(f"  {_status(ts_key)}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
         print()
@@ -4210,7 +4267,7 @@ def tools_disable_enable_command(args):
 
     if action == "list":
         _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
+                          config.get("mcp_servers") or {}, platform, config=config)
         return
 
     targets: List[str] = args.names

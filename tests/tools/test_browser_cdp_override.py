@@ -162,3 +162,97 @@ class TestGetCdpOverride:
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
+
+class TestCreateCdpSession:
+    """_create_cdp_session() must sanitize the CDP URL before logging.
+
+    PR #54851 added _sanitize_url_for_logs() and wired it into the three log
+    sites inside _resolve_cdp_override(). This test guards the fourth site
+    that was missed: the logger.info call inside _create_cdp_session(), which
+    receives the already-resolved CDP URL and could contain a query-string
+    token (e.g. wss://provider.example/session?token=secret).
+    """
+
+    def test_redacts_token_in_session_creation_log(self):
+        from tools.browser_tool import _create_cdp_session
+
+        cdp_url_with_token = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-999"
+
+        with patch("tools.browser_tool.logger.info") as mock_info:
+            result = _create_cdp_session("task-1", cdp_url_with_token)
+
+        assert result["cdp_url"] == cdp_url_with_token, "raw URL must be stored unmodified"
+
+        mock_info.assert_called_once()
+        logged_args = " ".join(str(a) for a in mock_info.call_args.args)
+        assert "super-secret-token-999" not in logged_args
+        assert "token=***" in logged_args
+
+    def test_plain_url_without_secrets_passes_through(self):
+        from tools.browser_tool import _create_cdp_session
+
+        plain_url = "ws://localhost:9222/devtools/browser/abc123"
+
+        with patch("tools.browser_tool.logger.info") as mock_info:
+            _create_cdp_session("task-2", plain_url)
+
+        logged_args = " ".join(str(a) for a in mock_info.call_args.args)
+        assert "localhost:9222" in logged_args
+
+
+class TestCDPSupervisorTimeoutRedaction:
+    """CDPSupervisor.start() TimeoutError must not expose raw CDP credentials.
+
+    The supervisor raises TimeoutError(f"... (cdp_url={self.cdp_url[:80]}...)")
+    when attach times out.  A URL with a query-string token (e.g.
+    wss://provider.example/session?token=secret) would embed the raw secret
+    in the exception message, which propagates to caller logs and tracebacks.
+    """
+
+    def _make_timed_out_supervisor(self, cdp_url: str):
+        """Return a CDPSupervisor whose start() will time out immediately."""
+        import threading
+        from tools.browser_supervisor import CDPSupervisor
+
+        sup = CDPSupervisor.__new__(CDPSupervisor)
+        sup.task_id = "test-task"
+        sup.cdp_url = cdp_url
+        sup._start_error = None
+        sup._stop_requested = False
+        sup._loop = None
+        # _thread = None so the is_alive() early-return guard is skipped.
+        sup._thread = None
+        # _ready_event that never fires so wait() always returns False.
+        never_ready = threading.Event()
+        sup._ready_event = never_ready
+        return sup
+
+    def test_timeout_error_redacts_query_token(self):
+        cdp_url = "wss://cdp.example/devtools/browser/abc?token=super-secret-999"
+        sup = self._make_timed_out_supervisor(cdp_url)
+
+        with patch("threading.Thread") as mock_thread_cls, patch.object(sup, "stop"):
+            mock_thread_cls.return_value = Mock()
+            try:
+                sup.start(timeout=0.001)
+            except TimeoutError as exc:
+                msg = str(exc)
+                assert "super-secret-999" not in msg, (
+                    "raw token must not appear in TimeoutError message"
+                )
+                assert "cdp_url=" in msg
+            else:
+                raise AssertionError("TimeoutError was not raised")
+
+    def test_timeout_error_preserves_plain_url(self):
+        plain_url = "ws://127.0.0.1:9222/devtools/browser/abc"
+        sup = self._make_timed_out_supervisor(plain_url)
+
+        with patch("threading.Thread") as mock_thread_cls, patch.object(sup, "stop"):
+            mock_thread_cls.return_value = Mock()
+            try:
+                sup.start(timeout=0.001)
+            except TimeoutError as exc:
+                assert "127.0.0.1:9222" in str(exc)
+            else:
+                raise AssertionError("TimeoutError was not raised")

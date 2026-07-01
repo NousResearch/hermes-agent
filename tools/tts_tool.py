@@ -2154,8 +2154,8 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+    from tools.speech.router import SpeechRouter
+    provider, tts_config = SpeechRouter().resolve_provider()
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here

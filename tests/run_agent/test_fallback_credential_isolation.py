@@ -65,7 +65,9 @@ def _make_agent(provider="openai-codex", model="gpt-5.5",
     }
     agent._config_context_length = None
     agent._credential_pool = _make_pool(provider)
-    agent._rate_limited_until = 0
+    # Clear any cooldown state so restore_primary_runtime isn't gated
+    from agent.cooldown_manager import CooldownManager, set_cooldown_manager
+    set_cooldown_manager(CooldownManager(storage_path=False))
     agent._transport_cache = {}
     agent._client_kwargs = {
         "api_key": "primary-key",

@@ -1424,23 +1424,30 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            agent._rate_limited_until = time.monotonic() + 60
+            from agent.cooldown_manager import get_cooldown_manager, build_cooldown_key
+            _active_key = getattr(agent, "api_key", None) or getattr(agent, "_api_key", None) or ""
+            _reason_str = reason.value if hasattr(reason, "value") else str(reason)
+            _ck = build_cooldown_key(current_provider, _active_key or None, _reason_str)
+            get_cooldown_manager().mark_failure(
+                _ck,
+                "billing" if reason == FailoverReason.billing else "rate_limit",
+            )
     if agent._fallback_index >= len(agent._fallback_chain):
-        # Chain exhausted.  If we actually walked a non-empty chain and the
-        # failure was NOT a rate-limit/billing event (those already armed
-        # their own 60s cooldown above), arm a short cooldown so the next
-        # turn's restore_primary_runtime stays gated instead of resetting
+        # If a non-rate-limit chain exhausts, arm a short cooldown so the next turn's
+        # restore_primary_runtime stays gated instead of resetting
         # _fallback_index=0 and re-marshaling the whole context across every
         # provider again.  Guards the cross-turn replay storm in #24996.
         if (
             len(agent._fallback_chain) > 0
             and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
-            _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
-            agent._rate_limited_until = max(
-                _existing_cooldown,
-                time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
-            )
+            from agent.cooldown_manager import get_cooldown_manager, build_cooldown_key
+            _exhaust_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
+            _exhaust_key_raw = getattr(agent, "api_key", None) or getattr(agent, "_api_key", None) or ""
+            _ck_exhaust = build_cooldown_key(_exhaust_provider, _exhaust_key_raw or None, "rate_limit")
+            _mgr = get_cooldown_manager()
+            if not _mgr.is_cooling(_ck_exhaust):
+                _mgr.mark_failure(_ck_exhaust, "rate_limit")
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1

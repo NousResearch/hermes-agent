@@ -1965,6 +1965,26 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_message_finish_reason(
+        self, session_id: str, row_id: int, finish_reason: str
+    ) -> None:
+        """Update the ``finish_reason`` of an already-persisted message row.
+
+        The incremental flush (:meth:`AIAgent._flush_messages_to_session_db`)
+        writes each live message dict exactly once, keyed by object identity.
+        A message whose ``finish_reason`` is later mutated *in place* (e.g.
+        ``close_interrupted_tool_sequence`` flagging a plain-text assistant tail
+        with ``interrupt_close`` when a turn is interrupted) would otherwise
+        never reach the DB, silently losing the resume-discriminator. This
+        targeted UPDATE re-persists just that column so the flag survives reload.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE messages SET finish_reason = ? WHERE id = ? AND session_id = ?",
+                (finish_reason, row_id, session_id),
+            )
+        self._execute_write(_do)
+
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
 

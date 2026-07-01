@@ -73,6 +73,15 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+_RESUME_SUMMARY_ONLY_BLOCK_MESSAGE = (
+    "resumed turn interrupted by restart — summarize-only; await user go"
+)
+_RESUME_SUMMARY_ONLY_READ_ONLY_TOOLS = frozenset({
+    "read_file",
+    "search_files",
+    "list_files",
+    "ls",
+})
 
 
 def _flush_session_db_after_tool_progress(
@@ -92,6 +101,84 @@ def _flush_session_db_after_tool_progress(
         agent._flush_messages_to_session_db(messages)
     except Exception as exc:
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
+def _resume_summary_only_block_result(function_name: str) -> str:
+    return json.dumps(
+        {
+            "error": _RESUME_SUMMARY_ONLY_BLOCK_MESSAGE,
+            "resume_autocontinue_block": {
+                "tool_name": function_name,
+                "reason": "resume_summary_only",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _is_resume_summary_only_read_tool(function_name: str) -> bool:
+    return function_name in _RESUME_SUMMARY_ONLY_READ_ONLY_TOOLS
+
+
+def _block_resume_summary_only_tools(agent, tool_calls, messages: list, effective_task_id: str) -> bool:
+    """Block tool calls while the resume-summary-only interlock is active.
+
+    The resumed empty-message turn may summarize prior work, but it must wait
+    for a human "go" before executing any tool. The gateway clears this gate
+    at the start of the next genuine user turn, not between model rounds.
+    """
+    if not getattr(agent, "_resume_summary_only", False):
+        return False
+
+    names = [
+        getattr(getattr(tc, "function", None), "name", "") or "unknown"
+        for tc in tool_calls
+    ]
+    forward_names = [name for name in names if not _is_resume_summary_only_read_tool(name)]
+    if forward_names:
+        logger.warning(
+            "RESUME_AUTOCONTINUE_VIOLATION session_id=%s task_id=%s tools=%s",
+            getattr(agent, "session_id", "") or "",
+            effective_task_id or "",
+            ",".join(forward_names),
+        )
+    else:
+        logger.debug(
+            "Blocked read-only tool call on resume-summary turn "
+            "session_id=%s task_id=%s tools=%s",
+            getattr(agent, "session_id", "") or "",
+            effective_task_id or "",
+            ",".join(names),
+        )
+
+    if forward_names:
+        try:
+            cb = getattr(agent, "tool_progress_callback", None)
+            if cb:
+                cb(
+                    "resume.autocontinue_violation",
+                    ",".join(forward_names),
+                    _RESUME_SUMMARY_ONLY_BLOCK_MESSAGE,
+                    {},
+                )
+        except Exception:
+            logger.debug("resume autocontinue violation notify failed", exc_info=True)
+
+    for tc in tool_calls:
+        name = getattr(getattr(tc, "function", None), "name", "") or "unknown"
+        messages.append(
+            make_tool_result_message(
+                name,
+                _resume_summary_only_block_result(name),
+                getattr(tc, "id", "") or "",
+            )
+        )
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"resume-summary-only block {name}",
+        )
+    return True
 
 
 def _ra():
@@ -294,6 +381,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+
+    if _block_resume_summary_only_tools(agent, tool_calls, messages, effective_task_id):
+        return
 
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
@@ -884,6 +974,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    if _block_resume_summary_only_tools(agent, assistant_message.tool_calls, messages, effective_task_id):
+        return
+
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):

@@ -184,7 +184,11 @@ def finalize_turn(
         # persisting an empty-content assistant turn.
         if interrupted:
             from agent.message_sanitization import close_interrupted_tool_sequence
-            close_interrupted_tool_sequence(messages, final_response)
+            close_interrupted_tool_sequence(
+                messages,
+                final_response,
+                interrupted_assistant_tail=True,
+            )
 
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:

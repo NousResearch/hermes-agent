@@ -643,3 +643,122 @@ class TestDisabledToolsetsConflictVisibility:
         doc = get_tool_definitions.__doc__ or ""
         assert "always" in doc.lower()
         assert "disabled_toolsets" in doc
+
+
+class TestProtectedToolsetsOverrideDisabled:
+    """#55986: a toolset explicitly requested for the current platform/session
+    (passed via protected_toolsets) must survive the disabled_toolsets
+    subtraction in _compute_tool_definitions — the second, independent
+    subtraction point that a fix only in hermes_cli/tools_config.py would not
+    reach."""
+
+    def test_protected_toolset_survives_disabled_toolsets(self):
+        from model_tools import _compute_tool_definitions
+
+        tools = _compute_tool_definitions(
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=["terminal"],
+            protected_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" in names, "protected toolset must survive disabled_toolsets"
+
+    def test_unprotected_toolset_still_removed(self):
+        """protected_toolsets is a narrow exception — a toolset not named in
+        it is still removed by disabled_toolsets, even if other toolsets are
+        protected."""
+        from model_tools import _compute_tool_definitions
+
+        tools = _compute_tool_definitions(
+            enabled_toolsets=["terminal", "web"],
+            disabled_toolsets=["terminal", "web"],
+            protected_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" in names
+        assert "web_search" not in names and "web_extract" not in names
+
+    def test_protected_toolset_logs_info_not_warning(self, caplog):
+        import logging
+        import model_tools
+        from model_tools import _compute_tool_definitions
+
+        model_tools._WARNED_TOOLSET_CONFLICTS.discard(("terminal",))
+        model_tools._LOGGED_TOOLSET_PROTECTIONS.discard(("terminal",))
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            _compute_tool_definitions(
+                enabled_toolsets=["terminal"],
+                disabled_toolsets=["terminal"],
+                protected_toolsets=["terminal"],
+                quiet_mode=True,
+            )
+
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any(
+            "explicitly requested for this platform" in r.getMessage()
+            and "terminal" in r.getMessage()
+            for r in info_records
+        ), f"Expected an INFO protection log, got: {[r.getMessage() for r in info_records]}"
+
+    def test_protection_info_fires_once_per_toolset(self, caplog):
+        import logging
+        import model_tools
+        from model_tools import _compute_tool_definitions
+
+        model_tools._LOGGED_TOOLSET_PROTECTIONS.discard(("terminal",))
+
+        with caplog.at_level(logging.INFO, logger="model_tools"):
+            for _ in range(3):
+                _compute_tool_definitions(
+                    enabled_toolsets=["terminal"],
+                    disabled_toolsets=["terminal"],
+                    protected_toolsets=["terminal"],
+                    quiet_mode=True,
+                )
+
+        matches = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO and "explicitly requested for this platform" in r.getMessage()
+        ]
+        assert len(matches) == 1, f"Expected exactly one protection log, got {len(matches)}"
+
+    def test_protected_toolsets_none_is_backward_compatible(self):
+        """Default protected_toolsets=None must behave exactly like before
+        this feature existed — disabled_toolsets always wins."""
+        from model_tools import _compute_tool_definitions
+
+        tools = _compute_tool_definitions(
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "terminal" not in names
+
+    def test_get_tool_definitions_cache_key_includes_protected_toolsets(self):
+        """The public get_tool_definitions cache must not conflate a
+        protected and an unprotected resolution for the same enabled/disabled
+        pair — otherwise the first call's result would be reused for the
+        other, silently reintroducing #55986 (or the reverse: a stale cached
+        removal masking a later protection)."""
+        from model_tools import get_tool_definitions
+
+        unprotected = get_tool_definitions(
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        protected = get_tool_definitions(
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=["terminal"],
+            protected_toolsets=["terminal"],
+            quiet_mode=True,
+        )
+        unprotected_names = {t["function"]["name"] for t in unprotected}
+        protected_names = {t["function"]["name"] for t in protected}
+        assert "terminal" not in unprotected_names
+        assert "terminal" in protected_names

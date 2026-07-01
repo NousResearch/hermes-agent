@@ -4605,6 +4605,7 @@ def refresh_agent_mcp_tools(
         get_tool_definitions(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
+            protected_toolsets=getattr(agent, "protected_toolsets", None),
             quiet_mode=quiet_mode,
         )
         or []

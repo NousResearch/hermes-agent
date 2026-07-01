@@ -198,6 +198,28 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _resolve_cron_protected_toolsets(job: dict, cfg: dict) -> list[str] | None:
+    """Toolsets that must survive agent.disabled_toolsets for this cron run.
+
+    Only populated when the job has NO per-job ``enabled_toolsets`` override —
+    i.e. only when the effective toolset list came from ``_get_platform_tools``
+    resolving the cron platform's OWN explicit ``platform_toolsets.cron``
+    config (an admin-level, non-LLM-controlled setting). A job-supplied
+    ``enabled_toolsets`` (set via the ``cronjob`` tool, which IS LLM-controlled)
+    must NEVER be treated as protected — that would reopen the #25752
+    self-widening hole that ``_resolve_cron_disabled_toolsets`` exists to close.
+    """
+    per_job = job.get("enabled_toolsets")
+    if per_job:
+        return None
+    try:
+        from hermes_cli.tools_config import _explicit_platform_toolset_names  # lazy: avoid heavy import at cron module load
+        protected = _explicit_platform_toolset_names(cfg or {}, "cron")
+        return sorted(protected) if protected else None
+    except Exception:
+        return None
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -2495,6 +2517,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            protected_toolsets=_resolve_cron_protected_toolsets(job, _cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

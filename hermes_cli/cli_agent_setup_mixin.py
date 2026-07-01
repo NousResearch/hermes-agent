@@ -340,6 +340,10 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            from cli import CLI_CONFIG
+            from hermes_cli.tools_config import _explicit_platform_toolset_names
+            protected_toolsets = sorted(_explicit_platform_toolset_names(CLI_CONFIG, "cli")) or None
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -353,6 +357,7 @@ class CLIAgentSetupMixin:
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
+                protected_toolsets=protected_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),

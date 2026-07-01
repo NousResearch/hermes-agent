@@ -1794,6 +1794,7 @@ class TestRegisterSessionMcpServers:
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
         state.agent.disabled_toolsets = None
+        state.agent.protected_toolsets = None
         state.agent.tools = []
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
@@ -1823,6 +1824,7 @@ class TestRegisterSessionMcpServers:
         mock_defs.assert_called_once_with(
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
+            protected_toolsets=None,
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]

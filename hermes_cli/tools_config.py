@@ -44,6 +44,11 @@ _warned_invalid_platform_toolsets: Set[str] = set()
 # fires once per pair instead of on every tool resolution.
 _warned_toolset_conflicts: Set[tuple] = set()
 
+# (platform, toolset) pairs already logged about winning over
+# agent.disabled_toolsets because the toolset was explicitly requested for
+# that platform (issue #55986), so the info log fires once per pair.
+_logged_toolset_protections: Set[tuple] = set()
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
@@ -1415,6 +1420,33 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
 
 
+def _explicit_platform_toolset_names(config: dict, platform: str) -> Set[str]:
+    """Configurable toolset keys the user explicitly listed in
+    ``platform_toolsets.<platform>``.
+
+    These are more specific than the global ``agent.disabled_toolsets``
+    denylist and win over it (issue #55986) — unlike toolsets that only end up
+    enabled via a platform's default composite, composite expansion, or the
+    "recover non-configurable platform toolsets" step in
+    ``_get_platform_tools``, all of which remain subject to the global
+    denylist. Returns an empty set when the platform has no explicit
+    ``platform_toolsets`` entry (i.e. when ``_get_platform_tools`` would
+    compute ``has_explicit_config`` as False).
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    toolset_names = platform_toolsets.get(platform)
+    if toolset_names is None or not isinstance(toolset_names, list):
+        return set()
+    toolset_names = [str(ts) for ts in toolset_names]
+    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    if not any(ts in configurable_keys for ts in toolset_names):
+        return set()
+    return {
+        ts for ts in toolset_names
+        if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+    }
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1458,11 +1490,10 @@ def _get_platform_tools(
     # toolsets to re-appear as enabled.
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
 
+    explicit_platform_toolsets = _explicit_platform_toolset_names(config, platform)
+
     if has_explicit_config:
-        enabled_toolsets = {
-            ts for ts in toolset_names
-            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
-        }
+        enabled_toolsets = set(explicit_platform_toolsets)
         # Mixed config: composite toolset alongside configurables (e.g.
         # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
         # tools``). Without expansion the composite name is silently dropped,
@@ -1672,8 +1703,17 @@ def _get_platform_tools(
         # but the tool never reaches the model (see issue #49995 for the
         # symmetric "saved but can't re-enable" case). Surface it once per
         # platform+toolset instead of letting it disappear with no signal.
+        #
+        # Exception (issue #55986): a toolset the user *explicitly* listed in
+        # platform_toolsets.<platform> for this exact platform is more
+        # specific than the global agent.disabled_toolsets denylist and wins
+        # over it. Toolsets only present via a default composite or the
+        # "recover non-configurable platform toolsets" step below remain
+        # subject to the global list, same as before.
         conflicts = enabled_toolsets & disabled_set
-        for ts_name in sorted(conflicts):
+        protected_conflicts = conflicts & explicit_platform_toolsets
+        truly_suppressed = conflicts - protected_conflicts
+        for ts_name in sorted(truly_suppressed):
             conflict_key = (platform, ts_name)
             if conflict_key not in _warned_toolset_conflicts:
                 _warned_toolset_conflicts.add(conflict_key)
@@ -1690,7 +1730,21 @@ def _get_platform_tools(
                     ts_name,
                     platform,
                 )
-        enabled_toolsets -= disabled_set
+        for ts_name in sorted(protected_conflicts):
+            protect_key = (platform, ts_name)
+            if protect_key not in _logged_toolset_protections:
+                _logged_toolset_protections.add(protect_key)
+                logger.info(
+                    "platform '%s' explicitly requested toolset '%s' via "
+                    "platform_toolsets.%s; this wins over agent.disabled_toolsets "
+                    "(more specific config takes precedence, issue #55986) — "
+                    "'%s' remains enabled for this platform.",
+                    platform,
+                    ts_name,
+                    platform,
+                    ts_name,
+                )
+        enabled_toolsets -= (disabled_set - explicit_platform_toolsets)
 
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
@@ -4205,6 +4259,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     # about, surfaced here so `hermes tools list` doesn't just show a plain
     # "✗ disabled" that looks identical to "never configured".
     suppressed: Set[str] = set()
+    overridden: Set[str] = set()
     if config is not None:
         pre_disabled = _get_platform_tools(
             config, platform, include_default_mcp_servers=False,
@@ -4213,9 +4268,17 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         disabled_globally = {
             str(ts) for ts in (config.get("agent") or {}).get("disabled_toolsets") or []
         }
-        suppressed = pre_disabled & disabled_globally
+        explicit_platform_toolsets = _explicit_platform_toolset_names(config, platform)
+        conflicts = pre_disabled & disabled_globally
+        # A toolset explicitly requested via platform_toolsets.<platform> wins
+        # over the global denylist (issue #55986); only non-explicit conflicts
+        # are actually suppressed.
+        overridden = conflicts & explicit_platform_toolsets
+        suppressed = conflicts - explicit_platform_toolsets
 
     def _status(ts_key: str) -> str:
+        if ts_key in overridden:
+            return color("✓ enabled (overrides agent.disabled_toolsets)", Colors.GREEN)
         if ts_key in enabled_toolsets:
             return color("✓ enabled", Colors.GREEN)
         if ts_key in suppressed:

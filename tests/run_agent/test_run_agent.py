@@ -1447,6 +1447,84 @@ class TestAgentInitResolvedToolsLogging:
         assert "enabled_toolsets=['terminal']" in matches[0]
         assert "disabled_toolsets=['terminal']" in matches[0]
 
+    def test_resolved_tools_log_names_protected_toolsets_input(self, caplog):
+        """#55986: the log line must also carry protected_toolsets, so a case
+        where a toolset survives disabled_toolsets specifically because it was
+        protected is diagnosable from this one line."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            with caplog.at_level(logging.INFO, logger="run_agent"):
+                a = AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://openrouter.ai/api/v1",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                    enabled_toolsets=["terminal"],
+                    disabled_toolsets=["terminal"],
+                    protected_toolsets=["terminal"],
+                )
+            a.client = MagicMock()
+
+        matches = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and "Resolved" in r.getMessage() and "tool(s) for session" in r.getMessage()
+        ]
+        assert matches
+        assert "protected_toolsets=['terminal']" in matches[0]
+
+    def test_protected_toolsets_forwarded_to_get_tool_definitions(self):
+        """AIAgent.__init__ must forward protected_toolsets all the way to
+        get_tool_definitions — the call site that actually applies the
+        override — not just store it as an attribute."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]) as mock_get_defs,
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=["terminal"],
+                disabled_toolsets=["terminal"],
+                protected_toolsets=["terminal"],
+            )
+            a.client = MagicMock()
+
+        assert mock_get_defs.call_args.kwargs.get("protected_toolsets") == ["terminal"]
+        assert a.protected_toolsets == ["terminal"]
+
+    def test_protected_toolset_survives_end_to_end_without_mocks(self):
+        """#55986 regression: reproduce the exact reported scenario with a
+        real AIAgent (only the network client is mocked) — a toolset explicitly
+        requested for the platform must appear in valid_tool_names even though
+        it's also in agent.disabled_toolsets."""
+        with (
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=["terminal"],
+                disabled_toolsets=["terminal"],
+                protected_toolsets=["terminal"],
+            )
+            a.client = MagicMock()
+
+        assert "terminal" in a.valid_tool_names
+
 
 class TestTaskCompletionGuidance:
     """Tests for the universal task-completion / no-fabrication guidance
@@ -2723,6 +2801,7 @@ class TestConcurrentToolExecution:
                 skip_tool_request_middleware=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
+                protected_toolsets=agent.protected_toolsets,
                 tool_request_middleware_trace=[],
             )
             assert result == "result"

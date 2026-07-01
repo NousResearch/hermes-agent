@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
 _WARNED_DISABLED_BUNDLES: set = set()
+
+# Tracks toolset names already logged as winning over agent.disabled_toolsets
+# because they were explicitly requested for the current platform/session
+# (issue #55986), so the info log fires once per name.
+_LOGGED_TOOLSET_PROTECTIONS: set = set()
 _WARNED_TOOLSET_CONFLICTS: set = set()
 
 
@@ -280,6 +285,7 @@ def _clear_tool_defs_cache() -> None:
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    protected_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -293,9 +299,17 @@ def get_tool_definitions(
         disabled_toolsets: Exclude tools from these toolsets. Applied as a final
             subtraction step regardless of enabled_toolsets — a toolset listed
             here is always stripped, even if it is also explicitly present in
-            enabled_toolsets (see issue #17309). Callers that want a toolset to
-            actually reach the model must ensure it is absent from
-            disabled_toolsets, not merely present in enabled_toolsets.
+            enabled_toolsets (see issue #17309), unless it is also present in
+            protected_toolsets (see issue #55986). Callers that want a toolset
+            to actually reach the model must ensure it is absent from
+            disabled_toolsets, or explicitly protected, not merely present in
+            enabled_toolsets.
+        protected_toolsets: Toolsets that win over disabled_toolsets. Meant for
+            toolsets a platform explicitly requested for itself via
+            platform_toolsets.<platform> — more specific config takes
+            precedence over the global disabled_toolsets denylist (issue
+            #55986). Has no effect on a toolset that isn't also in
+            disabled_toolsets.
         quiet_mode: Suppress status prints.
         skip_tool_search_assembly: When True, return the pre-assembly tool list
             (raw schemas for every enabled tool). Used internally by the
@@ -325,6 +339,7 @@ def get_tool_definitions(
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
+            frozenset(protected_toolsets) if protected_toolsets else None,
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
@@ -341,6 +356,7 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
+                                       protected_toolsets=protected_toolsets,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
@@ -364,9 +380,11 @@ def _compute_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
+    protected_toolsets: Optional[List[str]] = None,
     skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
+    protected_set = {str(t) for t in protected_toolsets} if protected_toolsets else set()
     # Determine which tool names the caller wants
     tools_to_include: set = set()
     effective_enabled_toolsets: Optional[List[str]] = None
@@ -405,6 +423,24 @@ def _compute_tool_definitions(
     # stripped out. See issue #17309.
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
+            if toolset_name in protected_set:
+                # More specific config wins (issue #55986): this toolset was
+                # explicitly requested for the current platform/session, so it
+                # survives the global disabled_toolsets subtraction.
+                if not quiet_mode:
+                    print(f"✅ '{toolset_name}' explicitly requested for this platform — overrides agent.disabled_toolsets")
+                protect_key = (toolset_name,)
+                if protect_key not in _LOGGED_TOOLSET_PROTECTIONS:
+                    _LOGGED_TOOLSET_PROTECTIONS.add(protect_key)
+                    logger.info(
+                        "toolset '%s' is listed in agent.disabled_toolsets but "
+                        "was explicitly requested for this platform/session — "
+                        "explicit config wins and '%s' remains enabled (issue "
+                        "#55986).",
+                        toolset_name,
+                        toolset_name,
+                    )
+                continue
             if validate_toolset(toolset_name):
                 if toolset_name.startswith("hermes-"):
                     # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
@@ -946,6 +982,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    protected_toolsets: Optional[List[str]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -967,6 +1004,9 @@ def handle_function_call(
                        matching ``get_tool_definitions`` semantics.
         disabled_toolsets: The session's disabled toolsets, applied as a
                        subtraction when scoping the bridge catalog.
+        protected_toolsets: Toolsets that win over disabled_toolsets when
+                       scoping the bridge catalog, matching
+                       ``get_tool_definitions`` semantics (issue #55986).
 
     Returns:
         Function result as a JSON string.
@@ -1006,6 +1046,7 @@ def handle_function_call(
             current_defs = get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                protected_toolsets=protected_toolsets,
                 quiet_mode=True, skip_tool_search_assembly=True,
             ) or []
         except Exception:
@@ -1050,6 +1091,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                protected_toolsets=protected_toolsets,
             )
 
     _tool_original_args = dict(function_args)

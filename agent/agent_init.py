@@ -178,6 +178,7 @@ def init_agent(
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
+    protected_toolsets: List[str] = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -249,6 +250,10 @@ def init_agent(
         tool_delay (float): Delay between tool calls in seconds (default: 1.0)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
+        protected_toolsets (List[str]): Toolsets that win over disabled_toolsets — meant
+            for toolsets explicitly requested for the current platform via
+            platform_toolsets.<platform>, so more specific config takes precedence over
+            the global disabled_toolsets denylist (issue #55986) (optional)
         save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
         verbose_logging (bool): Enable verbose logging for debugging (default: False)
         quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
@@ -494,6 +499,7 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.protected_toolsets = protected_toolsets
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -1037,6 +1043,7 @@ def init_agent(
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
+        protected_toolsets=protected_toolsets,
         quiet_mode=agent.quiet_mode,
     )
     
@@ -1060,10 +1067,12 @@ def init_agent(
     # alone — quiet_mode is the normal mode for gateway-driven sessions
     # (Telegram, Discord, etc.), where the prints above never fire.
     logger.info(
-        "Resolved %d tool(s) for session (enabled_toolsets=%s, disabled_toolsets=%s): %s",
+        "Resolved %d tool(s) for session (enabled_toolsets=%s, disabled_toolsets=%s, "
+        "protected_toolsets=%s): %s",
         len(agent.tools) if agent.tools else 0,
         sorted(enabled_toolsets) if enabled_toolsets else None,
         sorted(disabled_toolsets) if disabled_toolsets else None,
+        sorted(protected_toolsets) if protected_toolsets else None,
         sorted(agent.valid_tool_names) if agent.valid_tool_names else [],
     )
 

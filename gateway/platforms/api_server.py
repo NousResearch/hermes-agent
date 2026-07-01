@@ -1109,7 +1109,11 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
+        from hermes_cli.tools_config import _get_platform_tools, _explicit_platform_toolset_names
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        agent_cfg_local = user_config.get("agent") or {}
+        disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        protected_toolsets = sorted(_explicit_platform_toolset_names(user_config, "api_server")) or None
 
         max_iterations = _current_max_iterations()
 
@@ -1125,6 +1129,8 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            protected_toolsets=protected_toolsets,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,

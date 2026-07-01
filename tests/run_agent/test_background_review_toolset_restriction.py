@@ -40,6 +40,7 @@ def _make_agent_stub(agent_cls):
     # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
+    agent.protected_toolsets = ["terminal"]
     return agent
 
 
@@ -64,6 +65,7 @@ def test_background_review_matches_parent_toolset_config():
     def _capture_init(self, *args, **kwargs):
         captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
         captured["disabled_toolsets"] = kwargs.get("disabled_toolsets", "UNSET")
+        captured["protected_toolsets"] = kwargs.get("protected_toolsets", "UNSET")
         raise RuntimeError("stop after capturing init args")
 
     with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
@@ -82,6 +84,13 @@ def test_background_review_matches_parent_toolset_config():
     assert captured["disabled_toolsets"] == agent.disabled_toolsets, (
         f"disabled_toolsets mismatch: {captured['disabled_toolsets']!r} "
         f"vs expected {agent.disabled_toolsets!r}"
+    )
+    # #55986: the fork must also inherit protected_toolsets, otherwise a
+    # toolset the parent had explicitly protected would silently lose that
+    # protection inside the review sub-agent.
+    assert captured["protected_toolsets"] == agent.protected_toolsets, (
+        f"protected_toolsets mismatch: {captured['protected_toolsets']!r} "
+        f"vs expected {agent.protected_toolsets!r}"
     )
 
 

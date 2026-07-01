@@ -1578,6 +1578,10 @@ class CLICommandsMixin:
             except Exception:
                 pass
             try:
+                from hermes_cli.tools_config import _explicit_platform_toolset_names
+                from cli import CLI_CONFIG
+                protected_toolsets = sorted(_explicit_platform_toolset_names(CLI_CONFIG, "cli")) or None
+
                 bg_agent = AIAgent(
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -1589,6 +1593,8 @@ class CLICommandsMixin:
                     max_tokens=turn_route["runtime"].get("max_tokens"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
+                    disabled_toolsets=self.disabled_toolsets,
+                    protected_toolsets=protected_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
                     session_id=task_id,

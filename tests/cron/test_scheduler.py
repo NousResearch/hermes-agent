@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _resolve_cron_protected_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1263,6 +1263,91 @@ class TestRunJobSessionPersistence:
         assert set(kwargs["disabled_toolsets"]) >= {
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
+
+    def test_resolve_cron_protected_toolsets_from_explicit_platform_config(self):
+        """#55986: a toolset explicitly listed in platform_toolsets.cron (an
+        admin-level, non-LLM-controlled setting) is protected when the job has
+        no per-job enabled_toolsets override."""
+        cfg = {"platform_toolsets": {"cron": ["terminal", "web"]}}
+        job = {"id": "j1", "name": "test", "prompt": "hi"}
+
+        result = _resolve_cron_protected_toolsets(job, cfg)
+
+        assert result == ["terminal", "web"]
+
+    def test_resolve_cron_protected_toolsets_none_without_explicit_config(self):
+        cfg = {}
+        job = {"id": "j1", "name": "test", "prompt": "hi"}
+
+        assert _resolve_cron_protected_toolsets(job, cfg) is None
+
+    def test_resolve_cron_protected_toolsets_security_per_job_override_blocks_protection(self):
+        """Critical #25752 guarantee: protection must NEVER originate from a
+        job's own enabled_toolsets (LLM-controlled via the cronjob tool), even
+        when platform_toolsets.cron also lists the same toolset. Otherwise an
+        LLM could self-grant immunity from agent.disabled_toolsets by simply
+        calling cronjob() with the toolset it wants protected."""
+        cfg = {"platform_toolsets": {"cron": ["terminal"]}}
+        job = {"id": "j1", "name": "test", "prompt": "hi", "enabled_toolsets": ["terminal"]}
+
+        assert _resolve_cron_protected_toolsets(job, cfg) is None
+
+    def test_run_job_passes_protected_toolsets_to_agent(self, tmp_path):
+        """#55986 integration: a cron platform_toolsets.cron entry that is
+        also globally disabled must still reach AIAgent as protected, and
+        actually survive disabled_toolsets end to end."""
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  disabled_toolsets:\n"
+            "    - terminal\n"
+            "platform_toolsets:\n"
+            "  cron:\n"
+            "    - terminal\n"
+            "    - web\n",
+            encoding="utf-8",
+        )
+        job = {"id": "policy-job-2", "name": "test", "prompt": "hello"}
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["protected_toolsets"] == ["terminal", "web"]
+
+    def test_run_job_per_job_enabled_toolsets_never_yields_protected_toolsets(self, tmp_path):
+        """#25752 integration guarantee: even with platform_toolsets.cron
+        configured, a job carrying its own enabled_toolsets (LLM-controlled)
+        must reach AIAgent with protected_toolsets=None."""
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  disabled_toolsets:\n"
+            "    - terminal\n"
+            "platform_toolsets:\n"
+            "  cron:\n"
+            "    - terminal\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "policy-job-3",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["terminal", "web"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert not kwargs["protected_toolsets"]
+        assert "terminal" in kwargs["disabled_toolsets"]
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

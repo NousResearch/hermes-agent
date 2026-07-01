@@ -198,10 +198,12 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    protected = getattr(agent, "protected_toolsets", None)
     cache_key = (
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        frozenset(protected) if protected else None,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -210,6 +212,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
         scoped_defs = model_tools.get_tool_definitions(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
+            protected_toolsets=protected,
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
@@ -1307,6 +1310,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    protected_toolsets=getattr(agent, "protected_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
                 _spinner_result = function_result
@@ -1349,6 +1353,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    protected_toolsets=getattr(agent, "protected_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
             except KeyboardInterrupt:

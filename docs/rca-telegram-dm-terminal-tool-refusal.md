@@ -1,7 +1,11 @@
 # RCA — Hermes recusa usar `terminal` em DMs do Telegram mesmo com `platform_toolsets.telegram` incluindo `terminal`
 
-Status: **investigação concluída — sem fix aplicado** (por escopo).
+Status: **causa raiz corrigida** — ver [Seção 11](#11-correção-aplicada-config-mais-específico-vence-issue-55986).
 Branch: `investigation/telegram-dm-terminal-tool-refusal`.
+
+> Um PR anterior (#56079) tentou endereçar este RCA adicionando apenas logs em torno de
+> `agent.disabled_toolsets`, sem mudar o comportamento — foi fechado sem merge por não resolver a
+> causa raiz. A correção real está descrita na Seção 9 abaixo.
 
 ## 1. Resumo executivo
 
@@ -264,6 +268,61 @@ dado que não está disponível nesta investigação**: o conteúdo real de `age
    comparando com o `enabled_toolsets` de entrada vindo de `gateway/run.py:15483`/`16594` — uma
    divergência ali (`enabled_toolsets` contém "terminal" mas `agent.tools` não) confirma
    definitivamente o ponto exato descrito na Seção 3.
+
+## 11. Correção aplicada — "config mais específico vence" (issue #55986)
+
+A hipótese de causa raiz da Seção 4 foi confirmada (não apenas por leitura de código, mas por
+reprodução direta com um `AIAgent` real, sem mocks): `agent.disabled_toolsets` é uma lista
+**global**, não por plataforma, subtraída **duas vezes, de forma incondicional**, do conjunto de
+tools de uma sessão:
+
+1. `hermes_cli/tools_config.py::_get_platform_tools` — já sabia, neste ponto, se o usuário havia
+   configurado `platform_toolsets.<platform>` explicitamente, mas ignorava essa informação na hora
+   de subtrair.
+2. `model_tools.py::_compute_tool_definitions` (via `agent/agent_init.py`) — repetia a subtração
+   com base em `enabled_toolsets`/`disabled_toolsets` já "achatados", sem saber quais nomes eram
+   explícitos para a plataforma. Corrigir só o passo 1 não bastava: o passo 2 desfazia a correção.
+
+### Regra adotada
+
+Um toolset **explicitamente** listado pelo usuário em `platform_toolsets.<platform>` para a
+plataforma atual passa a vencer a subtração de `agent.disabled_toolsets`, em ambos os pontos acima
+— "config mais específico vence". Toolsets que só aparecem via default do composto da plataforma,
+expansão de composite, ou a etapa de "recover non-configurable platform toolsets" continuam sendo
+cortados pela lista global, preservando a intenção original da issue #17309 (nenhuma regressão para
+quem depende do denylist global).
+
+### Implementação
+
+- Novo helper puro `hermes_cli/tools_config.py::_explicit_platform_toolset_names(config, platform)`
+  — única fonte de verdade para "o que o usuário pediu explicitamente nesta plataforma". Usado tanto
+  em `_get_platform_tools` (ponto de subtração 1) quanto em `_print_tools_list` (para marcar
+  visualmente toolsets que sobrevivem ao denylist global em `hermes tools list`).
+- Novo parâmetro opcional `protected_toolsets` — aditivo, `None` por padrão — propagado por toda a
+  cadeia de construção do `AIAgent`: `hermes_cli/tools_config.py` → `gateway/run.py` /
+  `cron/scheduler.py` → `run_agent.py::AIAgent.__init__` → `agent/agent_init.py::init_agent` →
+  `model_tools.py::get_tool_definitions`/`_compute_tool_definitions` (ponto de subtração 2). Também
+  armazenado como `agent.protected_toolsets` para ser herdado por qualquer código que recompute o
+  toolset de uma sessão a partir do agente pai — `agent/background_review.py`,
+  `agent/tool_executor.py`, `agent/agent_runtime_helpers.py`, `tools/mcp_tool.py` (refresh de MCP) e
+  `acp_adapter/server.py` (refresh de sessão ACP) — evitando que qualquer um desses caminhos
+  reintroduza silenciosamente o bug ao recarregar a lista de tools.
+- **Cron (issue #25752) preservado**: `cron/scheduler.py::_resolve_cron_protected_toolsets` só
+  concede proteção quando ela nasce de `platform_toolsets.cron` (configuração de admin) — nunca de
+  `job.get("enabled_toolsets")`, que é controlado pela LLM via a tool `cronjob`. Isso impede que um
+  job auto-conceda imunidade ao denylist global chamando `cronjob()` com o toolset desejado.
+- **Blank Slate sem regressão**: `hermes_cli/setup.py::_blank_slate_minimal_toolsets` nunca inclui
+  os toolsets mantidos (`file`, `terminal`) em `agent.disabled_toolsets`, então a proteção nunca é
+  exercida nesse fluxo — comportamento idêntico ao anterior, coberto por teste dedicado.
+
+### Verificação
+
+Testes novos/ajustados em `tests/hermes_cli/test_tools_config.py`, `tests/test_model_tools.py`,
+`tests/run_agent/test_run_agent.py` (incluindo um teste end-to-end sem mocks reproduzindo o cenário
+exato da issue: `platform_toolsets.telegram=["terminal", ...]` + `agent.disabled_toolsets=["terminal"]`
+→ `"terminal" in agent.valid_tool_names`), `tests/cron/test_scheduler.py` (incluindo o teste de
+segurança do #25752), `tests/run_agent/test_background_review_toolset_restriction.py` e
+`tests/hermes_cli/test_setup_blank_slate.py`. Suíte completa executada sem regressões.
 
 ## Anexos — trechos relevantes
 

@@ -42,6 +42,28 @@ class TestBlankSlateMinimalToolsets:
         resolved = set(_get_platform_tools(cfg, "cli"))
         assert resolved == {"file", "terminal"}
 
+    def test_no_overlap_with_disabled_toolsets_never_triggers_protection(self, caplog):
+        """#55986 non-regression: Blank Slate's kept toolsets (file, terminal)
+        must never appear in its own disabled_toolsets, so the new
+        'explicit config wins over agent.disabled_toolsets' protection path
+        is never exercised for this flow — output stays identical to before
+        the fix, with no protection log emitted."""
+        import logging
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+
+        explicit = _explicit_platform_toolset_names(cfg, "cli")
+        disabled = set(cfg["agent"]["disabled_toolsets"])
+        assert explicit & disabled == set()
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.tools_config"):
+            from hermes_cli.tools_config import _get_platform_tools
+            _get_platform_tools(cfg, "cli")
+
+        assert not any("#55986" in r.getMessage() for r in caplog.records)
+
     def test_tool_schema_builder_yields_only_file_and_terminal_tools(self):
         # End-to-end: the exact schema set the agent would send to the model.
         import model_tools

@@ -44,8 +44,9 @@ def test_agent_disabled_toolsets_suppresses_across_platforms():
 
 
 def test_agent_disabled_toolsets_with_explicit_platform_config():
-    """agent.disabled_toolsets should still suppress even when the platform
-    has an explicit toolset list that includes the disabled toolset.
+    """#55986: when the platform has an explicit toolset list that includes a
+    toolset also in agent.disabled_toolsets, the more specific per-platform
+    config wins — the toolset stays enabled for this platform.
     """
     config = {
         "agent": {"disabled_toolsets": ["memory"]},
@@ -54,7 +55,24 @@ def test_agent_disabled_toolsets_with_explicit_platform_config():
 
     enabled = _get_platform_tools(config, "cli")
 
-    assert "memory" not in enabled
+    assert "memory" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_agent_disabled_toolsets_suppresses_non_explicit_toolset_on_explicit_platform():
+    """A toolset that is globally disabled and NOT explicitly listed for this
+    platform is still suppressed, even when the platform has some explicit
+    config — only explicitly-requested toolsets win over the global list.
+    """
+    config = {
+        "agent": {"disabled_toolsets": ["homeassistant"]},
+        "platform_toolsets": {"cli": ["web", "terminal"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "homeassistant" not in enabled
     assert "web" in enabled
     assert "terminal" in enabled
 
@@ -114,44 +132,62 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
-def test_platform_toolset_disabled_globally_logs_conflict_warning(caplog):
-    """RCA regression: a toolset explicitly listed in platform_toolsets.<platform>
-    (e.g. 'terminal' for telegram) that is ALSO in agent.disabled_toolsets is
-    silently stripped with no signal anywhere. This must now log a WARNING
-    naming the platform and the toolset so the conflict is discoverable."""
+def test_platform_toolset_explicit_config_logs_protection_info(caplog):
+    """#55986: a toolset explicitly listed in platform_toolsets.<platform>
+    (e.g. 'terminal' for telegram) that is ALSO in agent.disabled_toolsets now
+    wins over the global list and stays enabled. This must log an INFO note
+    (not a WARNING — nothing was suppressed) naming the platform and toolset
+    so the override is discoverable."""
     import hermes_cli.tools_config as _tc
-    _tc._warned_toolset_conflicts.discard(("telegram", "terminal"))
+    _tc._logged_toolset_protections.discard(("telegram", "terminal"))
     config = {
         "agent": {"disabled_toolsets": ["terminal"]},
         "platform_toolsets": {"telegram": ["terminal", "web"]},
     }
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+    with caplog.at_level(logging.INFO, logger="hermes_cli.tools_config"):
         enabled = _get_platform_tools(config, "telegram")
 
-    assert "terminal" not in enabled
+    assert "terminal" in enabled
     assert "web" in enabled
-    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("telegram" in m and "terminal" in m for m in warnings), warnings
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("telegram" in m and "terminal" in m for m in infos), infos
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
-def test_platform_toolset_conflict_warning_fires_once(caplog):
-    """Same dedup contract as the #38798 warning: one conflict warning per
+def test_platform_toolset_protection_info_fires_once(caplog):
+    """Same dedup contract as the #38798 warning: one protection note per
     (platform, toolset) pair per process, not once per resolution call."""
     import hermes_cli.tools_config as _tc
-    _tc._warned_toolset_conflicts.discard(("cli", "memory"))
+    _tc._logged_toolset_protections.discard(("cli", "memory"))
     config = {
         "agent": {"disabled_toolsets": ["memory"]},
         "platform_toolsets": {"cli": ["web", "terminal", "memory"]},
     }
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+    with caplog.at_level(logging.INFO, logger="hermes_cli.tools_config"):
         _get_platform_tools(config, "cli")
         _get_platform_tools(config, "cli")
         _get_platform_tools(config, "cli")
 
     hits = [r for r in caplog.records if "cli" in r.getMessage() and "memory" in r.getMessage()]
-    assert len(hits) == 1, f"expected exactly one conflict warning, got {len(hits)}"
+    assert len(hits) == 1, f"expected exactly one protection note, got {len(hits)}"
+
+
+def test_platform_toolset_disabled_globally_still_warns_when_not_explicit(caplog):
+    """A toolset that's globally disabled and only present via a platform's
+    default composite (not explicitly requested) is still a genuine conflict
+    — the global list wins and a WARNING fires, same as before #55986."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_toolset_conflicts.discard(("discord", "memory"))
+    config = {"agent": {"disabled_toolsets": ["memory"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "discord")
+
+    assert "memory" not in enabled
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("discord" in m and "memory" in m for m in warnings), warnings
 
 
 def test_no_conflict_warning_when_toolset_never_requested(caplog):
@@ -169,10 +205,11 @@ def test_no_conflict_warning_when_toolset_never_requested(caplog):
     assert not any("homeassistant" in r.getMessage() for r in caplog.records)
 
 
-def test_print_tools_list_marks_suppressed_toolset(capsys):
-    """`hermes tools list` must visually distinguish 'suppressed by
-    agent.disabled_toolsets' from a plain 'never enabled' toolset, so an
-    operator staring at the list can actually see the RCA'd conflict."""
+def test_print_tools_list_marks_overridden_toolset(capsys):
+    """#55986: `hermes tools list` must visually distinguish a toolset that
+    was explicitly requested for this platform and overrides
+    agent.disabled_toolsets from a plain '✓ enabled', so an operator can see
+    that the global denylist would otherwise have stripped it."""
     from hermes_cli.tools_config import _print_tools_list
 
     config = {
@@ -185,6 +222,23 @@ def test_print_tools_list_marks_suppressed_toolset(capsys):
 
     out = capsys.readouterr().out
     assert "terminal" in out
+    assert "overrides" in out.lower()
+    assert "agent.disabled_toolsets" in out
+
+
+def test_print_tools_list_marks_suppressed_toolset(capsys):
+    """A toolset that is globally disabled and only resolved via the
+    platform's default composite (not explicitly requested) must still show
+    as suppressed, distinct from 'never enabled'."""
+    from hermes_cli.tools_config import _print_tools_list
+
+    config = {"agent": {"disabled_toolsets": ["terminal"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    _print_tools_list(enabled, {}, "cli", config=config)
+
+    out = capsys.readouterr().out
+    assert "terminal" not in enabled
     assert "suppressed" in out.lower()
     assert "agent.disabled_toolsets" in out
 
@@ -212,6 +266,44 @@ def test_agent_disabled_toolsets_empty_list_is_noop():
     assert _get_platform_tools(config_empty, "cli") == default
     assert _get_platform_tools(config_none, "cli") == default
     assert _get_platform_tools(config_missing, "cli") == default
+
+
+class TestExplicitPlatformToolsetNames:
+    """Unit tests for the #55986 helper that computes 'what the user
+    explicitly asked for on this platform' — the source of truth for what
+    wins over the global agent.disabled_toolsets denylist."""
+
+    def test_no_platform_toolsets_key_returns_empty(self):
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        assert _explicit_platform_toolset_names({}, "telegram") == set()
+
+    def test_platform_not_configured_returns_empty(self):
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        config = {"platform_toolsets": {"discord": ["web"]}}
+        assert _explicit_platform_toolset_names(config, "telegram") == set()
+
+    def test_non_list_value_returns_empty(self):
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        config = {"platform_toolsets": {"telegram": "hermes-telegram"}}
+        assert _explicit_platform_toolset_names(config, "telegram") == set()
+
+    def test_all_invalid_names_returns_empty(self):
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        config = {"platform_toolsets": {"telegram": ["hermes", "bogus"]}}
+        assert _explicit_platform_toolset_names(config, "telegram") == set()
+
+    def test_composite_name_alongside_configurables_only_returns_configurables(self):
+        """A composite entry like 'hermes-telegram' is not itself a
+        configurable toolset key — only the configurable siblings count as
+        explicit."""
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        config = {"platform_toolsets": {"telegram": ["hermes-telegram", "terminal", "web"]}}
+        assert _explicit_platform_toolset_names(config, "telegram") == {"terminal", "web"}
+
+    def test_returns_exactly_the_explicit_configurable_names(self):
+        from hermes_cli.tools_config import _explicit_platform_toolset_names
+        config = {"platform_toolsets": {"telegram": ["terminal", "web", "memory"]}}
+        assert _explicit_platform_toolset_names(config, "telegram") == {"terminal", "web", "memory"}
 
 
 def test_get_platform_tools_uses_default_when_platform_not_configured():
@@ -1352,7 +1444,8 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
 
     with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
         with mock_patch("toolsets.TOOLSETS", fake_toolsets):
-            enabled = _get_platform_tools({}, "_test_platform")
+            with mock_patch("tools.registry.registry._tools", {}):
+                enabled = _get_platform_tools({}, "_test_platform")
 
     assert "_test_platform_tool" in enabled
     assert "web" in enabled

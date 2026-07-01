@@ -2499,7 +2499,7 @@ def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception) -> bool:
+def _recover_provider_pool(provider: str, exc: Exception, model: Optional[str] = None) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls."""
     normalized = _normalize_aux_provider(provider)
     try:
@@ -2532,6 +2532,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
+            model=model,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -4847,7 +4848,7 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, model=resolved_model):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
@@ -5226,7 +5227,7 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, model=resolved_model):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,

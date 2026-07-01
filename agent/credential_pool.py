@@ -86,7 +86,7 @@ CUSTOM_POOL_PREFIX = "custom:"
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
-    "agent_key_obtained_at", "tls",
+    "agent_key_obtained_at", "tls", "exhausted_models",
 })
 
 
@@ -284,6 +284,18 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     return None
 
 
+def _model_exhausted_until(details: Dict[str, Any]) -> Optional[float]:
+    if details.get("last_status") != STATUS_EXHAUSTED:
+        return None
+    reset_at = _parse_absolute_timestamp(details.get("last_error_reset_at"))
+    if reset_at is not None:
+        return reset_at
+    last_status_at = details.get("last_status_at")
+    if last_status_at:
+        return last_status_at + _exhausted_ttl(details.get("last_error_code"))
+    return None
+
+
 def _normalize_custom_pool_name(name: str) -> str:
     """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
@@ -399,9 +411,9 @@ class CredentialPool:
     def has_credentials(self) -> bool:
         return bool(self._entries)
 
-    def has_available(self) -> bool:
+    def has_available(self, model: Optional[str] = None) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+        return bool(self._available_entries(model=model))
 
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
@@ -429,17 +441,36 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
-        updated = replace(
-            entry,
-            last_status=STATUS_EXHAUSTED,
-            last_status_at=time.time(),
-            last_error_code=status_code,
-            last_error_reason=normalized_error.get("reason"),
-            last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
-        )
+        now = time.time()
+        if model:
+            extra = dict(entry.extra) if entry.extra else {}
+            exhausted_models = dict(extra.get("exhausted_models") or {})
+            exhausted_models[model] = {
+                "last_status": STATUS_EXHAUSTED,
+                "last_status_at": now,
+                "last_error_code": status_code,
+                "last_error_reason": normalized_error.get("reason"),
+                "last_error_message": normalized_error.get("message"),
+                "last_error_reset_at": normalized_error.get("reset_at"),
+            }
+            extra["exhausted_models"] = exhausted_models
+            updated = replace(
+                entry,
+                extra=extra,
+            )
+        else:
+            updated = replace(
+                entry,
+                last_status=STATUS_EXHAUSTED,
+                last_status_at=now,
+                last_error_code=status_code,
+                last_error_reason=normalized_error.get("reason"),
+                last_error_message=normalized_error.get("message"),
+                last_error_reset_at=normalized_error.get("reset_at"),
+            )
         self._replace_entry(entry, updated)
         self._persist()
         return updated
@@ -1131,11 +1162,17 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        model: Optional[str] = None,
+        clear_expired: bool = False,
+        refresh: bool = False,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
@@ -1189,6 +1226,31 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            
+            model_lockouts_active = False
+            exhausted_models = entry.extra.get("exhausted_models")
+            if isinstance(exhausted_models, dict) and exhausted_models:
+                updated_exhausted = {}
+                for m, details in list(exhausted_models.items()):
+                    until = _model_exhausted_until(details)
+                    if until is not None and now < until:
+                        updated_exhausted[m] = details
+                        if model and m == model:
+                            model_lockouts_active = True
+                    else:
+                        if clear_expired:
+                            cleared_any = True
+                        else:
+                            updated_exhausted[m] = details
+                if cleared_any:
+                    updated_extra = dict(entry.extra)
+                    if updated_exhausted:
+                        updated_extra["exhausted_models"] = updated_exhausted
+                    else:
+                        updated_extra.pop("exhausted_models", None)
+                    entry = replace(entry, extra=updated_extra)
+                    self._replace_entry(entry, entry)
+
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
@@ -1211,13 +1273,15 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            if model_lockouts_active:
+                continue
             available.append(entry)
         if cleared_any:
             self._persist()
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, model: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(model=model, clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1249,11 +1313,19 @@ class CredentialPool:
         self._current_id = entry.id
         return entry
 
-    def peek(self) -> Optional[PooledCredential]:
+    def peek(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         current = self.current()
         if current is not None:
-            return current
-        available = self._available_entries()
+            is_locked = False
+            if model and current.extra:
+                exhausted_models = current.extra.get("exhausted_models")
+                if isinstance(exhausted_models, dict) and model in exhausted_models:
+                    until = _model_exhausted_until(exhausted_models[model])
+                    if until is not None and time.time() < until:
+                        is_locked = True
+            if not is_locked:
+                return current
+        available = self._available_entries(model=model)
         return available[0] if available else None
 
     def mark_exhausted_and_rotate(
@@ -1261,9 +1333,10 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            entry = self.current() or self._select_unlocked(model=model)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1271,15 +1344,15 @@ class CredentialPool:
                 "credential pool: marking %s exhausted (status=%s), rotating",
                 _label, status_code,
             )
-            self._mark_exhausted(entry, status_code, error_context)
+            self._mark_exhausted(entry, status_code, error_context, model=model)
             self._current_id = None
-            next_entry = self._select_unlocked()
+            next_entry = self._select_unlocked(model=model)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
 
-    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
+    def acquire_lease(self, credential_id: Optional[str] = None, model: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
 
         If a specific credential_id is provided, lease that entry directly.
@@ -1293,7 +1366,7 @@ class CredentialPool:
                 self._current_id = credential_id
                 return credential_id
 
-            available = self._available_entries(clear_expired=True, refresh=True)
+            available = self._available_entries(model=model, clear_expired=True, refresh=True)
             if not available:
                 return None
 
@@ -1336,7 +1409,10 @@ class CredentialPool:
         count = 0
         new_entries = []
         for entry in self._entries:
-            if entry.last_status or entry.last_status_at or entry.last_error_code:
+            has_exhausted_models = isinstance(entry.extra.get("exhausted_models"), dict) and entry.extra["exhausted_models"]
+            if entry.last_status or entry.last_status_at or entry.last_error_code or has_exhausted_models:
+                updated_extra = dict(entry.extra) if entry.extra else {}
+                updated_extra.pop("exhausted_models", None)
                 new_entries.append(
                     replace(
                         entry,
@@ -1346,6 +1422,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        extra=updated_extra,
                     )
                 )
                 count += 1

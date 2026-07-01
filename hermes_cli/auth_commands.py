@@ -21,6 +21,7 @@ from agent.credential_pool import (
     STRATEGY_LEAST_USED,
     PooledCredential,
     _exhausted_until,
+    _model_exhausted_until,
     _normalize_custom_pool_name,
     get_pool_strategy,
     label_from_token,
@@ -132,32 +133,56 @@ def _classify_exhausted_status(entry) -> tuple[str, bool]:
 
 
 def _format_exhausted_status(entry) -> str:
-    if entry.last_status != STATUS_EXHAUSTED:
-        return ""
-    label, show_retry_window = _classify_exhausted_status(entry)
-    reason = getattr(entry, "last_error_reason", None)
-    reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
-    code = f" ({entry.last_error_code})" if entry.last_error_code else ""
-    if not show_retry_window:
-        return f" {label}{reason_text}{code} (re-auth may be required)"
-    exhausted_until = _exhausted_until(entry)
-    if exhausted_until is None:
-        return f" {label}{reason_text}{code}"
-    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
-    if remaining <= 0:
-        return f" {label}{reason_text}{code} (ready to retry)"
-    minutes, seconds = divmod(remaining, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    if days:
-        wait = f"{days}d {hours}h"
-    elif hours:
-        wait = f"{hours}h {minutes}m"
-    elif minutes:
-        wait = f"{minutes}m {seconds}s"
-    else:
-        wait = f"{seconds}s"
-    return f" {label}{reason_text}{code} ({wait} left)"
+    if entry.last_status == STATUS_EXHAUSTED:
+        label, show_retry_window = _classify_exhausted_status(entry)
+        reason = getattr(entry, "last_error_reason", None)
+        reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
+        code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+        if not show_retry_window:
+            return f" {label}{reason_text}{code} (re-auth may be required)"
+        exhausted_until = _exhausted_until(entry)
+        if exhausted_until is None:
+            return f" {label}{reason_text}{code}"
+        remaining = max(0, int(math.ceil(exhausted_until - time.time())))
+        if remaining <= 0:
+            return f" {label}{reason_text}{code} (ready to retry)"
+        minutes, seconds = divmod(remaining, 60)
+        hours, minutes = divmod(minutes, 60)
+        days, hours = divmod(hours, 24)
+        if days:
+            wait = f"{days}d {hours}h"
+        elif hours:
+            wait = f"{hours}h {minutes}m"
+        elif minutes:
+            wait = f"{minutes}m {seconds}s"
+        else:
+            wait = f"{seconds}s"
+        return f" {label}{reason_text}{code} ({wait} left)"
+
+    exhausted_models = entry.extra.get("exhausted_models") if entry.extra else None
+    if isinstance(exhausted_models, dict) and exhausted_models:
+        active_limits = []
+        now_epoch = time.time()
+        for m, details in sorted(exhausted_models.items()):
+            m_until = _model_exhausted_until(details)
+            if m_until is not None and now_epoch < m_until:
+                remaining = max(0, int(math.ceil(m_until - now_epoch)))
+                if remaining <= 0:
+                    wait = "ready"
+                else:
+                    minutes, seconds = divmod(remaining, 60)
+                    hours, minutes = divmod(minutes, 60)
+                    if hours:
+                        wait = f"{hours}h {minutes}m"
+                    elif minutes:
+                        wait = f"{minutes}m {seconds}s"
+                    else:
+                        wait = f"{seconds}s"
+                active_limits.append(f"{m}:{wait}")
+        if active_limits:
+            return " rate-limited[" + ", ".join(active_limits) + "]"
+
+    return ""
 
 
 def auth_add_command(args) -> None:

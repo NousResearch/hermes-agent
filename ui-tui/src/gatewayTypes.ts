@@ -654,6 +654,11 @@ export type GatewayEvent =
     }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
   | {
+      payload?: { code?: null | number; message?: string; reason?: string }
+      session_id?: string
+      type: 'gateway.crash'
+    }
+  | {
       payload?: { text?: string; verbose?: boolean }
       session_id?: string
       type: 'reasoning.delta' | 'reasoning.available'

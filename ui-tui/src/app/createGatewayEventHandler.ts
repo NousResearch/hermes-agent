@@ -676,6 +676,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'gateway.crash': {
+        // Windows STATUS_ACCESS_VIOLATION or similar gateway child crash.
+        // The exit handler in useMainApp.ts will respawn + resume the
+        // session; this case surfaces the diagnostic so the user knows
+        // why the gateway died and that recovery is underway.
+        const msg = ev.payload?.message ?? 'Gateway crashed unexpectedly'
+        const reason = ev.payload?.reason ?? 'unknown'
+        const code = ev.payload?.code
+
+        turnController.pushActivity(
+          `gateway crash (${reason}${code !== undefined ? ` · exit ${code}` : ''}) · recovering…`,
+          'warn'
+        )
+        sys(`${msg}`)
+
+        return
+      }
+
       case 'reasoning.delta':
         if (ev.payload?.text) {
           turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))

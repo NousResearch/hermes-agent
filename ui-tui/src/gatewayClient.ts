@@ -21,6 +21,11 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
+// Windows STATUS_ACCESS_VIOLATION (0xC0000005) — the gateway child segfaults
+// under concurrent subagent tool execution (see issue #55812). Detecting it
+// lets us surface a actionable diagnostic instead of a generic "gateway exited".
+const WINDOWS_ACCESS_VIOLATION = 3221225786
+
 const getWebSocketCtor = (): typeof WebSocket =>
   typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
 
@@ -418,6 +423,26 @@ export class GatewayClient extends EventEmitter {
       this.lifecycle(
         `[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
       )
+
+      // Windows STATUS_ACCESS_VIOLATION: the gateway child segfaulted,
+      // typically when concurrent delegate_task subagents execute tools
+      // simultaneously (issue #55812). Surface a diagnostic so the user
+      // knows this is a known Windows crash, not a config error, before
+      // the recovery handler respawns.
+      if (code === WINDOWS_ACCESS_VIOLATION) {
+        this.pushLog(
+          '[lifecycle] Windows STATUS_ACCESS_VIOLATION (0xC0000005) — gateway child segfaulted under concurrent subagent load'
+        )
+        this.publish({
+          type: 'gateway.crash',
+          payload: {
+            code,
+            reason: 'windows_access_violation',
+            message: 'Gateway crashed (Windows access violation). This is a known issue under concurrent subagent load. Restarting…',
+          },
+        })
+      }
+
       this.handleTransportExit(code)
     })
   }

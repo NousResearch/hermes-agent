@@ -1,6 +1,6 @@
 ---
 name: stock-sentiment
-description: "Sentiment and smart money for US stocks: the SentiSense Score, sentiment polarity, market mood (fear/greed), insider and congressional and 13F flows, analyst actions, AI insights, and sentiment-tagged news. Read-only: no trading, no purchases, no wallet access."
+description: "Sentiment and smart-money positioning for US stocks."
 version: 0.1.0
 author: SentiSense
 license: MIT

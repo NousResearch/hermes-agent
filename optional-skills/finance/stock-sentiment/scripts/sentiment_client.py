@@ -43,6 +43,9 @@ def get(path, **params):
                 "'Install Certificates.command', or use the system python3, or plain curl.)"
                 if "CERTIFICATE_VERIFY_FAILED" in str(e.reason) else "")
         sys.exit(f"network error on {path}: {e.reason}{hint}")
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # A 200 with a non-JSON body (maintenance page, WAF/captcha, truncation).
+        sys.exit(f"non-JSON response from {path}: {e}")
 
 
 def rows(raw):
@@ -52,6 +55,15 @@ def rows(raw):
     if isinstance(raw, dict) and "data" in raw:
         return raw["data"]
     return raw
+
+
+def shaped(raw):
+    """Like rows(), but preserve free-tier preview flags so callers can tag truncated
+    data. When the envelope is a preview, keep isPreview/previewReason alongside data;
+    otherwise return the bare rows unchanged."""
+    if isinstance(raw, dict) and raw.get("isPreview") and "data" in raw:
+        return {"isPreview": True, "previewReason": raw.get("previewReason"), "data": raw["data"]}
+    return rows(raw)
 
 
 def sentiment_scalar(series):
@@ -66,7 +78,7 @@ def out(obj):
 
 
 def metric(ticker, slug, start=None, end=None):
-    return get(f"/api/v2/metrics/entity/{ticker.upper()}/metric/{slug}",
+    return get(f"/api/v2/metrics/entity/{urllib.parse.quote(ticker.upper(), safe='')}/metric/{slug}",
                startTime=start, endTime=end)
 
 
@@ -105,7 +117,7 @@ def cmd_holders(a):
     if not quarters:
         sys.exit("no institutional quarters available")
     q = quarters[0].get("reportDate")
-    out(rows(get(f"/api/v1/institutional/holders/{a.ticker.upper()}", reportDate=q)))
+    out(shaped(get(f"/api/v1/institutional/holders/{urllib.parse.quote(a.ticker.upper(), safe='')}", reportDate=q)))
 
 
 def main():
@@ -147,6 +159,7 @@ def main():
     a = p.parse_args()
     t = getattr(a, "ticker", None)
     T = t.upper() if t else None
+    TE = urllib.parse.quote(T, safe="") if T else None  # percent-encoded for URL path segments
     days = getattr(a, "days", None)
 
     if a.cmd == "sentiment":
@@ -160,38 +173,38 @@ def main():
     elif a.cmd == "mood":
         cmd_mood(a)
     elif a.cmd == "insights":
-        out(rows(get(f"/api/v1/insights/stock/{T}")))
+        out(shaped(get(f"/api/v1/insights/stock/{TE}")))
     elif a.cmd == "market-insights":
-        out(rows(get("/api/v1/insights/market")))
+        out(shaped(get("/api/v1/insights/market")))
     elif a.cmd == "insight-types":
-        out(get(f"/api/v1/insights/stock/{T}/types"))
+        out(get(f"/api/v1/insights/stock/{TE}/types"))
     elif a.cmd == "cluster-buys":
-        out(rows(get("/api/v1/insider/cluster-buys", lookbackDays=days)))
+        out(shaped(get("/api/v1/insider/cluster-buys", lookbackDays=days)))
     elif a.cmd == "insider":
-        out(rows(get(f"/api/v1/insider/trades/{T}", lookbackDays=days)))
+        out(shaped(get(f"/api/v1/insider/trades/{TE}", lookbackDays=days)))
     elif a.cmd == "congress":
-        out(rows(get("/api/v1/politicians/activity", lookbackDays=days)))
+        out(shaped(get("/api/v1/politicians/activity", lookbackDays=days)))
     elif a.cmd == "filings":
-        out(rows(get(f"/api/v1/politicians/filings/{T}", lookbackDays=days)))
+        out(shaped(get(f"/api/v1/politicians/filings/{TE}", lookbackDays=days)))
     elif a.cmd == "holders":
         cmd_holders(a)
     elif a.cmd == "consensus":
-        out(rows(get(f"/api/v1/analyst/{T}/consensus")))
+        out(shaped(get(f"/api/v1/analyst/{TE}/consensus")))
     elif a.cmd == "actions":
-        out(rows(get(f"/api/v1/analyst/{T}/actions", lookbackDays=days)))
+        out(shaped(get(f"/api/v1/analyst/{TE}/actions", lookbackDays=days)))
     elif a.cmd == "estimates":
-        out(rows(get(f"/api/v1/analyst/{T}/estimates")))
+        out(shaped(get(f"/api/v1/analyst/{TE}/estimates")))
     elif a.cmd == "analyst-activity":
-        out(rows(get("/api/v1/analyst/activity", lookbackDays=days)))
+        out(shaped(get("/api/v1/analyst/activity", lookbackDays=days)))
     elif a.cmd == "earnings":
-        out(rows(get("/api/v1/calendar/earnings", ticker=T)))
+        out(shaped(get("/api/v1/calendar/earnings", ticker=T)))
     elif a.cmd == "news":
-        raw = get(f"/api/v1/documents/ticker/{T}", limit=a.limit)
+        raw = get(f"/api/v1/documents/ticker/{TE}", limit=a.limit)
         out({"totalCount": raw.get("totalCount"), "documents": raw.get("documents", [])})
     elif a.cmd == "stories":
-        path = (f"/api/v1/documents/stories/ticker/{a.ticker.upper()}"
+        path = (f"/api/v1/documents/stories/ticker/{urllib.parse.quote(a.ticker.upper(), safe='')}"
                 if a.ticker else "/api/v1/documents/stories")
-        out(rows(get(path, limit=a.limit)))
+        out(shaped(get(path, limit=a.limit)))
     elif a.cmd == "price":
         out(get("/api/v1/stocks/price", ticker=T))
     elif a.cmd == "chart":

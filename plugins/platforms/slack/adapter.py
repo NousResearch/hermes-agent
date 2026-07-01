@@ -54,6 +54,11 @@ from gateway.platforms.base import (
     cache_video_from_bytes,
 )
 
+try:  # sibling module; support both package and flat plugin-dir import
+    from .block_kit import render_blocks
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from block_kit import render_blocks  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 
@@ -1372,12 +1377,21 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
+            # Block Kit (opt-in): render the primary message as structured
+            # blocks. Only applied to a single-chunk message — a >39k response
+            # that had to be split is pathological for Block Kit's 50-block /
+            # 3000-char limits, so those fall back to plain text. The ``text``
+            # field is always kept as the notification/accessibility fallback.
+            blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+
             for i, chunk in enumerate(chunks):
                 kwargs = {
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if blocks and i == 0:
+                    kwargs["blocks"] = blocks
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -1462,11 +1476,20 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            update_kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "ts": message_id,
+                "text": formatted,
+            }
+            # Only render Block Kit on the FINAL edit. Intermediate streaming
+            # edits stay plain mrkdwn — re-deriving a full block layout on every
+            # progressive flush would be wasteful and jittery. ``text`` is kept
+            # as the fallback either way.
+            if finalize:
+                blocks = self._maybe_blocks(content)
+                if blocks:
+                    update_kwargs["blocks"] = blocks
+            await self._get_client(chat_id).chat_update(**update_kwargs)
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -1781,6 +1804,36 @@ class SlackAdapter(BasePlatformAdapter):
         return self._is_retryable_error(body)
 
     # ----- Markdown → mrkdwn conversion -----
+
+    def _rich_blocks_enabled(self) -> bool:
+        """Whether to render outbound agent messages as Slack Block Kit blocks.
+
+        Opt-in via ``platforms.slack.extra.rich_blocks`` (config.yaml). Default
+        off: messages continue to go out as flat mrkdwn ``text``. Enabling it
+        renders the *final* agent message with real structural primitives
+        (headers, dividers, true nested lists via ``rich_text``); tables are
+        rendered as aligned monospace (Block Kit has no robust table block).
+        """
+        raw = self.config.extra.get("rich_blocks")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _maybe_blocks(self, content: str) -> Optional[list]:
+        """Render ``content`` to Block Kit blocks when the feature is enabled.
+
+        Returns ``None`` when rich blocks are disabled, or when the renderer
+        declines (empty / too complex / unexpected shape) — the caller then
+        falls back to the plain ``text`` payload. A ``text`` fallback is ALWAYS
+        sent alongside blocks, so this can safely return ``None`` at any time.
+        """
+        if not self._rich_blocks_enabled():
+            return None
+        try:
+            return render_blocks(content, mrkdwn_fn=self.format_message)
+        except Exception:  # pragma: no cover - renderer already guards itself
+            logger.debug("[Slack] block render failed; using plain text", exc_info=True)
+            return None
 
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.

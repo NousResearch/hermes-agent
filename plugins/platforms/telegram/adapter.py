@@ -2165,8 +2165,17 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
 
+            # Capture a stable local reference: self._app can be reassigned to
+            # None by a concurrent disconnect() while we're suspended across
+            # the awaits above (same race #55992 fixed on the network path).
+            # Re-reading self._app after that point would raise
+            # AttributeError deep inside start_polling instead of failing fast
+            # here, where the except below reschedules or escalates to fatal.
+            app = self._app
             try:
-                await self._app.updater.start_polling(
+                if not app:
+                    raise RuntimeError("Telegram application was torn down during conflict reconnect")
+                await app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,

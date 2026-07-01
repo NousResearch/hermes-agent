@@ -3389,7 +3389,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    # The native schema may rename its inner `arguments` field to
+                    # `tool_arguments` to avoid colliding with the outer tool call
+                    # envelope. Accept either name and fall back to the raw args
+                    # for direct/internal callers.  Preserve every sibling
+                    # parameter (e.g. tool_name / toolset_name for VibeUE's
+                    # call_tool wrapper) so the rename is not lossy.
+                    if isinstance(args, dict):
+                        tool_args = dict(args)
+                        if "tool_arguments" in tool_args:
+                            tool_args["arguments"] = tool_args.pop("tool_arguments")
+                        if "arguments" in tool_args and "tool_arguments" not in tool_args:
+                            pass  # already native shape
+                        result = await server.session.call_tool(tool_name, arguments=tool_args)
+                    else:
+                        result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
@@ -3688,7 +3702,17 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         name = args.get("name")
         if not name:
             return tool_error("Missing required parameter 'name'")
-        arguments = args.get("arguments", {})
+        # Name and arguments are the canonical MCP prompt parameters. Some
+        # prompt schemas expose the arguments under a top-level `arguments`
+        # property; Hermes' tool dispatch layer uses `arguments` for the whole
+        # tool-call envelope, so that parameter is renamed to `prompt_arguments`
+        # in the schema. Accept both names for backward compatibility.
+        if isinstance(args, dict) and "prompt_arguments" in args:
+            arguments = args["prompt_arguments"]
+        elif isinstance(args, dict) and "arguments" in args:
+            arguments = args["arguments"]
+        else:
+            arguments = {}
 
         async def _call():
             async with server._rpc_lock:
@@ -3923,10 +3947,43 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+    normalized = _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None))
+
+    # NOTE: Targeted wrapper for MCP tools whose native schema uses a top-level
+    # `arguments` parameter. Hermes' tool dispatch path uses `arguments` as
+    # the JSON-encoded string for the whole tool call, so a tool parameter
+    # literally named `arguments` collides with that envelope and can be
+    # dropped or mis-routed. For affected schemas we rename the user-facing
+    # parameter to `tool_arguments`; the handler maps it back before calling
+    # the server.
+    #
+    # Only apply the wrapper when the normalized schema has a top-level
+    # property named `arguments`; otherwise keep the original schema so the
+    # model sees the real parameters and descriptions.
+    properties = normalized.get("properties", {})
+    if "arguments" in properties:
+        wrapped_props = {**properties}
+        wrapped_props["tool_arguments"] = wrapped_props.pop("arguments")
+        required = list(normalized.get("required", []))
+        if "arguments" in required:
+            required = ["tool_arguments" if p == "arguments" else p for p in required]
+        wrapped = {
+            "type": "object",
+            "properties": wrapped_props,
+        }
+        if required:
+            wrapped["required"] = required
+        return {
+            "name": prefixed_name,
+            "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
+            "parameters": wrapped,
+            "_mcp_input_schema": dict(normalized),
+        }
+
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
+        "parameters": normalized,
     }
 
 
@@ -3988,10 +4045,14 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
                             "type": "string",
                             "description": "Name of the prompt to retrieve",
                         },
-                        "arguments": {
+                        "prompt_arguments": {
                             "type": "object",
-                            "description": "Optional arguments to pass to the prompt",
-                            "properties": {},
+                            "description": (
+                                "Optional arguments to pass to the prompt. "
+                                "Renamed from `arguments` to avoid colliding with the "
+                                "tool-call envelope used by the dispatch layer."
+                            ),
+                            "default": {},
                             "additionalProperties": True,
                         },
                     },

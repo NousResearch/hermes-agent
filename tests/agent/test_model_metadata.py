@@ -25,6 +25,7 @@ from agent.model_metadata import (
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
+    get_context_length_from_provider_error,
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
@@ -1368,6 +1369,27 @@ class TestParseContextLimitFromError:
         msg = "prompt is too long: 250000 tokens > 200000 maximum"
         # Should extract 200000 (the limit), not 250000 (the input size)
         assert parse_context_limit_from_error(msg) == 200000
+
+    def test_arithmetic_comparison_returns_right_hand_limit(self):
+        # "A + B > C" form: the real window is the RHS of '>', not the input
+        # size on the left that textually follows the "limit:" keyword.
+        msg = (
+            "input length and max_tokens exceed context limit: "
+            "250000 + 8192 > 200000, decrease input length or max_tokens"
+        )
+        assert parse_context_limit_from_error(msg) == 200000
+
+    def test_arithmetic_overflow_recovery_records_real_window(self):
+        # End-to-end guard: while running at the 256K default fallback, an
+        # overflow error reporting a 200K window must shrink to 200000.
+        # Before the fix the parser returned 250000 (> the real 200K window),
+        # which slipped past the `parsed < current` guard and left the agent
+        # stuck overflowing instead of recovering via compression.
+        msg = (
+            "input length and max_tokens exceed context limit: "
+            "250000 + 8192 > 200000, decrease input length or max_tokens"
+        )
+        assert get_context_length_from_provider_error(msg, 256_000) == 200_000
 
     def test_lmstudio_format(self):
         msg = "Error: context window of 4096 tokens exceeded"

@@ -715,6 +715,57 @@ class TestLoadGatewayConfig:
         )
         assert telegram.extra.get("require_mention") is False
 
+    def test_require_mention_env_not_shadowed_by_yaml_in_extra(self, tmp_path, monkeypatch):
+        """Regression #48493: MATRIX_REQUIRE_MENTION=false in .env must work even
+        when config.yaml sets matrix.require_mention: true.
+
+        The shared-key loop used to always copy the YAML value into
+        PlatformConfig.extra, so adapters read extra first and ignored the env
+        override that users set in .env.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+
+        config = load_gateway_config()
+
+        matrix = config.platforms[Platform.MATRIX]
+        assert matrix.extra.get("require_mention") is None
+        from gateway.platforms.matrix import MatrixAdapter
+
+        assert MatrixAdapter(matrix)._require_mention is False
+
+    def test_require_mention_yaml_still_bridges_when_env_unset(self, tmp_path, monkeypatch):
+        """Explicit YAML require_mention must still reach extra when no env override."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+
+        config = load_gateway_config()
+
+        matrix = config.platforms[Platform.MATRIX]
+        assert matrix.extra.get("require_mention") is False
+
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

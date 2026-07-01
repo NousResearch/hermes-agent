@@ -831,37 +831,142 @@ class CLICommandsMixin:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
+        """Handle /sessions list/delete/rename/prune or resume a target session."""
+        from cli import _cprint, _DIM, _RST
 
-        Without arguments, prints the same recent-sessions table that /resume
-        shows when called without a target, and tells the user how to resume.
-        With an explicit subcommand or target, delegates to the resume flow so
-        ``/sessions <id>`` and ``/resume <id>`` behave identically.
-
-        The TUI ships an interactive picker overlay for this command; the
-        classic CLI prints an inline list because there is no equivalent
-        overlay primitive here. Without this handler the canonical name
-        ``sessions`` falls through ``process_command``'s elif chain and
-        prints ``Unknown command: sessions`` even though the command is
-        registered in the central COMMAND_REGISTRY.
-        """
-        from cli import _cprint
-        parts = cmd_original.split(None, 1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-        sub = arg.lower()
-
-        # Bare /sessions or /sessions list — show recent sessions inline.
-        if not arg or sub in {"list", "ls", "browse"}:
-            if not self._session_db:
-                from hermes_state import format_session_db_unavailable
-                _cprint(f"  {format_session_db_unavailable()}")
-                return
-            if not self._show_recent_sessions(reason="sessions"):
-                _cprint("  (._.) No previous sessions yet.")
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
             return
 
-        # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
-        self._handle_resume_command(f"/resume {arg}")
+        parts = cmd_original.split(None, 2)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        # Bare /sessions or /sessions list / ls / browse
+        if subcommand in ("", "list", "ls", "browse"):
+            sessions = self._list_recent_sessions(limit=20)
+            if not sessions:
+                _cprint("  (._.) No sessions found.")
+                return
+            from hermes_cli.main import _relative_time
+            _cprint()
+            _cprint(f"  {'#':<3} {'Title':<30} {'Preview':<38} {'Last Active':<13} {'ID'}")
+            _cprint(f"  {'─'*3} {'─'*30} {'─'*38} {'─'*13} {'─'*24}")
+            for idx, s in enumerate(sessions, 1):
+                title = (s.get("title") or "—")[:28]
+                preview = (s.get("preview") or "")[:36]
+                last_active = _relative_time(s.get("last_active"))
+                marker = "▶ " if s["id"] == self.session_id else "  "
+                _cprint(f"  {marker}{idx:<2} {title:<30} {preview:<38} {last_active:<13} {s['id']}")
+            _cprint()
+            _cprint(f"  {_DIM}Type a number to resume · /sessions delete <n> · /sessions rename <n> <title> · /sessions prune{_RST}")
+            _cprint()
+            self._pending_resume_sessions = sessions
+            return
+
+        # /sessions delete <n|id>
+        if subcommand == "delete":
+            target_raw = parts[2].strip() if len(parts) > 2 else ""
+            if not target_raw:
+                _cprint("  Usage: /sessions delete <number|session_id>")
+                return
+
+            target_id = self._resolve_sessions_target(target_raw)
+            if not target_id:
+                _cprint(f"  Session not found: {target_raw!r}")
+                return
+
+            if target_id == self.session_id:
+                _cprint("  Cannot delete the current session. Start a new one first (/new).")
+                return
+
+            meta = self._session_db.get_session(target_id)
+            title = (meta or {}).get("title") or target_id
+            confirm = self._confirm_destructive_slash(
+                "sessions delete",
+                f"Delete session '{title}' ({target_id}) and all its messages?",
+                cmd_original=cmd_original,
+            )
+            if confirm is None:
+                return  # cancelled
+
+            from hermes_constants import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            if self._session_db.delete_session(target_id, sessions_dir=sessions_dir):
+                _cprint(f"  ✓ Deleted session '{title}'.")
+            else:
+                _cprint(f"  Session not found: {target_raw!r}")
+            return
+
+        # /sessions rename <n|id> <new title>
+        if subcommand == "rename":
+            rest = parts[2].strip() if len(parts) > 2 else ""
+            rename_parts = rest.split(None, 1)
+            if len(rename_parts) < 2:
+                _cprint("  Usage: /sessions rename <number|session_id> <new title>")
+                return
+
+            target_raw, new_title = rename_parts[0], rename_parts[1].strip()
+            target_id = self._resolve_sessions_target(target_raw)
+            if not target_id:
+                _cprint(f"  Session not found: {target_raw!r}")
+                return
+
+            try:
+                self._session_db.set_session_title(target_id, new_title)
+                _cprint(f"  ✓ Renamed to '{new_title}'.")
+                if target_id == self.session_id:
+                    self.session_title = new_title
+            except ValueError as e:
+                _cprint(f"  ✗ {e}")
+            return
+
+        # /sessions prune [--days N]
+        if subcommand == "prune":
+            days = 90
+            rest_parts = (parts[2].strip().split() if len(parts) > 2 else [])
+            if rest_parts:
+                try:
+                    days = int(rest_parts[-1])
+                except ValueError:
+                    _cprint(f"  ✗ Invalid number of days: {rest_parts[-1]!r}")
+                    _cprint("  Usage: /sessions prune [--days N]  (default: 90)")
+                    return
+
+            confirm = self._confirm_destructive_slash(
+                "sessions prune",
+                f"Delete all ended sessions older than {days} days?",
+                cmd_original=cmd_original,
+            )
+            if confirm is None:
+                return
+
+            from hermes_constants import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            count = self._session_db.prune_sessions(
+                older_than_days=days, sessions_dir=sessions_dir
+            )
+            _cprint(f"  ✓ Pruned {count} session(s) older than {days} days.")
+            return
+
+        # /sessions <id_or_title>
+        self._handle_resume_command(f"/resume {parts[1]}" + (f" {parts[2]}" if len(parts) > 2 else ""))
+
+    def _resolve_sessions_target(self, target: str) -> "Optional[str]":
+        """Resolve a /sessions target (number or session ID/title) to a session ID."""
+        if target.isdigit():
+            sessions = self._list_recent_sessions(limit=20)
+            idx = int(target)
+            if 1 <= idx <= len(sessions):
+                return sessions[idx - 1]["id"]
+            return None
+        if self._session_db:
+            resolved = self._session_db.resolve_session_id(target)
+            if resolved:
+                return resolved
+            from hermes_cli.main import _resolve_session_by_name_or_id
+            return _resolve_session_by_name_or_id(target)
+        return None
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.

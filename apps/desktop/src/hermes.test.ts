@@ -47,6 +47,17 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
+  it('forwards a specific profile name to the all-profile session list', async () => {
+    await listAllProfileSessions(50, 1, 'exclude', 'recent', 'remote')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=remote',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 

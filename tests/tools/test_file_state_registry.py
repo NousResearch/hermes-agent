@@ -283,5 +283,91 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertNotIn("error", w)
 
 
+class UnstatablePathUnitTests(unittest.TestCase):
+    """Paths the HOST cannot stat — the remote-backend case.
+
+    When TERMINAL_ENV routes file operations to a sandboxed backend
+    (docker, singularity, ssh, modal, daytona), the resolved path names a
+    file inside the sandbox, so ``os.path.getmtime`` on the host raises
+    OSError even though the file exists remotely.  The registry must keep
+    its wall-clock protections (sibling detection, partial-read and
+    write-without-read warnings, delegate reminders) — only the host-mtime
+    drift check is meaningless there.
+    """
+
+    def setUp(self) -> None:
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp(prefix="hermes_fs_sandbox_")
+        # Never created — getmtime deterministically raises OSError.
+        self._nx = os.path.join(self._tmpdir, "workspace", "app.py")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        file_state.get_registry().clear()
+
+    def test_record_read_still_records_stamp(self):
+        file_state.record_read("A", self._nx)
+        self.assertEqual(file_state.known_reads("A"), [self._nx])
+
+    def test_note_write_still_records_writer(self):
+        since = time.time() - 1.0
+        file_state.note_write("B", self._nx)
+        out = file_state.writes_since("A", since, [self._nx])
+        self.assertEqual(out, {"B": [self._nx]})
+
+    def test_sibling_write_detected(self):
+        file_state.record_read("A", self._nx)
+        time.sleep(0.01)
+        file_state.note_write("B", self._nx)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("B", warn)
+        self.assertIn("sibling", warn.lower())
+
+    def test_write_without_read_flagged(self):
+        file_state.note_write("B", self._nx)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("never read", warn)
+
+    def test_partial_read_flagged_on_write(self):
+        file_state.record_read("A", self._nx, partial=True)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("partial", warn.lower())
+
+    def test_own_write_then_write_is_clean(self):
+        file_state.record_read("A", self._nx)
+        file_state.note_write("A", self._nx)
+        self.assertIsNone(file_state.check_stale("A", self._nx))
+
+    def test_delegate_reminder_wiring(self):
+        # Mirrors delegate_tool: snapshot parent reads, then ask which of
+        # them a child rewrote after the delegation started.
+        file_state.record_read("parent", self._nx)
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("child", self._nx)
+        parent_reads = file_state.known_reads("parent")
+        out = file_state.writes_since("parent", since, parent_reads)
+        self.assertIn("child", out)
+        self.assertIn(self._nx, out["child"])
+
+    def test_host_deleted_file_still_not_stale(self):
+        # Preserved semantics: when the stamp DID carry a real host mtime
+        # (file existed locally at read time) and the file has since been
+        # deleted, the write recreates it — not stale.
+        fd, p = tempfile.mkstemp(prefix="hermes_file_state_test_", suffix=".txt")
+        os.close(fd)
+        try:
+            file_state.record_read("A", p)
+            time.sleep(0.01)
+            file_state.note_write("B", p)
+        finally:
+            os.unlink(p)
+        self.assertIsNone(file_state.check_stale("A", p))
+
+
 if __name__ == "__main__":
     unittest.main()

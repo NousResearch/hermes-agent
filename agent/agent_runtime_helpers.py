@@ -970,6 +970,14 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        try:
+            from agent.agent_init import _configure_custom_provider_reasoning_replay
+            _configure_custom_provider_reasoning_replay(
+                agent,
+                getattr(agent, "_custom_providers", None) or [],
+            )
+        except Exception:
+            agent._reasoning_replay_field = None
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1134,6 +1142,14 @@ def restore_primary_runtime(agent) -> bool:
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._client_kwargs = dict(rt["client_kwargs"])
+        try:
+            from agent.agent_init import _configure_custom_provider_reasoning_replay
+            _configure_custom_provider_reasoning_replay(
+                agent,
+                getattr(agent, "_custom_providers", None) or [],
+            )
+        except Exception:
+            agent._reasoning_replay_field = None
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).
@@ -1811,6 +1827,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             model=new_model,
         )
     )
+
+    try:
+        from hermes_cli.config import load_config, get_compatible_custom_providers
+        from agent.agent_init import _configure_custom_provider_reasoning_replay
+
+        _sm_cfg = load_config()
+        agent._custom_providers = get_compatible_custom_providers(_sm_cfg)
+        _configure_custom_provider_reasoning_replay(
+            agent,
+            getattr(agent, "_custom_providers", None) or [],
+        )
+    except Exception:
+        agent._reasoning_replay_field = None
 
     # ── LM Studio: preload before probing context length ──
     agent._ensure_lmstudio_runtime_loaded()
@@ -2501,12 +2530,57 @@ def intent_ack_continuation_enabled(agent) -> bool:
 
 
 
+def reasoning_replay_field_for_api(agent) -> Optional[str]:
+    """Return the configured provider-facing reasoning replay field, if any."""
+    field = getattr(agent, "_reasoning_replay_field", None)
+    if not isinstance(field, str):
+        return None
+    field = field.strip().lower()
+    if field in {"reasoning", "reasoning_content"}:
+        return field
+    return None
+
+
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
     if source_msg.get("role") != "assistant":
         return
 
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+    replay_field = reasoning_replay_field_for_api(agent)
+    normalized_reasoning = source_msg.get("reasoning")
+    existing = source_msg.get("reasoning_content")
+    replay_reasoning = (
+        normalized_reasoning
+        if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+        else None
+    )
+    replay_existing = (
+        existing
+        if isinstance(existing, str) and existing.strip()
+        else None
+    )
+
+    if replay_field == "reasoning":
+        if replay_reasoning is not None:
+            api_msg["reasoning"] = replay_reasoning
+            api_msg.pop("reasoning_content", None)
+        elif replay_existing is not None:
+            api_msg["reasoning"] = replay_existing
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg.pop("reasoning", None)
+            api_msg.pop("reasoning_content", None)
+        return
+
+    if replay_field == "reasoning_content":
+        if replay_existing is not None:
+            api_msg["reasoning_content"] = replay_existing
+        elif replay_reasoning is not None:
+            api_msg["reasoning_content"] = replay_reasoning
+        else:
+            api_msg.pop("reasoning_content", None)
+        return
 
     # 1. Explicit reasoning_content already set.
     #
@@ -2526,7 +2600,6 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # fallback to a strict provider replays that pad and 422s. Stripping
     # here covers the rebuild path; reapply_reasoning_echo_for_provider()
     # covers the already-built api_messages path. Refs #45655.
-    existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if not needs_thinking_pad:
             api_msg.pop("reasoning_content", None)
@@ -2547,7 +2620,6 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # provider's chain of thought to DeepSeek/Kimi. Space (not "")
     # because DeepSeek V4 Pro rejects empty-string reasoning_content
     # in thinking mode (refs #17341).
-    normalized_reasoning = source_msg.get("reasoning")
     if (
         needs_thinking_pad
         and source_msg.get("tool_calls")
@@ -2613,26 +2685,48 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     fields against the *current* provider.  It is idempotent and safe to call
     every iteration; it covers every fallback path.
 
-    Returns the number of assistant turns whose reasoning_content was added or
-    removed.
+    Returns the number of assistant turns whose provider-facing reasoning
+    fields were added or removed.
     """
     needs_pad = agent._needs_thinking_reasoning_pad()
+    replay_field = reasoning_replay_field_for_api(agent)
     changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
             continue
-        if needs_pad:
-            if api_msg.get("reasoning_content"):
-                continue
+        before = dict(api_msg)
+        if replay_field:
             copy_reasoning_content_for_api(agent, api_msg, api_msg)
-            if api_msg.get("reasoning_content"):
+            if replay_field == "reasoning":
+                api_msg.pop("reasoning_content", None)
+            elif replay_field == "reasoning_content":
+                api_msg.pop("reasoning", None)
+            if api_msg != before:
+                changed += 1
+        elif needs_pad:
+            # api_messages may have been built under a provider that replays
+            # history under ``reasoning`` (for example Qwen/vLLM). Do not
+            # leak that provider's private trace into a DeepSeek/Kimi/MiMo
+            # fallback; their fallback-safe shape is the blank pad unless a
+            # reasoning_content field was already present.
+            if "reasoning" in api_msg:
+                api_msg.pop("reasoning", None)
+            if not api_msg.get("reasoning_content"):
+                copy_reasoning_content_for_api(agent, api_msg, api_msg)
+            if api_msg != before:
                 changed += 1
         else:
             # Strict provider — strip any stale reasoning_content pad left
             # over from a reasoning primary so the fallback request doesn't
             # 400/422 on it.
+            removed = False
             if "reasoning_content" in api_msg:
                 api_msg.pop("reasoning_content", None)
+                removed = True
+            if "reasoning" in api_msg:
+                api_msg.pop("reasoning", None)
+                removed = True
+            if removed:
                 changed += 1
     return changed
 
@@ -2969,6 +3063,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "reasoning_replay_field_for_api",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

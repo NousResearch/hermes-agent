@@ -3550,6 +3550,31 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_preserves_reasoning_for_reasoning_replay_provider(self, agent):
+        agent.provider = "custom:my-vllm"
+        agent.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        agent.base_url = "http://localhost:8000/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "content": "Visible result.",
+                "reasoning": "prior hidden reasoning",
+                "reasoning_content": "old provider scratchpad",
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        replayed_assistant = next(m for m in sent_msgs if m.get("role") == "assistant")
+        assert replayed_assistant["reasoning"] == "prior hidden reasoning"
+        assert "reasoning_content" not in replayed_assistant
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -7072,6 +7097,50 @@ class TestReasoningReplayForStrictProviders:
         sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
         replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
         assert "reasoning_content" not in replayed_assistant
+
+    def test_preserve_thinking_custom_provider_replays_reasoning_field(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom:my-vllm"
+        agent.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        agent.base_url = "http://localhost:8000/v1"
+        agent._reasoning_replay_field = "reasoning"
+        prior_assistant = {
+            "role": "assistant",
+            "content": "The visible answer.",
+            "reasoning": "prior hidden reasoning",
+        }
+        final_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = final_resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step",
+                conversation_history=[prior_assistant],
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
+        assert replayed_assistant["reasoning"] == "prior hidden reasoning"
+        assert "reasoning_content" not in replayed_assistant
+
+    def test_strict_provider_strips_stale_reasoning_field_on_reapply(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "mistral"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._reasoning_replay_field = None
+        api_messages = [
+            {"role": "assistant", "content": "ok", "reasoning": "stale private reasoning"},
+        ]
+
+        changed = agent._reapply_reasoning_echo_for_provider(api_messages)
+
+        assert changed == 1
+        assert "reasoning" not in api_messages[0]
 
 
 # ---------------------------------------------------------------------------

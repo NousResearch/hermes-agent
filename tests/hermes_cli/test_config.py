@@ -981,6 +981,35 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
+    def test_compatible_custom_providers_preserves_reasoning_replay_config(self):
+        compatible = get_compatible_custom_providers(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Legacy vLLM",
+                        "base_url": "http://legacy.example/v1",
+                        "reasoning_replay_field": "reasoning",
+                        "preserve_thinking": True,
+                    }
+                ],
+                "providers": {
+                    "my-vllm": {
+                        "name": "My vLLM",
+                        "api": "http://localhost:8000/v1",
+                        "reasoning_replay_field": "reasoning",
+                        "preserve_thinking": True,
+                    }
+                },
+            }
+        )
+
+        legacy, provider = compatible
+        assert legacy["reasoning_replay_field"] == "reasoning"
+        assert legacy["preserve_thinking"] is True
+        assert provider["provider_key"] == "my-vllm"
+        assert provider["reasoning_replay_field"] == "reasoning"
+        assert provider["preserve_thinking"] is True
+
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""
         config_path = tmp_path / "config.yaml"

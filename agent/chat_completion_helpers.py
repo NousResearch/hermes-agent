@@ -1276,6 +1276,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        try:
+            from agent.agent_init import _configure_custom_provider_reasoning_replay
+            _configure_custom_provider_reasoning_replay(
+                agent,
+                getattr(agent, "_custom_providers", None) or [],
+            )
+        except Exception:
+            agent._reasoning_replay_field = None
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream
@@ -1432,14 +1440,20 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     messages.append({"role": "user", "content": summary_request})
 
     try:
-        # Build API messages, stripping internal-only fields
-        # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+        # Build API messages, stripping internal-only fields. Keep
+        # provider-facing reasoning when the active endpoint explicitly
+        # replays historical thinking through the ``reasoning`` field.
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
         for msg in messages:
             api_msg = msg.copy()
             agent._copy_reasoning_content_for_api(msg, api_msg)
-            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+            if (
+                "reasoning" in api_msg
+                and agent._reasoning_replay_field_for_api() != "reasoning"
+            ):
+                api_msg.pop("reasoning", None)
+            for internal_field in ("finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)
             # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat

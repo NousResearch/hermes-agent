@@ -144,6 +144,107 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
+_REASONING_REPLAY_FIELDS = {"reasoning", "reasoning_content"}
+
+
+def _normalize_reasoning_replay_field(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    field = value.strip().lower()
+    if field in _REASONING_REPLAY_FIELDS:
+        return field
+    if field:
+        logger.warning(
+            "custom_providers: unsupported reasoning_replay_field %r ignored "
+            "(expected one of: reasoning, reasoning_content)",
+            value,
+        )
+    return None
+
+
+def _entry_preserves_thinking(entry: Dict[str, Any]) -> bool:
+    if is_truthy_value(entry.get("preserve_thinking")):
+        return True
+    extra_body = entry.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return False
+    chat_template_kwargs = extra_body.get("chat_template_kwargs")
+    return (
+        isinstance(chat_template_kwargs, dict)
+        and is_truthy_value(chat_template_kwargs.get("preserve_thinking"))
+    )
+
+
+def _reasoning_replay_field_from_custom_provider_entry(
+    entry: Dict[str, Any],
+) -> Optional[str]:
+    explicit = _normalize_reasoning_replay_field(entry.get("reasoning_replay_field"))
+    if explicit:
+        return explicit
+    if _entry_preserves_thinking(entry):
+        return "reasoning"
+    return None
+
+
+def _custom_provider_reasoning_replay_field_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[str]:
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[str] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+
+        replay_field = _reasoning_replay_field_from_custom_provider_entry(entry)
+        if not replay_field:
+            continue
+
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model:
+            if _custom_provider_model_matches(model, entry):
+                return replay_field
+        elif fallback is None:
+            fallback = replay_field
+
+    return fallback
+
+
+def _configure_custom_provider_reasoning_replay(
+    agent,
+    custom_providers: List[Dict[str, Any]],
+) -> None:
+    agent._reasoning_replay_field = _custom_provider_reasoning_replay_field_for_agent(
+        provider=getattr(agent, "provider", ""),
+        model=getattr(agent, "model", ""),
+        base_url=getattr(agent, "base_url", ""),
+        custom_providers=custom_providers,
+    )
+
+
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider,
@@ -1509,6 +1610,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _configure_custom_provider_reasoning_replay(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

@@ -5,7 +5,785 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko' | 'de' | 'es' | 'fr' | 'pt-br' | 'ar' | 'hi' | 'th' | 'vi' | 'it' | 'ru', { title: string; detail: string }>
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko' | 'de' | 'es' | 'fr' | 'pt-br' | 'ar' | 'hi' | 'th' | 'vi' | 'it' | 'ru'
+
+export type ToolTitleKey =
+  | 'browser_click'
+  | 'browser_fill'
+  | 'browser_navigate'
+  | 'browser_snapshot'
+  | 'browser_take_screenshot'
+  | 'browser_type'
+  | 'clarify'
+  | 'cronjob'
+  | 'edit_file'
+  | 'execute_code'
+  | 'image_generate'
+  | 'list_files'
+  | 'patch'
+  | 'read_file'
+  | 'search_files'
+  | 'session_search_recall'
+  | 'terminal'
+  | 'todo'
+  | 'vision_analyze'
+  | 'web_extract'
+  | 'web_search'
+  | 'write_file'
+
+interface ToolTitleCopy {
+  done: string
+  pending: string
+  pendingAction: string
+}
+
+interface ModeOptionCopy {
+  label: string
+  description: string
+}
+
+interface AuxTaskCopy {
+  label: string
+  hint: string
+}
+
+export interface Translations {
+  common: {
+    apply: string
+    back: string
+    save: string
+    saving: string
+    cancel: string
+    change: string
+    choose: string
+    clear: string
+    close: string
+    collapse: string
+    confirm: string
+    connect: string
+    connecting: string
+    continue: string
+    copied: string
+    copy: string
+    copyFailed: string
+    delete: string
+    docs: string
+    done: string
+    error: string
+    failed: string
+    free: string
+    loading: string
+    notSet: string
+    refresh: string
+    remove: string
+    replace: string
+    retry: string
+    run: string
+    send: string
+    set: string
+    skip: string
+    update: string
+    on: string
+    off: string
+  }
+
+  fileMenu: {
+    revealFinder: string
+    revealExplorer: string
+    revealFileManager: string
+    revealInSidebar: string
+    copyPath: string
+    copyRelativePath: string
+    rename: string
+    delete: string
+    renameTitle: string
+    renameLabel: string
+    deleteTitle: (name: string) => string
+    deleteBody: string
+    pathCopied: string
+  }
+
+  boot: {
+    ready: string
+    desktopBootFailedWithMessage: (message: string) => string
+    steps: {
+      connectingGateway: string
+      loadingSettings: string
+      loadingSessions: string
+      startingDesktopConnection: string
+      startingHermesDesktop: string
+    }
+    errors: {
+      backgroundExited: string
+      backgroundExitedDuringStartup: string
+      backendStopped: string
+      desktopBootFailed: string
+      gatewayConnectionLost: string
+      gatewaySignInRequired: string
+      ipcBridgeUnavailable: string
+    }
+    failure: {
+      title: string
+      description: string
+      remoteTitle: string
+      remoteDescription: string
+      retry: string
+      repairInstall: string
+      useLocalGateway: string
+      openLogs: string
+      repairHint: string
+      remoteSignInHint: string
+      hideRecentLogs: string
+      showRecentLogs: string
+      signedInTitle: string
+      signedInMessage: string
+      signInIncompleteTitle: string
+      signInIncompleteMessage: string
+      signInFailed: string
+      signInToRemoteGateway: string
+      signInWithProvider: (provider: string) => string
+      identityProvider: string
+    }
+  }
+
+  notifications: {
+    region: string
+    hide: string
+    show: string
+    more: (count: number) => string
+    clearAll: string
+    dismiss: string
+    details: string
+    copyDetail: string
+    copyDetailFailed: string
+    backendOutOfDateTitle: string
+    backendOutOfDateMessage: string
+    updateHermes: string
+    updateReadyTitle: string
+    updateReadyMessage: (count: number) => string
+    seeWhatsNew: string
+    errors: {
+      elevenLabsNeedsKey: string
+      elevenLabsRejectedKey: string
+      methodNotAllowed: string
+      microphonePermission: string
+      openaiRejectedApiKey: string
+      openaiRejectedApiKeyWithStatus: (status: string) => string
+      openaiTtsNeedsKey: string
+    }
+    voice: {
+      configureSpeechToText: string
+      couldNotStartSession: string
+      microphoneAccessDenied: string
+      microphoneConstraintsUnsupported: string
+      microphoneFailed: string
+      microphoneInUse: string
+      microphonePermissionDenied: string
+      microphoneStartFailed: string
+      microphoneUnsupported: string
+      noMicrophone: string
+      noSpeechDetected: string
+      playbackFailed: string
+      recordingFailed: string
+      transcriptionFailed: string
+      transcriptionUnavailable: string
+      tryRecordingAgain: string
+      unavailable: string
+    }
+    // Native OS notification copy (titles + generic fallback bodies). Dynamic
+    // bodies (the agent's reply, a command, an error) are passed through raw.
+    native: {
+      approvalTitle: string
+      approveAction: string
+      rejectAction: string
+      inputTitle: string
+      inputBody: string
+      turnDoneTitle: string
+      turnDoneBody: string
+      turnErrorTitle: string
+      backgroundDoneTitle: string
+      backgroundFailedTitle: string
+    }
+  }
+
+  remoteDisplayBanner: {
+    message: (reason: string) => string
+    dismiss: string
+  }
+
+  titlebar: {
+    hideSidebar: string
+    showSidebar: string
+    search: string
+    searchTitle: string
+    swapSidebarSides: string
+    swapSidebarSidesTitle: string
+    hideRightSidebar: string
+    showRightSidebar: string
+    muteHaptics: string
+    unmuteHaptics: string
+    openSettings: string
+    openStarmap: string
+    openKeybinds: string
+  }
+
+  keybinds: {
+    title: string
+    subtitle: (open: string) => string
+    rebind: string
+    reset: string
+    resetAll: string
+    pressKey: string
+    set: string
+    conflictWith: (label: string) => string
+    categories: Record<string, string>
+    actions: Record<string, string>
+  }
+
+  language: {
+    label: string
+    description: string
+    saving: string
+    saveError: string
+    switchTo: string
+    searchPlaceholder: string
+    noResults: string
+  }
+
+  settings: {
+    closeSettings: string
+    exportConfig: string
+    importConfig: string
+    resetToDefaults: string
+    resetConfirm: string
+    exportFailed: string
+    resetFailed: string
+    nav: {
+      providers: string
+      providerAccounts: string
+      providerApiKeys: string
+      gateway: string
+      apiKeys: string
+      keysTools: string
+      keysSettings: string
+      mcp: string
+      archivedChats: string
+      about: string
+      notifications: string
+    }
+    notifications: {
+      title: string
+      intro: string
+      enableAll: string
+      enableAllDesc: string
+      focusedHint: string
+      kinds: Record<
+        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        { label: string; description: string }
+      >
+      test: string
+      testTitle: string
+      testBody: string
+      testSent: string
+      testUnsupported: string
+      completionSoundTitle: string
+      completionSoundDesc: string
+      completionSoundPreview: string
+    }
+    sections: Record<string, string>
+    searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
+    modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
+    appearance: {
+      title: string
+      intro: string
+      colorMode: string
+      colorModeDesc: string
+      toolViewTitle: string
+      toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
+      embedsTitle: string
+      embedsDesc: string
+      embedsAsk: string
+      embedsAlways: string
+      embedsOff: string
+      embedsReset: (count: number) => string
+      product: string
+      productDesc: string
+      technical: string
+      technicalDesc: string
+      themeTitle: string
+      themeDesc: string
+      themeProfileNote: (profile: string) => string
+      installTitle: string
+      installDesc: string
+      installPlaceholder: string
+      installButton: string
+      installing: string
+      installError: string
+      installed: (name: string) => string
+      removeTheme: string
+      importedBadge: string
+      pet: {
+        title: string
+        intro: string
+        restartHint: string
+        on: string
+        off: string
+        scaleTitle: string
+        scaleDesc: string
+        roamTitle: string
+        roamDesc: string
+        chooseTitle: string
+        chooseDesc: string
+        searchPlaceholder: string
+        unreachable: string
+        noMatch: (query: string) => string
+        installedTag: string
+        generatedTag: string
+        countCapped: (cap: number, total: number) => string
+        count: (n: number) => string
+        uninstall: (name: string) => string
+        delete: (name: string) => string
+        deleteTitle: (name: string) => string
+        deleteBody: string
+        deleteConfirm: string
+        rename: (name: string) => string
+        renameTitle: string
+        renamePlaceholder: string
+        renameSave: string
+        exportPet: (name: string) => string
+        adoptFailed: (slug: string) => string
+        uninstallFailed: (slug: string) => string
+        renameFailed: (slug: string) => string
+        exportFailed: (slug: string) => string
+        noneAvailable: string
+        turnOnFailed: string
+        turnOffFailed: string
+      }
+    }
+    fieldLabels: Record<string, string>
+    fieldDescriptions: Record<string, string>
+    about: {
+      heading: string
+      version: (value: string) => string
+      versionUnavailable: string
+      updates: string
+      checkNow: string
+      checking: string
+      seeWhatsNew: string
+      updateNow: string
+      releaseNotes: string
+      onLatest: string
+      installing: string
+      cantUpdate: string
+      cantReach: string
+      tapCheck: string
+      updateReady: (count: number) => string
+      lastChecked: (age: string) => string
+      justNowSuffix: string
+      automaticUpdates: string
+      automaticUpdatesDesc: string
+      branchCommit: (branch: string, commit: string) => string
+      never: string
+      justNow: string
+      minAgo: (count: number) => string
+      hoursAgo: (count: number) => string
+      daysAgo: (count: number) => string
+    }
+    config: {
+      none: string
+      noneParen: string
+      notSet: string
+      commaSeparated: string
+      loading: string
+      emptyTitle: string
+      emptyDesc: string
+      failedLoad: string
+      autosaveFailed: string
+      imported: string
+      invalidJson: string
+    }
+    credentials: {
+      pasteKey: string
+      pasteLabelKey: (label: string) => string
+      optional: string
+      enterValueFirst: string
+      couldNotSave: string
+      remove: string
+      or: string
+      escToCancel: string
+      getKey: string
+      saving: string
+    }
+    envActions: {
+      actionsFor: (label: string) => string
+      credentialActions: string
+      docs: string
+      hideValue: string
+      revealValue: string
+      replace: string
+      set: string
+      clear: string
+    }
+    gateway: {
+      loading: string
+      unavailableTitle: string
+      unavailableDesc: string
+      title: string
+      envOverride: string
+      intro: string
+      appliesTo: string
+      allProfiles: string
+      defaultConnection: string
+      profileConnection: (profile: string) => string
+      envOverrideTitle: string
+      envOverrideDesc: string
+      localTitle: string
+      localDesc: string
+      remoteTitle: string
+      remoteDesc: string
+      remoteUrlTitle: string
+      remoteUrlDesc: string
+      probing: string
+      probeError: string
+      signedIn: string
+      signIn: string
+      signOut: string
+      signInWith: (provider: string) => string
+      authTitle: string
+      authSignedInPassword: string
+      authSignedInOauth: string
+      authNeedsPassword: string
+      authNeedsOauth: (provider: string) => string
+      tokenTitle: string
+      tokenDesc: string
+      existingToken: (value: string) => string
+      savedToken: string
+      pasteSessionToken: string
+      testRemote: string
+      saveForRestart: string
+      saveAndReconnect: string
+      diagnostics: string
+      diagnosticsDesc: string
+      openLogs: string
+      incompleteTitle: string
+      incompleteSignIn: string
+      incompleteToken: string
+      incompleteSignInTest: string
+      incompleteTokenTest: string
+      enterUrlFirst: string
+      restartingTitle: string
+      savedTitle: string
+      restartingMessage: string
+      savedMessage: string
+      connectedTo: (baseUrl: string, version?: string) => string
+      reachableTitle: string
+      signedOutTitle: string
+      signedOutMessage: string
+      failedLoad: string
+      signInFailed: string
+      signOutFailed: string
+      testFailed: string
+      applyFailed: string
+      saveFailed: string
+    }
+    keys: {
+      loading: string
+      failedLoad: string
+      empty: string
+    }
+    mcp: {
+      loading: string
+      failedLoad: string
+      nameRequiredTitle: string
+      nameRequiredMessage: string
+      objectRequired: string
+      invalidJson: string
+      saveFailed: string
+      removeFailed: string
+      gatewayUnavailableTitle: string
+      gatewayUnavailableMessage: string
+      reloadedTitle: string
+      reloadedMessage: string
+      reloadFailed: string
+      savedTitle: string
+      savedMessage: (name: string) => string
+      newServer: string
+      reload: string
+      reloading: string
+      emptyTitle: string
+      emptyDesc: string
+      disabled: string
+      editServer: string
+      name: string
+      serverJson: string
+      remove: string
+      saveServer: string
+    }
+    model: {
+      loading: string
+      appliesDesc: string
+      provider: string
+      model: string
+      applying: string
+      defaultsLabel: string
+      reasoning: string
+      reasoningOff: string
+      defaultsFailed: string
+      auxiliaryTitle: string
+      resetAllToMain: string
+      auxiliaryDesc: string
+      setToMain: string
+      change: string
+      autoUseMain: string
+      providerDefault: string
+      tasks: Record<string, AuxTaskCopy>
+    }
+    providers: {
+      connectAccount: string
+      haveApiKey: string
+      intro: string
+      connected: string
+      collapse: string
+      connectAnother: string
+      otherProviders: string
+      disconnect: string
+      disconnectInTerminal: string
+      removeConfirm: (provider: string) => string
+      removeExternalGeneric: (provider: string) => string
+      removeKeyManaged: (provider: string) => string
+      removeTerminalConfirm: (provider: string, command: string) => string
+      removeTerminalRunning: (provider: string) => string
+      removedTitle: string
+      removedMessage: (provider: string) => string
+      failedRemove: (provider: string) => string
+      noProviderKeys: string
+      searchKeys: string
+      noKeysMatch: string
+      loading: string
+    }
+    sessions: {
+      loading: string
+      archivedTitle: string
+      archivedIntro: string
+      emptyArchivedTitle: string
+      emptyArchivedDesc: string
+      unarchive: string
+      deletePermanently: string
+      messages: (count: number) => string
+      restored: string
+      deleteConfirm: (title: string) => string
+      defaultDirTitle: string
+      defaultDirDesc: string
+      defaultDirUpdated: string
+      defaultsTo: (label: string) => string
+      change: string
+      choose: string
+      clear: string
+      notSet: string
+      failedLoad: string
+      unarchiveFailed: string
+      deleteFailed: string
+      updateDirFailed: string
+      clearDirFailed: string
+    }
+    toolsets: {
+      loadingConfig: string
+      savedTitle: string
+      savedMessage: (key: string) => string
+      removedTitle: string
+      removedMessage: (key: string) => string
+      failedSave: (key: string) => string
+      failedRemove: (key: string) => string
+      failedReveal: (key: string) => string
+      removeConfirm: (key: string) => string
+      set: string
+      notSet: string
+      selectedTitle: string
+      selectedMessage: (provider: string) => string
+      failedSelect: (provider: string) => string
+      failedLoad: string
+      noProviderOptions: string
+      noProviders: string
+      ready: string
+      nousIncluded: string
+      noApiKeyRequired: string
+      postSetupHint: (step: string) => string
+      postSetupRun: string
+      postSetupRunning: string
+      postSetupStarting: string
+      postSetupCompleteTitle: string
+      postSetupCompleteMessage: (step: string) => string
+      postSetupErrorTitle: string
+      postSetupErrorMessage: (step: string) => string
+      postSetupFailed: (step: string) => string
+    }
+  }
+
+  skills: {
+    tabSkills: string
+    tabToolsets: string
+    all: string
+    searchSkills: string
+    searchToolsets: string
+    refresh: string
+    refreshing: string
+    loading: string
+    noSkillsTitle: string
+    noSkillsDesc: string
+    noToolsetsTitle: string
+    noToolsetsDesc: string
+    noDescription: string
+    configured: string
+    needsKeys: string
+    toolsetsEnabled: (enabled: number, total: number) => string
+    configureToolset: (label: string) => string
+    toggleToolset: (label: string) => string
+    skillsLoadFailed: string
+    toolsetsRefreshFailed: string
+    skillEnabled: string
+    skillDisabled: string
+    toolsetEnabled: string
+    toolsetDisabled: string
+    appliesToNewSessions: (name: string) => string
+    failedToUpdate: (name: string) => string
+  }
+
+  starmap: {
+    title: string
+    subtitle: (nodes: number, clusters: number) => string
+    close: string
+    refresh: string
+    memory: string
+    filterAll: string
+    filterUsed: string
+    filterLearned: string
+    viewGraph: string
+    loadFailed: string
+    loading: string
+    emptyTitle: string
+    emptyDesc: string
+    share: string
+    shareHint: string
+    shareTitle: string
+    sharePlaceholder: string
+    copy: string
+    copied: string
+    importMap: string
+    importBtn: string
+    importEmpty: string
+    importSuccess: (nodes: number) => string
+    importedBadge: string
+    resetToMine: string
+  }
+  agents: {
+    close: string
+    title: string
+    subtitle: string
+    emptyTitle: string
+    emptyDesc: string
+    running: string
+    failed: string
+    done: string
+    streaming: string
+    files: string
+    moreFiles: (count: number) => string
+    delegation: (index: number) => string
+    workers: (count: number) => string
+    workersActive: (count: number) => string
+    agentsCount: (count: number) => string
+    activeCount: (count: number) => string
+    failedCount: (count: number) => string
+    toolsCount: (count: number) => string
+    filesCount: (count: number) => string
+    updatedAgo: (age: string) => string
+    ageNow: string
+    ageSeconds: (seconds: number) => string
+    ageMinutes: (minutes: number) => string
+    ageHours: (hours: number) => string
+    durationSeconds: (seconds: string) => string
+    durationMinutes: (minutes: number, seconds: number) => string
+    tokensK: (k: string) => string
+    tokens: (value: number) => string
+  }
+
+  commandCenter: {
+    close: string
+    paletteTitle: string
+    back: string
+    searchPlaceholder: string
+    goTo: string
+    goToSession: string
+    branches: string
+    startInBranch: (branch: string) => string
+    commandCenter: string
+    appearance: string
+    settings: string
+    changeTheme: string
+    changeColorMode: string
+    pets: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      staleBackend: string
+      empty: string
+      turnOff: string
+      turnOn: string
+      installed: string
+      generatedTag: string
+      adoptFailed: string
+      toggleFailed: string
+      noneAvailable: string
+    }
+    generatePet: {
+      title: string
+      placeholder: string
+      promptHint: string
+      readyHint: string
+      generate: string
+      generating: string
+      retry: string
+      hatch: string
+      spawning: string
+      hatching: string
+      hatchingSub: string
+      hatched: string
+      hatchRow: (state: string, done: number, total: number) => string
+      hatchComposing: string
+      hatchSaving: string
+      namePlaceholder: string
+      staleBackend: string
+      backgroundHint: string
+      slowProviderHint: string
+      remix: string
+      remixConfirmTitle: string
+      remixConfirmBody: string
+      genericError: string
+      referenceImageTooLarge: string
+      referenceImageInvalid: string
+      adopt: string
+      startOver: string
+    }
+    installTheme: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      empty: string
+      install: string
+      installing: string
+      installed: string
+      installs: (count: string) => string
+    }
+    settingsFields: string
+    mcpServers: string
+    archivedChats: string
+    sections: Record<'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'sessions' | 'system' | 'usage', string>
+    nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
     refresh: string

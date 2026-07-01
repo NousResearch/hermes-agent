@@ -56,7 +56,25 @@ TYPE_UNION = ' | '.join(f"'{l['ts']}'" for l in KNOWN_LOCALES)
 
 LOCALE_CODES = {'system'} | {l['json'] for l in KNOWN_LOCALES}
 
+# Flat keys that map to wrong nesting paths in upstream Translations type.
+# These exist as leaf strings in our JSON but upstream has them as
+# nested objects or at different paths (e.g. settings.nav.{key}).
+# defineLocale handles the fallback to English.
+KEYS_TO_SKIP: set[str] = {
+    'settings.appearance',
+    'settings.model',
+    'settings.gateway',
+    'settings.sessions',
+    'settings.tools',
+    'settings.mcp',
+    'settings.config',
+    'settings.keys',
+    'settings.about',
+}
+
 def should_skip(key: str) -> bool:
+    if key in KEYS_TO_SKIP:
+        return True
     for code in LOCALE_CODES:
         if key == f'language.{code}' or key.startswith(f'language.{code}.'):
             return True
@@ -108,7 +126,7 @@ def render(obj, indent=0):
         if isinstance(v, dict):
             lines.append(f'{inner}{k}: {render(v, indent + 1)},')
         elif isinstance(v, str) and v.startswith('__FN__:'):
-            lines.append(f'{inner}{v[7:]},')
+            lines.append(f'{inner}{k}: {v[7:]},')
         else:
             lines.append(f"{inner}{k}: '{escape_ts(str(v))}',")
     lines.append(f'{pfx}}}')
@@ -225,13 +243,15 @@ def main():
     with open(types_path) as f:
         types_content = f.read()
     
-    old_type = re.search(r"export type Locale = '([^']|'[^'])*'", types_content)
-    if old_type:
-        new_type_line = f"export type Locale = {TYPE_UNION}"
-        types_content = types_content.replace(old_type.group(0), new_type_line)
-        with open(types_path, 'w') as f:
-            f.write(types_content)
-        print(f'📝 types.ts: Locale type updated → {TYPE_UNION}')
+    old_line = 'export type Locale = '
+    for line in types_content.split('\n'):
+        if line.startswith(old_line):
+            new_line = f"export type Locale = {TYPE_UNION}"
+            types_content = types_content.replace(line, new_line, 1)
+            with open(types_path, 'w') as f:
+                f.write(types_content)
+            print(f'📝 types.ts: Locale type updated → {TYPE_UNION}')
+            break
     
     # 5. Generate/update languages.ts
     langs_path = os.path.join(I18N_DIR, 'languages.ts')

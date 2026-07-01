@@ -1261,6 +1261,36 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivered = False
         target_errors = []
 
+        # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
+        # this platform generically from its config ``extra``. Default "thread"
+        # (today's behaviour, byte-identical). "in_channel" delivers the brief
+        # FLAT into the channel (no dedicated thread) so a plain channel reply
+        # continues the job in-context via the shared-channel session
+        # ``(platform, chat_id, None)`` — the same bucket ``reply_in_thread:
+        # false`` routes inbound channel messages to. The key is read
+        # generically here (any platform); the ``in_channel`` branch is gated on
+        # the adapter capability flag ``supports_inchannel_continuable`` so an
+        # unsupported platform fails SAFE to "thread" (Slack is the first
+        # consumer; "first consumer ≠ definition").
+        surface_mode = "thread"
+        try:
+            surface_raw = (pconfig.extra or {}).get("cron_continuable_surface")
+            if surface_raw is not None and str(surface_raw).strip().lower() == "in_channel":
+                surface_mode = "in_channel"
+        except Exception:
+            surface_mode = "thread"
+        in_channel_surface = surface_mode == "in_channel"
+        if in_channel_surface and runtime_adapter is not None and not getattr(
+            runtime_adapter, "supports_inchannel_continuable", False
+        ):
+            # Fail safe (D6): platform has no in_channel continuation primitive.
+            logger.debug(
+                "Job '%s': cron_continuable_surface=in_channel not supported on "
+                "%s, using thread",
+                job.get("id", "?"), platform_name,
+            )
+            in_channel_surface = False
+
         # Continuable cron (thread-preferred): when mirroring is enabled for the
         # origin target and the gateway is live, try to open a DEDICATED thread
         # for this job and deliver the brief into it. On thread-capable
@@ -1269,10 +1299,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # continues with full context. On DM-only platforms (WhatsApp/Signal)
         # create_handoff_thread returns None and we fall back to mirroring into
         # the origin DM session (handled after delivery). Cf. _process_handoff.
+        #
+        # in_channel surface (D2): SKIP thread creation entirely — leave
+        # thread_id=None so the delivery posts flat, and let the existing
+        # origin-mirror (below) seed the shared-channel session (F5: for a
+        # channel-origin job with thread_id=None, _target_matches_origin matches
+        # and _maybe_mirror_cron_delivery seeds (platform, chat_id, None)). No
+        # new seed call is needed.
         thread_seeded = False
         opened_thread_id: Optional[str] = None
         if (
             mirror_this_target
+            and not in_channel_surface
             and runtime_adapter is not None
             and loop is not None
             and not thread_id  # never override an explicit origin thread/topic

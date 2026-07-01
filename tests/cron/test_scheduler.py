@@ -4142,3 +4142,134 @@ class TestCronDeliveryMirror:
             )
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
+
+
+class TestCronContinuableSurfaceInChannel:
+    """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
+    into a channel (no dedicated thread), so a plain channel reply continues the
+    job via the shared-channel session (platform, chat_id, None).
+
+    Design: decisions.md D1/D2/D6 + F5. The scheduler reads the per-platform key
+    generically from pconfig.extra; the in_channel branch is gated on the
+    adapter capability flag ``supports_inchannel_continuable`` (Slack=True,
+    others fail SAFE to thread). In in_channel mode the thread-open branch is
+    SKIPPED (thread_id stays None), so the existing origin-mirror seeds the
+    shared-channel session — no new seed code (G6).
+    """
+
+    def _slack_cfg(self, extra):
+        """A mock GatewayConfig with a Slack pconfig carrying ``extra``."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = extra
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+        return mock_cfg
+
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True):
+        """Drive _deliver_result down the live-adapter path for a Slack
+        channel-origin job with the given ``extra`` config. Returns the
+        _open_continuable_cron_thread mock and the mirror_to_session mock."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        mock_cfg = self._slack_cfg(extra)
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                import asyncio as _asyncio
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "name": "Daily Brief",
+            "deliver": "origin",
+            # Channel origin: no thread_id (flat channel message scheduled it).
+            "origin": {"platform": "slack", "chat_id": "C123"},
+            # Opt into the continuable mirror.
+            "attach_to_session": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+        return open_thread_mock, mirror_mock
+
+    def _slack_adapter(self, supports_inchannel=True):
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        # Capability flag read via getattr in the scheduler.
+        adapter.supports_inchannel_continuable = supports_inchannel
+        return adapter
+
+    def test_in_channel_skips_thread_open(self):
+        """G2: in_channel mode must NOT open a handoff thread."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        open_thread_mock.assert_not_called()
+
+    def test_in_channel_seeds_shared_channel_session_flat(self):
+        """G3/F5: with the thread-open branch skipped, the existing origin-mirror
+        seeds the shared-channel session with thread_id=None (flat)."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        mirror_mock.assert_called_once()
+        # Seeded flat: no thread_id → session (slack, C123, None).
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        assert mirror_mock.call_args[0][0] == "slack"
+        assert mirror_mock.call_args[0][1] == "C123"
+        assert "Here is today's brief." in mirror_mock.call_args[0][2]
+
+    def test_thread_mode_default_still_opens_thread(self):
+        """G1 regression: the default (thread) mode is byte-identical — the
+        thread-open branch still fires when no surface key is set."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery({}, adapter)
+        open_thread_mock.assert_called_once()
+
+    def test_explicit_thread_value_opens_thread(self):
+        """An explicit cron_continuable_surface: thread is the default path."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "thread"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+
+    def test_in_channel_on_unsupported_platform_fails_safe_to_thread(self):
+        """D6 fail-safe: in_channel on an adapter WITHOUT the capability flag
+        falls back to the thread path (a threaded continuation ≈ today), never
+        a dropped continuation."""
+        adapter = self._slack_adapter(supports_inchannel=False)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+        )
+        # Capability absent → treated as thread → thread-open still attempted.
+        open_thread_mock.assert_called_once()
+
+    def test_unrecognised_surface_value_coerces_to_thread(self):
+        """Any non-'in_channel' value is the default thread path (fail safe)."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        open_thread_mock, _ = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "bogus"}, adapter,
+        )
+        open_thread_mock.assert_called_once()
+

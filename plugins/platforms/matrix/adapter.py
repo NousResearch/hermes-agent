@@ -55,6 +55,7 @@ import inspect
 import logging
 import mimetypes
 import os
+import random
 import re
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -340,6 +341,17 @@ class _MatrixModelPickerPrompt:
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
+
+# Rate limit (M_LIMIT_EXCEEDED / HTTP 429) retry configuration.
+# The Matrix spec says a 429 response may include ``retry_after_ms``.
+# mautrix does not parse it, so we extract it from the error message or
+# fall back to exponential backoff with jitter.
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 2.0  # seconds
+_RATE_LIMIT_MAX_DELAY = 30.0  # seconds
+_RATE_LIMIT_RETRY_AFTER_RE = re.compile(
+    r"retry_after_ms[\s:=]+(\d+)", re.IGNORECASE
+)
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
@@ -1575,6 +1587,88 @@ class MatrixAdapter(BasePlatformAdapter):
 
         logger.info("Matrix: disconnected")
 
+    async def _send_with_rate_limit_retry(
+        self,
+        room_id: str,
+        event_type: Any,
+        content: Dict[str, Any],
+        *,
+        timeout: float = 45,
+    ) -> str:
+        """Send a message event, retrying on M_LIMIT_EXCEEDED (429).
+
+        The Matrix homeserver returns HTTP 429 with ``errcode:
+        M_LIMIT_EXCEEDED`` when a client exceeds the configured rate
+        limit (e.g. Synapse ``rc_message``).  The response body may
+        include ``retry_after_ms`` advising how long to wait.
+
+        mautrix raises ``MLimitExceeded`` but does **not** parse
+        ``retry_after_ms`` and does **not** retry on 429 (it only
+        retries on 502/503/504).  Without this wrapper the message is
+        silently dropped.
+
+        Strategy: up to ``_RATE_LIMIT_MAX_RETRIES`` attempts.  If the
+        error message contains ``retry_after_ms`` we honour it (capped
+        at ``_RATE_LIMIT_MAX_DELAY``); otherwise we use exponential
+        backoff with jitter.
+        """
+        try:
+            from mautrix.errors import MLimitExceeded
+        except ImportError:
+            MLimitExceeded = None  # type: ignore[assignment]
+
+        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+            try:
+                event_id = await asyncio.wait_for(
+                    self._client.send_message_event(
+                        RoomID(room_id),
+                        event_type,
+                        content,
+                    ),
+                    timeout=timeout,
+                )
+                return str(event_id)
+            except Exception as exc:
+                # Only retry on rate-limit errors.
+                is_rate_limit = (
+                    MLimitExceeded is not None
+                    and isinstance(exc, MLimitExceeded)
+                ) or (
+                    getattr(exc, "http_status", None) == 429
+                    and "M_LIMIT_EXCEEDED" in str(getattr(exc, "errcode", ""))
+                )
+                if not is_rate_limit or attempt >= _RATE_LIMIT_MAX_RETRIES:
+                    raise
+
+                # Try to extract retry_after_ms from the error message.
+                delay = None
+                err_str = str(exc)
+                match = _RATE_LIMIT_RETRY_AFTER_RE.search(err_str)
+                if match:
+                    delay = min(
+                        int(match.group(1)) / 1000.0,
+                        _RATE_LIMIT_MAX_DELAY,
+                    )
+
+                if delay is None:
+                    # Exponential backoff with jitter: 2s, 4s, 8s (±25%).
+                    base = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+                    delay = min(base, _RATE_LIMIT_MAX_DELAY)
+                    delay += random.uniform(0, delay * 0.25)
+
+                logger.warning(
+                    "Matrix: rate limited on %s (attempt %d/%d), "
+                    "retrying in %.1fs",
+                    room_id,
+                    attempt + 1,
+                    _RATE_LIMIT_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+        # Unreachable — loop either returns or raises.
+        raise RuntimeError("unreachable")
+
     async def send(
         self,
         chat_id: str,
@@ -1597,30 +1691,24 @@ class MatrixAdapter(BasePlatformAdapter):
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
             try:
-                event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
-                        msg_content,
-                    ),
-                    timeout=45,
+                event_id = await self._send_with_rate_limit_retry(
+                    chat_id,
+                    EventType.ROOM_MESSAGE,
+                    msg_content,
                 )
-                last_event_id = str(event_id)
+                last_event_id = event_id
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 # On E2EE errors, retry after sharing keys.
                 if self._encryption and getattr(self._client, "crypto", None):
                     try:
                         await self._client.crypto.share_keys()
-                        event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
-                            ),
-                            timeout=45,
+                        event_id = await self._send_with_rate_limit_retry(
+                            chat_id,
+                            EventType.ROOM_MESSAGE,
+                            msg_content,
                         )
-                        last_event_id = str(event_id)
+                        last_event_id = event_id
                         logger.info(
                             "Matrix: sent event %s to %s (after key share)",
                             last_event_id,
@@ -2208,12 +2296,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(room_id),
+            event_id = await self._send_with_rate_limit_retry(
+                room_id,
                 EventType.ROOM_MESSAGE,
                 msg_content,
             )
-            return SendResult(success=True, message_id=str(event_id))
+            return SendResult(success=True, message_id=event_id)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
@@ -3110,13 +3198,13 @@ class MatrixAdapter(BasePlatformAdapter):
             }
         }
         try:
-            resp_event_id = await self._client.send_message_event(
-                RoomID(room_id),
+            resp_event_id = await self._send_with_rate_limit_retry(
+                room_id,
                 EventType.REACTION,
                 content,
             )
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
-            return str(resp_event_id)
+            return resp_event_id
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
             return None

@@ -378,6 +378,23 @@ def _make_adapter():
     return adapter
 
 
+def _make_rate_limit_error(message: str = "Too Many Requests"):
+    """Create a fake MLimitExceeded-like exception for 429 rate-limit tests.
+
+    The adapter's retry logic checks ``isinstance(exc, MLimitExceeded)``
+    *or* the ``http_status == 429`` fallback, so a plain exception with
+    the right attributes works under the fake mautrix test stubs.
+    """
+    try:
+        from mautrix.errors import MLimitExceeded
+        return MLimitExceeded(429, message)
+    except ImportError:
+        exc = Exception(message)
+        exc.http_status = 429  # type: ignore[attr-defined]
+        exc.errcode = "M_LIMIT_EXCEEDED"  # type: ignore[attr-defined]
+        return exc
+
+
 # ---------------------------------------------------------------------------
 # Typing indicator
 # ---------------------------------------------------------------------------
@@ -2644,6 +2661,164 @@ class TestMatrixEncryptedSendFallback:
         assert result.message_id == "$event123"
         mock_crypto.share_keys.assert_awaited_once()
         assert fake_client.send_message_event.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Rate limit (M_LIMIT_EXCEEDED / 429) retry
+# ---------------------------------------------------------------------------
+
+class TestMatrixRateLimitRetry:
+    """_send_with_rate_limit_retry retries on 429 and respects retry_after_ms."""
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_after_rate_limit(self):
+        from plugins.platforms.matrix.adapter import EventType
+
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[_make_rate_limit_error(), "$event123"]
+        )
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=AsyncMock()):
+            result = await adapter._send_with_rate_limit_retry(
+                "!room:example.org",
+                EventType.ROOM_MESSAGE,
+                {"body": "hello", "msgtype": "m.text"},
+            )
+
+        assert result == "$event123"
+        assert adapter._client.send_message_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_respects_retry_after_ms(self):
+        from plugins.platforms.matrix.adapter import EventType
+
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        exc = _make_rate_limit_error("Too Many Requests (retry_after_ms: 5000)")
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[exc, "$event456"]
+        )
+
+        sleep_calls = []
+
+        async def fake_sleep(delay):
+            sleep_calls.append(delay)
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=fake_sleep):
+            result = await adapter._send_with_rate_limit_retry(
+                "!room:example.org",
+                EventType.ROOM_MESSAGE,
+                {"body": "hello", "msgtype": "m.text"},
+            )
+
+        assert result == "$event456"
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_retry_gives_up_after_max_retries(self):
+        from plugins.platforms.matrix.adapter import EventType, _RATE_LIMIT_MAX_RETRIES
+
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[_make_rate_limit_error()] * (_RATE_LIMIT_MAX_RETRIES + 1)
+        )
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=AsyncMock()):
+            with pytest.raises(Exception, match="Too Many Requests"):
+                await adapter._send_with_rate_limit_retry(
+                    "!room:example.org",
+                    EventType.ROOM_MESSAGE,
+                    {"body": "hello", "msgtype": "m.text"},
+                )
+
+        assert adapter._client.send_message_event.await_count == _RATE_LIMIT_MAX_RETRIES + 1
+
+    @pytest.mark.asyncio
+    async def test_non_rate_limit_error_not_retried(self):
+        from plugins.platforms.matrix.adapter import EventType
+
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=Exception("network error")
+        )
+
+        with pytest.raises(Exception, match="network error"):
+            await adapter._send_with_rate_limit_retry(
+                "!room:example.org",
+                EventType.ROOM_MESSAGE,
+                {"body": "hello", "msgtype": "m.text"},
+            )
+
+        assert adapter._client.send_message_event.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_send_uses_rate_limit_retry(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[_make_rate_limit_error(), "$event789"]
+        )
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=AsyncMock()):
+            result = await adapter.send("!room:example.org", "hello world")
+
+        assert result.success is True
+        assert result.message_id == "$event789"
+        assert adapter._client.send_message_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_reaction_uses_rate_limit_retry(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[_make_rate_limit_error(), "$reaction_event"]
+        )
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=AsyncMock()):
+            result = await adapter._send_reaction(
+                "!room:example.org",
+                "$msg123",
+                "\U0001f44d",
+            )
+
+        assert result == "$reaction_event"
+        assert adapter._client.send_message_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_without_retry_after_ms(self):
+        from plugins.platforms.matrix.adapter import EventType, _RATE_LIMIT_BASE_DELAY
+
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.send_message_event = AsyncMock(
+            side_effect=[
+                _make_rate_limit_error(),
+                _make_rate_limit_error(),
+                "$event_final",
+            ]
+        )
+
+        sleep_calls = []
+
+        async def fake_sleep(delay):
+            sleep_calls.append(delay)
+
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", new=fake_sleep):
+            with patch("plugins.platforms.matrix.adapter.random.uniform", return_value=0):
+                result = await adapter._send_with_rate_limit_retry(
+                    "!room:example.org",
+                    EventType.ROOM_MESSAGE,
+                    {"body": "hello", "msgtype": "m.text"},
+                )
+
+        assert result == "$event_final"
+        assert sleep_calls[0] == pytest.approx(_RATE_LIMIT_BASE_DELAY)
+        assert sleep_calls[1] == pytest.approx(_RATE_LIMIT_BASE_DELAY * 2)
 
 
 # ---------------------------------------------------------------------------

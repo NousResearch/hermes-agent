@@ -149,6 +149,15 @@ gateway:
     subscribed_suffix:     "(購読しました — {task_id} が完了またはブロックされたときに通知されます)"
     truncated_suffix:      "… (切り詰めました; 完全な出力にはターミナルで `hermes kanban …` を使用してください)"
     no_output:             "(出力なし)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` に人格が設定されていません"

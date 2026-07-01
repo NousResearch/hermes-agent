@@ -1676,7 +1676,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from gateway.delivery import DeliveryRouter
+from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -6823,12 +6823,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # handoff turn binds a generic `thread` session key while real replies
         # arrive on a `dm` session key.
         home_chat_id = str(home.chat_id)
-        is_telegram_private_chat = False
-        if platform == Platform.TELEGRAM:
-            try:
-                is_telegram_private_chat = int(home_chat_id) > 0
-            except (TypeError, ValueError):
-                is_telegram_private_chat = False
+        is_telegram_private_chat = (
+            platform == Platform.TELEGRAM
+            and looks_like_telegram_private_chat_id(home_chat_id)
+        )
 
         if new_thread_id and not is_telegram_private_chat:
             dest_chat_type = "thread"

@@ -226,11 +226,19 @@ class TestThreadStarterDedup:
 
     @pytest.mark.asyncio
     async def test_no_dedup_seed_when_thread_creation_fails(self, adapter, monkeypatch):
-        """When _auto_create_thread returns None, no pre-seeding occurs."""
+        """When _auto_create_thread returns None, no pre-seeding occurs.
+
+        Auto-thread failure is now fail-closed (#20243): the agent is NOT
+        invoked and the user gets a visible notice instead of a silent inline
+        reply. This test's contract is specifically about dedup pre-seeding —
+        the phantom thread id must not leak into the dedup cache when creation
+        fails.
+        """
         monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
         monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
 
         channel = _TextChannel(channel_id=100)
+        channel.send = AsyncMock()
         phantom_thread_id = 55555
 
         async def fake_auto_create_thread_fail(message):
@@ -243,8 +251,9 @@ class TestThreadStarterDedup:
         user_msg = _make_message(msg_id=42, channel=channel, content="hello")
         await adapter._handle_message(user_msg)
 
-        # The message was still dispatched (no thread, but message goes through)
-        adapter.handle_message.assert_awaited_once()
+        # Fail-closed: the agent must NOT run when the required thread route
+        # could not be created (#20243).
+        adapter.handle_message.assert_not_awaited()
 
         # The phantom thread id should NOT be in the dedup cache
         assert str(phantom_thread_id) not in adapter._dedup._seen, (

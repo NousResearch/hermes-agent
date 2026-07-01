@@ -2662,11 +2662,13 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     entry is removed. Used by ``/model --refresh`` and
     ``hermes model --refresh``.
     """
+    global _openrouter_catalog_cache
     try:
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
+            _openrouter_catalog_cache = None
             return
         cache = _load_provider_models_cache()
         normalized = normalize_provider(provider) or provider or ""

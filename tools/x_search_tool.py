@@ -60,6 +60,13 @@ DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
 MAX_HANDLES = 10
+X_SEARCH_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+X_SEARCH_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
+X_SEARCH_RESPONSE_CHUNK_BYTES = 64 * 1024
+
+
+class _XSearchResponseTooLarge(ValueError):
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +250,83 @@ def _extract_inline_citations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return citations
 
 
+def _close_response(response: requests.Response) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def _response_chunks(response: requests.Response):
+    iter_content = getattr(response, "iter_content", None)
+    if callable(iter_content):
+        yield from iter_content(chunk_size=X_SEARCH_RESPONSE_CHUNK_BYTES)
+        return
+
+    content = getattr(response, "content", None)
+    if content is not None:
+        yield content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        return
+
+    text = getattr(response, "text", "") or ""
+    yield str(text).encode("utf-8", errors="replace")
+
+
+def _read_response_body(
+    response: requests.Response,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    chunks: List[bytes] = []
+    total = 0
+    try:
+        for chunk in _response_chunks(response):
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            total += len(chunk)
+            if total > max_bytes:
+                raise _XSearchResponseTooLarge(f"{label} exceeded {max_bytes} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        _close_response(response)
+
+
+def _read_response_json(
+    response: requests.Response,
+    *,
+    max_bytes: int = X_SEARCH_RESPONSE_MAX_BYTES,
+    label: str = "x_search response",
+) -> Dict[str, Any]:
+    raw = _read_response_body(response, max_bytes=max_bytes, label=label)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} returned non-object JSON")
+    return payload
+
+
 def _http_error_message(exc: requests.HTTPError) -> str:
     response = getattr(exc, "response", None)
     if response is None:
         return str(exc)
 
     try:
-        payload = response.json()
-    except Exception:
+        raw = _read_response_body(
+            response,
+            max_bytes=X_SEARCH_ERROR_RESPONSE_MAX_BYTES,
+            label="x_search error response",
+        )
+    except _XSearchResponseTooLarge as too_large:
+        return str(too_large)
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         payload = None
 
     if isinstance(payload, dict):
@@ -261,7 +337,7 @@ def _http_error_message(exc: requests.HTTPError) -> str:
             message = f"{code}: {message}"
         return message or str(exc)
 
-    text = str(getattr(response, "text", "") or "").strip()
+    text = raw.decode("utf-8", errors="replace").strip()
     if text:
         return text[:500]
     return str(exc)
@@ -339,6 +415,7 @@ def x_search_tool(
                     },
                     json=payload,
                     timeout=timeout_seconds,
+                    stream=True,
                 )
                 response.raise_for_status()
                 break
@@ -367,7 +444,7 @@ def x_search_tool(
         if response is None:
             raise RuntimeError("x_search request did not return a response")
 
-        data = response.json()
+        data = _read_response_json(response)
 
         answer = _extract_response_text(data)
         citations = list(data.get("citations") or [])

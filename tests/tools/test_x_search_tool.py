@@ -19,6 +19,8 @@ class _FakeResponse:
         self._payload = payload
         self.status_code = status_code
         self.text = text if text is not None else json.dumps(payload)
+        self.content = self.text.encode("utf-8")
+        self.closed = False
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -28,6 +30,13 @@ class _FakeResponse:
 
     def json(self):
         return self._payload
+
+    def iter_content(self, chunk_size=1):
+        for idx in range(0, len(self.content), chunk_size):
+            yield self.content[idx : idx + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +51,12 @@ def test_x_search_posts_responses_request(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         captured["url"] = url
         captured["headers"] = headers
         captured["json"] = json
         captured["timeout"] = timeout
+        captured["stream"] = stream
         return _FakeResponse(
             {
                 "output_text": "People on X are discussing xAI's latest launch.",
@@ -70,6 +80,7 @@ def test_x_search_posts_responses_request(monkeypatch):
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
     assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
+    assert captured["stream"] is True
     assert captured["json"]["model"] == "grok-4.20-reasoning"
     assert captured["json"]["store"] is False
     assert tool_def["type"] == "x_search"
@@ -100,7 +111,7 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         return _FakeResponse(
             {
                 "output": [
@@ -173,12 +184,78 @@ def test_x_search_returns_structured_http_error(monkeypatch):
     assert result["error"] == "forbidden: x_search is not enabled for this model"
 
 
+def test_x_search_caps_success_response_body(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    class _LargeResponse:
+        status_code = 200
+
+        def __init__(self):
+            self.closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=1):
+            yield b"{"
+            yield b'"output_text":"' + (b"x" * (9 * 1024 * 1024))
+
+        def close(self):
+            self.closed = True
+
+    response = _LargeResponse()
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", lambda *a, **k: response)
+
+    result = json.loads(x_search_tool(query="latest xai discussion"))
+
+    assert result["success"] is False
+    assert result["error_type"] == "_XSearchResponseTooLarge"
+    assert "x_search response exceeded" in result["error"]
+    assert response.closed is True
+
+
+def test_x_search_caps_http_error_body(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    class _LargeErrorResponse:
+        status_code = 403
+
+        def __init__(self):
+            self.closed = False
+
+        def raise_for_status(self):
+            err = requests.HTTPError("403 Client Error: Forbidden")
+            err.response = self
+            raise err
+
+        def iter_content(self, chunk_size=1):
+            yield b"{"
+            yield b'"error":"' + (b"x" * (128 * 1024))
+
+        def close(self):
+            self.closed = True
+
+    response = _LargeErrorResponse()
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", lambda *a, **k: response)
+
+    result = json.loads(x_search_tool(query="latest xai discussion"))
+
+    assert result["success"] is False
+    assert result["error_type"] == "HTTPError"
+    assert "x_search error response exceeded" in result["error"]
+    assert response.closed is True
+
+
 def test_x_search_retries_read_timeout_then_succeeds(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
     calls = {"count": 0}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         calls["count"] += 1
         if calls["count"] == 1:
             raise requests.ReadTimeout("timed out")
@@ -205,7 +282,7 @@ def test_x_search_retries_5xx_then_succeeds(monkeypatch):
 
     calls = {"count": 0}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         calls["count"] += 1
         if calls["count"] == 1:
             return _FakeResponse(
@@ -258,7 +335,7 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         captured["headers"] = headers
         return _FakeResponse({"output_text": "Found posts via OAuth."})
 
@@ -296,7 +373,7 @@ def test_x_search_uses_api_key_when_only_xai_api_key_set(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         captured["headers"] = headers
         return _FakeResponse({"output_text": "Found posts via API key."})
 
@@ -338,7 +415,7 @@ def test_x_search_prefers_oauth_when_both_available(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         captured["headers"] = headers
         return _FakeResponse({"output_text": "OAuth preferred."})
 
@@ -410,7 +487,7 @@ def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
 
     captured = {}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         captured["model"] = json["model"]
         captured["timeout"] = timeout
         return _FakeResponse({"output_text": "Custom model OK."})
@@ -528,7 +605,7 @@ def test_x_search_allows_future_to_date(monkeypatch):
 
     monkeypatch.setattr("tools.x_search_tool.datetime", _FrozenDateTime)
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         return _FakeResponse(
             {"output_text": "future to_date is allowed", "citations": []}
         )

@@ -249,9 +249,50 @@ def handle_cost(raw_args: str) -> str:
             return _handle_top(parts)
         if subcommand == "debug":
             return _handle_debug()
+        if subcommand == "reprice":
+            return _handle_reprice(parts[1:])
         return _handle_turn(parts[0])
     except Exception as exc:
         return f"⚠️ /cost error: {exc}"
+
+
+def _handle_reprice(flags: list[str]) -> str:
+    """Re-price NULL-cost turns in this profile's store. Dry-run by default;
+    ``--apply`` writes. SPEC M2 §5C / D-8. Runs in the CURRENT profile only —
+    fleet-wide backfill is a separate operator step (soul isolation)."""
+    from plugins.blackbox.cost import compute_turn_cost
+
+    apply = "--apply" in flags
+    limit: Optional[int] = None
+    for f in flags:
+        if f.startswith("--limit="):
+            try:
+                limit = int(f.split("=", 1)[1])
+            except ValueError:
+                return "⚠️ /cost reprice: --limit= needs an integer"
+
+    def _fn(model: str, provider: Optional[str], tok: dict):
+        return compute_turn_cost(
+            model,
+            provider,
+            None,
+            [
+                dict(
+                    input_tokens=tok["input_tokens"],
+                    output_tokens=tok["output_tokens"],
+                    cache_read_tokens=tok["cache_read_tokens"],
+                    cache_write_tokens=tok["cache_write_tokens"],
+                )
+            ],
+        )
+
+    res = store.reprice_unpriced(_fn, apply=apply, limit=limit)
+    mode = "APPLIED" if apply else "DRY-RUN (pass --apply to write)"
+    return (
+        f"/cost reprice — {mode}\n"
+        f"• scanned={res['scanned']} repriced={res['repriced']} "
+        f"zeroed={res['zeroed']} still_unknown={res['still_unknown']}"
+    )
 
 
 def register(ctx) -> None:
@@ -259,6 +300,7 @@ def register(ctx) -> None:
         "cost",
         handler=handle_cost,
         description="Show blackbox telemetry costs for this channel. "
-                    "Subcommands: <turn_id> | session | top [N] | debug.",
-        args_hint="[id|session|top N|debug]",
+                    "Subcommands: <turn_id> | session | top [N] | debug | "
+                    "reprice [--apply] [--limit=N].",
+        args_hint="[id|session|top N|debug|reprice [--apply]]",
     )

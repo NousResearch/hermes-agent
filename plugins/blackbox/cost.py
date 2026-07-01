@@ -47,6 +47,25 @@ def compute_turn_cost(
     if not calls:
         return 0.0, "included", dict(_PERCLASS_NONE)
 
+    # M3 (SPEC §5D / INV-7): a turn whose every billed token class is zero is
+    # costless, not unpriced. Return a concrete $0 split so the dashboard treats
+    # it as priced; ANY nonzero class falls through to normal pricing.
+    def _billed_tokens(call: dict) -> int:
+        return (
+            _int_value(call.get("input_tokens"))
+            + _int_value(call.get("output_tokens"))
+            + _int_value(call.get("cache_read_tokens"))
+            + _int_value(call.get("cache_write_tokens"))
+        )
+
+    if all(_billed_tokens(call) == 0 for call in calls):
+        return 0.0, "priced_zero", {
+            "uncached": 0.0,
+            "cache_read": 0.0,
+            "cache_write": 0.0,
+            "output": 0.0,
+        }
+
     known_total = Decimal("0")
     known_count = 0
     unknown_count = 0

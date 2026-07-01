@@ -49,6 +49,12 @@ _DEFAULTS = {
     "store_text": True,
     "record_subagents": True,
     "retention_days": 30,
+    # Reserved (SPEC 2026-06-30 §5C / D-4 / OQ1): when a periodic auto-reprice
+    # sweep lands, `reprice_enabled: true` will opt it in. NOT read yet — the
+    # M2 reprice pass is operator-triggered via `/cost reprice [--apply]` today,
+    # so this default is documented-but-inert on purpose (no theater: it becomes
+    # load-bearing only when the sweep loop that reads it ships). Default off.
+    "reprice_enabled": False,
 }
 
 _lock = Lock()

@@ -783,6 +783,26 @@ def _strip_anthropic_release_date(name: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _infer_vendor_from_model(model: str) -> Optional[str]:
+    """Infer the pricing vendor from an unambiguous model-id prefix (M1, SPEC §5B).
+
+    Assumes these prefixes are vendor-EXCLUSIVE (true 2026-06-30): a future prefix
+    collision (a non-Anthropic ``claude-*``, etc.) must revisit this map — see
+    SPEC INV-2/RR-1. Used ONLY as a last-resort pricing fallback in
+    ``_lookup_official_docs_pricing`` — a real ``(provider, model)`` entry always
+    wins first, so this never overrides a specific price. Returns None when the id
+    names no known vendor.
+    """
+    name = (model or "").lower().strip()
+    if name.startswith("claude-"):
+        return "anthropic"
+    if name.startswith("gpt-") or re.fullmatch(r"o[1-9][a-z0-9.\-]*", name):
+        return "openai"
+    if name.startswith("gemini-"):
+        return "google"
+    return None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     """Resolve a route to a static official-docs pricing entry, most-specific first.
 
@@ -822,6 +842,22 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+    # LAST-RESORT vendor fallback (M1, SPEC §5B): the (provider, model) is unpriced
+    # at every specific tier above, but the model id unambiguously names a vendor.
+    # Retry the WHOLE tiered lookup under that vendor as provider. ONE hop only:
+    # guarded by ``vendor != route.provider`` so the inner call (provider == vendor)
+    # cannot re-infer-and-recurse (RC-5 termination). Fixes Class A (openai/claude-*)
+    # and every future proxy/bridge lane with a vendor-named model.
+    vendor = _infer_vendor_from_model(route.model)
+    if vendor and vendor != route.provider:
+        return _lookup_official_docs_pricing(
+            BillingRoute(
+                provider=vendor,
+                model=route.model,
+                base_url=route.base_url,
+                billing_mode=route.billing_mode,
+            )
+        )
     return None
 
 

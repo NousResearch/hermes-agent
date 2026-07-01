@@ -6,11 +6,13 @@ import json
 import logging
 import sqlite3
 import time
+import uuid
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from agent.redact import redact_sensitive_text
+from agent.usage_pricing import get_pricing_entry, resolve_billing_route
 from hermes_constants import get_hermes_home
 from plugins.blackbox.record import TurnRecord, tools_summary
 
@@ -326,6 +328,131 @@ def mark_alerted(turn_id: str) -> bool:
             (turn_id,),
         )
         return cur.rowcount == 1
+
+
+# ---------------------------------------------------------------------------
+# M2 — reprice/backfill pass (SPEC 2026-06-30 §5C). Heals turns recorded with
+# cost_usd NULL once a price becomes resolvable (a new snapshot entry, or M1
+# now reaching it), and classifies zero-token turns as priced_zero. Dry-run by
+# default; only --apply mutates. The store holds NO rate table (INV-1): the
+# caller injects `pricing_fn` (the real compute_turn_cost in prod).
+# ---------------------------------------------------------------------------
+
+# Routes whose price is a PURE function of the stored (provider, model) + tokens
+# and linear per-token. A live-catalog route (official_models_api) prices against
+# TODAY's catalog, so repricing a historical row there would be wrong — leave it
+# NULL (INV-9 / RC-A). subscription_included is pure ($0).
+_PURE_BILLING_MODES = frozenset({"official_docs_snapshot", "subscription_included"})
+_ZERO_PERCLASS = {"uncached": 0.0, "cache_read": 0.0, "cache_write": 0.0, "output": 0.0}
+
+
+def reprice_unpriced(pricing_fn, *, apply: bool = False, limit: int | None = None) -> dict:
+    """Re-price turns whose cost_usd is NULL. Returns the pinned status schema
+    ``{scanned, repriced, zeroed, still_unknown}`` (RC-F).
+
+    - Zero-token rows → priced_zero, regardless of route (nothing to misprice).
+    - Real-token rows → priced ONLY when the route is pure/static (INV-9) and the
+      resolved entry carries no non-linear per-request term (RC-B); otherwise the
+      row is left NULL and counted in ``still_unknown``.
+    - Only rows with cost_usd AND all four per-class cost columns NULL are touched
+      (RC-C), so a partial/aborted prior write is never clobbered.
+    - ``apply=False`` (default) computes the plan and writes nothing (D-8).
+    - ``apply=True`` writes a forward-only rollback manifest of the affected
+      turn_ids before mutating (D-7), commits in one transaction, and re-checks
+      the NULL guard in the UPDATE WHERE so a concurrently-priced row can't be
+      overwritten (INV-8).
+    """
+    conn = _connect()
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")  # INV-8: wait, don't error, on a live writer
+        sel = (
+            "SELECT turn_id, model, provider, "
+            "COALESCE(input_tokens,0) AS i, COALESCE(output_tokens,0) AS o, "
+            "COALESCE(cache_read,0) AS cr, COALESCE(cache_write,0) AS cw "
+            "FROM turns WHERE cost_usd IS NULL "
+            "AND cost_uncached_usd IS NULL AND cost_cache_read_usd IS NULL "
+            "AND cost_cache_write_usd IS NULL AND cost_output_usd IS NULL"
+        )
+        if limit:
+            sel += f" LIMIT {int(limit)}"
+        rows = conn.execute(sel).fetchall()
+        scanned = len(rows)
+
+        # (turn_id, cost, status, perclass, is_zero)
+        candidates: list[tuple[str, float, str, dict, bool]] = []
+        for r in rows:
+            total = r["i"] + r["o"] + r["cr"] + r["cw"]
+            if total == 0:
+                # Zero-token → costless → priced_zero, route-independent (M3 parity).
+                candidates.append((r["turn_id"], 0.0, "priced_zero", dict(_ZERO_PERCLASS), True))
+                continue
+            # Real-token: route-purity gate (INV-9 / RC-A).
+            route = resolve_billing_route(r["model"], provider=r["provider"])
+            if route.billing_mode not in _PURE_BILLING_MODES:
+                continue  # live-catalog / unknown-mode route → still_unknown
+            # Non-linear per-request term can't be reconstructed from summed
+            # tokens (RC-B): refuse rather than misprice.
+            entry = get_pricing_entry(r["model"], provider=r["provider"])
+            if entry is not None and getattr(entry, "request_cost", None) is not None:
+                continue
+            tokens = {
+                "input_tokens": r["i"],
+                "output_tokens": r["o"],
+                "cache_read_tokens": r["cr"],
+                "cache_write_tokens": r["cw"],
+            }
+            cost, status, perclass = pricing_fn(r["model"], r["provider"], tokens)
+            if cost is None or status not in ("estimated", "actual", "included", "priced_zero"):
+                continue  # genuinely unknown → leave NULL
+            candidates.append((r["turn_id"], float(cost), status, perclass, False))
+
+        repriced = sum(1 for c in candidates if not c[4])
+        zeroed = sum(1 for c in candidates if c[4])
+        result = {
+            "scanned": scanned,
+            "repriced": repriced,
+            "zeroed": zeroed,
+            "still_unknown": scanned - len(candidates),
+        }
+
+        if apply and candidates:
+            # Apply inside one transaction, capturing the turn_ids that ACTUALLY
+            # updated (rowcount == 1). A row a concurrent writer priced between
+            # SELECT and UPDATE fails the NULL guard → rowcount 0 → excluded, so
+            # the manifest never claims a row it didn't change.
+            committed_ids: list[str] = []
+            with conn:  # single transaction
+                for turn_id, cost, status, perclass, _is_zero in candidates:
+                    cur = conn.execute(
+                        "UPDATE turns SET cost_usd = ?, cost_status = ?, "
+                        "cost_uncached_usd = ?, cost_cache_read_usd = ?, "
+                        "cost_cache_write_usd = ?, cost_output_usd = ? "
+                        "WHERE turn_id = ? AND cost_usd IS NULL "
+                        "AND cost_uncached_usd IS NULL AND cost_cache_read_usd IS NULL "
+                        "AND cost_cache_write_usd IS NULL AND cost_output_usd IS NULL",
+                        (
+                            cost,
+                            status,
+                            perclass.get("uncached"),
+                            perclass.get("cache_read"),
+                            perclass.get("cache_write"),
+                            perclass.get("output"),
+                            turn_id,
+                        ),
+                    )
+                    if cur.rowcount == 1:
+                        committed_ids.append(turn_id)
+            # Write the forward-only rollback manifest ONLY after the transaction
+            # committed, and only for rows that actually changed (D-7). A unique
+            # nonce prevents same-second back-to-back runs from clobbering each
+            # other's manifest.
+            if committed_ids:
+                nonce = uuid.uuid4().hex[:8]
+                manifest = _db_path().parent / f"reprice-run-{time.strftime('%Y%m%d-%H%M%S')}-{nonce}.json"
+                manifest.write_text(json.dumps(committed_ids))
+        return result
+    finally:
+        conn.close()
 
 
 def get_turn(turn_id: str) -> dict[str, Any] | None:

@@ -3367,6 +3367,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
+            # Cap MCP tool result size to prevent unbounded allocation.
+            # Without this, a buggy or malicious MCP server can return
+            # multi-megabyte text that floods context, causes OOM on
+            # small VMs, or burns unbounded API costs.
+            from tools.tool_output_limits import get_max_bytes
+            _max = get_max_bytes()
+            if len(text_result) > _max:
+                _half = _max // 2
+                _dropped = len(text_result) - _max
+                text_result = text_result[:_half] + f"\n...[{_dropped:,} chars truncated]...\n" + text_result[-_half:]
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content

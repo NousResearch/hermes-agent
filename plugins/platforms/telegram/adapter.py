@@ -7742,6 +7742,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_is_own = False
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             quote = getattr(message, "quote", None)
@@ -7768,6 +7771,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception:
                         reply_to_text = None
 
+            # Extract reply author info so the agent knows *who* said it.
+            reply_from = message.reply_to_message.from_user
+            if reply_from:
+                reply_to_author_id = str(reply_from.id)
+                reply_to_author_name = (
+                    getattr(reply_from, "full_name", None)
+                    or getattr(reply_from, "first_name", None)
+                    or None
+                )
+                bot_id = getattr(self._bot, "id", None) if self._bot else None
+                if bot_id is not None and reply_from.id == bot_id:
+                    reply_to_is_own = True
+
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
@@ -7786,6 +7802,9 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

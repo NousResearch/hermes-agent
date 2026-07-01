@@ -89,6 +89,54 @@ class TestSkillsHubPathResolution:
         assert taps_b.path == prof_b / "skills" / ".hub" / "taps.json"
 
 
+class TestSkillsSyncPathResolution:
+    """tools/skills_sync.py path constants must reflect the active profile —
+    otherwise gateway/run.py's in-process sync_skills() call on every
+    profile's startup syncs bundled skills into whichever profile imported
+    this module first, under the multiplexed gateway."""
+
+    def test_skills_dir_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import tools.skills_sync as ss
+
+        a_seen = _under_override(prof_a, lambda: ss._skills_dir())
+        b_seen = _under_override(prof_b, lambda: ss._skills_dir())
+
+        assert a_seen == prof_a / "skills"
+        assert b_seen == prof_b / "skills"
+        assert a_seen != b_seen
+
+    def test_manifest_file_follows_override(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        import tools.skills_sync as ss
+
+        b_seen = _under_override(prof_b, lambda: ss._manifest_file())
+        assert b_seen == prof_b / "skills" / ".bundled_manifest"
+
+    def test_legacy_attribute_access_follows_override(self, two_profiles):
+        """External `from tools.skills_sync import SKILLS_DIR`-style access
+        (PEP 562 module __getattr__) must also reflect the active profile."""
+        prof_a, prof_b = two_profiles
+        import tools.skills_sync as ss
+
+        a_seen = _under_override(prof_a, lambda: Path(ss.SKILLS_DIR))
+        b_seen = _under_override(prof_b, lambda: Path(ss.HERMES_HOME))
+
+        assert a_seen == prof_a / "skills"
+        assert b_seen == prof_b
+
+    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
+        """The existing test seam (patch the module constant, see
+        tests/tools/test_skills_sync.py) is preserved."""
+        _prof_a, prof_b = two_profiles
+        import tools.skills_sync as ss
+
+        forced = tmp_path / "forced_skills"
+        monkeypatch.setattr("tools.skills_sync.SKILLS_DIR", forced)
+        seen = _under_override(prof_b, lambda: ss._skills_dir())
+        assert seen == forced
+
+
 class TestGatewayCacheDirResolution:
     """gateway/platforms/base.py cache getters must follow the active profile."""
 

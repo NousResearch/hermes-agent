@@ -67,3 +67,22 @@ def test_execute_code_project_mode_falls_back_when_terminal_cwd_missing(monkeypa
 
     assert Path(resolved).is_dir()
     assert Path(resolved) != tmp_path / "missing"
+
+
+def test_execute_code_project_mode_uses_per_session_cwd_override(monkeypatch, tmp_path):
+    """Per-session cwd overrides (session.cwd.set) must win over TERMINAL_CWD."""
+    session_workspace = tmp_path / "session-a"
+    other_workspace = tmp_path / "session-b"
+    staging = tmp_path / "staging"
+    session_workspace.mkdir()
+    other_workspace.mkdir()
+    staging.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(other_workspace))
+    terminal_tool.register_task_env_overrides("session-a", {"cwd": str(session_workspace)})
+
+    resolved = code_execution_tool._resolve_child_cwd(
+        "project", str(staging), task_id="session-a"
+    )
+
+    assert Path(resolved) == session_workspace

@@ -30,6 +30,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
+from tools import terminal_tool
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
@@ -214,7 +215,18 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist/anywhere"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), os.getcwd())
 
-    def test_project_expands_tilde(self):
+    def test_project_uses_per_session_override_before_terminal_cwd(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as session_dir, tempfile.TemporaryDirectory() as other_dir:
+            terminal_tool.register_task_env_overrides(
+                "sess-override", {"cwd": session_dir}
+            )
+            with patch.dict(os.environ, {"TERMINAL_CWD": other_dir}):
+                self.assertEqual(
+                    _resolve_child_cwd("project", "/tmp/staging", task_id="sess-override"),
+                    session_dir,
+                )
+
         import pathlib
         home = str(pathlib.Path.home())
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):

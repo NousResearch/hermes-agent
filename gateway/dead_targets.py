@@ -67,7 +67,7 @@ class DeadTargetRegistry:
     def _load(self) -> None:
         try:
             if self._path.exists():
-                raw = json.loads(self._path.read_text())
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     # Only keep well-shaped entries.
                     self._dead = {

@@ -473,7 +473,7 @@ def _apply_profile_override() -> None:
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
-                name = active_path.read_text().strip()
+                name = active_path.read_text(encoding="utf-8").strip()
                 if name and name != "default":
                     profile_name = name
                     consume = 0  # don't strip anything from argv
@@ -854,7 +854,7 @@ def _has_any_provider_configured() -> bool:
         try:
             import json
 
-            auth = json.loads(auth_file.read_text())
+            auth = json.loads(auth_file.read_text(encoding="utf-8"))
             active = auth.get("active_provider")
             if active:
                 status = get_auth_status(active)
@@ -4547,7 +4547,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     while _time.monotonic() < deadline:
         if response_path.exists():
             try:
-                answer = response_path.read_text().strip()
+                answer = response_path.read_text(encoding="utf-8").strip()
                 response_path.unlink(missing_ok=True)
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
@@ -11413,7 +11413,7 @@ def _render_distribution_plan(plan) -> None:
                 env_path = plan.target_dir / ".env"
                 if env_path.is_file():
                     try:
-                        for raw in env_path.read_text().splitlines():
+                        for raw in env_path.read_text(encoding="utf-8").splitlines():
                             line = raw.strip()
                             if not line or line.startswith("#"):
                                 continue

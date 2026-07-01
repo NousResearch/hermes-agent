@@ -395,7 +395,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
             if existing_path == str(expected):
                 try:
-                    content = expected.read_text()
+                    content = expected.read_text(encoding="utf-8")
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -477,7 +477,7 @@ def remove_wrapper_script(name: str) -> bool:
         if wrapper_path.exists():
             try:
                 # Verify it's our wrapper before removing
-                content = wrapper_path.read_text()
+                content = wrapper_path.read_text(encoding="utf-8")
                 if "hermes -p" in content:
                     wrapper_path.unlink()
                     return True
@@ -1549,7 +1549,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         return
 
     try:
-        raw = pid_file.read_text().strip()
+        raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Route through terminate_pid so Windows uses the appropriate
@@ -1590,7 +1590,7 @@ def get_active_profile() -> str:
     """
     path = _get_active_profile_path()
     try:
-        name = path.read_text().strip()
+        name = path.read_text(encoding="utf-8").strip()
         if not name:
             return "default"
         return name

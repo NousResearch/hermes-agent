@@ -703,7 +703,7 @@ class CopilotACPClient:
                 if block_error:
                     raise PermissionError(block_error)
                 try:
-                    content = path.read_text()
+                    content = path.read_text(encoding="utf-8")
                 except FileNotFoundError:
                     content = ""
                 line = params.get("line")

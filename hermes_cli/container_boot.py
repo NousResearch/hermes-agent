@@ -370,7 +370,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text())
+        data = json.loads(state_file.read_text(encoding="utf-8"))
         desired_state = data.get("desired_state")
         if desired_state is not None:
             return desired_state

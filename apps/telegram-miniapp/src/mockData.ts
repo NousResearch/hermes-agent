@@ -1,14 +1,15 @@
-export type RiskLevel = "read_only" | "disabled" | "critical";
+export type RiskLevel = "safe" | "read_only" | "disabled" | "critical";
 
 export type StatusCard = {
   label: string;
   value: string;
-  tone: "ok" | "warn" | "muted";
+  meta: string;
+  tone: "ok" | "warn" | "muted" | "danger";
 };
 
 export type QuickAction = {
+  id: string;
   label: string;
-  command: string;
   risk: RiskLevel;
   description: string;
 };
@@ -19,42 +20,55 @@ export type LogLine = {
   time: string;
 };
 
+export type NavItem = {
+  label: string;
+  badge?: string;
+  active?: boolean;
+};
+
 export const statusCards: StatusCard[] = [
-  { label: "Gateway", value: "Online", tone: "ok" },
-  { label: "Mode", value: "Read-only MVP", tone: "muted" },
-  { label: "Actions", value: "Disabled", tone: "warn" },
-  { label: "Approvals", value: "0 pending", tone: "ok" },
+  { label: "Шлюз", value: "Готов", meta: "локальное превью", tone: "ok" },
+  { label: "Сессии", value: "0", meta: "активных запусков", tone: "muted" },
+  { label: "Одобрения", value: "0", meta: "нет запросов", tone: "ok" },
+  { label: "Действия", value: "Блок", meta: "контур одобрений позже", tone: "warn" },
 ];
 
 export const quickActions: QuickAction[] = [
   {
-    label: "Refresh status",
-    command: "mock:read-status",
+    id: "status",
+    label: "Статус системы",
     risk: "read_only",
-    description: "Reads the M2 safe status snapshot when the local sidecar is connected.",
+    description: "Обновить безопасный снимок состояния Hermes.",
   },
   {
-    label: "Open sessions",
-    command: "mock:open-sessions",
+    id: "sessions",
+    label: "Сессии агентов",
     risk: "read_only",
-    description: "Preview the sessions panel with mock data.",
+    description: "Открыть будущий список Codex, Claude, OpenClaw и наблюдателей.",
   },
   {
-    label: "Run healthcheck",
-    command: "disabled:healthcheck",
-    risk: "disabled",
-    description: "Still disabled. Requires approve gate in a later milestone.",
+    id: "logs",
+    label: "Журнал событий",
+    risk: "read_only",
+    description: "Посмотреть шкалу событий без секретов и токенов.",
   },
   {
-    label: "Restart gateway",
-    command: "disabled:restart",
+    id: "restart",
+    label: "Перезапуск Hermes",
     risk: "critical",
-    description: "Critical action. Must route through existing Hermes restart gate later.",
+    description: "Заблокировано до серверного контура одобрений.",
   },
 ];
 
 export const recentLogs: LogLine[] = [
-  { level: "info", time: "M2", message: "Status API is read-only and allowlisted." },
-  { level: "info", time: "M2", message: "Telegram initData is verified only on the server." },
-  { level: "warn", time: "M2", message: "Runtime actions disabled until approve-gate milestone." },
+  { level: "info", time: "M2", message: "Status API работает только на чтение." },
+  { level: "info", time: "M3", message: "Telegram initData проверяется на сервере." },
+  { level: "warn", time: "M3", message: "Опасные действия заблокированы до контура одобрений." },
+];
+
+export const navItems: NavItem[] = [
+  { label: "Статус", active: true },
+  { label: "Сессии" },
+  { label: "Одобрения", badge: "0" },
+  { label: "Логи" },
 ];

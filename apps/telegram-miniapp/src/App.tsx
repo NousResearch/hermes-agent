@@ -1,16 +1,44 @@
-import { useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { authenticateTelegram, fetchStatusSnapshot, hasMiniAppApi, type StatusSnapshot } from "./api";
-import { recentLogs, statusCards, quickActions, type QuickAction } from "./mockData";
+import { navItems, quickActions, recentLogs, statusCards, type QuickAction } from "./mockData";
 import { getTelegramRuntime, prepareTelegramViewport } from "./telegram";
 
+const riskLabels: Record<QuickAction["risk"], string> = {
+  safe: "безопасно",
+  read_only: "только чтение",
+  disabled: "отключено",
+  critical: "критично",
+};
+
 function RiskBadge({ action }: { action: QuickAction }) {
-  const label = action.risk === "read_only" ? "read-only" : action.risk;
-  return <span className={`risk risk-${action.risk}`}>{label}</span>;
+  return <span className={`risk risk-${action.risk}`}>{riskLabels[action.risk]}</span>;
 }
 
-function CommandPreview({ command }: { command: string }) {
-  const visible = command.startsWith("mock:") || command.startsWith("disabled:") ? command : `/${command}`;
-  return <code>{visible}</code>;
+function RouteHint({ action }: { action: QuickAction }) {
+  const label = action.risk === "critical" ? "заблокировано" : action.risk === "disabled" ? "скоро" : "только чтение";
+  return <span className="route-hint">{label}</span>;
+}
+
+function formatRuntime(platform?: string) {
+  if (!platform) return "среда неизвестна";
+  if (platform === "unknown") return "среда неизвестна";
+  return platform;
+}
+
+function gatewayValue(snapshot: StatusSnapshot | null) {
+  if (!snapshot) return "Готов";
+  return snapshot.gateway.running ? "Готов" : "Офлайн";
+}
+
+function gatewayMeta(snapshot: StatusSnapshot | null) {
+  if (!snapshot) return "локальное превью";
+  if (snapshot.gateway.busy) return "агенты работают";
+  return snapshot.gateway.state || "стабильно";
+}
+
+function actionValue(snapshot: StatusSnapshot | null) {
+  if (!snapshot) return "Блок";
+  return snapshot.miniapp.actions_enabled ? "Вкл" : "Блок";
 }
 
 export function App() {
@@ -55,105 +83,139 @@ export function App() {
 
   const displayName = telegram.user?.username
     ? `@${telegram.user.username}`
-    : telegram.user?.first_name ?? "Browser preview";
+    : telegram.user?.first_name ?? "локальное превью";
 
   const cards = useMemo(() => {
-    if (!snapshot) {
-      return statusCards;
-    }
+    if (!snapshot) return statusCards;
     return [
       {
-        label: "Gateway",
-        value: snapshot.gateway.running ? "Online" : "Offline",
-        tone: snapshot.gateway.running ? "ok" : "warn",
+        label: "Шлюз",
+        value: gatewayValue(snapshot),
+        meta: gatewayMeta(snapshot),
+        tone: snapshot.gateway.running ? "ok" : "danger",
       },
-      { label: "State", value: snapshot.gateway.state, tone: snapshot.gateway.busy ? "warn" : "ok" },
-      { label: "Agents", value: String(snapshot.gateway.active_agents), tone: snapshot.gateway.busy ? "warn" : "ok" },
-      { label: "Actions", value: snapshot.miniapp.actions_enabled ? "Enabled" : "Disabled", tone: "warn" },
+      {
+        label: "Сессии",
+        value: String(snapshot.gateway.active_agents),
+        meta: snapshot.gateway.busy ? "активные агенты" : "нет активной нагрузки",
+        tone: snapshot.gateway.busy ? "warn" : "muted",
+      },
+      {
+        label: "Одобрения",
+        value: "0",
+        meta: "очередь пуста",
+        tone: "ok",
+      },
+      {
+        label: "Действия",
+        value: actionValue(snapshot),
+        meta: snapshot.miniapp.actions_enabled ? "нужен контур одобрений" : "безопасный режим",
+        tone: "warn",
+      },
     ] as const;
   }, [snapshot]);
 
   const connectionLabel =
     apiState === "connected"
       ? publicSmoke
-        ? "HTTPS smoke / read-only"
-        : "real read-only status"
+        ? "HTTPS-проверка · только чтение"
+        : "реальный статус · только чтение"
       : apiState === "connecting"
-        ? "connecting to sidecar"
+        ? "подключаю локальный сервис"
         : apiState === "offline"
-          ? "sidecar unavailable — mock fallback"
+          ? "локальный сервис недоступен · превью"
           : apiConfigured
-            ? "API configured — waiting for Telegram initData"
-            : "mock/local preview";
+            ? "API готов · жду Telegram initData"
+            : "локальное превью";
+
+  const safetyText = snapshot?.miniapp.actions_enabled
+    ? "Сервер сообщил о включённых действиях. Перед любым запуском нужен контур одобрений."
+    : "Ничего не будет выполнено без вашего явного одобрения.";
 
   return (
-    <main className="shell" data-mode={telegram.colorScheme}>
-      <section className="hero panel">
+    <main className="screen" data-mode={telegram.colorScheme}>
+      <div className="orb orb-cyan" />
+      <div className="orb orb-gold" />
+      <div className="grid-noise" />
+
+      <header className="topbar" aria-label="Контекст Mini App">
         <div>
-          <p className="eyebrow">Hermes Telegram Mini App · Milestone 3</p>
-          <h1>Control Deck</h1>
+          <span className="mono-label">HERMES / MINI APP</span>
+          <strong>Пульт управления</strong>
+        </div>
+        <span className="status-pill"><span />Защищённый режим</span>
+      </header>
+
+      <section className="hero-card glass-card scan-line">
+        <div className="hero-copy-block">
+          <p className="eyebrow">Светлая кибернетическая ОС</p>
+          <h1>Hermes готов</h1>
           <p className="hero-copy">
-            Read-only Telegram WebView smoke path with mock fallback. No launchd,
-            no privileged actions, no stored Telegram initData.
+            Персональная диспетчерская для агентов, сессий и будущих одобрений. Сейчас режим только чтение.
           </p>
           <div className={`connection-banner state-${apiState}`}>{connectionLabel}</div>
         </div>
-        <div className="identity-card">
-          <span>{telegram.isTelegram ? "Telegram runtime" : "Mock runtime"}</span>
+        <aside className="runtime-panel" aria-label="Пользователь и среда">
+          <span>Контекст</span>
           <strong>{displayName}</strong>
-          <small>{telegram.platform}</small>
-        </div>
+          <small>{telegram.isTelegram ? "Telegram WebView" : formatRuntime(telegram.platform)}</small>
+        </aside>
       </section>
 
-      <section className="grid status-grid" aria-label="Hermes status preview">
-        {cards.map((card) => (
-          <article className={`panel status-card tone-${card.tone}`} key={card.label}>
+      <section className="status-grid" aria-label="Ключевые состояния Hermes">
+        {cards.map((card, index) => (
+          <article className={`metric-card tone-${card.tone}`} key={card.label} style={{ "--delay": `${index * 55}ms` } as CSSProperties}>
             <span>{card.label}</span>
             <strong>{card.value}</strong>
+            <small>{card.meta}</small>
           </article>
         ))}
       </section>
 
-      <section className="panel">
+      <section className="approval-card glass-card" aria-label="Состояние одобрений">
+        <div>
+          <p className="mono-label">КОНТУР ОДОБРЕНИЙ</p>
+          <h2>Опасные действия заблокированы</h2>
+          <p>{safetyText}</p>
+        </div>
+        <span className="approval-lock">0</span>
+      </section>
+
+      <section className="command-card glass-card" aria-label="Быстрые действия">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Quick actions</p>
-            <h2>Safe by default</h2>
+            <p className="mono-label">КОМАНДНАЯ ПОВЕРХНОСТЬ</p>
+            <h2>Безопасные маршруты</h2>
           </div>
-          <span className="lock-pill">actions disabled</span>
+          <span className="lock-pill">действия выключены</span>
         </div>
-        <div className="action-list">
-          {quickActions.map((action) => (
-            <article className="action-row" key={action.command}>
-              <div>
-                <div className="action-title">
-                  <strong>{action.label}</strong>
-                  <RiskBadge action={action} />
-                </div>
-                <p>{action.description}</p>
+
+        <div className="quick-grid">
+          {quickActions.map((action, index) => (
+            <article className="quick-tile tap" key={action.id} style={{ "--delay": `${index * 45}ms` } as CSSProperties}>
+              <div className="action-title">
+                <strong>{action.label}</strong>
+                <RiskBadge action={action} />
               </div>
-              <CommandPreview command={action.command} />
+              <p>{action.description}</p>
+              <RouteHint action={action} />
             </article>
           ))}
         </div>
       </section>
 
-      <section className="two-column">
-        <article className="panel">
+      <section className="intel-grid" aria-label="Будущие разделы">
+        <article className="mini-panel glass-card">
           <div className="section-heading compact">
-            <h2>Approvals</h2>
-            <span className="risk risk-read_only">empty</span>
+            <h2>Сессии</h2>
+            <span className="risk risk-read_only">скоро</span>
           </div>
-          <p className="muted">
-            The approval queue is intentionally empty in this milestone. Real action requests
-            require the server-side approve-gate state machine from Milestone 4.
-          </p>
+          <p className="muted">Здесь будет шкала событий Codex, Claude, OpenClaw и наблюдателей.</p>
         </article>
-
-        <article className="panel">
+        <article className="mini-panel glass-card">
           <div className="section-heading compact">
-            <h2>Recent logs</h2>
-            <span className="risk risk-disabled">redacted mock</span>
+            <h2>Журнал</h2>
+            <span className="risk risk-disabled">редактировано</span>
           </div>
           <div className="log-list">
             {recentLogs.map((line) => (
@@ -165,6 +227,15 @@ export function App() {
           </div>
         </article>
       </section>
+
+      <nav className="bottom-nav" aria-label="Навигация">
+        {navItems.map((item) => (
+          <button aria-current={item.active ? "page" : undefined} className={item.active ? "active" : ""} key={item.label} type="button" disabled>
+            <span>{item.label}</span>
+            {item.badge ? <em>{item.badge}</em> : null}
+          </button>
+        ))}
+      </nav>
     </main>
   );
 }

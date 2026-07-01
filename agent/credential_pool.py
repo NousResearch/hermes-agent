@@ -2162,7 +2162,12 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
+        # Claude Code OAuth tokens are the only Anthropic credentials that should flow into the OAuth refresh path.
+        auth_type = (
+            AUTH_TYPE_OAUTH
+            if provider == "anthropic" and token.startswith("sk-ant-oat")
+            else AUTH_TYPE_API_KEY
+        )
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)

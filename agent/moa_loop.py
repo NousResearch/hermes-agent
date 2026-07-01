@@ -99,7 +99,22 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         # provider-backed targets whose provider branch adds auth refresh,
         # request metadata, or request-shape adapters. Keep those providers
         # identified by name.
-        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
+        # ``bedrock`` belongs here too: its provider branch builds an
+        # AWS-SigV4-signed client (or IAM-role-signed) against the
+        # bedrock-runtime endpoint. resolve_runtime_provider returns that
+        # endpoint's base_url plus a PLACEHOLDER api_key ("aws-sdk") — there is
+        # no real bearer token. Forwarding base_url+api_key makes call_llm treat
+        # it as a plain OpenAI-compatible endpoint and POST with an unsigned
+        # fake bearer, which Bedrock answers with an empty/malformed
+        # ChatCompletion (choices=None). Keeping it identified by name routes it
+        # through the real signed bedrock branch.
+        #
+        # ``anthropic`` likewise: subscription OAuth setup-tokens (sk-ant-oat*)
+        # require Bearer auth plus the ``anthropic-beta: oauth-*`` header, which
+        # only the anthropic provider branch adds. Forwarding base_url+api_key
+        # sends the OAuth token as ``x-api-key``, which Anthropic rejects with a
+        # bare 429.
+        if resolved_provider in {"nous", "anthropic", "openai-codex", "xai-oauth", "bedrock"}:
             return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url

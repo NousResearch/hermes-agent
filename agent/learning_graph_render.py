@@ -255,7 +255,7 @@ def _period_key(ts: float, granularity: str) -> tuple[int, ...]:
 def _period_label(ts: float, granularity: str) -> str:
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     if granularity == "day":
-        return dt.strftime("%-d %b")
+        return f"{dt.day} {dt.strftime('%b')}"
     if granularity == "month":
         return dt.strftime("%b %Y")
     return dt.strftime("%Y")

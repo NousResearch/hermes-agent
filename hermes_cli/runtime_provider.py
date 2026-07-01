@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_MODEL_DISCOVERY_BODY_LIMIT = 2 * 1024 * 1024
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
@@ -245,18 +248,44 @@ def _anthropic_base_url_override_ok(base_url: str) -> bool:
     return False
 
 
+def _read_local_model_discovery_json(response: Any) -> Dict[str, Any]:
+    """Parse a local /models response without buffering an unbounded body."""
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > _LOCAL_MODEL_DISCOVERY_BODY_LIMIT:
+            raise ValueError(
+                "local model discovery response exceeded "
+                f"{_LOCAL_MODEL_DISCOVERY_BODY_LIMIT} bytes"
+            )
+        chunks.append(chunk)
+
+    raw = b"".join(chunks)
+    if not raw.strip():
+        return {}
+    encoding = getattr(response, "encoding", None) or "utf-8"
+    parsed = json.loads(raw.decode(encoding, errors="replace"))
+    if not isinstance(parsed, dict):
+        raise ValueError("local model discovery response was not a JSON object")
+    return parsed
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
         return ""
+    resp = None
     try:
         import requests
         url = base_url.rstrip("/")
         if not url.endswith("/v1"):
             url += "/v1"
-        resp = requests.get(url + "/models", timeout=5)
+        resp = requests.get(url + "/models", timeout=5, stream=True)
         if resp.ok:
-            models = resp.json().get("data", [])
+            models = _read_local_model_discovery_json(resp).get("data", [])
             if len(models) == 1:
                 model_id = models[0].get("id", "")
                 if model_id:
@@ -265,6 +294,10 @@ def _auto_detect_local_model(base_url: str) -> str:
         # Log instead of silently swallowing — aids debugging when
         # local model auto-detection fails unexpectedly.
         logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
+    finally:
+        close = getattr(resp, "close", None)
+        if callable(close):
+            close()
     return ""
 
 

@@ -200,6 +200,63 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ---
 
+## Pattern: Cross-Profile Delegation
+
+Sometimes you need separate Hermes agents with different configurations, API keys, and session histories — a personal agent and a business agent, for example. While `delegate_task` spawns subagents within the **same** profile, you can task another entire profile using the CLI directly:
+
+```bash
+# Task a fresh session in another profile
+hermes -p business chat -q "Create a calendar event for tomorrow at 2pm" --quiet
+
+# Resume a previous session for follow-up context
+hermes -p business chat -r 20260701_110633_cd0d9f -q "Actually, move it to 3pm" --quiet
+
+# Resume the most recent session
+hermes -p business chat --continue -q "Follow-up task" --quiet
+```
+
+The `--quiet` flag suppresses banners and progress spinners so only the result is returned. Each profile has its own `config.yaml`, `.env`, sessions database, memory, and gateway — so tasks run with that profile's credentials, API keys, and bot tokens.
+
+### Real-world example: Business + Personal separation
+
+Set up two profiles — one for personal use and one for business:
+
+```bash
+hermes profile create business
+hermes profile create personal
+```
+
+Each gets its own command alias automatically:
+
+```bash
+business chat -q "Send invoice reminder" --quiet   # One-shot business task
+personal chat                                       # Your daily agent
+```
+
+From your personal agent session, you can task the business profile:
+
+```bash
+hermes -p business chat -q \
+  'Create a calendar event titled "Team Standup" for tomorrow 10:00-10:30' \
+  --quiet
+```
+
+All sessions are logged under the business profile's database — review them later by running `business chat` or `hermes -p business chat` directly.
+
+### Fresh vs. continued sessions
+
+| Mode | Command | When |
+|------|---------|------|
+| **Fresh** | `-q "task"` | Most tasks — no prior context needed |
+| **Resume** | `-r SESSION_ID -q "..."` | Task builds on a previous conversation |
+| **Continue** | `--continue -q "..."` | Quick follow-up on the most recent session |
+
+### How it works
+
+Each profile alias (like `business` in the examples) is a thin wrapper at `~/.local/bin/<name>` that runs `hermes -p <name> "$@"`. Under the hood, `-p` sets `HERMES_HOME` to the profile's directory, so all state — config, credentials, sessions, cron jobs — scopes to that profile. Nothing crosses over unless you explicitly pass it.
+
+---
+
 ## Toolset Selection
 
 Choose toolsets based on what the subagent needs:

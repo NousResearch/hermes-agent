@@ -391,7 +391,26 @@ def _resolve_runtime_from_pool_entry(
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_base_url:
-                base_url = cfg_base_url
+                # For opencode-zen/opencode-go: the gateway /model handler
+                # persists ``model.base_url`` on every switch.  When switching
+                # TO an ``anthropic_messages`` model (e.g. minimax-m3) the
+                # URL is stored WITHOUT ``/v1`` (correct for that mode — the
+                # Anthropic SDK appends ``/v1/messages``).  When the user
+                # then switches to a ``chat_completions`` model (e.g. glm-5.2)
+                # that stale URL would win the config override here and the
+                # OpenAI SDK would hit ``…/chat/completions`` without ``/v1``
+                # → HTTP 404.  Guard by requiring the config URL to still
+                # match the provider's current ``inference_base_url``; if it
+                # does not, silently keep the pool default (which has ``/v1``).
+                # Other providers are unaffected — their config overrides are
+                # legitimate user customizations (proxy URLs, etc.) and pass
+                # through unchanged.
+                if provider in {"opencode-zen", "opencode-go"}:
+                    if cfg_base_url == pconfig.inference_base_url.rstrip("/"):
+                        base_url = cfg_base_url
+                    # Else: keep pool default (with /v1).
+                else:
+                    base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if provider in {"opencode-zen", "opencode-go"}:
             # Re-derive api_mode from the effective model rather than the

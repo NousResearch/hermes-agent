@@ -1506,6 +1506,46 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_opencode_go_stale_config_base_url_ignored_for_chat_completions(monkeypatch):
+    """When the gateway persists a ``model.base_url`` from a previous
+    /model switch (e.g. to MiniMax, which stores the URL without ``/v1``
+    because ``anthropic_messages`` mode strips it), that stale URL must
+    NOT override the provider's ``inference_base_url`` for a subsequent
+    ``chat_completions`` model.  Otherwise the OpenAI SDK constructs
+    ``…/chat/completions`` without ``/v1`` and every non-MiniMax model
+    404s on opencode-go.
+
+    The fix in ``_resolve_runtime_from_pool_entry`` only honours the
+    config ``base_url`` when it still matches the provider's current
+    ``inference_base_url``.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "minimax-m3",
+            # Stale URL persisted by a previous /model minimax-m3 switch —
+            # the /v1 was stripped because anthropic_messages mode did it.
+            "base_url": "https://opencode.ai/zen/go",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    # Resolve for a chat_completions model (GLM) with the stale config.
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go", target_model="glm-5.2"
+    )
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    # The stale config URL (without /v1) must NOT win — the pool default
+    # (with /v1) should be used instead.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     """Custom providers should accept api_mode: anthropic_messages."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")

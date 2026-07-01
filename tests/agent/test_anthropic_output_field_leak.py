@@ -11,7 +11,7 @@ normalize_response capture, _sanitize_replay_block (ordered-blocks replay), and
 _convert_content_part_to_anthropic (content-list replay).
 """
 import sys, os
-sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import pytest
 from agent.anthropic_adapter import (

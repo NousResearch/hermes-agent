@@ -160,6 +160,13 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - ``anthropic_content_blocks`` on assistant messages — written by the
+          ``anthropic_messages`` transport to preserve thinking-block ordering
+          for replay. When a session switches from an anthropic_messages-routed
+          model (e.g. MiniMax on opencode-go) to a chat_completions-routed
+          model (e.g. GLM-5.2, DeepSeek), the field leaks into the outgoing
+          payload. Strict providers (opencode-go, Fireworks) reject it with
+          ``Extra inputs are not permitted, field: 'messages[N].anthropic_content_blocks'``.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
@@ -173,6 +180,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "codex_message_items" in msg
                 or "tool_name" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or "anthropic_content_blocks" in msg  # model-switch leak (→ GH-XXXX)
             ):
                 needs_sanitize = True
                 break
@@ -203,6 +211,7 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
             msg.pop("timestamp", None)  # #47868 — leak into strict providers
+            msg.pop("anthropic_content_blocks", None)  # model-switch leak
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

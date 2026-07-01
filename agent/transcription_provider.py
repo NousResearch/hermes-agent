@@ -222,8 +222,7 @@ class FuelIXTranscriptionProvider(TranscriptionProvider):
             cfg = load_config()
             api_key = (
                 cfg.get("providers", {})
-                .get("api", {})
-                .get("fuelix.ai", {})
+                .get("api.fuelix.ai", {})
                 .get("api_key", "")
             )
             return bool(str(api_key).strip())
@@ -246,15 +245,14 @@ class FuelIXTranscriptionProvider(TranscriptionProvider):
             cfg = load_config()
             api_key = (
                 cfg.get("providers", {})
-                .get("api", {})
-                .get("fuelix.ai", {})
+                .get("api.fuelix.ai", {})
                 .get("api_key", "")
             )
             if not api_key:
                 return {
                     "success": False,
                     "transcript": "",
-                    "error": "FuelIX API key missing in config.providers.api.fuelix.ai.api_key",
+                    "error": "FuelIX API key missing in config.providers.'api.fuelix.ai'.api_key",
                     "provider": self.name,
                 }
 

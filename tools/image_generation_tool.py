@@ -1408,8 +1408,7 @@ def _fuelix_api_key() -> str:
         cfg = load_config()
         return str(
             cfg.get("providers", {})
-            .get("api", {})
-            .get("fuelix.ai", {})
+            .get("api.fuelix.ai", {})
             .get("api_key", "")
         ).strip()
     except Exception:

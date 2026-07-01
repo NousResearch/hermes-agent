@@ -273,8 +273,7 @@ class FuelIXTTSProvider(TTSProvider):
             cfg = load_config()
             api_key = (
                 cfg.get("providers", {})
-                .get("api", {})
-                .get("fuelix.ai", {})
+                .get("api.fuelix.ai", {})
                 .get("api_key", "")
             )
             return bool(str(api_key).strip())
@@ -299,12 +298,11 @@ class FuelIXTTSProvider(TTSProvider):
         cfg = load_config()
         api_key = (
             cfg.get("providers", {})
-            .get("api", {})
-            .get("fuelix.ai", {})
+            .get("api.fuelix.ai", {})
             .get("api_key", "")
         )
         if not api_key:
-            raise ValueError("FuelIX API key missing in config.providers.api.fuelix.ai.api_key")
+            raise ValueError("FuelIX API key missing in config.providers.'api.fuelix.ai'.api_key")
 
         voice = voice or "alloy"
         model = model or "tts-1"

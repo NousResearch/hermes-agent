@@ -249,6 +249,19 @@ def _domain_of(address: str) -> str:
     return domain.strip().lower()
 
 
+def _strip_channel_prefix(addr: str) -> str:
+    """Strip a ``email:`` platform prefix from a channel identifier.
+
+    The cron delivery pipeline and session keys sometimes carry a compound
+    channel ID like ``email:user@example.com``.  The SMTP ``To`` header
+    requires a bare RFC 5321 address — passing the compound form causes
+    strict servers (Gmail) to reject with ``555 5.5.2``.
+    """
+    if addr.startswith("email:"):
+        return addr[len("email:"):]
+    return addr
+
+
 def _domains_aligned(a: str, b: str) -> bool:
     """Return True if two domains are equal or in an organizational
     parent/subdomain relationship (relaxed DMARC alignment).
@@ -897,6 +910,7 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        to_addr = _strip_channel_prefix(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1012,6 +1026,7 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        to_addr = _strip_channel_prefix(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1092,6 +1107,7 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        to_addr = _strip_channel_prefix(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1186,6 +1202,8 @@ async def _standalone_send(
 
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+
+    chat_id = _strip_channel_prefix(chat_id)
 
     try:
         msg = MIMEText(message, "plain", "utf-8")

@@ -1775,5 +1775,61 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestStripChannelPrefix(unittest.TestCase):
+    """Regression: compound channel IDs must be stripped before SMTP To."""
+
+    def test_strip_email_prefix(self):
+        from plugins.platforms.email.adapter import _strip_channel_prefix
+        self.assertEqual(_strip_channel_prefix("email:user@example.com"), "user@example.com")
+
+    def test_strip_no_prefix(self):
+        from plugins.platforms.email.adapter import _strip_channel_prefix
+        self.assertEqual(_strip_channel_prefix("user@example.com"), "user@example.com")
+
+    def test_strip_empty(self):
+        from plugins.platforms.email.adapter import _strip_channel_prefix
+        self.assertEqual(_strip_channel_prefix(""), "")
+
+    @patch("plugins.platforms.email.adapter.EmailAdapter._connect_smtp")
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_send_email_strips_prefix(self, mock_smtp):
+        """_send_email must strip 'email:' prefix to avoid Gmail 555 5.5.2."""
+        from plugins.platforms.email.adapter import EmailAdapter
+        from gateway.config import PlatformConfig
+        adapter = EmailAdapter(PlatformConfig(enabled=True))
+        mock_server = MagicMock()
+        mock_smtp.return_value = mock_server
+        # Call with compound channel ID — should NOT raise
+        adapter._send_email("email:user@example.com", "Hello")
+        # Verify the SMTP To header was the bare address
+        sent_msg = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["To"], "user@example.com")
+
+    @patch("smtplib.SMTP")
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_standalone_send_strips_prefix(self, mock_smtp_cls):
+        """_standalone_send must strip 'email:' prefix."""
+        import asyncio
+        from plugins.platforms.email.adapter import _standalone_send
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(enabled=True, extra={"address": "hermes@test.com", "smtp_host": "smtp.test.com"})
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+        result = asyncio.run(_standalone_send(pconfig, "email:user@test.com", "Hello"))
+        self.assertTrue(result.get("success"))
+        sent_msg = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["To"], "user@test.com")
+
+
 if __name__ == "__main__":
     unittest.main()

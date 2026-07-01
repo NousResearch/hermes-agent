@@ -1556,6 +1556,17 @@ class HermesACPAgent(acp.Agent):
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
+        # If a skill was loaded via /<skill-name>, use its prompt text as the
+        # user message so the LLM responds in the skill's voice/role immediately.
+        skill_prompt = getattr(state, "_pending_skill_prompt", None)
+        if skill_prompt:
+            user_text = skill_prompt
+            user_content = skill_prompt
+            try:
+                delattr(state, "_pending_skill_prompt")
+            except AttributeError:
+                pass
+
         # If Zed sends another regular prompt while the same ACP session is
         # still running, queue it instead of racing two AIAgent loops against
         # the same state.history. /steer and /queue are handled above and can
@@ -1993,15 +2004,19 @@ class HermesACPAgent(acp.Agent):
             # Check if the command matches a registered skill name —
             # if so, load and run it directly (like OpenCode).
             try:
-                from agent.skill_commands import get_skill_commands
+                from agent.skill_commands import get_skill_commands, build_preloaded_skills_prompt
 
                 skill_cmds = get_skill_commands()
-                # Keys are /skill-name; values include {"name": "skill-name"}
                 for raw_key, skill_info in skill_cmds.items():
                     if isinstance(skill_info, dict):
                         skill_name = skill_info.get("name", raw_key.lstrip("/"))
                         if cmd == skill_name:
-                            return self._cmd_skill(f"load {skill_name}", state)
+                            # Load skill into system prompt, then fall through to LLM
+                            prompt_text, loaded_names, missing_names = build_preloaded_skills_prompt([skill_name])
+                            if loaded_names:
+                                _inject_skills_prompt(state.agent, prompt_text or "")
+                                setattr(state, "_pending_skill_prompt", prompt_text or "")
+                            return None  # fall through to LLM with skill loaded
             except Exception:
                 pass
             return None  # not a known command — let the LLM handle it

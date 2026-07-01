@@ -193,7 +193,7 @@ function SectionIntro({
   return (
     <section className="section-intro glass-card" aria-label="Текущий раздел">
       <div>
-        <p className="mono-label">M7 / LIVE READ-ONLY</p>
+        <p className="mono-label">M9 / LIVE READ-ONLY</p>
         <h2>{navTitles[activeTab]}</h2>
         <p>Данные обновляются только чтением. Ручное обновление не запускает команды и не меняет состояние Hermes.</p>
         <div className="freshness-row" data-state={freshness}>
@@ -300,6 +300,51 @@ function SessionsSection({ sessions }: { sessions: SessionPreview[] }) {
   );
 }
 
+function DecisionReadiness({ approval }: { approval: ApprovalPreview }) {
+  const guardrails = [
+    {
+      label: "Действия сервера",
+      value: "не подключены",
+      ready: false,
+      detail: "В Mini App нет endpoint для approve/reject/restart.",
+    },
+    {
+      label: "Контекст владельца",
+      value: approval.risk === "critical" ? "требуется" : "ожидает",
+      ready: false,
+      detail: "Будущее решение должно пройти ручное подтверждение Андрея.",
+    },
+    {
+      label: "Проверки запроса",
+      value: `${approval.checks.length} видно`,
+      ready: approval.checks.length > 0,
+      detail: "Список отображается только как read-only preflight.",
+    },
+  ] as const;
+
+  return (
+    <section className="decision-readiness" aria-label="Готовность будущего решения">
+      <div className="decision-readiness-head">
+        <div>
+          <p className="mono-label">M9 / PREFLIGHT</p>
+          <h3>Решение ещё не подключено</h3>
+        </div>
+        <span className="lock-pill">read-only</span>
+      </div>
+      <p>Этот блок заранее показывает, что должно быть проверено перед будущим approve/reject. Сейчас он ничего не отправляет и не меняет.</p>
+      <div className="readiness-grid">
+        {guardrails.map((item) => (
+          <article className="readiness-item" data-ready={item.ready} key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <small>{item.detail}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: ApprovalPreview[]; selectedId: string; onSelect: (approval: ApprovalPreview) => void }) {
   if (approvals.length === 0) {
     return <EmptyState title="Очередь одобрений пуста" text="Сервер вернул пустую очередь. Это считается валидным live-состоянием, а не поводом показывать mock-запросы." />;
@@ -339,6 +384,7 @@ function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: Appr
             <li key={check}>{check}</li>
           ))}
         </ul>
+        <DecisionReadiness approval={selected} />
         <div className="decision-strip" aria-label="Недоступные решения">
           <button type="button" disabled>Одобрить позже</button>
           <button type="button" disabled>Отклонить позже</button>

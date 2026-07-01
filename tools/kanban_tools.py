@@ -602,7 +602,10 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    # judge_goal returns 4 values (verdict, reason, parse_failed, wait_directive)
+                    # since the upstream goals.py change; unpack all 4 or it raises ValueError and
+                    # the goal-judge acceptance gate silently fails open. (carry-fix, Bill 2026-07-01)
+                    verdict, reason, _, _ = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )

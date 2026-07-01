@@ -1153,6 +1153,16 @@ class MatrixAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
         self._device_id_unverified = False
+        # Reset to the config-derived value on every (re)connect attempt, not
+        # just __init__. A transient E2EE setup failure (missing deps import
+        # race, a locked crypto-store sqlite file, etc.) downgrades this to
+        # False below; without resetting here first, that downgrade is
+        # permanent for the adapter's lifetime — every later reconnect
+        # silently skips the whole E2EE setup block instead of retrying,
+        # even though the transient cause may have cleared. Same "stale
+        # one-shot flag across reconnect" bug class _device_id_unverified
+        # above was just fixed for.
+        self._encryption = self._e2ee_mode != "off"
         if self._client is not None:
             try:
                 await self.disconnect()

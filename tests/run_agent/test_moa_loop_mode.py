@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -175,11 +177,14 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     """Codex slots must not become custom chat-completions endpoints.
 
-    _resolve_task_provider_model treats any explicit base_url as provider=custom.
-    For openai-codex that bypasses the Codex auxiliary branch, losing the
-    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    _slot_runtime forwards the resolved base_url/api_key/api_mode; the single
+    chokepoint that must NOT collapse openai-codex to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, the Codex auxiliary branch — Cloudflare headers + Responses
+    adapter for chatgpt.com/backend-api/codex — would be bypassed.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -194,8 +199,66 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     )
 
     rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
 
-    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+    # The chokepoint preserves openai-codex identity despite the explicit
+    # base_url (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "openai-codex"
+    assert base_url == "https://chatgpt.com/backend-api/codex"
+
+
+@pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
+def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
+    """MoA can pass resolved endpoints for provider-backed slots without
+    call_llm flattening them to generic custom endpoints.
+
+    ``_slot_runtime`` resolves a provider-backed slot to ``provider`` plus a
+    concrete ``base_url``/``api_key``/``api_mode``; ``_run_reference`` then
+    forwards that dict to ``call_llm``. ``call_llm`` resolves the routing tuple
+    via ``_resolve_task_provider_model`` (which takes everything except
+    ``api_mode``, handled separately). The provider identity must survive that
+    resolution rather than being flattened to ``custom``.
+
+    NOTE: providers in the ``_slot_runtime`` name-preservation set (anthropic,
+    bedrock, nous, openai-codex, xai-oauth) are intentionally NOT forwarded —
+    they're covered by their own dedicated tests. This case covers the
+    forward-the-resolved-endpoint path for providers that are NOT in the set.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"token-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": provider, "model": "test-model"})
+    # api_mode is forwarded to call_llm directly, not to _resolve_task_provider_model.
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, model, base_url, api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+
+    assert resolved_provider == provider
+    assert model == "test-model"
+    assert base_url == f"https://{provider}.example/v1"
+    assert api_key == f"token-for-{provider}"
 
 
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
@@ -347,7 +410,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text = _run_reference(
+    label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -505,7 +568,7 @@ def test_references_run_in_parallel(monkeypatch):
     # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
     assert elapsed < 0.9, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
-    assert [label for label, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
+    assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
@@ -635,3 +698,189 @@ def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
 
     # 2 references × 2 distinct turns = 4 reference runs.
     assert len(ref_runs) == 4
+
+
+def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch):
+    """Native anthropic slots must keep their provider identity, not collapse to custom.
+
+    anthropic OAuth setup-tokens (sk-ant-oat*) require Bearer auth + the
+    ``anthropic-beta: oauth-*`` header, which only the anthropic provider branch
+    of call_llm adds. _slot_runtime forwards the resolved base_url/api_key for
+    every provider now; the single chokepoint that must NOT collapse anthropic
+    to provider=custom (which would send the token as x-api-key → bare 429) is
+    _resolve_task_provider_model via _preserve_provider_with_base_url.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "base_url": "https://resolved.example/v1",
+            "api_key": "resolved-key",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
+    anthropic_rt = moa_loop._slot_runtime(
+        {"provider": "anthropic", "model": "claude-opus-4-8"}
+    )
+    assert anthropic_rt["provider"] == "anthropic"
+    assert anthropic_rt["base_url"] == "https://resolved.example/v1"
+
+    # The chokepoint preserves anthropic identity despite the explicit base_url,
+    # so call_llm routes through the anthropic provider branch (not custom).
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        provider="anthropic",
+        model="claude-opus-4-8",
+        base_url="https://resolved.example/v1",
+        api_key="resolved-key",
+    )
+    assert resolved_provider == "anthropic"
+
+    # A generic provider (openrouter) is likewise forwarded and preserved.
+    other_rt = moa_loop._slot_runtime(
+        {"provider": "openrouter", "model": "some-model"}
+    )
+    assert other_rt["provider"] == "openrouter"
+    assert other_rt["model"] == "some-model"
+    assert other_rt["base_url"] == "https://resolved.example/v1"
+    assert other_rt["api_key"] == "resolved-key"
+
+
+def _response_with_usage(content="advice", *, prompt=100, completion=50, cached=0):
+    """A fake response carrying OpenAI-style usage so normalize_usage works."""
+    details = SimpleNamespace(cached_tokens=cached, cache_write_tokens=0)
+    usage = SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=details,
+        output_tokens_details=None,
+    )
+    message = SimpleNamespace(content=content, tool_calls=[])
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=usage, model="fake-model")
+
+
+def test_run_reference_captures_usage_and_cost(monkeypatch):
+    """A reference call returns per-advisor CanonicalUsage + priced cost.
+
+    Before this, _run_reference discarded response.usage entirely, so the
+    advisor fan-out was invisible to cost tracking.
+    """
+    from agent.moa_loop import _RefAccounting, _run_reference
+    from agent.usage_pricing import CanonicalUsage
+
+    monkeypatch.setattr(
+        "agent.moa_loop.call_llm",
+        lambda **kw: _response_with_usage(prompt=1000, completion=200, cached=400),
+    )
+    # Keep runtime resolution + pricing deterministic.
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
+    )
+
+    label, text, acct = _run_reference(
+        {"provider": "openrouter", "model": "vendor/adv-model"},
+        [{"role": "user", "content": "state?"}],
+    )
+
+    assert text == "advice"
+    assert isinstance(acct, _RefAccounting)
+    assert isinstance(acct.usage, CanonicalUsage)
+    # prompt_tokens=1000 with 400 cached → 600 fresh input + 400 cache_read.
+    assert acct.usage.input_tokens == 600
+    assert acct.usage.cache_read_tokens == 400
+    assert acct.usage.output_tokens == 200
+    assert acct.cost_usd == 0.0123
+
+
+def test_references_parallel_sum_and_consume(monkeypatch, tmp_path):
+    """create() sums advisor usage + cost once per turn; consume clears it.
+
+    Repeat tool-iterations within a turn reuse the cache and contribute ZERO
+    additional advisor spend (otherwise advisor cost multiplies by iteration
+    count).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: adv-a
+        - provider: openrouter
+          model: adv-b
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response_with_usage(prompt=1000, completion=100, cached=0)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.01, status="estimated", source="table"),
+    )
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+
+    usage, cost = facade.consume_reference_usage()
+    # Two advisors × (1000 input, 100 output) = 2000 input, 200 output.
+    assert usage.input_tokens == 2000
+    assert usage.output_tokens == 200
+    # Two advisors × $0.01 each = $0.02.
+    assert cost == pytest.approx(0.02)
+
+    # consume clears — a second consume with no new create() is zeroed.
+    usage2, cost2 = facade.consume_reference_usage()
+    assert usage2.input_tokens == 0
+    assert cost2 is None
+
+    # A repeat create() with the SAME advisory view is a cache HIT: advisors
+    # do not re-run, so pending advisor spend is zero (no double-charge).
+    facade.create(messages=[{"role": "user", "content": "turn one"}], tools=[])
+    usage3, cost3 = facade.consume_reference_usage()
+    assert usage3.input_tokens == 0
+    assert cost3 is None
+
+
+def test_canonical_usage_add():
+    """CanonicalUsage sums per bucket (used to fold advisor tokens in)."""
+    from agent.usage_pricing import CanonicalUsage
+
+    a = CanonicalUsage(input_tokens=100, output_tokens=20, cache_read_tokens=5)
+    b = CanonicalUsage(input_tokens=50, output_tokens=10, cache_write_tokens=3)
+    total = a + b
+    assert total.input_tokens == 150
+    assert total.output_tokens == 30
+    assert total.cache_read_tokens == 5
+    assert total.cache_write_tokens == 3
+    assert total.request_count == 2

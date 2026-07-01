@@ -93,18 +93,21 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
-        resolved_provider = str(rt.get("provider") or provider).strip().lower()
-        # call_llm treats an explicit base_url as a custom endpoint. That is
-        # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
-        # provider-backed targets whose provider branch adds auth refresh,
-        # request metadata, or request-shape adapters. Keep those providers
-        # identified by name.
-        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
-            return out
-        # Pass the resolved endpoint through so call_llm builds the request for
-        # the provider's actual API surface instead of auto-detecting. base_url
-        # routes call_llm to the right adapter (incl. anthropic_messages mode);
-        # api_key is the resolved credential for that provider.
+        # Forward the resolved endpoint through to call_llm unconditionally.
+        # call_llm's _resolve_task_provider_model() is the single chokepoint that
+        # decides whether an explicit base_url collapses a call to the generic
+        # ``custom`` route or keeps the provider's real identity: it preserves
+        # identity for any first-class provider (via
+        # _preserve_provider_with_base_url, a provider-catalog capability check),
+        # so provider branches that add auth refresh / request metadata /
+        # request-shape adapters — anthropic OAuth (Bearer + anthropic-beta),
+        # openai-codex Responses wrapping + Cloudflare headers, xai-oauth,
+        # bedrock SigV4 signing, nous Portal tags — still fire. Those branches
+        # re-resolve their own credentials by name and ignore a forwarded
+        # base_url/api_key, so forwarding is safe even for a placeholder key
+        # (bedrock's "aws-sdk"). We used to maintain a name-preservation set here
+        # too; that duplicated the chokepoint and drifted out of sync, so the
+        # single source of truth now lives in call_llm.
         if rt.get("base_url"):
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):

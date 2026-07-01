@@ -463,7 +463,7 @@ class Mem0MemoryProvider(MemoryProvider):
         t.start()
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        self._start_prefetch(query, session_id=session_id)
+        return None
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall memories for the CURRENT question with a short hot-path wait."""

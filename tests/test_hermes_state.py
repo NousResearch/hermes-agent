@@ -4793,6 +4793,56 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_record_gateway_session_peer_preserves_source_when_none(db):
+    """Passing source=None to record_gateway_session_peer must leave
+    the existing sessions.source column untouched (#56439)."""
+    db.create_session(
+        "resume-test",
+        "tui",
+        user_id="user-1",
+        session_key="agent:main:tui:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    row = db.get_session("resume-test")
+    assert row["source"] == "tui"
+
+    # Simulate /resume from telegram: update routing fields but NOT source
+    db.record_gateway_session_peer(
+        "resume-test",
+        source=None,
+        session_key="agent:main:telegram:dm:chat-1",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    row = db.get_session("resume-test")
+    assert row["source"] == "tui", "source must not be overwritten when source=None"
+    assert row["session_key"] == "agent:main:telegram:dm:chat-1"
+
+
+def test_record_gateway_session_peer_updates_source_when_provided(db):
+    """Passing source=<value> must still update the source column."""
+    db.create_session(
+        "src-update",
+        "tui",
+        user_id="user-1",
+        session_key="agent:main:tui:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.record_gateway_session_peer(
+        "src-update",
+        source="telegram",
+        session_key="agent:main:telegram:dm:chat-1",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    row = db.get_session("src-update")
+    assert row["source"] == "telegram"
+
+
 def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     db.create_session(
         "closed-gw-session",

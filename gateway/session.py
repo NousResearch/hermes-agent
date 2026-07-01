@@ -1126,22 +1126,34 @@ class SessionStore:
         session_key: str,
         source: Optional[SessionSource],
     ) -> None:
-        """Persist the routing peer for an existing gateway session row."""
-        if not self._db or not source:
+        """Persist the routing peer for an existing gateway session row.
+
+        When *source* is ``None`` (e.g. ``/resume`` from a different
+        platform), the routing fields are still updated but
+        ``sessions.source`` is left untouched to preserve the original
+        platform provenance.
+        """
+        if not self._db:
             return
         recorder = getattr(self._db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
         try:
-            recorder(
-                session_id,
-                source=source.platform.value,
-                user_id=source.user_id,
-                session_key=session_key,
-                chat_id=source.chat_id,
-                chat_type=source.chat_type,
-                thread_id=source.thread_id,
-            )
+            if source is not None:
+                recorder(
+                    session_id,
+                    source=source.platform.value,
+                    user_id=source.user_id,
+                    session_key=session_key,
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    thread_id=source.thread_id,
+                )
+            else:
+                recorder(
+                    session_id,
+                    session_key=session_key,
+                )
         except Exception as exc:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
     

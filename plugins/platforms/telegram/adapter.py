@@ -6569,6 +6569,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
         username = re.escape(self._bot.username)
+        # Telegram group menus send slash commands as /cmd@BotName args. Strip
+        # only our bot suffix from the command token so args stay separated
+        # (/reasoning@LynxBot medium -> /reasoning medium, not /reasoningmedium).
+        slash_cmd = re.match(
+            rf"^(/[\w-]+)@{username}\b[,:\-]*\s*(.*)$",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if slash_cmd:
+            command, args = slash_cmd.group(1), slash_cmd.group(2)
+            if args:
+                return f"{command} {args}".strip()
+            return command
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 

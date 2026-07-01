@@ -53,6 +53,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _SecretValue,
 )
 
 logger = logging.getLogger(__name__)
@@ -708,6 +709,36 @@ class WebhookAdapter(BasePlatformAdapter):
             len(prompt),
             delivery_id,
         )
+
+        # ── Route-level model/provider override ──────────────────
+        # If the webhook route config specifies model/provider/base_url/api_key,
+        # inject them into the gateway runner session model overrides so the agent
+        # uses them instead of the profile default.
+        _route_model_keys = ("model", "provider", "base_url", "api_key", "api_mode")
+        _route_override = {k: route_config[k] for k in _route_model_keys if route_config.get(k)}
+        if _route_override and self.gateway_runner is not None:
+            # Wrap api_key so it is redacted if the override dict is ever logged,
+            # repr'd, or serialized by a plugin/debug path, while still being
+            # unwrapped by _apply_session_model_override when the agent starts.
+            if "api_key" in _route_override:
+                _route_override["api_key"] = _SecretValue(_route_override["api_key"])
+            # Derive the same session key the runner will use so the override is found.
+            _resolved_key = session_chat_id
+            try:
+                _resolved_key = self.gateway_runner._session_key_for_source(source)
+            except Exception:
+                pass
+            self.gateway_runner._session_model_overrides[_resolved_key] = _route_override
+            # Also store under the raw chat_id as fallback
+            if _resolved_key != session_chat_id:
+                self.gateway_runner._session_model_overrides[session_chat_id] = _route_override
+            logger.info(
+                "[webhook] Route model override: route=%s session=%s resolved_key=%s override=%s",
+                route_name,
+                session_chat_id,
+                _resolved_key,
+                _route_override,
+            )
 
         # Non-blocking — return 202 Accepted immediately
         task = asyncio.create_task(self.handle_message(event))

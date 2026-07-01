@@ -166,11 +166,13 @@ def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
     never be deleted.
 
-    This only matches the directory itself, known control-plane files
-    (``jobs.json``, ``.tick.lock``), and the ``output/`` root directory.
-    It does NOT blanket-protect files under ``cron/output/`` because those
-    run artifacts are disposable, but deleting the output root itself is too
-    broad and can erase every job's retained run history at once.
+    This matches, by EXACT path only, the ``cron/`` directory itself, known
+    control-plane files (``jobs.json``, ``.tick.lock``), and the ``output/``
+    root directory. It does NOT (and must not be "simplified" to) blanket-match
+    everything under ``cron/output/`` — those run artifacts are disposable and
+    are cleaned by retention policy; only the ``output/`` root itself is
+    protected, because deleting it wholesale erases every job's retained run
+    history at once.
     """
     # Lazily build the set once per process so HERMES_HOME is resolved
     # exactly once.

@@ -2251,6 +2251,25 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return None
 
 
+def _tool_call_id_variants(tc: Any) -> set:
+    """Return every id a tool result might legitimately match this tool_call on.
+
+    A tool_call can carry both ``call_id`` and ``id`` with different values
+    (Responses-API / codex flows), and different code paths key the matching
+    ``role="tool"`` result's ``tool_call_id`` off one or the other. Returning
+    all non-empty variants lets the sanitizer treat a result matching ANY of
+    them as paired, so a valid result is never falsely orphaned and dropped.
+    """
+    variants: set = set()
+    if isinstance(tc, dict):
+        candidates = (tc.get("call_id"), tc.get("id"))
+    else:
+        candidates = (getattr(tc, "call_id", None), getattr(tc, "id", None))
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            variants.add(c.strip())
+    return variants
+
 
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
@@ -2324,8 +2343,18 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     for msg in messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid:
+                # A tool_call may carry BOTH ``call_id`` and ``id`` with
+                # DIFFERENT values (e.g. Responses-API / codex tool calls,
+                # where ``id`` is a ``fc_...`` response-item id distinct from
+                # the ``call_...`` id). ``_get_tool_call_id_static`` returns
+                # only the preferred one (``call_id``), but a tool result
+                # keyed on the OTHER id would then look orphaned and get
+                # dropped + replaced with a bogus "[Result unavailable]"
+                # stub — silently eating a perfectly valid tool result
+                # (#55626). Register EVERY id variant so a result matching
+                # any of them survives. This is purely additive: it can only
+                # prevent false drops, never introduce new ones.
+                for cid in _tool_call_id_variants(tc):
                     surviving_call_ids.add(cid)
 
     result_call_ids: set = set()
@@ -2347,26 +2376,37 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             len(orphaned_results),
         )
 
-    # 2. Inject stub results for calls whose result was dropped
-    missing_results = surviving_call_ids - result_call_ids
-    if missing_results:
-        patched: List[Dict[str, Any]] = []
-        for msg in messages:
-            patched.append(msg)
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                    if cid in missing_results:
-                        patched.append({
-                            "role": "tool",
-                            "name": _ra().AIAgent._get_tool_call_name_static(tc),
-                            "content": "[Result unavailable — see context summary above]",
-                            "tool_call_id": cid,
-                        })
+    # 2. Inject stub results for calls whose result was dropped.
+    #    A call is "answered" when ANY of its id variants (call_id/id) has a
+    #    matching result, so a call answered via its ``id`` (fc_...) is not
+    #    mistaken for unanswered just because its distinct ``call_id`` has no
+    #    result of its own (#55626).
+    stub_count = 0
+    patched: List[Dict[str, Any]] = []
+    for msg in messages:
+        patched.append(msg)
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                variants = _tool_call_id_variants(tc)
+                if not variants:
+                    continue
+                if variants & result_call_ids:
+                    continue  # already answered on some id variant
+                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                if not cid:
+                    continue
+                patched.append({
+                    "role": "tool",
+                    "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                    "content": "[Result unavailable — see context summary above]",
+                    "tool_call_id": cid,
+                })
+                stub_count += 1
+    if stub_count:
         messages = patched
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
-            len(missing_results),
+            stub_count,
         )
     return messages
 

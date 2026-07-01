@@ -3683,6 +3683,51 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_api_sanitizer_matches_responses_id_when_result_keyed_on_id(self, agent):
+        """Inverse of the call_id case: a tool_call carries BOTH ``id`` (fc_...)
+        and a distinct ``call_id``, but the matching result is keyed on ``id``.
+        The sanitizer preferred ``call_id`` only, so it treated the valid
+        result as orphaned, dropped it, and injected a bogus
+        '[Result unavailable ...]' stub — silently eating a real tool result
+        (e.g. mnemosyne_recall / cronjob list). The result must survive intact.
+        (#55626)"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_456",
+                        "call_id": "call_456",
+                        "type": "function",
+                        "function": {"name": "mnemosyne_recall", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "fc_456", "content": '{"results": [1, 2]}'},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "fc_456"
+        assert tool_msgs[0]["content"] == '{"results": [1, 2]}'
+        assert "Result unavailable" not in tool_msgs[0]["content"]
+
+    def test_api_sanitizer_still_drops_genuinely_orphaned_result(self, agent):
+        """The id-variant matching must not weaken orphan removal: a tool result
+        whose tool_call_id matches NO assistant tool_call (neither call_id nor
+        id) is still dropped. (#55626 regression guard)"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "call_nomatch", "content": "orphan"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert all(m.get("role") != "tool" for m in sanitized)
+
     def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
         """A tool_call with id but empty function.name makes the Responses-API
         adapter drop the function_call while keeping its function_call_output,

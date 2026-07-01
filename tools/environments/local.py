@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -948,6 +949,8 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
+
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -958,8 +961,22 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
+            # Debian's /etc/profile unconditionally resets PATH for
+            # non-root shells *before* sourcing /etc/profile.d/*.sh,
+            # discarding venv entries the Dockerfile's ENV PATH sets up.
+            # Save and restore the PATH around the login shell so that
+            # the snapshot (export -p) captures the correct venv entries.
+            # See issue #56634.
+            path_key = _path_env_key(run_env)
+            if path_key is not None:
+                saved = shlex.quote(run_env.get(path_key, ""))
+                cmd_string = (
+                    f"__hermes_prelogin_path={saved}\n"
+                    f"{cmd_string}"
+                    f"export {path_key}=$__hermes_prelogin_path\n"
+                    f"unset __hermes_prelogin_path\n"
+                )
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

@@ -201,6 +201,37 @@ def test_quoted_and_brace_paths_are_hardline_blocked(command):
 
 
 # -------------------------------------------------------------------------
+# Shell line-continuation bypass
+# -------------------------------------------------------------------------
+#
+# A backslash immediately followed by a newline is a POSIX line
+# continuation: the shell removes BOTH characters and joins the tokens, so
+# `rm -rf \<newline>/` executes as `rm -rf /`. The normalizer used to strip
+# only backslash-escapes of NON-newline characters (`\\([^\n])`), leaving the
+# dangling backslash wedged between tokens — which broke the structured
+# rm/dd/mkfs patterns and let a root wipe slip past the hardline floor.
+
+# (command_with_continuation, description_substring) — each is the
+# line-continuation form of a command already in _HARDLINE_BLOCK.
+_HARDLINE_LINE_CONTINUATION = [
+    ("rm -rf \\\n/", "root"),            # split before the path
+    ("rm -r\\\nf /", "root"),            # split inside the flag bundle
+    ("rm -rf \\\n~", "home"),            # home-directory wipe
+    ("rm -rf \\\r\n/", "root"),          # CRLF line ending
+    ("mkfs.ext4 \\\n/dev/sda1", "mkfs"),  # filesystem format
+]
+
+
+@pytest.mark.parametrize("command,desc_substr", _HARDLINE_LINE_CONTINUATION)
+def test_hardline_blocks_line_continuation(command, desc_substr):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"line-continuation bypassed hardline detection: {command!r}"
+    assert desc and desc_substr in desc.lower(), (
+        f"unexpected description {desc!r} for {command!r}"
+    )
+
+
+# -------------------------------------------------------------------------
 # Integration with the approval flow
 # -------------------------------------------------------------------------
 
@@ -248,6 +279,21 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
         r2 = check_all_command_guards(cmd, "local")
         assert r2["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_all_command_guards)"
         assert r2.get("hardline") is True
+
+
+def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monkeypatch):
+    """A line-continuation root wipe must stay blocked even under yolo.
+
+    `rm -rf \\<newline>/` runs as `rm -rf /`. Yolo bypasses the regular
+    dangerous-command layer, so the hardline floor is the only thing left to
+    catch it — it must hold.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    result = check_all_command_guards("rm -rf \\\n/", "local")
+    assert result["approved"] is False, "yolo leaked a line-continuation root wipe"
+    assert result.get("hardline") is True
+    assert "BLOCKED (hardline)" in result["message"]
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):

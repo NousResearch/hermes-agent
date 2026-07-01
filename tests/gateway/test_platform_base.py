@@ -13,6 +13,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    cleanup_screenshot_cache,
+    cleanup_video_cache,
     safe_url_for_log,
     utf16_len,
     validate_inbound_media_size,
@@ -70,6 +72,42 @@ class TestInboundMediaSizeCap:
         validate_inbound_media_size(100, media_type="image", max_bytes=200)  # ok
         with pytest.raises(ValueError, match="too large"):
             validate_inbound_media_size(300, media_type="image", max_bytes=200)
+
+
+class TestCacheCleanup:
+    def test_video_cache_cleanup_removes_only_stale_files(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        cache_dir = tmp_path / "videos"
+        monkeypatch.setattr(base, "VIDEO_CACHE_DIR", cache_dir)
+        old_file = cache_dir / "video_old.mp4"
+        fresh_file = cache_dir / "video_fresh.mp4"
+        old_file.parent.mkdir(parents=True)
+        old_file.write_bytes(b"old")
+        fresh_file.write_bytes(b"fresh")
+        old_mtime = time.time() - (25 * 3600)
+        os.utime(old_file, (old_mtime, old_mtime))
+
+        assert cleanup_video_cache(max_age_hours=24) == 1
+        assert not old_file.exists()
+        assert fresh_file.exists()
+
+    def test_screenshot_cache_cleanup_removes_only_stale_files(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        cache_dir = tmp_path / "screenshots"
+        monkeypatch.setattr(base, "SCREENSHOT_CACHE_DIR", cache_dir)
+        old_file = cache_dir / "browser_screenshot_old.png"
+        fresh_file = cache_dir / "browser_screenshot_fresh.png"
+        old_file.parent.mkdir(parents=True)
+        old_file.write_bytes(b"old")
+        fresh_file.write_bytes(b"fresh")
+        old_mtime = time.time() - (25 * 3600)
+        os.utime(old_file, (old_mtime, old_mtime))
+
+        assert cleanup_screenshot_cache(max_age_hours=24) == 1
+        assert not old_file.exists()
+        assert fresh_file.exists()
 
 
 class TestSecretCaptureGuidance:

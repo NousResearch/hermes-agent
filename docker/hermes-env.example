@@ -33,3 +33,13 @@
 # EXA_API_KEY=
 # OPENAI_API_KEY=
 # ANTHROPIC_API_KEY=
+
+# ── API Server (OpenAI-compatible endpoint on :8642) ──────────────────────────
+# Disabled by default. Set API_SERVER_KEY to enable the /v1/chat/completions
+# endpoint so external frontends (Open WebUI, LobeChat, LibreChat, etc.) can
+# connect to hermes-agent. See .github/instructions/api-gateway-ports.instructions.md
+# API_SERVER_KEY=<generate-a-strong-bearer-token>
+# API_SERVER_PORT=8642
+# API_SERVER_HOST=127.0.0.1
+# API_SERVER_CORS_ORIGINS=http://localhost:3000
+# API_SERVER_MODEL_NAME=hermes-agent

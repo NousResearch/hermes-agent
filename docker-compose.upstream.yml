@@ -73,9 +73,11 @@ services:
     command: ["gateway", "run"]
     environment:
       - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
+      - API_SERVER_HOST=0.0.0.0
       - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
       - GATEWAY_ALLOW_ALL_USERS=true
     ports:
+      - "8642:8642"
       - "8789:8789"
       - "8644:8644"
     depends_on:

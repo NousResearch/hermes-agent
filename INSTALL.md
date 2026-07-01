@@ -252,6 +252,11 @@ docker compose -f docker-compose.upstream.yml up -d --pull always --force-recrea
 
 | Port (host) | Port (container) | Service |
 |---|---|---|
-| 9119 | 9119 | Hermes Web UI |
-| — | — | `hermes-gateway` (WeChat gateway, outbound only — no host port) |
+| 9119 | 9119 | Hermes Web UI (dashboard) |
+| 8642 | 8642 | API server (OpenAI-compatible `/v1` endpoint) — enable via `API_SERVER_KEY` in `data/.env` |
+| 8789 | 8789 | Gateway health endpoint (`/health`) — used by dashboard for cross-container status |
+| 8644 | 8644 | Webhook inbound — disabled by default; enable in `data/config.yaml` under `platforms.webhook` |
 | 5433 | 5432 | PostgreSQL |
+
+> **WeChat (weixin) gateway**: uses outbound long-poll to Tencent iLink — no inbound host port needed.
+> **API server**: disabled by default. Set `API_SERVER_KEY` in `data/.env` to enable the OpenAI-compatible endpoint at `http://localhost:8642/v1`. See `.github/instructions/api-gateway-ports.instructions.md` for full configuration details.

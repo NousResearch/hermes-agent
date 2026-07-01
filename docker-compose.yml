@@ -24,6 +24,9 @@
 #
 # Ports (host → container):
 #   9119 → 9119   Hermes Web UI
+#   8642 → 8642   API server (OpenAI-compatible /v1 endpoint — enable via API_SERVER_KEY)
+#   8789 → 8789   Gateway health endpoint (/health)
+#   8644 → 8644   Webhook inbound (disabled by default — enable in data/config.yaml)
 #   5433 → 5432   PostgreSQL (host:5433 → container:5432)
 
 x-hermes-common: &hermes-common
@@ -97,9 +100,11 @@ services:
     command: ["gateway", "run"]
     environment:
       - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
+      - API_SERVER_HOST=0.0.0.0
       - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
       - GATEWAY_ALLOW_ALL_USERS=true
     ports:
+      - "8642:8642"
       - "8789:8789"
       - "8644:8644"
     # Wait for hermes-web's healthcheck so config bootstrap is complete before gateway reads it

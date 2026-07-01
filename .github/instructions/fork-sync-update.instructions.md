@@ -129,3 +129,13 @@ git pull origin main && bash docker/deploy.sh
 
 The deploy script handles steps 2–3 automatically. Only step 4 (restart)
 and step 6 (QR login) may be needed manually.
+
+## Post-sync port consistency check
+
+After pulling, verify that `docker-compose.yml` and
+`docker-compose.upstream.yml` expose the same gateway ports. The
+canonical set is `8642` (API server), `8789` (health), `8644` (webhook).
+If they diverge, sync `docker-compose.yml` to match
+`docker-compose.upstream.yml`. See
+[api-gateway-ports.instructions.md](api-gateway-ports.instructions.md)
+for the full port map.

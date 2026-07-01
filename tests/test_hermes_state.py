@@ -4793,6 +4793,26 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_record_gateway_session_peer_preserves_original_source(db):
+    db.create_session("desktop-session", "tui", user_id="desktop-user")
+
+    db.record_gateway_session_peer(
+        "desktop-session",
+        source="telegram",
+        user_id="telegram-user",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+
+    row = db.get_session("desktop-session")
+    assert row["source"] == "tui"
+    assert row["session_key"] == "agent:main:telegram:dm:chat-1"
+    assert row["user_id"] == "telegram-user"
+    assert row["chat_id"] == "chat-1"
+    assert row["chat_type"] == "dm"
+
+
 def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     db.create_session(
         "closed-gw-session",

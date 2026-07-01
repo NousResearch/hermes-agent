@@ -1648,15 +1648,20 @@ class SessionDB:
         chat_type: str = None,
         thread_id: str = None,
     ) -> None:
-        """Persist the gateway routing peer for an existing session row."""
+        """Persist the gateway routing peer for an existing session row.
+
+        ``source`` records where the session was originally created.  Resuming a
+        desktop/TUI/CLI session from a gateway should attach routing metadata for
+        that gateway peer without rewriting the original provenance.
+        """
         if not session_id or not session_key:
             return
 
         def _do(conn):
             conn.execute(
                 """UPDATE sessions
-                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?
+                   SET session_key = ?, source = COALESCE(source, ?),
+                       user_id = ?, chat_id = ?, chat_type = ?, thread_id = ?
                    WHERE id = ?""",
                 (
                     session_key,

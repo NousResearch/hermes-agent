@@ -8642,7 +8642,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "journey":
             try:
                 import argparse
+                import io
                 import shlex
+                import sys
 
                 from hermes_cli.journey import register_cli as _register_journey_cli
 
@@ -8650,7 +8652,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _register_journey_cli(parser)
                 argv = shlex.split(cmd_original.split(None, 1)[1]) if len(cmd_original.split(None, 1)) > 1 else []
                 args = parser.parse_args(argv)
-                args.func(args)
+
+                # Capture Rich output and route through _cprint so prompt_toolkit
+                # renders ANSI codes instead of swallowing them.
+                buf = io.StringIO()
+                old_stdout = sys.stdout
+                sys.stdout = buf
+                try:
+                    args.func(args)
+                finally:
+                    sys.stdout = old_stdout
+                output = buf.getvalue()
+                if output:
+                    _cprint(output)
             except SystemExit:
                 pass
             except Exception as exc:

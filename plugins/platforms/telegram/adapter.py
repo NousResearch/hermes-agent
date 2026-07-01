@@ -7707,11 +7707,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
-            group_topics_config: list = self.config.extra.get("group_topics", [])
-            for chat_entry in group_topics_config:
+            # Group/supergroup forum topic skill binding via config.extra['group_topics'].
+            # Accept both supported shapes:
+            #   [{"chat_id": "-100...", "topics": [...]}]
+            # and legacy/operator-edited mapping shape:
+            #   {"-100...": [{"thread_id": 12, ...}]}
+            group_topics_config = self.config.extra.get("group_topics", [])
+            if isinstance(group_topics_config, dict):
+                group_topics_iter = [
+                    {"chat_id": cfg_chat_id, "topics": topics}
+                    for cfg_chat_id, topics in group_topics_config.items()
+                ]
+            elif isinstance(group_topics_config, list):
+                group_topics_iter = [
+                    entry for entry in group_topics_config if isinstance(entry, dict)
+                ]
+            else:
+                group_topics_iter = []
+            for chat_entry in group_topics_iter:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
-                    for topic in chat_entry.get("topics", []):
+                    topics = chat_entry.get("topics", [])
+                    if not isinstance(topics, list):
+                        topics = []
+                    for topic in topics:
+                        if not isinstance(topic, dict):
+                            continue
                         tid = topic.get("thread_id")
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")

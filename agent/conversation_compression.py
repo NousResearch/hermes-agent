@@ -89,6 +89,26 @@ _DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_o
 _APPROX_GROSS_MAX_FRAC = 0.10
 
 
+def _fmt_gross_frac(gross_tok: int, pre_tok: int) -> str:
+    """Render the raw-kept-tail-vs-pre ratio TRUTHFULLY for the observability marker.
+
+    ``gross_tok`` (``raw_tail_tokens``) is a documented UPPER BOUND on the kept-tail
+    magnitude, estimated on the RAW (pre-sanitize) suffix; ``pre_tok`` is the
+    pre-compaction total counted on the SANITIZED/in-context basis. The two are on
+    DIFFERENT bases, so the raw bound can legitimately exceed ``pre`` — printing a bare
+    ``101.3%`` reads as an impossible "kept more than existed". Cap the displayed
+    fraction at 100% and mark it as a bound (``≥100%``) with a basis note when it
+    exceeds pre, so the marker is honest; the underlying comparison still uses the raw
+    ratio (a bound over threshold correctly triggers the two-line degrade)."""
+    if pre_tok <= 0:
+        return "n/a (pre=0)"
+    frac = gross_tok / pre_tok
+    if frac > 1.0:
+        # raw upper-bound exceeds the sanitized pre-total: bases differ, not a real >100%
+        return f"≥100% (raw-tail bound {gross_tok} ≥ pre {pre_tok}; raw vs sanitized basis)"
+    return f"{frac:.1%}"
+
+
 def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) -> None:
     """Emit a compaction-stats degrade ``warning`` at most once per (cause, session).
 
@@ -1515,7 +1535,8 @@ def compress_context(
                                 agent,
                                 f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
                                 f"degraded (kept_tail {_gross_tok} / pre {_pre_tok} "
-                                f"= {_gross_frac:.1%} > {_APPROX_GROSS_MAX_FRAC:.0%}); two-line",
+                                f"= {_fmt_gross_frac(_gross_tok, _pre_tok)} "
+                                f"> {_APPROX_GROSS_MAX_FRAC:.0%}); two-line",
                             )
                             _inturn_stats = None
                         else:
@@ -1527,7 +1548,7 @@ def compress_context(
                                 agent,
                                 f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
                                 f"(engine={_engine_name}; kept_tail {_gross_tok} / "
-                                f"pre {_pre_tok} = {_gross_frac:.1%})",
+                                f"pre {_pre_tok} = {_fmt_gross_frac(_gross_tok, _pre_tok)})",
                             )
                     else:
                         _inturn_stats = _cand

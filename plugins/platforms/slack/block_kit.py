@@ -35,6 +35,10 @@ from typing import Any, Dict, List, Optional, Tuple
 MAX_BLOCKS = 50
 MAX_SECTION_TEXT = 3000
 MAX_HEADER_TEXT = 150
+# Native table block limits (https://docs.slack.dev/reference/block-kit/blocks/table-block)
+MAX_TABLE_ROWS = 100
+MAX_TABLE_COLS = 20
+MAX_TABLE_CHARS = 10000  # aggregate across all cells
 
 Block = Dict[str, Any]
 
@@ -208,15 +212,95 @@ def _section_block(text: str) -> Block:
 
 
 # ----------------------------------------------------------------------------
-# Table handling (best-effort monospace fallback)
+# Table handling — native Block Kit ``table`` block, monospace fallback
 # ----------------------------------------------------------------------------
 
 
+def _parse_alignment(sep_line: str) -> List[str]:
+    """Parse a markdown separator row (``|:--|:-:|--:|``) into column aligns.
+
+    Returns a list of ``"left"``/``"center"``/``"right"`` per column.
+    """
+    aligns: List[str] = []
+    for cell in sep_line.strip().strip("|").split("|"):
+        c = cell.strip()
+        left = c.startswith(":")
+        right = c.endswith(":")
+        if left and right:
+            aligns.append("center")
+        elif right:
+            aligns.append("right")
+        else:
+            aligns.append("left")
+    return aligns
+
+
+def _split_row(row: str) -> List[str]:
+    """Split a markdown table row into trimmed cell strings.
+
+    Respects backslash-escaped pipes (``\\|``) so they aren't treated as
+    column separators.
+    """
+    # Temporarily protect escaped pipes, split on real ones, then restore.
+    protected = row.strip().strip("|").replace(r"\|", "\x00PIPE\x00")
+    return [c.strip().replace("\x00PIPE\x00", "|") for c in protected.split("|")]
+
+
+def _rich_text_cell(text: str) -> Dict[str, Any]:
+    """A ``rich_text`` table cell carrying inline-formatted content."""
+    return {
+        "type": "rich_text",
+        "elements": [
+            {"type": "rich_text_section", "elements": _inline_elements(text)}
+        ],
+    }
+
+
+def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
+    """Build a native Slack ``table`` block from markdown pipe-table rows.
+
+    ``rows`` includes the header row (index 0) and body rows; ``sep_line`` is
+    the ``|---|`` alignment row (already consumed by the caller).  Returns
+    ``None`` when the table exceeds Slack's limits (100 rows / 20 cols /
+    10,000 aggregate cell chars) or parses to nothing — the caller then falls
+    back to the monospace preformatted rendering.
+    """
+    parsed = [_split_row(r) for r in rows if r.strip()]
+    if not parsed:
+        return None
+    ncols = max(len(r) for r in parsed)
+    # Reject rather than silently truncate beyond Slack's structural limits.
+    if len(parsed) > MAX_TABLE_ROWS or ncols > MAX_TABLE_COLS:
+        return None
+    for r in parsed:
+        r.extend([""] * (ncols - len(r)))
+
+    total_chars = sum(len(c) for r in parsed for c in r)
+    if total_chars > MAX_TABLE_CHARS:
+        return None
+
+    aligns = _parse_alignment(sep_line)
+    column_settings: List[Optional[Dict[str, Any]]] = []
+    for c in range(min(ncols, MAX_TABLE_COLS)):
+        align = aligns[c] if c < len(aligns) else "left"
+        # Only emit a setting when it differs from the default (left, no wrap);
+        # use null to skip a column, per the Slack schema.
+        column_settings.append({"align": align} if align != "left" else None)
+
+    block: Block = {
+        "type": "table",
+        "rows": [[_rich_text_cell(cell) for cell in row] for row in parsed],
+    }
+    if any(cs is not None for cs in column_settings):
+        block["column_settings"] = column_settings
+    return block
+
+
 def _render_table(rows: List[str]) -> str:
-    """Render markdown pipe-table rows as aligned monospace text."""
+    """Render markdown pipe-table rows as aligned monospace text (fallback)."""
     parsed: List[List[str]] = []
     for r in rows:
-        cells = [c.strip() for c in r.strip().strip("|").split("|")]
+        cells = _split_row(r)
         parsed.append(cells)
     if not parsed:
         return "\n".join(rows)
@@ -320,12 +404,20 @@ def render_blocks(
             # Pipe table: current line has a pipe AND next line is a separator
             if "|" in line and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1]):
                 flush_para()
-                trows = [line]
+                header_row = line
+                sep_line = lines[i + 1]
+                trows = [header_row]
                 i += 2  # skip header + separator
                 while i < n and "|" in lines[i] and lines[i].strip():
                     trows.append(lines[i])
                     i += 1
-                blocks.append(_preformatted_block(_render_table(trows)))
+                # Prefer a native Block Kit table; fall back to aligned
+                # monospace when it exceeds Slack's table limits or won't parse.
+                table = _table_block(trows, sep_line)
+                if table is not None:
+                    blocks.append(table)
+                else:
+                    blocks.append(_preformatted_block(_render_table(trows)))
                 continue
 
             # Blockquote group

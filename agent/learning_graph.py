@@ -49,7 +49,10 @@ def _frontmatter(text: str) -> dict[str, Any]:
 
 
 def _related(fm: dict[str, Any]) -> list[str]:
-    raw = fm.get("related_skills") or (fm.get("metadata", {}).get("hermes", {}) or {}).get("related_skills")
+    meta = fm.get("metadata", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    raw = fm.get("related_skills") or meta.get("hermes", {}).get("related_skills")
     if isinstance(raw, list):
         return [str(r).strip() for r in raw if str(r).strip()]
     if isinstance(raw, str):
@@ -58,7 +61,10 @@ def _related(fm: dict[str, Any]) -> list[str]:
 
 
 def _category(fm: dict[str, Any], skill_md: Path) -> str:
-    cat = fm.get("category") or (fm.get("metadata", {}).get("hermes", {}) or {}).get("category")
+    meta = fm.get("metadata", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    cat = fm.get("category") or meta.get("hermes", {}).get("category")
     if cat:
         return str(cat)
     # …/skills/<category>/<skill>/SKILL.md

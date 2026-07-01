@@ -38,6 +38,61 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def _apply_pre_llm_call_model_override(agent, new_model: str, new_provider: str) -> None:
+    """Apply a per-turn model override requested by a ``pre_llm_call`` plugin.
+
+    A ``pre_llm_call`` callback may return ``{"model": ..., "provider": ...}``
+    to route THIS turn to a different model (e.g. a coding-tuned model for a
+    coding task). Credentials are resolved through the same pipeline as the
+    ``/model`` command, then the runtime swap is applied.
+
+    Any failure is logged and swallowed so a bad override can never abort the
+    turn — the agent simply keeps its current model. The swap persists like
+    ``/model`` (not turn-scoped), so routing plugins should return a choice on
+    every turn.
+    """
+    try:
+        from hermes_cli.model_switch import switch_model as _resolve_switch
+        from hermes_cli.config import load_config, get_compatible_custom_providers
+        from agent.agent_runtime_helpers import switch_model as _runtime_switch
+
+        _cfg = load_config()
+        result = _resolve_switch(
+            raw_input=new_model,
+            current_provider=agent.provider or "",
+            current_model=agent.model or "",
+            current_base_url=getattr(agent, "base_url", "") or "",
+            current_api_key=getattr(agent, "api_key", "") or "",
+            explicit_provider=new_provider,
+            custom_providers=get_compatible_custom_providers(_cfg),
+            is_global=False,
+        )
+        if not result.success:
+            logger.warning(
+                "pre_llm_call model override to %s/%s failed: %s; keeping %s/%s",
+                new_provider, new_model, result.error_message,
+                agent.provider, agent.model,
+            )
+            return
+        _runtime_switch(
+            agent,
+            result.new_model,
+            result.target_provider,
+            api_key=result.api_key,
+            base_url=result.base_url,
+            api_mode=result.api_mode,
+        )
+        logger.info(
+            "pre_llm_call: routed this turn to %s/%s",
+            result.target_provider, result.new_model,
+        )
+    except Exception as exc:  # never let routing break a turn
+        logger.warning(
+            "pre_llm_call model override error (%s/%s): %s; keeping %s/%s",
+            new_provider, new_model, exc, agent.provider, agent.model,
+        )
+
+
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -452,6 +507,21 @@ def build_turn_context(
                 _ctx_parts.append(r)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
+
+        # Per-turn model routing: a pre_llm_call plugin may return
+        # {"model": "...", "provider": "..."} to route THIS turn to a
+        # different model (e.g. a coding model for a coding task). The first
+        # such result wins. This runs after context injection so a plugin can
+        # do both. See _apply_pre_llm_call_model_override for semantics.
+        _routed = next(
+            (r for r in _pre_results if isinstance(r, dict) and r.get("model")),
+            None,
+        )
+        if _routed:
+            _rm = str(_routed.get("model") or "").strip()
+            _rp = str(_routed.get("provider") or agent.provider or "").strip()
+            if _rm and (_rm != agent.model or _rp != (agent.provider or "")):
+                _apply_pre_llm_call_model_override(agent, _rm, _rp)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 

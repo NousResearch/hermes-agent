@@ -1863,6 +1863,20 @@ class PluginManager:
         system prompt stays identical across turns so cached tokens
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
+
+        A ``pre_llm_call`` callback may ALSO request a per-turn model
+        override — routing THIS turn to a different model (e.g. a
+        coding-tuned model for a coding task) — by returning::
+
+            {"model": "gpt-oss-120b", "provider": "openrouter"}
+            {"context": "...", "model": "...", "provider": "..."}  # both
+
+        ``provider`` is optional (defaults to the current provider).
+        Credentials resolve through the same pipeline as ``/model``; a
+        failed/invalid override is logged and ignored (the turn keeps the
+        current model). The first result carrying ``model`` wins. The swap
+        persists like ``/model``, so a routing plugin should return a choice
+        on every turn.
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])

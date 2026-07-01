@@ -213,6 +213,44 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+
+def _build_non_provider_child_secret_blocklist() -> frozenset:
+    """Secrets that must not leak even to provider-inheriting child CLIs.
+
+    ``inherit_credentials=True`` means "this child may need LLM provider
+    credentials" (Codex/Copilot/TUI hosts), not "this child should receive
+    every Hermes tool and messaging credential".  Keep real provider API keys
+    available, but always strip password-shaped tool/messaging env vars such
+    as MATRIX_ACCESS_TOKEN, WEBHOOK_SECRET, TEAMS_CLIENT_SECRET, and browser
+    backend keys.  Those children do not need Hermes platform/tool secrets.
+    """
+    blocked: set[str] = set()
+    provider_keys: set[str] = set()
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for pconfig in PROVIDER_REGISTRY.values():
+            provider_keys.update(pconfig.api_key_env_vars)
+    except ImportError:
+        pass
+
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        for name, metadata in OPTIONAL_ENV_VARS.items():
+            if not metadata.get("password"):
+                continue
+            if name in provider_keys:
+                continue
+            if metadata.get("category") in {"tool", "messaging"}:
+                blocked.add(name)
+    except ImportError:
+        pass
+    return frozenset(blocked)
+
+
+_NON_PROVIDER_CHILD_SECRET_BLOCKLIST = _build_non_provider_child_secret_blocklist()
+
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
 # VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
@@ -413,7 +451,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY",
-})
+}) | _NON_PROVIDER_CHILD_SECRET_BLOCKLIST
 
 
 def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:

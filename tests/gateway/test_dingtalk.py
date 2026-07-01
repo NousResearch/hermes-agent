@@ -682,6 +682,52 @@ class TestAllowedUsersGate:
         assert adapter._is_user_allowed("alice", "") is True
         assert adapter._is_user_allowed("dave", "") is False
 
+    @pytest.mark.asyncio
+    async def test_unauthorized_sender_does_not_trigger_pre_auth_side_effects(
+        self, monkeypatch
+    ):
+        adapter = _make_gating_adapter(monkeypatch)
+
+        class Runner:
+            def _is_user_authorized(self, source):
+                return False
+
+            async def handle(self, event):
+                self.event = event
+
+        runner = Runner()
+        adapter._message_handler = runner.handle
+        adapter.handle_message = AsyncMock()
+        adapter._resolve_media_codes = AsyncMock()
+
+        msg = _FakeChatbotMessage(
+            message_id="msg-preauth",
+            conversation_id="chat-preauth",
+            conversation_type="1",
+            sender_id="sender-preauth",
+            sender_staff_id="staff-preauth",
+            sender_nick="Sender",
+            text={"content": "please inspect this"},
+            rich_text=None,
+            rich_text_content=None,
+            session_webhook="https://api.dingtalk.com/robot/sendBySession?session=preauth",
+            session_webhook_expired_time=9999999999999,
+            create_at=0,
+            at_users=[],
+            is_in_at_list=False,
+        )
+        msg.image_content = SimpleNamespace(download_code="download-code")
+
+        await adapter._on_message(msg)
+
+        adapter._resolve_media_codes.assert_not_awaited()
+        assert "chat-preauth" not in adapter._session_webhooks
+        assert "chat-preauth" not in adapter._message_contexts
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.user_id == "sender-preauth"
+        assert event.media_urls == ["download-code"]
+
 
 class TestMentionPatterns:
 

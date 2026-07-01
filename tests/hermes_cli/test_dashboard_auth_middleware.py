@@ -593,3 +593,62 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+def _make_basic_provider():
+    import plugins.dashboard_auth.basic as basic_module
+    h = basic_module.hash_password("hunter2")
+    return basic_module.BasicAuthProvider(
+        username="admin",
+        password_hash=h,
+        secret=b"test-secret-must-be-at-least-16b",
+    )
+
+
+def test_basic_auth_unauthenticated_html_redirects_to_login_not_auth_login(
+    _gated_state,
+):
+    """Basic auth should redirect unauthenticated HTML requests to /login."""
+    register_provider(_make_basic_provider())
+    client = _gated_state()
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert not location.startswith("/auth/login"), (
+        f"BasicAuthProvider should never trigger /auth/login redirect "
+        f"(issue #56130). Got: {location!r}"
+    )
+    assert location.startswith("/login"), (
+        f"Expected redirect to /login (password form), got: {location!r}"
+    )
+
+
+def test_basic_auth_direct_auth_login_url_redirects_to_login_page(
+    _gated_state,
+):
+    """Direct /auth/login for basic auth should bounce to /login."""
+    register_provider(_make_basic_provider())
+    client = _gated_state()
+    r = client.get("/auth/login?provider=basic&next=%2F", follow_redirects=False)
+    assert r.status_code == 302, (
+        f"Expected 302, got {r.status_code}: {r.text}"
+    )
+    location = r.headers["location"]
+    assert location.startswith("/login"), (
+        f"Expected redirect to /login, got: {location!r}"
+    )
+    assert "next=" in location, (
+        f"Expected next= to be forwarded in redirect, got: {location!r}"
+    )
+
+
+def test_basic_auth_does_not_suppress_oauth_auto_sso(_gated_state):
+    """OAuth-capable single providers should still use auto-SSO."""
+    register_provider(StubAuthProvider())
+    client = _gated_state()
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert location.startswith("/auth/login?provider=stub"), (
+        f"OAuth provider should still trigger auto-SSO. Got: {location!r}"
+    )

@@ -3632,6 +3632,24 @@ class TestCronDeliveryMirror:
         assert _cron_mirror_delivery_enabled({}, {}) is False
         assert _cron_mirror_delivery_enabled({"id": "x"}, {"cron": {}}) is False
 
+    def test_gate_default_on_for_whatsapp_origin_delivery(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        assert _cron_mirror_delivery_enabled(
+            {
+                "deliver": "origin",
+                "origin": {"platform": "whatsapp", "chat_id": "12345"},
+            },
+            {},
+        ) is True
+        assert _cron_mirror_delivery_enabled(
+            {
+                "deliver": "origin",
+                "origin": {"platform": "whatsapp_cloud", "chat_id": "12345"},
+            },
+            {},
+        ) is True
+
     def test_gate_global_config_on(self):
         from cron.scheduler import _cron_mirror_delivery_enabled
 
@@ -3648,6 +3666,15 @@ class TestCronDeliveryMirror:
         assert _cron_mirror_delivery_enabled(
             {"attach_to_session": True}, {"cron": {"mirror_delivery": False}}
         ) is True
+        # Per-job False still disables the WhatsApp-origin default.
+        assert _cron_mirror_delivery_enabled(
+            {
+                "attach_to_session": False,
+                "deliver": "origin",
+                "origin": {"platform": "whatsapp_cloud", "chat_id": "12345"},
+            },
+            {},
+        ) is False
 
     def test_mirror_calls_mirror_to_session_when_enabled(self):
         from cron.scheduler import _maybe_mirror_cron_delivery
@@ -3774,6 +3801,31 @@ class TestCronDeliveryMirror:
             _deliver_result(job, "Here is today's summary.")
 
         mirror_mock.assert_not_called()
+
+    def test_delivery_mirrors_whatsapp_origin_by_default(self):
+        """WhatsApp-origin cron jobs should be continuable by default so a reply
+        lands in a session that already contains the brief (#55589)."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WHATSAPP_CLOUD: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "whatsapp_cloud", "chat_id": "15551234567"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args[0][0] == "whatsapp_cloud"
+        assert mirror_mock.call_args[0][1] == "15551234567"
 
     # --- origin-scoping (mirror only into the conversation that created the job) ---
 

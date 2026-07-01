@@ -399,15 +399,21 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     """Whether a cron delivery should also be mirrored into the target chat's
     gateway session transcript.
 
-    Default OFF — preserves the historical isolation guarantee (cron deliveries
-    live only in the cron job's own session, never the target chat's history)
-    byte-for-byte for everyone who does not opt in.
+    Default OFF for most platforms — preserves the historical isolation
+    guarantee (cron deliveries live only in the cron job's own session, never
+    the target chat's history) byte-for-byte unless a job explicitly opts in.
+    WhatsApp / WhatsApp Cloud ``deliver=origin`` jobs are the one default-ON
+    exception: replies happen in the same DM lane and there is no thread handoff
+    escape hatch, so omitting the mirror leaves follow-up messages unanchored
+    (#55589).
 
     Precedence (first decisive value wins):
       1. Per-job ``attach_to_session`` (bool) — set via the ``cronjob`` tool,
          lets one briefing job opt in without flipping global behaviour.
       2. Global ``cron.mirror_delivery`` (bool) in config.yaml.
-      3. False.
+      3. Implicit True for ``deliver=origin`` jobs whose origin platform is
+         ``whatsapp`` or ``whatsapp_cloud``.
+      4. False.
 
     When enabled, the cron's final output is appended to the target session as
     an assistant turn via the existing ``gateway.mirror.mirror_to_session`` —
@@ -422,9 +428,19 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     try:
         if cfg is None:
             cfg = load_config() or {}
-        return bool((cfg.get("cron", {}) or {}).get("mirror_delivery", False))
+        cron_cfg = (cfg.get("cron", {}) or {})
+        if cron_cfg.get("mirror_delivery"):
+            return True
     except Exception:
-        return False
+        pass
+
+    origin = _resolve_origin(job) or {}
+    deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    origin_platform = str(origin.get("platform", "")).lower()
+    return (
+        deliver_value == "origin"
+        and origin_platform in {"whatsapp", "whatsapp_cloud"}
+    )
 
 
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,

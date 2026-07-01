@@ -357,7 +357,10 @@ class TestCompactionRollupReproduction:
     in ``web/src/pages/SessionsPage.tsx``)."""
 
     def test_compress_keeps_visible_reply_text(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
         c = compressor
         c.tail_token_budget = 10
         # ``_generate_summary`` normally wraps the LLM body in
@@ -392,10 +395,12 @@ class TestCompactionRollupReproduction:
             return_value=_mocked,
         ):
             result = c.compress(messages, current_tokens=90_000)
-        # 1. A summary message exists (compression actually ran).
+        # 1. A summary message exists (compression actually ran). Detect via
+        # the canonical metadata key rather than a content prefix: merge-into-
+        # tail summaries wrap prior content before the summary, so the prefix
+        # is no longer at the start of the message content (#56372).
         assert any(
-            isinstance(m.get("content"), str)
-            and m["content"].startswith(SUMMARY_PREFIX)
+            m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             for m in result
         ), "compress() did not insert a summary message"
         # 2. The visible reply text must survive somewhere — either
@@ -419,7 +424,10 @@ class TestCompactionRollupReproduction:
         as its OWN assistant message — not merged with anything.
         This is the common case; the merge-into-tail path is the
         edge case for double-collision."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
         c = compressor
         c.tail_token_budget = 10
         _mocked = f"{SUMMARY_PREFIX}\nrolled-up middle summary"
@@ -449,11 +457,11 @@ class TestCompactionRollupReproduction:
             return_value=_mocked,
         ):
             result = c.compress(messages, current_tokens=90_000)
-        # Standalone summary present:
+        # Summary present (detect via the canonical metadata key — merge-into-
+        # tail summaries no longer start with SUMMARY_PREFIX after #56372):
         summary_rows = [
             m for m in result
-            if isinstance(m.get("content"), str)
-            and m["content"].startswith(SUMMARY_PREFIX)
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]
         assert len(summary_rows) == 1
         # Visible reply as its OWN distinct assistant message
@@ -463,7 +471,7 @@ class TestCompactionRollupReproduction:
             if m.get("role") == "assistant"
             and isinstance(m.get("content"), str)
             and "THE VISIBLE REPLY THE USER JUST READ" in m["content"]
-            and not m["content"].startswith(SUMMARY_PREFIX)
+            and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]
         assert len(reply_rows) == 1, (
             "REGRESSION (#29824): expected exactly one standalone "

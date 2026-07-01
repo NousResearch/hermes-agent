@@ -2009,6 +2009,42 @@ class TestCompressWithClient:
         assert text.index("SUMMARY_BODY") < text.index(end)
         assert text.rstrip().endswith(end)
 
+    def test_merged_tail_summary_still_detected_and_stripped(self):
+        """Regression for #56372 salvage: the merge-into-tail reorder moves the
+        summary prefix AFTER the [PRIOR CONTEXT] wrapper, so content-prefix
+        detection (_is_context_summary_content) and body extraction
+        (_strip_summary_prefix) must look past the delimiter. Otherwise a merged
+        summary is mistaken for a real user turn (breaking the last-real-user
+        anchor and carry-forward summary find) and the wrapper + stale tail
+        content leaks into the next summarizer prompt.
+        """
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _SUMMARY_END_MARKER,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        merged = (
+            _MERGED_PRIOR_CONTEXT_HEADER + "\n"
+            "old tail content here\n\n"
+            + _MERGED_SUMMARY_DELIMITER + "\n\n"
+            + SUMMARY_PREFIX + "\nTHE_SUMMARY_BODY\n\n"
+            + _SUMMARY_END_MARKER
+        )
+
+        # Detected as a summary despite the prefix not being at the start.
+        assert ContextCompressor._is_context_summary_content(merged) is True
+        # Stripping yields only the real summary body — no wrapper, no stale
+        # tail content, no prefix, no end marker.
+        body = ContextCompressor._strip_summary_prefix(merged)
+        assert body == "THE_SUMMARY_BODY"
+
+        # Standalone (non-merged) summaries still work unchanged.
+        standalone = SUMMARY_PREFIX + "\nSTANDALONE_BODY\n\n" + _SUMMARY_END_MARKER
+        assert ContextCompressor._is_context_summary_content(standalone) is True
+        assert ContextCompressor._strip_summary_prefix(standalone) == "STANDALONE_BODY"
+
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
         summary='assistant' collides with tail, 'user' collides with head → merge."""

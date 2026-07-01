@@ -95,6 +95,15 @@ _SUMMARY_END_MARKER = (
     "respond to the message below, not the summary above ---"
 )
 
+# When the summary must be merged into the first tail message (the alternation
+# corner case where a standalone summary role would collide with both head and
+# tail), the tail message's own prior content is preserved BEFORE the summary,
+# wrapped in these delimiters so the model doesn't read it as a fresh message.
+# The summary prefix therefore lands AFTER _MERGED_SUMMARY_DELIMITER rather than
+# at the start of the message, so _is_context_summary_content must look past it.
+_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
+_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
 # re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
@@ -2007,6 +2016,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         stale directive it carried stays embedded in the body.
         """
         text = (summary or "").strip()
+        # Merge-into-tail summaries wrap prior tail content before the summary
+        # body. Drop everything up to and including the delimiter so only the
+        # real summary body is carried forward on re-compaction — otherwise the
+        # [PRIOR CONTEXT] header and stale tail content leak into the next
+        # summarizer prompt.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
@@ -2027,6 +2043,13 @@ This compaction should PRIORITISE preserving all information related to the focu
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
+        # Merge-into-tail summaries wrap prior tail content before the summary,
+        # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
+        # at the start. Detect the summary in that region too, otherwise callers
+        # (auto-focus skip, carry-forward summary find, last-real-user anchor)
+        # mistake a merged summary message for a real user turn.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
@@ -2898,13 +2921,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # before the summary.
                 old_content = msg.get("content", "")
                 suffix = (
-                    "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
                     + summary + "\n\n"
                     + _SUMMARY_END_MARKER
                 )
                 msg["content"] = _append_text_to_content(
                     _append_text_to_content(old_content, suffix, prepend=False),
-                    "[PRIOR CONTEXT — for reference only; not a new message]\n",
+                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
                     prepend=True,
                 )
                 # Mark the merged message so frontends can identify it as

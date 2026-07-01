@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.dashboard_register as dr
+import hermes_cli.gateway_enroll as ge
 
 
 def _ns(**kw):
@@ -72,6 +73,96 @@ def _fake_http_ok(payload: dict):
     cm = MagicMock()
     cm.__enter__.return_value.read.return_value = json.dumps(payload).encode()
     return cm
+
+
+class _BoundedFakeResponse:
+    def __init__(self, payload: dict, *, content_length=None):
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+        self.read_sizes = []
+        self.read_called = False
+        self._body = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size=-1):
+        self.read_called = True
+        self.read_sizes.append(size)
+        return self._body
+
+
+class TestBoundedEnrollmentResponses:
+    def test_dashboard_register_rejects_oversized_response_before_reading(self):
+        response = _BoundedFakeResponse(
+            {"client_id": "agent:selfhost-1"},
+            content_length=dr._MAX_PORTAL_RESPONSE_BYTES + 1,
+        )
+
+        with patch.object(dr.urllib.request, "urlopen", return_value=response):
+            with pytest.raises(RuntimeError, match="too large"):
+                dr._register_self_hosted_client(
+                    access_token="tok",
+                    portal_base_url="https://portal.example",
+                    name="box",
+                    custom_redirect_uri=None,
+                )
+
+        assert response.read_called is False
+
+    def test_dashboard_register_reads_missing_content_length_with_cap(self):
+        response = _BoundedFakeResponse({"client_id": "agent:selfhost-1"})
+
+        with patch.object(dr.urllib.request, "urlopen", return_value=response):
+            payload = dr._register_self_hosted_client(
+                access_token="tok",
+                portal_base_url="https://portal.example",
+                name="box",
+                custom_redirect_uri=None,
+            )
+
+        assert payload["client_id"] == "agent:selfhost-1"
+        assert response.read_sizes == [dr._MAX_PORTAL_RESPONSE_BYTES + 1]
+
+    def test_gateway_enroll_rejects_oversized_response_before_reading(self):
+        response = _BoundedFakeResponse(
+            {"secret": "secret"},
+            content_length=ge._MAX_ENROLL_RESPONSE_BYTES + 1,
+        )
+
+        with patch.object(ge.urllib.request, "urlopen", return_value=response):
+            with pytest.raises(RuntimeError, match="too large"):
+                ge._post_enroll(
+                    connector_base_url="https://connector.example",
+                    access_token="tok",
+                    enrollment_token="enroll",
+                    gateway_id="gw",
+                )
+
+        assert response.read_called is False
+
+    def test_gateway_enroll_reads_missing_content_length_with_cap(self):
+        response = _BoundedFakeResponse({
+            "secret": "secret",
+            "deliveryKey": "delivery",
+            "tenant": "tenant",
+            "gatewayId": "gw",
+        })
+
+        with patch.object(ge.urllib.request, "urlopen", return_value=response):
+            payload = ge._post_enroll(
+                connector_base_url="https://connector.example",
+                access_token="tok",
+                enrollment_token="enroll",
+                gateway_id="gw",
+            )
+
+        assert payload["secret"] == "secret"
+        assert response.read_sizes == [ge._MAX_ENROLL_RESPONSE_BYTES + 1]
 
 
 class TestHappyPath:

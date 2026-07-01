@@ -56,6 +56,21 @@ _NAME_NOUNS = (
     "kepler", "tesla", "curie", "hopper", "turing", "lovelace",
 )
 
+_MAX_PORTAL_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_json_response(resp, *, limit: int = _MAX_PORTAL_RESPONSE_BYTES) -> dict:
+    headers = getattr(resp, "headers", None)
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if isinstance(raw_length, (str, bytes, int)) and int(raw_length) > limit:
+        raise ValueError("Portal JSON response body is too large")
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("Portal JSON response body is too large")
+    payload = json.loads(body.decode())
+    return payload if isinstance(payload, dict) else {}
+
 
 def _generate_dashboard_name() -> str:
     """Return a human-readable ``adjective_noun`` name (Docker-style)."""
@@ -139,12 +154,12 @@ def _register_self_hosted_client(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_json_response(resp)
     except urllib.error.HTTPError as exc:
         # The endpoint returns structured JSON errors ({error, error_description}).
         detail = ""
         try:
-            err_body = json.loads(exc.read().decode())
+            err_body = _read_json_response(exc)
             detail = (
                 err_body.get("error_description")
                 or err_body.get("error")
@@ -170,6 +185,8 @@ def _register_self_hosted_client(
         raise RuntimeError(
             f"Could not reach Nous Portal at {portal_base_url}: {exc.reason}"
         ) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Portal returned an invalid JSON response: {exc}") from exc
 
     if not isinstance(payload, dict) or not payload.get("client_id"):
         raise RuntimeError("Portal returned an unexpected response (no client_id).")

@@ -38,6 +38,21 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+_MAX_ENROLL_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_json_response(resp, *, limit: int = _MAX_ENROLL_RESPONSE_BYTES) -> dict:
+    headers = getattr(resp, "headers", None)
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if isinstance(raw_length, (str, bytes, int)) and int(raw_length) > limit:
+        raise ValueError("Connector JSON response body is too large")
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("Connector JSON response body is too large")
+    payload = json.loads(body.decode())
+    return payload if isinstance(payload, dict) else {}
+
 
 def _default_gateway_id() -> str:
     """A stable-ish default gateway instance id: ``<hostname>-<pid-free slug>``.
@@ -113,11 +128,11 @@ def _post_enroll(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_json_response(resp)
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = (json.loads(exc.read().decode()) or {}).get("error", "")
+            detail = (_read_json_response(exc) or {}).get("error", "")
         except Exception:
             pass
         if exc.code == 401:
@@ -137,6 +152,8 @@ def _post_enroll(
         raise RuntimeError(
             f"Could not reach the connector at {connector_base_url}: {exc.reason}"
         ) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Connector returned an invalid JSON response: {exc}") from exc
 
     if not isinstance(payload, dict) or not payload.get("secret"):
         raise RuntimeError("Connector returned an unexpected response (no secret).")

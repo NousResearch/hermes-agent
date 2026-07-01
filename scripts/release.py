@@ -1764,6 +1764,7 @@ AUTHOR_MAP = {
     "steveonjava@gmail.com": "steveonjava",  # PR #29669 (redact secrets in kanban tool payloads)
     "afnlegion01@gmail.com": "Afnath-max",  # PR #49129 salvage (opencode-zen catalog refresh + uncapped/live-first picker)
     "sharma.priyanshu96@gmail.com": "ipriyaaanshu",  # PR #51488 salvage (clear stale base_url on gateway model switches; #25107)
+    "carlitosdiazplaza@gmail.com": "talmax1124",  # PR #55931 (upstream sync — coalesce TUI drag-resize reflow + resize-burst heal coverage; #18449)
 }
 
 

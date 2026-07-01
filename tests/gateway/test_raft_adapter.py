@@ -425,6 +425,36 @@ class TestRaftConfig:
         assert _is_connected(PlatformConfig(enabled=True, extra={"enabled": True})) is True
         assert _is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+    def test_spawn_bridge_strips_unneeded_hermes_secrets(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("RAFT_PROFILE", "my-agent")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-aux-secret")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+
+        captured = {}
+
+        class DummyProc:
+            pid = 1234
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs["env"]
+            return DummyProc()
+
+        adapter = _make_adapter(bridge_token="bridge-token")
+
+        with patch("plugins.platforms.raft.adapter.shutil.which", return_value="/usr/bin/raft"), \
+             patch("plugins.platforms.raft.adapter.subprocess.Popen", side_effect=fake_popen):
+            adapter._spawn_bridge(4321)
+
+        env = captured["env"]
+        assert env["RAFT_PROFILE"] == "my-agent"
+        assert env["RAFT_CHANNEL_TOKEN"] == "bridge-token"
+        assert "OPENAI_API_KEY" not in env
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+
     def test_register_calls_register_platform(self):
         registered = {}
         hooks = {}

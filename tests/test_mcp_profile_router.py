@@ -500,7 +500,9 @@ def test_phase9_web_browser_api_model_surfaces_are_catalog_visible_but_blocked()
     assert metadata["web_search"]["capability_group"] == "web"
     assert metadata["browser_navigate"]["capability_group"] == "browser"
     assert metadata["x_search"]["blocked_reason"] == "model_backed_tool_blocked"
+    assert metadata["x_search"]["route_hint"] == "use_client_native"
     assert metadata["browser_vision"]["blocked_reason"] == "model_backed_tool_blocked"
+    assert metadata["web_search"]["route_hint"] == "requires_deterministic_no_model_wrapper"
 
 
 def test_hermes_catalog_blocked_tool_returns_sanitized_llm_zero_error():
@@ -514,8 +516,10 @@ def test_hermes_catalog_blocked_tool_returns_sanitized_llm_zero_error():
         "execution_status": "blocked_no_model",
         "native_side_effects": True,
         "capability_group": "api",
+        "route_hint": "use_client_native",
         "root_exposed": False,
     }
+    assert payload["route_hint"] == "use_client_native"
     assert "run_conversation" not in json.dumps(payload)
 
 

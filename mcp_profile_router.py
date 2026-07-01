@@ -48,6 +48,9 @@ COST_CLASS_EXTERNAL_API_NO_MODEL = "external_api_no_model"
 COST_CLASS_MAY_CALL_AUX_MODEL = "may_call_aux_model"
 COST_CLASS_SCHEDULES_FUTURE_MODEL = "schedules_future_model"
 COST_CLASS_CALLS_HERMES_AGENT_MODEL = "calls_hermes_agent_model"
+ROUTE_HINT_PROFILE_ROUTER_NO_MODEL_WRAPPER = "execute_via_profile_router_no_model_wrapper"
+ROUTE_HINT_USE_CLIENT_NATIVE = "use_client_native"
+ROUTE_HINT_REQUIRES_DETERMINISTIC_WRAPPER = "requires_deterministic_no_model_wrapper"
 
 NO_MODEL_DEFAULT_COST_CLASSES = frozenset(
     {COST_CLASS_NO_MODEL, COST_CLASS_EXTERNAL_API_NO_MODEL}
@@ -1059,6 +1062,15 @@ class RouterToolMetadata:
     tool_group: str = "profile_router"
     execution_status: str = "executable_no_model"
     blocked_reason: str | None = None
+    route_hint: str = ROUTE_HINT_PROFILE_ROUTER_NO_MODEL_WRAPPER
+
+
+def _blocked_catalog_route_hint(tool_name: str) -> str:
+    """Return a no-model route hint for a catalog-visible blocked tool."""
+
+    if tool_name in HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES:
+        return ROUTE_HINT_USE_CLIENT_NATIVE
+    return ROUTE_HINT_REQUIRES_DETERMINISTIC_WRAPPER
 
 
 def parse_profile_ref(
@@ -1798,6 +1810,7 @@ ROUTER_TOOL_METADATA = {
                 if name in HERMES_CATALOG_MODEL_BACKED_TOOL_NAMES
                 else "requires_no_model_implementation"
             ),
+            route_hint=_blocked_catalog_route_hint(name),
         )
         for name in HERMES_CATALOG_BLOCKED_TOOL_NAMES
     },
@@ -6703,8 +6716,10 @@ def hermes_catalog_blocked_tool(tool_name: str) -> str:
                     "execution_status": meta.execution_status,
                     "native_side_effects": name in HERMES_CATALOG_SIDE_EFFECT_TOOL_NAMES,
                     "capability_group": _router_capability_group(name),
+                    "route_hint": meta.route_hint,
                     "root_exposed": False,
                 },
+                "route_hint": meta.route_hint,
             },
         )
     except ProfileRouterError as exc:

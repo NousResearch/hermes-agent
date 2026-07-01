@@ -114,7 +114,11 @@ export function formatDurationSeconds(seconds: number): string {
     return `${ms}ms`
   }
 
-  if (seconds < 60) {
+  // Gate on the value we will actually render. The sub-minute label rounds via
+  // toFixed(0) for >= 10s, so gating on raw `seconds` lets [59.5, 60) pass this
+  // branch yet render "60s" — an out-of-range seconds label the minute branch
+  // below exists to avoid. Rounding first keeps the boundary consistent.
+  if (Math.round(seconds) < 60) {
     return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`
   }
 

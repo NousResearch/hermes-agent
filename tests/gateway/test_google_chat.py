@@ -197,7 +197,7 @@ def _make_pubsub_message(data: dict, *, attributes=None):
 
 def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type="HUMAN",
                        msg_name=None, thread_name=None, attachments=None,
-                       slash_command=None):
+                       slash_command=None, quoted_message_metadata=None):
     """Build a realistic Google Chat CloudEvents-style envelope body."""
     msg = {
         "name": msg_name or "spaces/S/messages/M.M",
@@ -216,6 +216,8 @@ def _make_chat_envelope(text="hello", sender_email="u@example.com", sender_type=
         msg["attachment"] = attachments
     if slash_command is not None:
         msg["slashCommand"] = slash_command
+    if quoted_message_metadata is not None:
+        msg["quotedMessageMetadata"] = quoted_message_metadata
 
     return {
         "chat": {
@@ -883,6 +885,43 @@ class TestBuildMessageEvent:
         assert event.media_types == ["image/png"]
         # With no text, the message type should reflect the first attachment.
         assert event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_quoted_message_populates_reply_to_context(self, adapter):
+        """Replying by quoting a message must surface the quoted text via
+        the generic MessageEvent reply_to_* fields, so gateway/run.py's
+        existing '[Replying to: ...]' injection picks it up — the same
+        mechanism Signal/WhatsApp Cloud/Feishu/Telegram/BlueBubbles use.
+        Without this, quoted context is silently dropped (see issue where
+        the adapter only read argumentText/text off the inbound message)."""
+        quoted_meta = {
+            "name": "spaces/S/messages/QUOTED.1",
+            "lastUpdateTime": "2026-06-01T09:00:00Z",
+            "quotedMessageSnapshot": {
+                "sender": "Hermes Bot",
+                "text": "the previous message being quoted",
+            },
+        }
+        env = _make_chat_envelope(
+            text="what did you mean by this?",
+            quoted_message_metadata=quoted_meta,
+        )
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.text == "what did you mean by this?"
+        assert event.reply_to_message_id == "spaces/S/messages/QUOTED.1"
+        assert event.reply_to_text == "the previous message being quoted"
+        assert event.reply_to_author_name == "Hermes Bot"
+
+    @pytest.mark.asyncio
+    async def test_no_quoted_message_leaves_reply_to_fields_unset(self, adapter):
+        """Regular (non-reply) messages must not synthesize reply context."""
+        env = _make_chat_envelope(text="hola, sin cita")
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+        assert event.reply_to_author_name is None
 
 
 # ===========================================================================

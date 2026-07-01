@@ -1549,6 +1549,24 @@ class GoogleChatAdapter(BasePlatformAdapter):
         text = msg.get("argumentText") or msg.get("text") or ""
         text = text.strip()
 
+        # Quoted-message context: when a user replies by quoting a message in
+        # Google Chat, the Chat API attaches quotedMessageMetadata with a
+        # snapshot of the quoted content. Populate the generic MessageEvent
+        # reply_to_* fields so gateway/run.py's existing "[Replying to: ...]"
+        # injection picks it up automatically — the same mechanism Signal /
+        # WhatsApp Cloud / Feishu / Telegram / BlueBubbles already rely on
+        # (see gateway/platforms/signal.py for the reference pattern).
+        # quotedMessageSnapshot.sender is a plain display-name string (per
+        # the Chat API reference), not a resource name, so it can't be
+        # compared against self._bot_user_id to detect "quoted my own
+        # message" — leave reply_to_is_own_message at its default instead
+        # of guessing.
+        quoted_meta = msg.get("quotedMessageMetadata") or {}
+        quoted_snapshot = quoted_meta.get("quotedMessageSnapshot") or {}
+        reply_to_text = (quoted_snapshot.get("text") or "").strip() or None
+        reply_to_message_id = quoted_meta.get("name") or None
+        reply_to_author_name = quoted_snapshot.get("sender") or None
+
         # Slash command: emit MessageType.COMMAND with normalized text.
         slash = msg.get("slashCommand") or {}
         is_slash = bool(slash)
@@ -1648,6 +1666,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             message_id=msg.get("name") or None,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_author_name=reply_to_author_name,
         )
 
     async def _download_attachment(

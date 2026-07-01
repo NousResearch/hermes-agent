@@ -623,32 +623,33 @@ class TestDeregisterAuthorization:
 
     def test_plugin_cannot_deregister_unowned_tool_without_opt_in(self):
         reg = self._reg()
-        reg.register_plugin_override_policy("hermes_plugins.evil", False)
+        token = reg.register_plugin_override_policy("hermes_plugins.evil", False)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
             import pytest
             with pytest.raises(PermissionError, match="allow_tool_override"):
-                reg.deregister("protected")
+                reg.deregister("protected", owner_token=token)
         assert reg._tools.get("protected") is not None, "tool must survive the rejected deregister"
 
     def test_plugin_with_opt_in_can_deregister_unowned_tool(self):
         reg = self._reg()
-        reg.register_plugin_override_policy("hermes_plugins.allowed", True)
+        token = reg.register_plugin_override_policy("hermes_plugins.allowed", True)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.allowed"):
-            reg.deregister("protected")
+            reg.deregister("protected", owner_token=token)
         assert reg._tools.get("protected") is None
 
     def test_plugin_can_deregister_its_own_tool(self):
         """Plugin deregistering a handler it defined itself — always allowed."""
         reg = ToolRegistry()
-        reg.register_plugin_override_policy("hermes_plugins.myplug", False)
+        token = reg.register_plugin_override_policy("hermes_plugins.myplug", False)
         handler = eval("lambda *a, **k: 'own'", {"__name__": "hermes_plugins.myplug"})
         reg.register(
             name="own_tool", toolset="myplug-ts",
             schema={"name": "own_tool", "description": "", "parameters": {"type": "object", "properties": {}}},
             handler=handler,
+            owner_token=token,
         )
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.myplug"):
-            reg.deregister("own_tool")
+            reg.deregister("own_tool", owner_token=token)
         assert reg._tools.get("own_tool") is None
 
     def test_plugin_root_module_can_deregister_submodule_handler(self):
@@ -661,17 +662,18 @@ class TestDeregisterAuthorization:
         module (egilewski review, #55840).
         """
         reg = ToolRegistry()
-        reg.register_plugin_override_policy("hermes_plugins.pkg", False)
+        token = reg.register_plugin_override_policy("hermes_plugins.pkg", False)
         handler = eval("lambda *a, **k: 'sub'", {"__name__": "hermes_plugins.pkg.handlers"})
         reg.register(
             name="sub_tool", toolset="pkg-ts",
             schema={"name": "sub_tool", "description": "", "parameters": {"type": "object", "properties": {}}},
             handler=handler,
+            owner_token=token,
         )
         # Caller is the plugin root (hermes_plugins.pkg), handler is in a
         # submodule (hermes_plugins.pkg.handlers) — must be allowed.
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.pkg"):
-            reg.deregister("sub_tool")
+            reg.deregister("sub_tool", owner_token=token)
         assert reg._tools.get("sub_tool") is None
 
     def test_opted_in_plugin_submodule_can_deregister(self):
@@ -691,9 +693,9 @@ class TestDeregisterAuthorization:
             schema={"name": "protected", "description": "", "parameters": {"type": "object", "properties": {}}},
             handler=lambda *a, **k: "built-in",
         )
-        reg.register_plugin_override_policy("hermes_plugins.allowed", True)
+        token = reg.register_plugin_override_policy("hermes_plugins.allowed", True)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.allowed.cleanup"):
-            reg.deregister("protected")
+            reg.deregister("protected", owner_token=token)
         assert reg._tools.get("protected") is None
 
     def test_mcp_toolset_always_deregisterable(self):
@@ -716,6 +718,15 @@ class TestDeregisterAuthorization:
             reg.deregister("protected")
         assert reg._tools.get("protected") is None
 
+    def test_forged_core_caller_cannot_deregister_after_plugin_policy_loads(self):
+        reg = self._reg()
+        reg.register_plugin_override_policy("hermes_plugins.evil", False)
+        import pytest
+        with patch.object(ToolRegistry, "_caller_module", return_value="tools.mcp_tool"):
+            with pytest.raises(PermissionError, match="owner token"):
+                reg.deregister("protected")
+        assert reg._tools.get("protected") is not None
+
     def test_full_bypass_blocked(self):
         """The original bypass: deregister then plain register no longer works."""
         reg = self._reg()
@@ -730,3 +741,19 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+    def test_forged_handler_module_cannot_override_without_owner_token(self):
+        reg = self._reg()
+        reg.register_plugin_override_policy("hermes_plugins.allowed", True)
+        forged_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "tools.mcp_tool"})
+        import pytest
+        with pytest.raises(PermissionError, match="owner token"):
+            reg.register(name="protected", toolset="evil-ts", schema={}, handler=forged_handler, override=True)
+        assert reg._tools["protected"].handler({}) == "built-in"
+
+    def test_opted_in_owner_token_can_override(self):
+        reg = self._reg()
+        token = reg.register_plugin_override_policy("hermes_plugins.allowed", True)
+        handler = eval("lambda *a, **k: 'plugin'", {"__name__": "hermes_plugins.allowed"})
+        reg.register(name="protected", toolset="allowed-ts", schema={}, handler=handler, override=True, owner_token=token)
+        assert reg._tools["protected"].handler({}) == "plugin"

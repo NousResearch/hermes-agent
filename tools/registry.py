@@ -82,11 +82,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "owner_namespace",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 owner_namespace=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -97,6 +99,7 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.owner_namespace = owner_namespace
         # Optional zero-arg callable returning a dict of schema overrides
         # applied at get_definitions() time. Use for fields that depend on
         # runtime config (e.g. delegate_task's description must reflect the
@@ -216,6 +219,7 @@ class ToolRegistry:
         # code that defined the handler, independent of WHEN the register() call
         # happens (sync during load, or a delayed/threaded callback afterwards).
         self._plugin_override_policy: Dict[str, bool] = {}
+        self._plugin_override_tokens: Dict[object, str] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
@@ -304,14 +308,25 @@ class ToolRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register_plugin_override_policy(self, module_namespace: str, allowed: bool) -> None:
+    def register_plugin_override_policy(self, module_namespace: str, allowed: bool) -> object:
         """Bind a plugin module namespace to its operator opt-in for built-in
         override. Called once per plugin at load time. Durable: never cleared,
         so later (even threaded/delayed) register() calls from that module are
-        still gated by the same policy.
+        still gated by the same policy. Returns an opaque owner token that
+        trusted plugin-loading code passes back when registering or removing
+        tools; unlike module names or frame globals, the token is not forgeable
+        by changing ``__name__``.
         """
+        token = object()
         with self._lock:
             self._plugin_override_policy[module_namespace] = bool(allowed)
+            self._plugin_override_tokens[token] = module_namespace
+        return token
+
+    def _plugin_owner_from_token(self, owner_token: object | None) -> Optional[str]:
+        if owner_token is None:
+            return None
+        return self._plugin_override_tokens.get(owner_token)
 
     def _plugin_owner_of(self, handler: Callable) -> Optional[str]:
         """Return the plugin module namespace that defined *handler*, or None
@@ -367,6 +382,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        owner_token: object | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -378,6 +394,7 @@ class ToolRegistry:
         """
         with self._lock:
             existing = self._tools.get(name)
+            token_owner = self._plugin_owner_from_token(owner_token)
             if existing and existing.toolset != toolset:
                 # Allow MCP-to-MCP overwrites (legitimate: server refresh,
                 # or two MCP servers with overlapping tool names).
@@ -391,18 +408,28 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 elif override:
-                    _owner = self._plugin_owner_of(handler)
-                    if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+                    if token_owner is None:
+                        logger.error(
+                            "Tool registration REJECTED: override of built-in "
+                            "tool %r (existing toolset %r) requires a registry "
+                            "owner token.",
+                            name, existing.toolset,
+                        )
+                        raise PermissionError(
+                            f"Tool {name!r} cannot override built-in toolset "
+                            f"{existing.toolset!r} without a registry owner token."
+                        )
+                    if not self._plugin_override_policy.get(token_owner, False):
                         logger.error(
                             "Tool registration REJECTED: plugin %r attempted to "
                             "override built-in tool %r (existing toolset %r) without "
                             "operator opt-in. Set "
                             "plugins.entries.<plugin_id>.allow_tool_override: true "
                             "in config.yaml to allow it.",
-                            _owner, name, existing.toolset,
+                            token_owner, name, existing.toolset,
                         )
                         raise PermissionError(
-                            f"Plugin module {_owner!r} cannot override built-in "
+                            f"Plugin module {token_owner!r} cannot override built-in "
                             f"tool {name!r} without operator opt-in "
                             f"(allow_tool_override)."
                         )
@@ -436,6 +463,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                owner_namespace=token_owner or self._plugin_owner_of(handler),
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -447,7 +475,7 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, owner_token: object | None = None) -> None:
         """Remove a tool from the registry.
 
         Also cleans up the toolset check if no other tools remain in the
@@ -468,36 +496,50 @@ class ToolRegistry:
             if entry is None:
                 return
             if not entry.toolset.startswith("mcp-"):
-                caller_mod = self._caller_module()
-                owner = self._plugin_owner_of(entry.handler)
-                # Ownership check: bind to the plugin package root
-                # (``hermes_plugins.{name}``), not the exact module string.
-                # A handler defined in ``hermes_plugins.pkg.handlers`` is
-                # still owned by the ``hermes_plugins.pkg`` package — exact
-                # string equality would wrongly block root-module cleanup code
-                # from removing tools registered by a submodule of the same
-                # plugin (egilewski review on #55840).
-                caller_root = ".".join(caller_mod.split(".")[:2])
-                owner_root = ".".join(owner.split(".")[:2]) if owner else ""
-                same_plugin = bool(owner and caller_root == owner_root)
-                if (
-                    caller_mod.startswith("hermes_plugins.")
-                    and not same_plugin
-                    and not self._plugin_override_policy.get(caller_root, False)
-                ):
+                token_owner = self._plugin_owner_from_token(owner_token)
+                if token_owner is not None:
+                    owner = entry.owner_namespace
+                    token_root = ".".join(token_owner.split(".")[:2])
+                    owner_root = ".".join(owner.split(".")[:2]) if owner else ""
+                    same_plugin = bool(owner and token_root == owner_root)
+                    if not same_plugin and not self._plugin_override_policy.get(token_owner, False):
+                        logger.error(
+                            "Tool deregistration REJECTED: plugin %r attempted to "
+                            "remove tool %r (toolset %r) it does not own, without "
+                            "operator opt-in.",
+                            token_owner, name, entry.toolset,
+                        )
+                        raise PermissionError(
+                            f"Plugin module {token_owner!r} cannot deregister tool "
+                            f"{name!r} (toolset {entry.toolset!r}) without operator "
+                            f"opt-in (allow_tool_override)."
+                        )
+                elif self._plugin_override_policy:
                     logger.error(
-                        "Tool deregistration REJECTED: plugin %r attempted to "
-                        "remove tool %r (toolset %r) it does not own, without "
-                        "operator opt-in. Set "
-                        "plugins.entries.%s.allow_tool_override: true in "
-                        "config.yaml to allow it.",
-                        caller_mod, name, entry.toolset, caller_mod,
+                        "Tool deregistration REJECTED: removal of tool %r "
+                        "(toolset %r) requires a registry owner token while "
+                        "plugin override policies are loaded.",
+                        name, entry.toolset,
                     )
                     raise PermissionError(
-                        f"Plugin module {caller_mod!r} cannot deregister tool "
-                        f"{name!r} (toolset {entry.toolset!r}) without operator "
-                        f"opt-in (allow_tool_override)."
+                        f"Tool {name!r} cannot be deregistered without a registry "
+                        f"owner token while plugin override policies are loaded."
                     )
+                else:
+                    del self._tools[name]
+                    toolset_still_exists = any(
+                        e.toolset == entry.toolset for e in self._tools.values()
+                    )
+                    if not toolset_still_exists:
+                        self._toolset_checks.pop(entry.toolset, None)
+                        self._toolset_aliases = {
+                            alias: target
+                            for alias, target in self._toolset_aliases.items()
+                            if target != entry.toolset
+                        }
+                    self._generation += 1
+                    logger.debug("Deregistered tool: %s", name)
+                    return
             del self._tools[name]
             # Drop the toolset check and aliases if this was the last tool in
             # that toolset.

@@ -1092,6 +1092,8 @@ class TestPluginContext:
             # And an ERROR was logged explaining why and how to opt in.
             assert any("override=True" in r.message for r in caplog.records)
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("shadow_target")
 
     def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
@@ -1147,6 +1149,8 @@ class TestPluginContext:
             # Plugin tracks it.
             assert "override_target" in mgr._plugin_tool_names
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("override_target")
 
     def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
@@ -1185,6 +1189,8 @@ class TestPluginContext:
             mgr.discover_and_load()
             assert "brand_new_override_tool" in registry._tools
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("brand_new_override_tool")
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):
@@ -1253,6 +1259,8 @@ class TestPluginContext:
             assert "allow_tool_override" in str(excinfo.value)
             assert "evil_override_plugin" in str(excinfo.value)
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("gated_override_target")
 
     def test_register_tool_override_blocked_via_direct_registry_import(self, tmp_path, monkeypatch):
@@ -1304,6 +1312,8 @@ class TestPluginContext:
             assert entry.toolset == "terminal", "built-in must NOT be overridden via direct registry import"
             assert entry.handler({}) == "built-in", "handler should still be the built-in one"
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("gated_override_target")
 
     def test_register_tool_override_blocked_via_delayed_callback(self, tmp_path, monkeypatch):
@@ -1368,6 +1378,8 @@ class TestPluginContext:
             assert entry.toolset == "terminal", "delayed override must NOT replace the built-in"
             assert entry.handler({}) == "built-in", "handler must still be the built-in one"
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("gated_override_target")
 
 
@@ -2200,4 +2212,6 @@ class TestDispatchToolWithoutCliRef:
             # parent_agent is not forced when there's no CLI agent to resolve.
             assert calls[0][1].get("parent_agent") is None
         finally:
+            registry._plugin_override_policy.clear()
+            registry._plugin_override_tokens.clear()
             registry.deregister("_test_dispatch_probe")

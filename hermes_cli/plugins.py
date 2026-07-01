@@ -337,9 +337,10 @@ class LoadedPlugin:
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
-    def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
+    def __init__(self, manifest: PluginManifest, manager: "PluginManager", tool_owner_token: object | None = None):
         self.manifest = manifest
         self._manager = manager
+        self._tool_owner_token = tool_owner_token
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
 
@@ -436,6 +437,7 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
+            owner_token=self._tool_owner_token,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(
@@ -1711,7 +1713,7 @@ class PluginManager:
         from tools.registry import registry as _registry
         _plugin_id = manifest.key or manifest.name
         _slug = _plugin_id.replace("/", "__").replace("-", "_")
-        _registry.register_plugin_override_policy(
+        _tool_owner_token = _registry.register_plugin_override_policy(
             f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
@@ -1729,7 +1731,7 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
-                ctx = PluginContext(manifest, self)
+                ctx = PluginContext(manifest, self, tool_owner_token=_tool_owner_token)
                 # Snapshot registry state BEFORE register() so each registry's
                 # attribution counts only what THIS plugin actually added.
                 # The previous approach diffed names against all already-loaded

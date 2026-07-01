@@ -560,6 +560,9 @@ def _pool_entry_is_portal_oauth(entry: Any) -> bool:
     return auth_type.startswith("oauth") or bool(refresh_token)
 
 
+_MAX_ACCOUNT_RESPONSE_BYTES = 1 << 20  # 1 MiB — account JSON is always small
+
+
 def _fetch_nous_account_info(
     access_token: str,
     portal_base_url: Optional[str] = None,
@@ -572,7 +575,18 @@ def _fetch_nous_account_info(
     }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=8) as resp:
-        payload = json.loads(resp.read().decode())
+        # Reject oversized responses before buffering.
+        content_length = resp.headers.get("Content-Length")
+        if content_length is not None and int(content_length) > _MAX_ACCOUNT_RESPONSE_BYTES:
+            raise ValueError(
+                f"Nous Portal account response too large: {content_length} bytes"
+            )
+        body = resp.read(_MAX_ACCOUNT_RESPONSE_BYTES + 1)
+        if len(body) > _MAX_ACCOUNT_RESPONSE_BYTES:
+            raise ValueError(
+                f"Nous Portal account response too large: {len(body)} bytes"
+            )
+        payload = json.loads(body.decode())
     return payload if isinstance(payload, dict) else {}
 
 

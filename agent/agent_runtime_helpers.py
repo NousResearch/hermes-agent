@@ -1184,11 +1184,23 @@ def restore_primary_runtime(agent) -> bool:
         if pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
+                entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
+                primary_provider = str(rt.get("provider") or "").strip().lower()
+                entry_matches_primary = entry_provider == primary_provider
+                if primary_provider == "custom" and entry_provider.startswith("custom:"):
+                    primary_base_url = str(rt.get("base_url") or "").strip().rstrip("/").lower()
+                    entry_base_url = str(
+                        getattr(entry, "runtime_base_url", None)
+                        or getattr(entry, "base_url", None)
+                        or ""
+                    ).strip().rstrip("/").lower()
+                    entry_matches_primary = bool(primary_base_url and entry_base_url == primary_base_url)
+
                 entry_key = (
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
                 )
-                if entry_key:
+                if entry_key and entry_matches_primary:
                     # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
@@ -1197,6 +1209,14 @@ def restore_primary_runtime(agent) -> bool:
                         "Restore re-selected pool entry %s (%s)",
                         getattr(entry, "id", "?"),
                         getattr(entry, "label", "?"),
+                    )
+                elif entry_key:
+                    logger.info(
+                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                        entry_provider or "?",
+                        primary_provider or "?",
                     )
 
         # ── Reset fallback chain for the new turn ──

@@ -159,10 +159,33 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
+        # Every provided entry must be a valid Slack column-settings object.
+        # Left placeholders are explicit only when needed to preserve position.
+        assert cs[0] == {"align": "left"}
         assert cs[1] == {"align": "center"}
         assert cs[2] == {"align": "right"}
+
+    def test_default_trailing_column_settings_are_omitted(self):
+        md = (
+            "| L | R | L2 |\n"
+            "|---|---:|---|\n"
+            "| 1 | 2 | 3 |"
+        )
+        blocks = render_blocks(md)
+        assert blocks is not None
+        cs = blocks[0]["column_settings"]
+        assert cs == [{"align": "left"}, {"align": "right"}]
+        assert all(isinstance(item, dict) for item in cs)
+
+    def test_all_default_table_omits_column_settings(self):
+        md = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |"
+        )
+        blocks = render_blocks(md)
+        assert blocks is not None
+        assert "column_settings" not in blocks[0]
 
     def test_inline_formatting_inside_cells(self):
         md = (

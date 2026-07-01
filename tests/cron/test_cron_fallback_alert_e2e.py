@@ -109,8 +109,11 @@ def _capture_alerts(monkeypatch):
     """Capture every _deliver_result call (digest delivery + fallback alert)."""
     calls = []
 
-    def fake(job, content, success=True, adapters=None, loop=None):
-        calls.append({"deliver": job.get("deliver"), "content": content, "success": success})
+    def fake(job, content, success=True, adapters=None, loop=None, wrap_override=None):
+        calls.append({
+            "deliver": job.get("deliver"), "content": content,
+            "success": success, "wrap_override": wrap_override,
+        })
         return None
 
     monkeypatch.setattr(cron_scheduler, "_deliver_result", fake)
@@ -153,7 +156,9 @@ def test_run_job_fires_loud_alert_when_fallback_used(monkeypatch):
     alert = fallback_alerts[0]
     assert "openai-codex/gpt-5.5" in alert["content"]
     assert "claude-app/claude-opus-4-8" in alert["content"]
-    assert alert["success"] is False  # ⚠️-framed
+    # delivered UNWRAPPED — no "Cronjob Failed/Response" envelope on an alert
+    # about a job that succeeded on its fallback (matches the unit-test coverage).
+    assert alert["wrap_override"] is False
     # and it did NOT go to the digest channel
     assert alert["deliver"] != DIGEST_JOB["deliver"]
 

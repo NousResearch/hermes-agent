@@ -1151,7 +1151,7 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
-def _deliver_result(job: dict, content: str, success: bool = True, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, success: bool = True, adapters=None, loop=None, *, wrap_override: Optional[bool] = None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1192,7 +1192,10 @@ def _deliver_result(job: dict, content: str, success: bool = True, adapters=None
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.yaml for clean output.  A caller may force it off per-call via
+    # ``wrap_override=False`` — used by the fallback alert, which is a
+    # self-contained 🚨 message that should NOT wear the "Cronjob Response/Failed"
+    # envelope (the alert is about a job that usually SUCCEEDED on its fallback).
     wrap_response = True
     user_cfg = None
     try:
@@ -1200,6 +1203,8 @@ def _deliver_result(job: dict, content: str, success: bool = True, adapters=None
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+    if wrap_override is not None:
+        wrap_response = wrap_override
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -2129,7 +2134,14 @@ def _emit_cron_fallback_alert(job: dict, agent, *, adapters=None, loop=None) -> 
             "name": f"{job_name} · fallback alert",
             "deliver": alert_deliver,
         }
-        err = _deliver_result(alert_job, msg, success=False, adapters=adapters, loop=loop)
+        # Deliver UNWRAPPED: the message is a self-contained 🚨 alert and should
+        # not wear the "⚠️ Cronjob Failed / stop reminder" envelope — the job it
+        # reports on usually SUCCEEDED (on its fallback). success=True keeps any
+        # residual framing neutral; wrap_override=False strips the envelope.
+        err = _deliver_result(
+            alert_job, msg, success=True, adapters=adapters, loop=loop,
+            wrap_override=False,
+        )
         if err:
             logger.warning(
                 "Job '%s': fallback fired but the loud alert failed to deliver: %s",

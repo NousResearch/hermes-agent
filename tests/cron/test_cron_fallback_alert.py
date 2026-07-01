@@ -21,11 +21,14 @@ class _FakeAgent:
 
 
 def _capture_deliver(monkeypatch):
-    """Patch _deliver_result to record (job, content, success) and return None."""
+    """Patch _deliver_result to record (job, content, success, wrap_override)."""
     calls = []
 
-    def fake(job, content, success=True, adapters=None, loop=None):
-        calls.append({"job": job, "content": content, "success": success})
+    def fake(job, content, success=True, adapters=None, loop=None, wrap_override=None):
+        calls.append({
+            "job": job, "content": content, "success": success,
+            "wrap_override": wrap_override,
+        })
         return None  # delivery OK
 
     monkeypatch.setattr(sched, "_deliver_result", fake)
@@ -54,8 +57,9 @@ def test_alert_fires_when_fallback_event_present(monkeypatch):
     assert "openai-codex/gpt-5.5" in content
     assert "claude-app/claude-opus-4-8" in content
     assert "FALLBACK" in content.upper()
-    # framed as a failure-style (⚠️) alert, not a success delivery
-    assert calls[0]["success"] is False
+    # delivered UNWRAPPED (no "Cronjob Failed/Response" envelope) — the reported
+    # job succeeded on its fallback; the alert is self-contained.
+    assert calls[0]["wrap_override"] is False
 
 
 def test_alert_routes_to_default_alerts_channel_not_digest(monkeypatch):

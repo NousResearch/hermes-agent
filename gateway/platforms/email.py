@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from gateway.loop_guard import AgentLoopGuard, LoopContext
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -320,6 +321,10 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._loop_guard = AgentLoopGuard.from_platform_config(
+            config,
+            local_identity=self._address.lower(),
+        )
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -507,7 +512,6 @@ class EmailAdapter(BasePlatformAdapter):
                         logger.debug("[Email] Skipping automated sender: %s", sender_addr)
                         continue
                     body = _extract_text_body(msg)
-                    attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
 
                     results.append({
                         "uid": uid,
@@ -517,8 +521,10 @@ class EmailAdapter(BasePlatformAdapter):
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
                         "body": body,
-                        "attachments": attachments,
+                        "attachments": None,
+                        "raw_email": raw_email,
                         "date": msg.get("Date", ""),
+                        "headers": msg_headers,
                     })
             finally:
                 try:
@@ -528,6 +534,94 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
+
+    def _thread_inbound_hop_count(self, chat_id: str) -> int:
+        ctx = self._thread_context.get(chat_id, {})
+        try:
+            return int(ctx.get("hermes_hop_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _inbound_loop_context(self, msg_data: Dict[str, Any], text: str) -> LoopContext:
+        return LoopContext(
+            platform="email",
+            direction="inbound",
+            local_identity=self._address.lower(),
+            remote_identity=str(msg_data.get("sender_addr") or "").lower(),
+            subject=str(msg_data.get("subject") or ""),
+            text=text,
+            message_id=str(msg_data.get("message_id") or ""),
+            in_reply_to=str(msg_data.get("in_reply_to") or ""),
+            headers=dict(msg_data.get("headers") or {}),
+        )
+
+    def _outbound_loop_context(
+        self,
+        to_addr: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> LoopContext:
+        thread_ctx = self._thread_context.get(to_addr, {})
+        loop_metadata = dict(metadata or {})
+        if "hermes_hop_count" not in loop_metadata:
+            loop_metadata["hermes_hop_count"] = self._thread_inbound_hop_count(to_addr) + 1
+        return LoopContext(
+            platform="email",
+            direction="outbound",
+            local_identity=self._address.lower(),
+            remote_identity=str(to_addr or "").lower(),
+            subject=str(thread_ctx.get("subject") or ""),
+            text=content or "",
+            message_id=str(thread_ctx.get("message_id") or ""),
+            in_reply_to=str(thread_ctx.get("message_id") or ""),
+            headers={},
+            metadata=loop_metadata,
+        )
+
+    async def _pre_send_loop_guard(
+        self,
+        to_addr: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        decision = await self._loop_guard.evaluate(
+            self._outbound_loop_context(to_addr, content, metadata),
+            stage="pre_send",
+        )
+        if decision.should_send_reply:
+            return None
+        logger.warning(
+            "[Email] Loop guard suppressed outbound email to %s: %s/%s (%s)",
+            to_addr,
+            decision.risk,
+            decision.category,
+            decision.reason,
+        )
+        return SendResult(
+            success=True,
+            message_id=None,
+            raw_response={
+                "loop_guard": {
+                    "suppressed": True,
+                    "decision": decision.as_dict(),
+                }
+            },
+        )
+
+    def _apply_hermes_headers(
+        self,
+        msg: MIMEMultipart,
+        to_addr: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        headers = self._loop_guard.outbound_headers(
+            to_addr=to_addr,
+            metadata=metadata,
+            inbound_hop_count=self._thread_inbound_hop_count(to_addr),
+        )
+        for key, value in headers.items():
+            if value and key not in msg:
+                msg[key] = value
 
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
@@ -556,12 +650,42 @@ class EmailAdapter(BasePlatformAdapter):
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
-        attachments = msg_data["attachments"]
 
         # Build message text: include subject as context
         text = body
         if subject and not subject.startswith("Re:"):
             text = f"[Subject: {subject}]\n\n{body}"
+
+        decision = await self._loop_guard.evaluate(
+            self._inbound_loop_context(msg_data, text or "(empty email)"),
+            stage="pre_dispatch",
+        )
+        if not decision.should_dispatch_to_agent:
+            logger.warning(
+                "[Email] Loop guard suppressed inbound email from %s: %s/%s (%s)",
+                sender_addr,
+                decision.risk,
+                decision.category,
+                decision.reason,
+            )
+            return
+
+        # Extract/cache attachments only after loop guard allows dispatch.
+        # Suppressed agent-agent runtime loops should not consume disk by
+        # caching attachments that will never reach the agent.
+        attachments = msg_data.get("attachments")
+        if attachments is None:
+            raw_email = msg_data.get("raw_email")
+            attachments = []
+            if raw_email:
+                try:
+                    msg = email_lib.message_from_bytes(raw_email)
+                    attachments = _extract_attachments(
+                        msg,
+                        skip_attachments=self._skip_attachments,
+                    )
+                except Exception as e:
+                    logger.warning("[Email] Attachment extraction failed after loop guard: %s", e)
 
         # Determine message type and media
         media_urls = []
@@ -582,9 +706,11 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading
+        headers = {str(k).lower(): str(v) for k, v in (msg_data.get("headers") or {}).items()}
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "hermes_hop_count": headers.get("x-hermes-hop-count", "0"),
         }
 
         source = self.build_source(
@@ -617,9 +743,12 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an email reply to the given address."""
         try:
+            suppressed = await self._pre_send_loop_guard(chat_id, content, metadata)
+            if suppressed is not None:
+                return suppressed
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
+                None, self._send_email, chat_id, content, reply_to, metadata
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -631,6 +760,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
@@ -653,6 +783,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        self._apply_hermes_headers(msg, to_addr, metadata)
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -687,7 +818,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
-        return await self.send(chat_id, text.strip(), reply_to)
+        return await self.send(chat_id, text.strip(), reply_to, metadata)
 
     async def send_multiple_images(
         self,
@@ -728,6 +859,10 @@ class EmailAdapter(BasePlatformAdapter):
 
         body = "\n\n".join(body_parts)
 
+        suppressed = await self._pre_send_loop_guard(chat_id, body, metadata)
+        if suppressed is not None:
+            return
+
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -736,6 +871,7 @@ class EmailAdapter(BasePlatformAdapter):
                 chat_id,
                 body,
                 local_paths,
+                metadata,
             )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
@@ -746,6 +882,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
@@ -766,6 +903,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        self._apply_hermes_headers(msg, to_addr, metadata)
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -806,6 +944,10 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a file as an email attachment."""
         try:
+            metadata = kwargs.get("metadata") if kwargs else None
+            suppressed = await self._pre_send_loop_guard(chat_id, caption or "", metadata)
+            if suppressed is not None:
+                return suppressed
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None,
@@ -814,6 +956,7 @@ class EmailAdapter(BasePlatformAdapter):
                 caption or "",
                 file_path,
                 file_name,
+                metadata,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -826,6 +969,7 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
@@ -846,6 +990,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        self._apply_hermes_headers(msg, to_addr, metadata)
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))

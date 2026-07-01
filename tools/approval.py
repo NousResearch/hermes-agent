@@ -308,6 +308,46 @@ _SUDO_STDIN_RE = re.compile(
     r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
     re.IGNORECASE)
 
+_GATEWAY_SELF_TARGET_RE = re.compile(
+    r"("
+    r"(?<![\w])['\"]?hermes['\"]?\s+gateway\s+(?:stop|restart)\b"
+    r"|(?<![\w])['\"]?hermes['\"]?\s+update\b"
+    r"|(?<![\w])['\"]?systemctl['\"]?\s+(?:-[\w-]+\s+)*(?:stop|restart|try-restart|reload-or-restart|kill)\s+[^;&|\n]*hermes[^;&|\n]*gateway"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _check_gateway_self_target_guard(command: str) -> tuple:
+    """Block a gateway-hosted agent from stopping/restarting its own gateway.
+
+    Dangerous-command approval is not enough here: a restart kills the agent
+    that is currently trying to recover, which can create recursive
+    shutdown/resume/restart loops.  The gateway's own /restart path remains
+    available because it does not execute through the terminal tool and its
+    detached watcher explicitly scrubs the _HERMES_GATEWAY marker.
+    """
+
+    if os.getenv("_HERMES_GATEWAY") != "1":
+        return (False, None)
+    normalized = _normalize_command_for_detection(command).lower()
+    if _GATEWAY_SELF_TARGET_RE.search(normalized):
+        return (True, "gateway self-stop/restart from inside its own agent session")
+    return (False, None)
+
+
+def _gateway_self_target_block_result(description: str) -> dict:
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (gateway self-protection): {description}. "
+            "Do not restart or stop the gateway from a terminal command running "
+            "inside that same gateway session. Use the gateway /restart command "
+            "or restart the service externally from SSH/systemd."
+        ),
+    }
+
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
     """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
@@ -1123,6 +1163,11 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    is_gateway_self_target, gateway_self_desc = _check_gateway_self_target_guard(command)
+    if is_gateway_self_target:
+        logger.warning("Gateway self-target guard block: %s (command: %s)", gateway_self_desc, command[:200])
+        return _gateway_self_target_block_result(gateway_self_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1363,6 +1408,11 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    is_gateway_self_target, gateway_self_desc = _check_gateway_self_target_guard(command)
+    if is_gateway_self_target:
+        logger.warning("Gateway self-target guard block: %s (command: %s)", gateway_self_desc, command[:200])
+        return _gateway_self_target_block_result(gateway_self_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

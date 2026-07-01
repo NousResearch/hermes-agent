@@ -341,7 +341,9 @@ class TestGatewayRuntimeStatus:
             (
                 target,
                 payload,
-                {"indent": None, "separators": (",", ":")},
+                # mode=0o600 added (busy-gateway-quiescence, 2026-06-30): gateway_state.json
+                # carries multi-user active_agent_keys → owner-only, TOCTOU-safe.
+                {"indent": None, "separators": (",", ":"), "mode": 0o600},
             )
         ]
 

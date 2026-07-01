@@ -2982,6 +2982,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        # Per-session handle on the asyncio Task running that session's current turn.
+        # Captured synchronously at the slot-set (see _handle_message: no `await` between
+        # the slot-set and this capture) so it is the EXACT turn task — used by the
+        # background reaper to evict ONLY entries whose task is genuinely done()/cancelled
+        # (a leaked slot), never a live long-running turn. Cleared in _release_running_agent_state.
+        self._running_agent_tasks: Dict[str, Any] = {}
         self._session_initiated_restart: Dict[str, bool] = {}
         self._resumed_this_boot: set[str] = set()
         self._active_session_leases: Dict[str, Any] = {}
@@ -4423,12 +4429,117 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(active_agents=self._running_agent_count())
+            write_runtime_status(
+                active_agents=self._running_agent_count(),
+                # The live running-session keys (excl. the pending sentinel) so the
+                # safe-restart watcher can do per-session quiescence (is MY session idle?)
+                # rather than waiting for the whole fleet to go idle.
+                active_agent_keys=list(self._snapshot_running_agents().keys()),
+            )
         except Exception:
             pass
 
     # ------------------------------------------------------------------
-    # External drain control (NAS-driven quiesce-without-restart, Phase 2).
+    # Task-liveness reaper (busy-gateway-quiescence, spec §5 D-3/D-4).
+    #
+    # A `_running_agents` entry is normally cleared by the turn coroutine's own
+    # finally (`_release_running_agent_state`). It can LEAK only when that
+    # coroutine is killed without unwinding — a hard `kickstart -k` SIGKILL
+    # mid-turn, or an unhandled crash in the handler. A leaked entry inflates
+    # `active_agents` forever (the existing stale-eviction at the `:8861`-style
+    # predicate runs ONLY on a new inbound message for that exact key, so if the
+    # key never recurs the leak is permanent), which makes the safe-restart /
+    # safe-reboot quiescence wait (`active_agents==0`) unreachable.
+    #
+    # The reaper evicts ONLY entries whose turn TASK is genuinely done()/cancelled
+    # — an unambiguous dead-vs-alive signal. It NEVER uses the idle/wall-age
+    # heuristic the `:8861` predicate uses, because `_touch_activity` is dead code
+    # (the "idle" signal is fake — it grows monotonically from agent init), so a
+    # long LIVE delegated turn looks "idle" and would be amputated. A live task
+    # (`not task.done()`) is never reaped, regardless of age.
+    # ------------------------------------------------------------------
+    _REAP_GRACE_SECS: float = 30.0  # a non-sentinel entry with no recorded task survives
+    # this long before being treated as a genuine leak — covers the microscopic window
+    # between the sentinel→real-agent swap and the `current_task()` capture a few lines
+    # later, and any object.__new__ partial that never set a task. >> the no-await span.
+
+    def _reap_dead_running_agents(self, now: "float | None" = None) -> int:
+        """One reaper sweep: evict every leaked `_running_agents` slot whose turn task
+        is dead. Returns the eviction count. Sync + crash-safe (per-entry try/except),
+        so it runs atomically w.r.t. the message path between the loop's awaits.
+
+        Eviction predicate (per entry, in priority order):
+          * pending sentinel  -> NEVER reap (its async setup may still be in flight).
+          * live task (not done) -> NEVER reap (a real turn, any age — INV-4/AC-5).
+          * task is done()    -> reap (the slot leaked; the finally never ran — AC-4).
+          * no task recorded  -> reap ONLY if entry-age > _REAP_GRACE_SECS, else keep
+                                 (the registration window — AC-5b/B1-NEW).
+        """
+        now = time.time() if now is None else now
+        tasks = getattr(self, "_running_agent_tasks", {})
+        ts = getattr(self, "_running_agents_ts", {})
+        evicted = 0
+        for key, agent in list(self._running_agents.items()):
+            try:
+                if agent is _AGENT_PENDING_SENTINEL:
+                    continue
+                task = tasks.get(key)
+                if task is not None:
+                    if not task.done():
+                        continue  # LIVE turn — never reap, any age (INV-4/AC-5)
+                    reason = "task_done"
+                else:
+                    age = now - float(ts.get(key, now))
+                    if age <= self._REAP_GRACE_SECS:
+                        continue  # registration window — not yet a leak (AC-5b)
+                    reason = f"no_task_age_{age:.0f}s"
+                entry_age = now - float(ts.get(key, now))
+                logger.warning(
+                    "REAPER_EVICTED key=%s reason=%s age=%.0fs — leaked running-agent "
+                    "slot reclaimed (turn coroutine died without unwinding)",
+                    key, reason, entry_age,
+                )
+                self._release_running_agent_state(key)
+                evicted += 1
+            except Exception:
+                # Per-entry isolation: one bad entry must never abort the sweep (AC-6).
+                logger.debug("reaper: failed to classify entry %s", key, exc_info=True)
+        if evicted:
+            self._persist_active_agents()
+        return evicted
+
+    async def _reap_dead_running_agents_loop(self) -> None:
+        """Periodic driver for `_reap_dead_running_agents`. Wrapped so a sweep exception
+        logs and the loop CONTINUES next tick — a dead reaper would silently re-introduce
+        the permanent-`active_agents`-inflation bug it exists to prevent (AC-6/INV-5)."""
+        interval = self._reap_interval_secs()
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                if not self._running:
+                    break
+                self._reap_dead_running_agents()
+                self._stamp_reaper_heartbeat()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("reaper loop sweep failed; continuing")
+
+    @staticmethod
+    def _reap_interval_secs() -> float:
+        """Reaper sweep interval (seconds). config `agent.running_agent_reap_interval`,
+        default 60s. A leak blocks only the GLOBAL active_agents==0 fast-path, cleared
+        within one sweep; the per-session quiescence gate does not depend on it (RC-4)."""
+        raw = _float_env("HERMES_RUNNING_AGENT_REAP_INTERVAL", 60.0)
+        return raw if raw and raw > 0 else 60.0
+
+    def _stamp_reaper_heartbeat(self) -> None:
+        """Liveness stamp so a silently-dead reaper is detectable (INV-5). Best-effort."""
+        try:
+            self._reaper_last_sweep_ts = time.time()
+        except Exception:
+            pass
+
     # The dashboard's begin/cancel-drain endpoint writes/removes the
     # ``.drain_request.json`` marker (gateway/drain_control.py); this watcher
     # observes the marker and flips the gateway between accepting and refusing
@@ -7162,6 +7273,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._update_runtime_status("running")
+
+        # Launch the task-liveness reaper (busy-gateway-quiescence): a periodic sweep
+        # that reclaims leaked _running_agents slots (turns killed without unwinding) so
+        # the active_agents count — which the safe-restart/safe-reboot quiescence wait
+        # gates on — can reach 0. Registered in _background_tasks so shutdown cancels it.
+        try:
+            _reaper_task = asyncio.create_task(self._reap_dead_running_agents_loop())
+            self._background_tasks.add(_reaper_task)
+            _reaper_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            logger.warning("failed to start running-agent reaper loop", exc_info=True)
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -9983,6 +10105,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._active_session_leases[_quick_key] = _active_session_lease
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        # 🔴 LOAD-BEARING NO-AWAIT INVARIANT (busy-gateway-quiescence reaper, RC-1):
+        # capture THIS turn's asyncio Task synchronously here, in the same straight-line
+        # block as the slot-set above and the `await _handle_message_with_agent` below.
+        # The turn runs INLINE in this handler coroutine, so `current_task()` IS the turn
+        # task. There MUST be NO `await` between the slot-set and this capture — an await
+        # would let the reaper observe a non-sentinel slot with no recorded task and
+        # mis-classify a just-launched live turn as a leaked/dead entry (INV-4 violation).
+        # If you add an `await` in this span, move this capture or the reaper breaks.
+        if not hasattr(self, "_running_agent_tasks"):
+            self._running_agent_tasks = {}  # self-heal for object.__new__ partials
+        self._running_agent_tasks[_quick_key] = asyncio.current_task()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
@@ -15518,6 +15651,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to release active session slot", exc_info=True)
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        # Clear the turn-task handle alongside the slot (busy-gateway-quiescence reaper).
+        # This is the single chokepoint covering every turn-exit path, so the handle never
+        # outlives the slot. Idempotent: pop-on-absent is harmless, so a reaper eviction
+        # racing this finally double-releases safely (AC-10).
+        getattr(self, "_running_agent_tasks", {}).pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the

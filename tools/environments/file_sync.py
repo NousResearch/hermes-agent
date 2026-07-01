@@ -128,6 +128,76 @@ _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 
 
+def _resolved_path(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return path.expanduser().absolute()
+
+
+def _sensitive_sync_back_dirs(hermes_home: Path | None = None) -> list[Path]:
+    hermes_home = hermes_home or get_hermes_home()
+    return [
+        _resolved_path(hermes_home / "skills"),
+        _resolved_path(hermes_home / "plugins"),
+    ]
+
+
+def _sensitive_sync_back_files(hermes_home: Path | None = None) -> list[Path]:
+    hermes_home = hermes_home or get_hermes_home()
+    return [
+        _resolved_path(hermes_home / "config.yaml"),
+        _resolved_path(hermes_home / "config.yml"),
+        _resolved_path(hermes_home / ".env"),
+    ]
+
+
+def _casefolded_parts(path: Path) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in path.parts)
+
+
+def _same_or_child_path(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        pass
+
+    path_parts = _casefolded_parts(path)
+    parent_parts = _casefolded_parts(parent)
+    return (
+        len(path_parts) >= len(parent_parts)
+        and path_parts[:len(parent_parts)] == parent_parts
+    )
+
+
+def _same_path(path: Path, other: Path) -> bool:
+    return path == other or _casefolded_parts(path) == _casefolded_parts(other)
+
+
+def _is_safe_sync_back_target(
+    host_path: str,
+    hermes_home: Path | None = None,
+) -> bool:
+    """Return whether sync_back may write to *host_path*."""
+    try:
+        raw_path = Path(host_path).expanduser()
+        if any(part == ".." for part in raw_path.parts):
+            return False
+        resolved = raw_path.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+    for sensitive_dir in _sensitive_sync_back_dirs(hermes_home):
+        if _same_or_child_path(resolved, sensitive_dir):
+            return False
+
+    return not any(
+        _same_path(resolved, sensitive_file)
+        for sensitive_file in _sensitive_sync_back_files(hermes_home)
+    )
+
+
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment.
 
@@ -259,13 +329,14 @@ class FileSyncManager:
             logger.debug("sync_back: no prior push state — skipping")
             return
 
-        lock_path = (hermes_home or get_hermes_home()) / ".sync.lock"
+        active_hermes_home = hermes_home or get_hermes_home()
+        lock_path = active_hermes_home / ".sync.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         last_exc: Exception | None = None
         for attempt in range(_SYNC_BACK_MAX_RETRIES):
             try:
-                self._sync_back_once(lock_path)
+                self._sync_back_once(lock_path, active_hermes_home)
                 return
             except Exception as exc:
                 last_exc = exc
@@ -279,7 +350,7 @@ class FileSyncManager:
 
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
 
-    def _sync_back_once(self, lock_path: Path) -> None:
+    def _sync_back_once(self, lock_path: Path, hermes_home: Path) -> None:
         """Single sync-back attempt with SIGINT protection and file lock."""
         # signal.signal() only works from the main thread. In gateway
         # contexts cleanup() may run from a worker thread — skip SIGINT
@@ -297,23 +368,23 @@ class FileSyncManager:
 
             signal.signal(signal.SIGINT, _defer_sigint)
         try:
-            self._sync_back_locked(lock_path)
+            self._sync_back_locked(lock_path, hermes_home)
         finally:
             if on_main_thread and original_handler is not None:
                 signal.signal(signal.SIGINT, original_handler)
                 if deferred_sigint:
                     os.kill(os.getpid(), signal.SIGINT)
 
-    def _sync_back_locked(self, lock_path: Path) -> None:
+    def _sync_back_locked(self, lock_path: Path, hermes_home: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
         if fcntl is None:
             # Windows: no flock — run without serialization
-            self._sync_back_impl()
+            self._sync_back_impl(hermes_home)
             return
         lock_fd = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            self._sync_back_impl()
+            self._sync_back_impl(hermes_home)
         finally:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -321,7 +392,7 @@ class FileSyncManager:
                 pass
             lock_fd.close()
 
-    def _sync_back_impl(self) -> None:
+    def _sync_back_impl(self, hermes_home: Path) -> None:
         """Download, diff, and apply remote changes to host."""
         if self._bulk_download_fn is None:
             raise RuntimeError("_sync_back_impl called without bulk_download_fn")
@@ -390,6 +461,28 @@ class FileSyncManager:
                         if self._is_upload_only_host_path(host_path, upload_only_host_paths):
                             logger.debug(
                                 "sync_back: skipping upload-only credential file %s",
+                                remote_path,
+                            )
+                            continue
+
+                        if not _is_safe_sync_back_target(host_path, hermes_home):
+                            logger.warning(
+                                "sync_back: SECURITY: refusing to write "
+                                "sensitive host path %s (remote: %s)",
+                                host_path,
+                                remote_path,
+                            )
+                            continue
+
+                        try:
+                            resolved_target = Path(host_path).resolve()
+                            resolved_parent = Path(os.path.dirname(host_path)).resolve()
+                            resolved_target.relative_to(resolved_parent)
+                        except (OSError, RuntimeError, ValueError):
+                            logger.warning(
+                                "sync_back: SECURITY: path %s escapes its mapped "
+                                "directory — skipping (remote: %s)",
+                                host_path,
                                 remote_path,
                             )
                             continue

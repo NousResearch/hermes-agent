@@ -14,6 +14,7 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
+    _is_safe_sync_back_target,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
@@ -471,3 +472,100 @@ class TestSyncBackSizeCap:
         # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
+
+
+class TestSyncBackSensitiveTargets:
+    """sync_back refuses inferred writes into host Hermes state."""
+
+    def test_sensitive_hermes_paths_are_unsafe(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert not _is_safe_sync_back_target(str(hermes_home / "skills" / "x.py"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "plugins" / "x.py"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "config.yaml"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "config.yml"))
+        assert not _is_safe_sync_back_target(str(hermes_home / ".env"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "Skills" / "x.py"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "Plugins" / "x.py"))
+        assert not _is_safe_sync_back_target(str(hermes_home / "CONFIG.YAML"))
+        assert not _is_safe_sync_back_target(str(hermes_home / ".ENV"))
+
+    def test_dotdot_path_is_unsafe(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert not _is_safe_sync_back_target(
+            str(tmp_path / "workspace" / ".." / "escape.py")
+        )
+
+    def test_inferred_new_skill_file_is_blocked(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        anchor_host = hermes_home / "skills" / "existing.py"
+        mapping = [(str(anchor_host), "/root/.hermes/skills/existing.py")]
+        download_fn = _make_download_fn({
+            "root/.hermes/skills/injected.py": b"print('remote injected')\n",
+        })
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=mapping,
+            bulk_download_fn=download_fn,
+        )
+
+        target = hermes_home / "skills" / "injected.py"
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=hermes_home)
+
+        assert not target.exists()
+        assert any("SECURITY" in record.message for record in caplog.records)
+
+    def test_explicit_sync_home_protects_even_when_env_differs(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        env_home = tmp_path / "env-home"
+        active_home = tmp_path / "active-home"
+        monkeypatch.setenv("HERMES_HOME", str(env_home))
+
+        anchor_host = active_home / "skills" / "existing.py"
+        mapping = [(str(anchor_host), "/root/.hermes/skills/existing.py")]
+        download_fn = _make_download_fn({
+            "root/.hermes/skills/injected.py": b"print('remote injected')\n",
+        })
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=mapping,
+            bulk_download_fn=download_fn,
+        )
+
+        target = active_home / "skills" / "injected.py"
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=active_home)
+
+        assert not target.exists()
+        assert any("SECURITY" in record.message for record in caplog.records)
+
+    def test_non_sensitive_inferred_file_still_syncs(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        existing_host = tmp_path / "cache" / "existing.json"
+        _write_file(existing_host, b"{}")
+        mapping = [(str(existing_host), "/root/.hermes/cache/existing.json")]
+        download_fn = _make_download_fn({
+            "root/.hermes/cache/new_entry.json": b'{"new": true}',
+        })
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=mapping,
+            bulk_download_fn=download_fn,
+        )
+
+        mgr.sync_back(hermes_home=hermes_home)
+
+        expected = tmp_path / "cache" / "new_entry.json"
+        assert expected.read_bytes() == b'{"new": true}'

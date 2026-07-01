@@ -238,6 +238,11 @@
       "note": "Layered OpenClaw vendor sync (openclaw-sync + clawdbot-main)."
     },
     {
+      "pattern": "scripts/setup_open_webui.sh",
+      "action": "preserve_custom",
+      "note": "Fork-owned Open WebUI bootstrap; upstream removed this helper, but the fork still ships it as an optional local integration."
+    },
+    {
       "pattern": "scripts/merge_tools/openclaw_*",
       "action": "preserve_custom",
       "note": "Layered OpenClaw merge helpers."

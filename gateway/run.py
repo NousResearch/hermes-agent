@@ -18543,13 +18543,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # new message).
 
                 updated_history = result.get("messages", history)
+                followup_session_id = session_id
+                if isinstance(response, dict):
+                    followup_session_id = response.get("session_id") or followup_session_id
                 next_source = source
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(followup_session_id):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",
@@ -18589,17 +18592,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # prefix #46237 was merged to preserve.  The existing
                 # re-baseline in _handle_message_with_agent only runs after the
                 # whole _run_agent chain unwinds — too late for the in-band
-                # follow-up.  Use the same (session_key, session_id) the
-                # recursive call runs under so the snapshot matches exactly
+                # follow-up.  Use the same (session_key, followup_session_id)
+                # the recursive call runs under so the snapshot matches exactly
                 # what the follow-up's guard will consult.  Fail-safe in helper.
-                await self._refresh_agent_cache_message_count(session_key, session_id)
+                await self._refresh_agent_cache_message_count(session_key, followup_session_id)
 
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=next_source,
-                    session_id=session_id,
+                    session_id=followup_session_id,
                     session_key=session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,

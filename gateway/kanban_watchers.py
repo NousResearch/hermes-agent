@@ -25,6 +25,22 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_notifier_agent_wake_enabled(load_config: Callable[[], Any]) -> bool:
+    """Return whether kanban notifications should wake an agent session.
+
+    Delivery notifications are safe by default; injecting a synthetic message
+    into the subscribed chat starts an agent loop and can make a notification
+    look like a new user instruction. Keep that behavior opt-in so a delivery
+    subscription cannot silently become cross-profile task takeover.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    return bool(kcfg.get("wake_agent_on_terminal_events", False))
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -563,7 +579,7 @@ class GatewayKanbanWatchersMixin:
                                 board=board_slug,
                             )
 
-                        if not _is_push_adapter and _wake_kinds and _session_key:
+                        if not _is_push_adapter and _wake_kinds and _session_key and _resolve_notifier_agent_wake_enabled(_load_config):
                             # Wake self-post IS the delivery on this path —
                             # it must succeed BEFORE the cursor advances.
                             from gateway.wake import deliver_wake
@@ -627,7 +643,7 @@ class GatewayKanbanWatchersMixin:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        if _is_push_adapter and _wake_kinds and _session_key:
+                        if _is_push_adapter and _wake_kinds and _session_key and _resolve_notifier_agent_wake_enabled(_load_config):
                             try:
                                 from gateway.session import SessionSource
                                 from gateway.wake import deliver_wake

@@ -1227,7 +1227,12 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(
+        self,
+        force: bool = False,
+        *,
+        cli_command: Optional[str] = None,
+    ) -> None:
         """Scan all plugin sources and load each plugin found.
 
         When ``force`` is true, clear cached discovery state first so config
@@ -1235,6 +1240,7 @@ class PluginManager:
         sessions without requiring a full agent restart.
         """
         if self._discovered and not force:
+            self._load_deferred_platform_for_cli_command(cli_command)
             return
         # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
         # with all customizations disabled. Skip plugin discovery entirely so
@@ -1268,6 +1274,7 @@ class PluginManager:
         except BaseException:
             self._discovered = False
             raise
+        self._load_deferred_platform_for_cli_command(cli_command)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
@@ -1700,6 +1707,21 @@ class PluginManager:
             )
             self._load_plugin(manifest)
 
+    def _load_deferred_platform_for_cli_command(
+        self,
+        cli_command: Optional[str],
+    ) -> None:
+        if not cli_command or cli_command in self._cli_commands:
+            return
+        for loaded in list(self._plugins.values()):
+            if not loaded.deferred:
+                continue
+            manifest = loaded.manifest
+            if self._platform_name_from_manifest(manifest) != cli_command:
+                continue
+            self._load_plugin(manifest)
+            return
+
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
@@ -1992,13 +2014,17 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(
+    force: bool = False,
+    *,
+    cli_command: Optional[str] = None,
+) -> None:
     """Discover and load all plugins.
 
     Default behavior is idempotent. Pass ``force=True`` to rescan plugin
     manifests and reload state in the current process.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    get_plugin_manager().discover_and_load(force=force, cli_command=cli_command)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

@@ -13,6 +13,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
+from plugins.platforms.photon.state import PhotonStateStore
 
 _MD = "**bold** and `code`"
 
@@ -127,3 +128,6 @@ async def test_standalone_send_includes_markdown_format(
 
     assert result.get("success") is True
     assert posted[0][1]["format"] == "markdown"
+    state = PhotonStateStore().load()
+    assert state["sent_messages"]["m-9"]["chat_key"] == "+15551234567"
+    assert state["sent_messages"]["m-9"]["kind"] == "markdown"

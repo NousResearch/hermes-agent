@@ -16,6 +16,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
+from plugins.platforms.photon.state import PhotonStateStore
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
@@ -240,7 +241,7 @@ async def test_standalone_send_text_then_attachments(
     cfg = PlatformConfig(enabled=True, token="", extra={})
     result = await photon_adapter._standalone_send(
         cfg,
-        "any;-;+1",
+        "any;-;+15551234567",
         "hello",
         media_files=[(str(img), False)],
     )
@@ -253,3 +254,6 @@ async def test_standalone_send_text_then_attachments(
     assert posted[1][1]["path"] == str(img)
     assert posted[1][1]["kind"] == "attachment"
     assert posted[1][1]["mimeType"] == "image/png"
+    state = PhotonStateStore().load()
+    assert state["sent_messages"]["m-9"]["chat_key"] == "+15551234567"
+    assert state["sent_messages"]["m-9"]["kind"] == "attachment"

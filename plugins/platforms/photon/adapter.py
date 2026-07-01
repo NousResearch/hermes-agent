@@ -64,6 +64,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import strip_markdown
 
 from .auth import load_project_credentials
+from .state import PhotonStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,15 @@ def _markdown_enabled() -> bool:
     }
 
 
+def _timestamp_from_iso(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 
@@ -254,6 +264,8 @@ class PhotonAdapter(BasePlatformAdapter):
         # react action default to "the message that triggered me" without
         # requiring the model to thread message ids through tool calls.
         self._last_inbound_by_chat: Dict[str, str] = {}
+        self._photon_state = PhotonStateStore()
+        self._hydrate_persistent_state()
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
@@ -271,6 +283,26 @@ class PhotonAdapter(BasePlatformAdapter):
             if "mention_patterns" in extra
             else os.getenv("PHOTON_MENTION_PATTERNS")
         )
+
+    def _hydrate_persistent_state(self) -> None:
+        state = self._photon_state.load()
+        sent = state.get("sent_messages") or {}
+        if isinstance(sent, dict):
+            for message_id, meta in sent.items():
+                if not isinstance(message_id, str):
+                    continue
+                ts = time.time()
+                if isinstance(meta, dict):
+                    ts = _timestamp_from_iso(meta.get("sent_at")) or ts
+                self._sent_message_ids[message_id] = ts
+        inbound = state.get("last_inbound_by_chat") or {}
+        if isinstance(inbound, dict):
+            for chat_key, meta in inbound.items():
+                if not isinstance(chat_key, str) or not isinstance(meta, dict):
+                    continue
+                message_id = meta.get("message_id")
+                if isinstance(message_id, str) and message_id:
+                    self._last_inbound_by_chat[chat_key] = message_id
 
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
@@ -1122,7 +1154,13 @@ class PhotonAdapter(BasePlatformAdapter):
     _SENT_IDS_MAX = 1000
     _LAST_INBOUND_CHATS_MAX = 200
 
-    def _record_sent_message(self, message_id: Optional[str]) -> None:
+    def _record_sent_message(
+        self,
+        message_id: Optional[str],
+        *,
+        chat_id: Optional[str] = None,
+        kind: str = "text",
+    ) -> None:
         if not message_id:
             return
         sent = self._sent_message_ids
@@ -1132,6 +1170,13 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(sent) > self._SENT_IDS_MAX:
             for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
                 del sent[old]
+        chat_key = self._normalize_chat_key(chat_id) if chat_id else None
+        self._photon_state.record_sent_message(
+            message_id,
+            chat_key=chat_key,
+            space_id=chat_id,
+            kind=kind,
+        )
 
     # A DM space is addressable two ways — the chat GUID (`any;-;+1555...`)
     # that inbound events carry, and the bare E.164 phone that home-channel
@@ -1160,6 +1205,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 : len(last) - self._LAST_INBOUND_CHATS_MAX
             ]:
                 del last[old]
+        self._photon_state.record_last_inbound(key, message_id, space_id=chat_id)
 
     def _reactions_enabled(self) -> bool:
         return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
@@ -1170,29 +1216,101 @@ class PhotonAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: str, emoji: str
     ) -> bool:
         """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
+        chat_key = self._normalize_chat_key(chat_id)
+        self._photon_state.record_audit(
+            action="react",
+            status="started",
+            chat_key=chat_key,
+            message_id=message_id,
+        )
         try:
-            await self._sidecar_call(
+            data = await self._sidecar_call(
                 "/react",
                 {"spaceId": chat_id, "messageId": message_id, "emoji": emoji},
             )
+            reaction_id = data.get("reactionId")
+            self._photon_state.record_reaction_added(
+                chat_key,
+                message_id,
+                emoji,
+                str(reaction_id) if reaction_id else None,
+            )
+            self._photon_state.record_audit(
+                action="react",
+                status="succeeded",
+                chat_key=chat_key,
+                message_id=message_id,
+                reaction_id=str(reaction_id) if reaction_id else None,
+            )
             return True
         except Exception as e:
+            self._photon_state.record_audit(
+                action="react",
+                status="failed",
+                chat_key=chat_key,
+                message_id=message_id,
+                error_class=e.__class__.__name__,
+                error=e,
+            )
             logger.debug("[photon] add_reaction failed: %s", e)
             return False
 
     async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
         """Retract our tapback from a message. Soft-fails (False), never raises.
 
-        The sidecar tracks one reaction handle per target message; after a
-        sidecar restart the handle is gone and removal is best-effort (the
-        stale tapback self-heals when the next reaction replaces it).
+        The sidecar tracks one live reaction handle per target message. Hermes
+        also persists the returned reaction id so a restarted sidecar can try
+        rehydrating and unsending the reaction message.
         """
+        chat_key = self._normalize_chat_key(chat_id)
+        slot = self._photon_state.reaction_for(chat_key, message_id)
+        if slot is None and chat_key != chat_id:
+            slot = self._photon_state.reaction_for(chat_id, message_id)
+        reaction_id = slot.get("reaction_id") if isinstance(slot, dict) else None
+        self._photon_state.record_audit(
+            action="unreact",
+            status="started",
+            chat_key=chat_key,
+            message_id=message_id,
+            reaction_id=str(reaction_id) if reaction_id else None,
+        )
         try:
             await self._sidecar_call(
-                "/unreact", {"spaceId": chat_id, "messageId": message_id},
+                "/unreact",
+                {
+                    "spaceId": chat_id,
+                    "messageId": message_id,
+                    "reactionId": str(reaction_id) if reaction_id else None,
+                },
+            )
+            self._photon_state.record_reaction_removed(
+                chat_key, message_id, succeeded=True
+            )
+            if chat_key != chat_id:
+                self._photon_state.record_reaction_removed(
+                    chat_id, message_id, succeeded=True
+                )
+            self._photon_state.record_audit(
+                action="unreact",
+                status="succeeded",
+                chat_key=chat_key,
+                message_id=message_id,
+                reaction_id=str(reaction_id) if reaction_id else None,
             )
             return True
         except Exception as e:
+            self._photon_state.record_reaction_removed(
+                chat_key, message_id, succeeded=False
+            )
+            self._photon_state.record_audit(
+                action="unreact",
+                status="failed",
+                chat_key=chat_key,
+                message_id=message_id,
+                reaction_id=str(reaction_id) if reaction_id else None,
+                error_class=e.__class__.__name__,
+                error=e,
+            )
             logger.debug("[photon] remove_reaction failed: %s", e)
             return False
 
@@ -1256,9 +1374,9 @@ class PhotonAdapter(BasePlatformAdapter):
         """Tapback 👀 on the triggering message while the agent works."""
         if not self._reactions_enabled():
             return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id:
+        target = self._processing_reaction_target(event)
+        if target:
+            chat_id, message_id = target
             await self._add_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(
@@ -1272,16 +1390,35 @@ class PhotonAdapter(BasePlatformAdapter):
         """
         if not self._reactions_enabled():
             return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if not chat_id or not message_id:
+        target = self._processing_reaction_target(event)
+        if not target:
             return
+        chat_id, message_id = target
         await self._remove_reaction(chat_id, message_id)
         if outcome == ProcessingOutcome.SUCCESS:
             await self._add_reaction(chat_id, message_id, "\U0001f44d")
         elif outcome == ProcessingOutcome.FAILURE:
             await self._add_reaction(chat_id, message_id, "\U0001f44e")
         # CANCELLED: leave the message unreacted.
+
+    @staticmethod
+    def _processing_reaction_target(
+        event: MessageEvent,
+    ) -> Optional[tuple[str, str]]:
+        """Return the message target for processing tapbacks, if reactable."""
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return None
+        raw = getattr(event, "raw_message", None)
+        if isinstance(raw, dict):
+            content = raw.get("content")
+            if isinstance(content, dict) and content.get("type") == "reaction":
+                return None
+        text = getattr(event, "text", None)
+        if isinstance(text, str) and text.startswith("reaction:"):
+            return None
+        return str(chat_id), str(message_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.
@@ -1390,12 +1527,36 @@ class PhotonAdapter(BasePlatformAdapter):
         # keeps accepting the body during a half-upgraded restart.
         if _markdown_enabled():
             body["format"] = "markdown"
+        chat_key = self._normalize_chat_key(space_id)
+        self._photon_state.record_audit(
+            action="send",
+            status="started",
+            chat_key=chat_key,
+        )
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
+            self._photon_state.record_audit(
+                action="send",
+                status="failed",
+                chat_key=chat_key,
+                error_class=e.__class__.__name__,
+                error=e,
+            )
             return SendResult(success=False, error=str(e))
-        self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        message_id = data.get("messageId")
+        self._record_sent_message(
+            message_id,
+            chat_id=space_id,
+            kind="markdown" if body.get("format") == "markdown" else "text",
+        )
+        self._photon_state.record_audit(
+            action="send",
+            status="succeeded",
+            chat_key=chat_key,
+            message_id=message_id,
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def _sidecar_send_attachment(
         self,
@@ -1420,6 +1581,13 @@ class PhotonAdapter(BasePlatformAdapter):
         # send_*_file / cron callers may pass arbitrary strings.
         safe_path = self.validate_media_delivery_path(str(path))
         if not safe_path:
+            self._photon_state.record_audit(
+                action="send",
+                status="failed",
+                chat_key=self._normalize_chat_key(space_id),
+                error_class="ValueError",
+                error=f"unsafe or missing attachment path: {path}",
+            )
             return SendResult(
                 success=False, error=f"unsafe or missing attachment path: {path}"
             )
@@ -1439,12 +1607,32 @@ class PhotonAdapter(BasePlatformAdapter):
             body["mimeType"] = mime_type
         if caption:
             body["caption"] = caption
+        chat_key = self._normalize_chat_key(space_id)
+        self._photon_state.record_audit(
+            action="send",
+            status="started",
+            chat_key=chat_key,
+        )
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
+            self._photon_state.record_audit(
+                action="send",
+                status="failed",
+                chat_key=chat_key,
+                error_class=e.__class__.__name__,
+                error=e,
+            )
             return SendResult(success=False, error=str(e))
-        self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        message_id = data.get("messageId")
+        self._record_sent_message(message_id, chat_id=space_id, kind=body["kind"])
+        self._photon_state.record_audit(
+            action="send",
+            status="succeeded",
+            chat_key=chat_key,
+            message_id=message_id,
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         # Guard: adapter not yet connected (no sidecar address known).
@@ -1580,12 +1768,48 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}
+    state = PhotonStateStore()
+    state.load()
+    chat_key = PhotonAdapter._normalize_chat_key(chat_id) if chat_id else chat_id
+
+    def _audit(
+        status: str,
+        *,
+        message_id: Optional[str] = None,
+        error: Any = None,
+        error_class: Optional[str] = None,
+    ) -> None:
+        state.record_audit(
+            action="send",
+            status=status,
+            chat_key=chat_key,
+            message_id=message_id,
+            error=error,
+            error_class=error_class,
+        )
+
+    def _record_success(data: Dict[str, Any], *, kind: str) -> Optional[str]:
+        message_id = data.get("messageId")
+        state.record_sent_message(
+            message_id,
+            chat_key=chat_key,
+            space_id=chat_id,
+            kind=kind,
+        )
+        _audit("succeeded", message_id=message_id)
+        return message_id if isinstance(message_id, str) else None
+
     port = _coerce_port(
         (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
     token = os.getenv("PHOTON_SIDECAR_TOKEN")
     if not token:
+        _audit(
+            "failed",
+            error_class="RuntimeError",
+            error="missing PHOTON_SIDECAR_TOKEN",
+        )
         return {
             "error": (
                 "Photon standalone send requires a running sidecar with "
@@ -1606,15 +1830,23 @@ async def _standalone_send(
                 }
                 if _markdown_enabled():
                     send_body["format"] = "markdown"
+                _audit("started")
                 resp = await client.post(
                     f"{base}/send", json=send_body, headers=headers,
                 )
                 if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                    error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                    _audit("failed", error_class="RuntimeError", error=error)
+                    return {"error": error}
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
-                last_message_id = data.get("messageId")
+                    error = data.get("error") or "sidecar reported failure"
+                    _audit("failed", error_class="RuntimeError", error=error)
+                    return {"error": error}
+                last_message_id = _record_success(
+                    data,
+                    kind="markdown" if send_body.get("format") == "markdown" else "text",
+                )
 
             # 2. Each attachment as a separate /send-attachment call.
             #    media_files is List[Tuple[path, is_voice]] (see
@@ -1625,6 +1857,11 @@ async def _standalone_send(
                 safe_path = BasePlatformAdapter.validate_media_delivery_path(str(media_path))
                 if not safe_path:
                     logger.warning("[photon] standalone send skipping unsafe path")
+                    _audit(
+                        "failed",
+                        error_class="ValueError",
+                        error=f"unsafe or missing attachment path: {media_path}",
+                    )
                     continue
                 guessed, _ = mimetypes.guess_type(safe_path)
                 att_body: Dict[str, Any] = {
@@ -1634,18 +1871,26 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
+                _audit("started")
                 resp = await client.post(
                     f"{base}/send-attachment", json=att_body, headers=headers,
                 )
                 if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                    error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                    _audit("failed", error_class="RuntimeError", error=error)
+                    return {"error": error}
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
-                last_message_id = data.get("messageId") or last_message_id
+                    error = data.get("error") or "sidecar reported failure"
+                    _audit("failed", error_class="RuntimeError", error=error)
+                    return {"error": error}
+                last_message_id = (
+                    _record_success(data, kind=att_body["kind"]) or last_message_id
+                )
 
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
+        _audit("failed", error_class=e.__class__.__name__, error=e)
         return {"error": f"Photon standalone send failed: {e}"}
 
 

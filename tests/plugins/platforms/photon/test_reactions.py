@@ -67,6 +67,26 @@ def _message_event(adapter: PhotonAdapter) -> MessageEvent:
     )
 
 
+def _reaction_message_event(adapter: PhotonAdapter) -> MessageEvent:
+    return MessageEvent(
+        text="reaction:added:\U0001f44d",
+        message_type=MessageType.TEXT,
+        source=adapter.build_source(
+            chat_id="+15551234567",
+            chat_name="+15551234567",
+            chat_type="dm",
+            user_id="+15551234567",
+            user_name=None,
+        ),
+        message_id="reaction-evt-1",
+        reply_to_message_id="bot-msg-1",
+        reply_to_text="the bot's earlier reply",
+        reply_to_is_own_message=True,
+        raw_message=_reaction_event(emoji="\U0001f44d"),
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+
+
 def _reaction_event(
     emoji: str = "❤️",
     target_id: str = "bot-msg-1",
@@ -123,7 +143,14 @@ async def test_remove_reaction_posts_unreact(monkeypatch: pytest.MonkeyPatch) ->
 
     assert ok is True
     assert calls == [
-        ("/unreact", {"spaceId": "+15551234567", "messageId": "target-msg-1"})
+        (
+            "/unreact",
+            {
+                "spaceId": "+15551234567",
+                "messageId": "target-msg-1",
+                "reactionId": None,
+            },
+        )
     ]
 
 
@@ -217,6 +244,21 @@ async def test_processing_cancelled_only_removes(
     assert [path for path, _ in calls] == ["/unreact"]
 
 
+@pytest.mark.asyncio
+async def test_processing_hooks_skip_inbound_reaction_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_REACTIONS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    event = _reaction_message_event(adapter)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert calls == []
+
+
 # -- Inbound reaction routing ------------------------------------------------
 
 @pytest.mark.asyncio
@@ -273,6 +315,106 @@ async def test_inbound_reaction_sent_ids_fallback(
     )
 
     assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_sent_ids_fallback_survives_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persisted sent ids still route tapbacks when provider direction is null."""
+    first = _make_adapter(monkeypatch)
+    first._record_sent_message("bot-msg-1", chat_id="+15551234567")
+
+    restarted = _make_adapter(monkeypatch)
+    captured = _capture_handled(restarted, monkeypatch)
+
+    await restarted._dispatch_inbound(
+        _reaction_event(target_id="bot-msg-1", target_direction=None)
+    )
+
+    assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_latest_inbound_target_survives_restart_for_add_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _make_adapter(monkeypatch)
+    _capture_handled(first, monkeypatch)
+    await first._dispatch_inbound({
+        "messageId": "inbound-before-restart",
+        "platform": "iMessage",
+        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
+        "sender": {"id": "+15551234567"},
+        "content": {"type": "text", "text": "hello"},
+        "timestamp": "2026-06-11T10:00:00.000Z",
+    })
+
+    restarted = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(restarted)
+
+    result = await restarted.add_reaction("+15551234567", _THUMBS_UP)
+
+    assert result == {"success": True, "message_id": "inbound-before-restart"}
+    assert calls[0] == (
+        "/react",
+        {
+            "spaceId": "+15551234567",
+            "messageId": "inbound-before-restart",
+            "emoji": _THUMBS_UP,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_reaction_id_persisted_for_unreact_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(first)
+
+    assert await first._add_reaction("+15551234567", "target-msg-1", _EYES)
+    assert calls[0][0] == "/react"
+
+    restarted = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(restarted)
+
+    assert await restarted._remove_reaction("+15551234567", "target-msg-1")
+    assert calls == [
+        (
+            "/unreact",
+            {
+                "spaceId": "+15551234567",
+                "messageId": "target-msg-1",
+                "reactionId": "react-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_persisted_reaction_lookup_accepts_dm_alias_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _make_adapter(monkeypatch)
+    _capture_sidecar(first)
+
+    assert await first._add_reaction("any;-;+15551234567", "target-msg-1", _EYES)
+
+    restarted = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(restarted)
+
+    assert await restarted._remove_reaction("+15551234567", "target-msg-1")
+    assert calls == [
+        (
+            "/unreact",
+            {
+                "spaceId": "+15551234567",
+                "messageId": "target-msg-1",
+                "reactionId": "react-1",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

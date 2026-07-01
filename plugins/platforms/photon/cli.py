@@ -314,7 +314,42 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
+    _print_state_summary(print)
     return 0
+
+
+def _print_state_summary(emit) -> None:
+    from .state import PhotonStateStore
+
+    store = PhotonStateStore()
+    store.load()
+    health = store.health()
+    emit(f"  state file          : {health['path']}")
+    if health.get("load_error"):
+        emit(
+            "  state unavailable/corrupt; using empty runtime state "
+            f"({health['load_error']})"
+        )
+    if health.get("write_error"):
+        emit(f"  state write failure : {health['write_error']}")
+    emit(f"  state schema        : v{health['schema_version']}")
+    emit(
+        "  state counts        : "
+        f"{health['sent_messages']} sent, "
+        f"{health['last_inbound_chats']} inbound chats, "
+        f"{health['active_reactions']} active reactions, "
+        f"{health['audit_entries']} audit entries"
+    )
+    failure = health.get("last_failure")
+    if isinstance(failure, dict):
+        parts = [
+            str(failure.get("at") or "unknown time"),
+            str(failure.get("action") or "unknown action"),
+            "failed",
+        ]
+        if failure.get("error"):
+            parts.append(f"({failure['error']})")
+        emit(f"  last state failure  : {' '.join(parts)}")
 
 
 def _refresh_status_numbers() -> None:

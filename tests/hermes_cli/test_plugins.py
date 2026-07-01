@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    LoadedPlugin,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -483,6 +484,32 @@ class TestPluginDiscovery:
         assert mgr._plugin_skills == {}
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
+
+    def test_deferred_bundled_platform_cli_loads_on_matching_command(self, tmp_path, monkeypatch):
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="photon-platform",
+            version="0.1.0",
+            source="bundled",
+            path=tmp_path,
+            kind="platform",
+            key="platforms/photon",
+        )
+        loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
+        mgr._plugins[manifest.key] = loaded
+        mgr._discovered = True
+        loaded_names: list[str] = []
+
+        def fake_load_plugin(item):
+            loaded_names.append(item.name)
+            mgr._cli_commands["photon"] = {"name": "photon", "plugin": item.name}
+
+        monkeypatch.setattr(mgr, "_load_plugin", fake_load_plugin)
+
+        mgr.discover_and_load(cli_command="photon")
+
+        assert loaded_names == ["photon-platform"]
+        assert "photon" in mgr._cli_commands
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────

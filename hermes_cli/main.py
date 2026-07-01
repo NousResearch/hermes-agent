@@ -12805,7 +12805,7 @@ def main():
                     plugin_parser.set_defaults(func=cmd_info["handler_fn"])
                 seen_plugin_commands.add(cmd_info["name"])
 
-            discover_plugins()
+            discover_plugins(cli_command=_first_positional_argv())
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

@@ -718,3 +718,97 @@ async def test_disconnect_cancels_heartbeat_task():
 
     assert heartbeat_task.cancelled(), "Heartbeat task must be cancelled by disconnect()"
     assert adapter._polling_heartbeat_task is None
+
+
+# ── Bootstrap degradation: keep polling alive during outages (#47508) ────
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_network_error_is_recoverable():
+    """deleteWebhook timeouts must not fail gateway startup.
+
+    A transient Bot API outage during bootstrap should be treated as
+    recoverable and continue toward polling, so it never becomes a systemd
+    service failure.
+    """
+    adapter = _make_adapter()
+    mock_bot = MagicMock()
+    mock_bot.delete_webhook = AsyncMock(side_effect=ConnectionError("api.telegram.org timeout"))
+    adapter._bot = mock_bot
+
+    result = await adapter._delete_webhook_best_effort()
+
+    assert result is False
+    assert adapter._send_path_degraded is True
+    mock_bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_network_error_schedules_background_recovery():
+    """Initial start_polling() network failure should degrade, not raise."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(side_effect=ConnectionError("bootstrap timeout"))
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._schedule_polling_recovery = MagicMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    adapter._schedule_polling_recovery.assert_called_once()
+    err = adapter._schedule_polling_recovery.call_args.args[0]
+    assert isinstance(err, ConnectionError)
+    assert adapter._schedule_polling_recovery.call_args.kwargs["reason"] == "polling bootstrap"
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_conflict_schedules_conflict_recovery_task():
+    """Initial 409 polling conflict should also be recovered in background."""
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(
+        side_effect=Exception("Conflict: terminated by other getUpdates request")
+    )
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+    adapter._handle_polling_conflict = AsyncMock()
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+    )
+
+    assert result is False
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert pending, "expected background conflict recovery task"
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    assert not adapter.has_fatal_error
+
+
+@pytest.mark.asyncio
+async def test_schedule_polling_recovery_tracks_background_task():
+    """Background recovery task is registered so it isn't GC'd mid-flight."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    adapter._schedule_polling_recovery(ConnectionError("boom"), reason="unit test")
+
+    assert adapter._send_path_degraded is True
+    assert adapter._polling_error_task is not None
+    assert adapter._polling_error_task in adapter._background_tasks
+    await adapter._polling_error_task
+    adapter._handle_polling_network_error.assert_awaited_once()
+

@@ -60,7 +60,6 @@ const sidebars: SidebarsConfig = {
           label: 'Core',
           items: [
             'user-guide/features/tools',
-            'user-guide/features/tool-search',
             'user-guide/features/skills',
             'user-guide/features/lsp',
             'user-guide/features/curator',
@@ -190,6 +189,16 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'devops',
+                  key: 'skills-bundled-devops',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
+                    'user-guide/skills/bundled/devops/devops-kanban-worker',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'dogfood',
                   key: 'skills-bundled-dogfood',
                   collapsed: true,
@@ -269,6 +278,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-notion',
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
+                    'user-guide/skills/bundled/productivity/productivity-slack-surfaces',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
                   ],
                 },
@@ -280,6 +290,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
                     'user-guide/skills/bundled/research/research-blogwatcher',
+                    'user-guide/skills/bundled/research/research-cyber-vc-analyst',
                     'user-guide/skills/bundled/research/research-llm-wiki',
                     'user-guide/skills/bundled/research/research-polymarket',
                     'user-guide/skills/bundled/research/research-research-paper-writing',
@@ -534,6 +545,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
                     'user-guide/skills/optional/productivity/productivity-telephony',
+                    'user-guide/skills/optional/productivity/productivity-vault-para-triage',
                   ],
                 },
                 {

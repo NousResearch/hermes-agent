@@ -55,6 +55,24 @@ def _get_anthropic_sdk():
 
 logger = logging.getLogger(__name__)
 
+_MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_oauth_json_response(resp: Any, *, limit: int = _MAX_OAUTH_RESPONSE_BYTES) -> Dict[str, Any]:
+    headers = getattr(resp, "headers", None)
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if isinstance(raw_length, (str, bytes, int)) and int(raw_length) > limit:
+        raise ValueError("Anthropic OAuth response body is too large")
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("Anthropic OAuth response body is too large")
+    data = json.loads(body.decode())
+    if not isinstance(data, dict):
+        raise ValueError("Anthropic OAuth response was not a JSON object")
+    return data
+
+
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
@@ -1051,7 +1069,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
+                result = _read_oauth_json_response(resp)
         except Exception as exc:
             last_error = exc
             logger.debug("Anthropic token refresh failed at %s: %s", endpoint, exc)
@@ -1494,7 +1512,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             )
             try:
                 with urllib.request.urlopen(req, timeout=15) as resp:
-                    result = json.loads(resp.read().decode())
+                    result = _read_oauth_json_response(resp)
                 break
             except Exception as exc:
                 last_error = exc

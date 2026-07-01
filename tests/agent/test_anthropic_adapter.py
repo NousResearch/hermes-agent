@@ -10,6 +10,7 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _MAX_OAUTH_RESPONSE_BYTES,
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
@@ -23,6 +24,7 @@ from agent.anthropic_adapter import (
     is_claude_code_token_valid,
     normalize_model_name,
     read_claude_code_credentials,
+    refresh_anthropic_oauth_pure,
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
@@ -553,6 +555,56 @@ class TestRefreshOauthToken:
 
         with patch("urllib.request.urlopen", side_effect=Exception("network error")):
             assert _refresh_oauth_token(creds) is None
+
+    def test_refresh_rejects_oversized_response_without_reading_body(self):
+        class _FakeResponse:
+            headers = {"Content-Length": str(_MAX_OAUTH_RESPONSE_BYTES + 1)}
+            read_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, *_args):
+                self.read_called = True
+                return b"{}"
+
+        response = _FakeResponse()
+
+        with patch("urllib.request.urlopen", return_value=response):
+            with pytest.raises(ValueError, match="too large"):
+                refresh_anthropic_oauth_pure("refresh-123")
+
+        assert response.read_called is False
+
+    def test_refresh_reads_missing_content_length_with_cap(self):
+        class _FakeResponse:
+            headers = {}
+            read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return json.dumps({
+                    "access_token": "new-token",
+                    "refresh_token": "new-refresh",
+                    "expires_in": 3600,
+                }).encode()
+
+        response = _FakeResponse()
+
+        with patch("urllib.request.urlopen", return_value=response):
+            result = refresh_anthropic_oauth_pure("refresh-123")
+
+        assert result["access_token"] == "new-token"
+        assert response.read_sizes == [_MAX_OAUTH_RESPONSE_BYTES + 1]
 
 
 class TestWriteClaudeCodeCredentials:

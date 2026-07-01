@@ -153,9 +153,7 @@ def apply(
     # config.yaml without ever running the slash command. The migration is
     # idempotent by design (it replaces its own managed block in place), so
     # re-running is cheap and safe.
-    reapplying_enable = (
-        new_value == current and new_value == "codex_app_server"
-    )
+    reapplying_enable = new_value == current == "codex_app_server"
     if new_value == current and not reapplying_enable:
         return CodexRuntimeStatus(
             success=True,
@@ -199,12 +197,10 @@ def apply(
 
     if reapplying_enable:
         msg_lines = [
-            f"openai_runtime already set to {current} — re-applying migration",
+            f"openai_runtime already set to {current} — re-applying migration"
         ]
     else:
-        msg_lines = [
-            f"openai_runtime: {current} → {new_value}",
-        ]
+        msg_lines = [f"openai_runtime: {current} → {new_value}"]
     if new_value == "codex_app_server":
         ok, ver = _check_binary_cached()
         if ok:

@@ -410,14 +410,17 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is False
         assert routing.auto_approve_apply_patch is False
 
-    def test_hermes_yolo_env_auto_approves_codex_server_requests(
+    def test_frozen_yolo_env_auto_approves_codex_server_requests(
         self, monkeypatch
     ):
-        """HERMES_YOLO_MODE should flow through to codex app-server routing so
-        gateway/cron contexts do not fail closed when the user explicitly
-        enabled yolo mode outside the CLI slash-command path."""
+        """--yolo / HERMES_YOLO_MODE (frozen into _YOLO_MODE_FROZEN at import
+        time — a prompt-injection-safe process-scoped bypass) should flow
+        through to codex app-server routing so gateway/cron contexts do not
+        fail closed when the user launched with yolo mode."""
+        import tools.approval as _approval
+
         captured = self._capture_routing_agent(monkeypatch)
-        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setattr(_approval, "_YOLO_MODE_FROZEN", True)
         with patch(
             "hermes_cli.config.load_config",
             return_value={"approvals": {"mode": "manual"}},

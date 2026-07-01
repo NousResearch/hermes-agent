@@ -269,32 +269,22 @@ def run_codex_app_server_turn(
         # requests through, so codex app-server exec / apply_patch requests
         # fail closed (silently decline) by default. When the user has
         # explicitly opted out of Hermes approvals — via `approvals.mode: off`
-        # in config, the /yolo session toggle, or HERMES_YOLO_MODE=1 — honor
-        # that and let codex's own sandbox permission profile
+        # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
+        # honor that and let codex's own sandbox permission profile
         # (~/.codex/config.toml) be the policy gate instead of double-gating
         # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
         # current fail-closed behavior — this is a no-op for those users.
         auto_approve_requests = False
         try:
-            from tools.approval import (
-                _get_approval_mode,
-                is_current_session_yolo_enabled,
-            )
+            from tools.approval import is_approval_bypass_active
 
-            auto_approve_requests = (
-                _get_approval_mode() == "off"
-                or is_current_session_yolo_enabled()
-            )
+            auto_approve_requests = is_approval_bypass_active()
         except Exception:
             logger.debug(
-                "codex app-server: approval-mode lookup failed; "
+                "codex app-server: approval-bypass lookup failed; "
                 "keeping fail-closed default",
                 exc_info=True,
             )
-        if not auto_approve_requests:
-            auto_approve_requests = os.getenv(
-                "HERMES_YOLO_MODE", ""
-            ).strip().lower() in {"1", "true", "yes", "on"}
 
         def _on_codex_event(note: dict) -> None:
             # Bridge Codex app-server item/started notifications to Hermes

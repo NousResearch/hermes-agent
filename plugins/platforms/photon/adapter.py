@@ -39,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from hermes_constants import get_hermes_home
+
 if TYPE_CHECKING:
     # Type checkers see ``httpx`` as the always-imported module, so every use
     # site type-checks cleanly. The runtime fallback below keeps the optional
@@ -84,6 +86,53 @@ _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+
+
+def _sidecar_token_file(port: int) -> Path:
+    """Runtime handoff file for out-of-process senders."""
+    return get_hermes_home() / "runtime" / f"photon-sidecar-{port}.json"
+
+
+def _write_sidecar_token_file(port: int, token: str, pid: int) -> None:
+    """Persist the live sidecar control token with user-only permissions."""
+    path = _sidecar_token_file(port)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"port": port, "token": token, "pid": pid}),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+
+
+def _read_sidecar_token_file(port: int) -> Optional[str]:
+    """Read the live gateway sidecar token for `hermes send`/cron fallback."""
+    try:
+        data = json.loads(_sidecar_token_file(port).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if int(data.get("port") or 0) != port:
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def _remove_sidecar_token_file(port: int, token: str) -> None:
+    """Remove our token file without clobbering a newer sidecar's token."""
+    path = _sidecar_token_file(port)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("token") == token:
+            path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception:
+        logger.debug("[photon] failed to remove sidecar token file", exc_info=True)
+
 
 # Photon / Envoy / spectrum-ts error substrings that indicate a transient
 # upstream overload rather than a permanent failure.  These are not in the
@@ -884,6 +933,11 @@ class PhotonAdapter(BasePlatformAdapter):
             env=env,
             start_new_session=(sys.platform != "win32"),
         )
+        _write_sidecar_token_file(
+            self._sidecar_port,
+            self._sidecar_token,
+            int(self._sidecar_proc.pid),
+        )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.
         loop = asyncio.get_event_loop()
@@ -983,6 +1037,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 except subprocess.TimeoutExpired:
                     proc.kill()
         finally:
+            _remove_sidecar_token_file(self._sidecar_port, self._sidecar_token)
             self._sidecar_proc = None
             if self._sidecar_supervisor_task is not None:
                 self._sidecar_supervisor_task.cancel()
@@ -1584,13 +1639,13 @@ async def _standalone_send(
         (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
-    token = os.getenv("PHOTON_SIDECAR_TOKEN")
+    token = os.getenv("PHOTON_SIDECAR_TOKEN") or _read_sidecar_token_file(port)
     if not token:
         return {
             "error": (
                 "Photon standalone send requires a running sidecar with "
-                "PHOTON_SIDECAR_TOKEN set in the environment. Cron processes "
-                "cannot spawn the sidecar themselves."
+                "a readable runtime token. Start/restart the Hermes gateway "
+                "so it can launch the Photon sidecar."
             )
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"

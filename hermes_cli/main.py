@@ -12809,6 +12809,23 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+            # Bundled platform plugins are normally deferred so plain `hermes`
+            # startup doesn't import every platform SDK. If the unknown
+            # positional token is itself a platform plugin's CLI command (for
+            # example `hermes photon status`), resolve just that platform now;
+            # its register() call can then contribute the CLI subparser.
+            plugin_candidate = _first_positional_argv()
+            if plugin_candidate:
+                try:
+                    from gateway.platform_registry import platform_registry
+
+                    platform_registry.get(plugin_candidate)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "Deferred platform CLI discovery failed for %s",
+                        plugin_candidate,
+                        exc_info=True,
+                    )
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

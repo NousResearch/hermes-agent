@@ -214,13 +214,26 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+# Platforms whose adapters key off the ``non_conversational`` marker to route
+# lifecycle/status/progress sends differently from customer-facing replies:
+#   - discord: lifecycle/status sends
+#   - chatwoot: reasoning + tool/skill progress → agent-only private notes
+#     (CHATWOOT_PRIVATE_NOTE_TRACE), so the customer only sees the final reply.
+_NON_CONVERSATIONAL_MARKER_PLATFORMS = frozenset({"discord", "chatwoot"})
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
     platform: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
+    """Mark lifecycle/status/progress sends without changing other platforms.
+
+    Adapters that opt in (see ``_NON_CONVERSATIONAL_MARKER_PLATFORMS``) receive
+    ``metadata["non_conversational"] = True`` on non-reply sends; every other
+    platform's metadata is returned unchanged.
+    """
+    if _gateway_platform_value(platform) not in _NON_CONVERSATIONAL_MARKER_PLATFORMS:
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True

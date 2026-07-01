@@ -574,6 +574,82 @@ def test_references_run_in_parallel(monkeypatch):
     assert out[0][1] == "resp-p1"
 
 
+def test_references_parallel_without_agent_is_unaffected(monkeypatch):
+    """No agent passed (the pre-fix call shape) must behave exactly as
+    before: block until every reference completes, no interrupt check."""
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    # Poll interval shorter than the reference's own sleep so the assertion
+    # below would catch a regression that waits a whole poll cycle extra.
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    def slow_call_llm(**kwargs):
+        time.sleep(0.2)
+        return _response(f"resp-{kwargs['provider']}")
+
+    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
+
+    refs = [{"provider": "p1", "model": "ok"}]
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}],
+    )
+
+    assert out[0][1] == "resp-p1"
+
+
+def test_references_parallel_interrupt_aborts_wait(monkeypatch):
+    """A user interrupt mid-fanout must stop the wait instead of blocking
+    until every reference (including a wedged one) finishes or times out on
+    its own — mirroring the interrupt check agent.tool_executor already
+    applies to its own concurrent tool batch."""
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=False)
+    release_wedged = threading.Event()
+
+    def fake_call_llm(**kwargs):
+        if kwargs["provider"] == "fast":
+            # Simulate the interrupt arriving right after the fast reference
+            # finishes, while the wedged one is still in flight.
+            fake_agent._interrupt_requested = True
+            return _response("fast output")
+        # "wedged" — never returns within the test unless released, standing
+        # in for a reference whose own (possibly very long) timeout hasn't
+        # elapsed yet.
+        release_wedged.wait(timeout=5)
+        return _response("should not be observed")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    refs = [
+        {"provider": "fast", "model": "m1"},
+        {"provider": "wedged", "model": "m2"},
+    ]
+    try:
+        start = time.monotonic()
+        out = moa_loop._run_references_parallel(
+            refs, [{"role": "user", "content": "hi"}], agent=fake_agent,
+        )
+        elapsed = time.monotonic() - start
+
+        # Must return promptly once interrupted, not block for the wedged
+        # reference's full (5s test-simulated) duration.
+        assert elapsed < 2.0, f"interrupt did not abort the wait (took {elapsed:.2f}s)"
+        assert out[0][1] == "fast output"
+        assert "interrupted" in out[1][1]
+    finally:
+        release_wedged.set()  # don't leak a blocked thread past the test
+
+
 def _ref_config(home):
     home.mkdir()
     (home / "config.yaml").write_text(

@@ -1733,7 +1733,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
-            agent.client = MoAClient(agent.model or "default")
+            agent.client = MoAClient(agent.model or "default", agent=agent)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

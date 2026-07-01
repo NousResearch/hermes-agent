@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 from typing import Any
 
 from agent.auxiliary_client import call_llm
@@ -277,12 +277,16 @@ def _run_reference(
         )
 
 
+_REFERENCE_POLL_INTERVAL_S = 5.0
+
+
 def _run_references_parallel(
     reference_models: list[dict[str, str]],
     ref_messages: list[dict[str, Any]],
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    agent: Any = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -293,7 +297,22 @@ def _run_references_parallel(
     another MoA preset are skipped here (recursion guard) with a labelled note.
 
     Each element is ``(label, text, usage)`` where usage is a
-    ``CanonicalUsage`` (zeroed for skipped/failed references).
+    ``CanonicalUsage`` (zeroed for skipped/failed/interrupted references).
+
+    When *agent* is given, the fan-out is interruptible: waiting for the
+    batch is broken into ``_REFERENCE_POLL_INTERVAL_S``-second polls (instead
+    of one blocking ``future.result()`` per reference) so a user interrupt
+    mid-turn can abort the wait — mirroring the same interrupt check
+    ``agent.tool_executor`` already applies to its own concurrent tool
+    batch. This does not add or change any per-reference *timeout* (that is
+    ``auxiliary.moa_reference.timeout``, out of scope here) — it only lets
+    the caller stop waiting early. References already in flight cannot be
+    forcibly killed (``call_llm`` is a blocking HTTP call with no interrupt
+    hook of its own, same limitation tool_executor has for tools without an
+    interrupt check); an interrupted reference's own timeout still reaps its
+    thread independently. *agent* is optional and defaults to ``None``,
+    preserving today's uninterruptible blocking behavior for any caller that
+    doesn't pass it.
     """
     from agent.usage_pricing import CanonicalUsage
 
@@ -301,9 +320,11 @@ def _run_references_parallel(
         return []
 
     results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
-    futures = {}
+    futures: dict[Any, int] = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=workers)
+    interrupted = False
+    try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
                 results[idx] = (
@@ -321,10 +342,45 @@ def _run_references_parallel(
                     max_tokens=max_tokens,
                 )
             ] = idx
+
         # Collect every reference before returning — the aggregator needs the
-        # complete set, so there is no early-exit / first-completed path here.
-        for future, idx in futures.items():
-            results[idx] = future.result()
+        # complete set, so there is no early-exit / first-completed path
+        # here, other than a user interrupt.
+        pending = set(futures)
+        while pending:
+            done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
+            for future in done:
+                results[futures[future]] = future.result()
+            if not pending:
+                break
+            if agent is not None and getattr(agent, "_interrupt_requested", False):
+                interrupted = True
+                break
+
+        if interrupted:
+            for future, idx in futures.items():
+                if results[idx] is not None:
+                    continue
+                if future.cancel():
+                    results[idx] = (
+                        _slot_label(reference_models[idx]),
+                        "[skipped: interrupted by user]",
+                        _RefAccounting(CanonicalUsage()),
+                    )
+                elif future.done():
+                    # Finished between the interrupt check and now.
+                    results[idx] = future.result()
+                else:
+                    # Already running — cannot be force-killed (see
+                    # docstring); leave it be so the caller isn't blocked,
+                    # and note that its output was abandoned.
+                    results[idx] = (
+                        _slot_label(reference_models[idx]),
+                        "[skipped: interrupted by user]",
+                        _RefAccounting(CanonicalUsage()),
+                    )
+    finally:
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     return [r for r in results if r is not None]
 
@@ -499,6 +555,7 @@ def aggregate_moa_context(
     temperature: float = 0.6,
     aggregator_temperature: float = 0.4,
     max_tokens: int | None = None,
+    agent: Any = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
@@ -510,6 +567,9 @@ def aggregate_moa_context(
     the parameter entirely when it is ``None`` (see its docstring), which also
     sidesteps providers that reject ``max_tokens`` outright. A hardcoded cap
     here previously truncated long aggregator syntheses.
+
+    ``agent``, when passed, lets the reference fan-out be aborted early on a
+    user interrupt — see ``_run_references_parallel``'s docstring.
     """
     reference_outputs: list[tuple[str, str, Any]] = []
     ref_messages = _reference_messages(api_messages)
@@ -518,6 +578,7 @@ def aggregate_moa_context(
         ref_messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        agent=agent,
     )
 
     joined = "\n\n".join(
@@ -586,7 +647,7 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(self, preset_name: str, reference_callback: Any = None, agent: Any = None):
         self.preset_name = preset_name or "default"
         # Optional display hook. Called as reference outputs become available so
         # frontends can show each reference model's answer as a labelled block
@@ -597,6 +658,11 @@ class MoAChatCompletions:
         #   "moa.aggregating" kwargs: aggregator (label), ref_count
         # Never raises into the model call — display is best-effort.
         self.reference_callback = reference_callback
+        # Back-reference to the owning AIAgent, so the reference fan-out can
+        # check agent._interrupt_requested (see _run_references_parallel).
+        # Optional — a caller that doesn't pass it just keeps the fan-out
+        # uninterruptible, as it was before.
+        self._agent = agent
         # State-scoped reference cache. The agent loop calls create() once per
         # tool-loop iteration; references should re-run whenever the task STATE
         # advances — i.e. on every new user message AND every new tool result —
@@ -736,6 +802,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=None,
+                agent=self._agent,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -873,9 +940,11 @@ class MoAChatCompletions:
 
 
 class MoAClient:
-    def __init__(self, preset_name: str, reference_callback: Any = None):
+    def __init__(self, preset_name: str, reference_callback: Any = None, agent: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(
+            preset_name, reference_callback=reference_callback, agent=agent,
+        )
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.

@@ -39,6 +39,8 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
+_PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
+_PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 
 # When the fallback chain is fully exhausted on a non-rate-limit failure
 # (e.g. every provider returns a non-retryable client error like HTTP 400),
@@ -61,6 +63,293 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+class ProviderStreamError(Exception):
+    """Provider encoded an API error as streaming content instead of an SDK error."""
+
+    def __init__(
+        self,
+        *,
+        status_code: Optional[int],
+        body: dict,
+        raw_text: str,
+        headers: Any = None,
+    ):
+        self.status_code = status_code
+        self.body = body
+        self.raw_text = raw_text
+        self.response = SimpleNamespace(headers=headers or {})
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        error_obj = self.body.get("error", {}) if isinstance(self.body, dict) else {}
+        code = error_obj.get("code") if isinstance(error_obj, dict) else None
+        message = error_obj.get("message") if isinstance(error_obj, dict) else None
+        parts = ["Provider stream returned an error event"]
+        if self.status_code:
+            parts.append(f"HTTP {self.status_code}")
+        if code:
+            parts.append(str(code))
+        text = " - ".join(parts)
+        if message:
+            text += f": {message}"
+        return text
+
+
+def _status_code_from_value(value: Any) -> Optional[int]:
+    if isinstance(value, int) and 100 <= value < 600:
+        return value
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(?:HTTP_STATUS/)?\b([1-5]\d\d)\b", value, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _status_code_from_payload(payload: Any) -> Optional[int]:
+    if not isinstance(payload, dict):
+        return None
+
+    candidates = [
+        payload.get("status_code"),
+        payload.get("status"),
+        payload.get("http_status"),
+    ]
+    error_obj = payload.get("error")
+    if isinstance(error_obj, dict):
+        candidates.extend([
+            error_obj.get("status_code"),
+            error_obj.get("status"),
+            error_obj.get("http_status"),
+            error_obj.get("code"),
+        ])
+    candidates.append(payload.get("code"))
+
+    for candidate in candidates:
+        status_code = _status_code_from_value(candidate)
+        if status_code is not None:
+            return status_code
+    return None
+
+
+def _json_object_from_text(text: str) -> Optional[dict]:
+    stripped = (text or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        decoded = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _parse_provider_sse_events(text: str) -> list[dict]:
+    """Parse provider text that looks like Server-Sent Events."""
+    events: list[dict] = []
+    current = {"event": None, "data": [], "comments": [], "fields": {}}
+
+    def _has_event_data(event: dict) -> bool:
+        return bool(
+            event.get("event")
+            or event.get("data")
+            or event.get("comments")
+            or event.get("fields")
+        )
+
+    def _flush_current():
+        nonlocal current
+        if _has_event_data(current):
+            data_text = "\n".join(current["data"])
+            status_candidates = list(current["comments"])
+            for key in ("status", "status_code", "http_status"):
+                if key in current["fields"]:
+                    status_candidates.append(current["fields"][key])
+            events.append({
+                "event": current["event"],
+                "data": data_text,
+                "comments": list(current["comments"]),
+                "fields": dict(current["fields"]),
+                "status_code": next(
+                    (
+                        status
+                        for status in (
+                            _status_code_from_value(value)
+                            for value in status_candidates
+                        )
+                        if status is not None
+                    ),
+                    None,
+                ),
+            })
+        current = {"event": None, "data": [], "comments": [], "fields": {}}
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.rstrip("\r")
+        if line == "":
+            _flush_current()
+            continue
+        if line.startswith(":"):
+            current["comments"].append(line[1:].strip())
+            continue
+
+        field, sep, value = line.partition(":")
+        if not sep:
+            current["fields"][field.strip().lower()] = ""
+            continue
+        field = field.strip().lower()
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            current["event"] = value.strip()
+        elif field == "data":
+            current["data"].append(value)
+        else:
+            current["fields"][field] = value
+
+    _flush_current()
+    return events
+
+
+def _provider_error_body(payload: dict, status_code: Optional[int]) -> dict:
+    """Normalize common provider error payloads to OpenAI-style body.error."""
+    if isinstance(payload, dict):
+        error_obj = payload.get("error")
+        if isinstance(error_obj, dict):
+            return payload
+    else:
+        payload = {}
+
+    code = (
+        payload.get("code")
+        or payload.get("error_code")
+        or payload.get("type")
+        or (f"HTTP_{status_code}" if status_code else "provider_stream_error")
+    )
+    message = (
+        payload.get("message")
+        or payload.get("error_description")
+        or payload.get("error")
+        or "Provider stream returned an error event."
+    )
+    normalized_error = {"message": str(message)}
+    if code:
+        normalized_error["code"] = str(code)
+    for key in ("request_id", "param", "type"):
+        if payload.get(key):
+            normalized_error[key] = payload[key]
+    return {"error": normalized_error}
+
+
+def _payload_has_error_shape(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if isinstance(payload.get("error"), (dict, str)):
+        return True
+    if payload.get("message") and (
+        payload.get("code")
+        or payload.get("error_code")
+        or _status_code_from_payload(payload) is not None
+    ):
+        return True
+    return False
+
+
+def _provider_stream_text_may_be_sse(text: str) -> bool:
+    """Return True while pending text still looks like an SSE control block."""
+    stripped = (text or "").lstrip()
+    if not stripped:
+        return False
+
+    lines = stripped.splitlines()
+    trailing_newline = stripped.endswith(("\n", "\r"))
+    saw_sse_field = False
+
+    for index, raw_line in enumerate(lines):
+        line = raw_line.rstrip("\r")
+        if line == "":
+            continue
+        if line.startswith(":"):
+            saw_sse_field = True
+            continue
+
+        field, sep, _value = line.partition(":")
+        field_name = field.strip().lower()
+        if sep and field_name in _PROVIDER_STREAM_SSE_FIELDS:
+            saw_sse_field = True
+            continue
+
+        is_last_incomplete = index == len(lines) - 1 and not trailing_newline
+        if is_last_incomplete and any(
+            sse_field.startswith(field_name)
+            for sse_field in _PROVIDER_STREAM_SSE_FIELDS
+        ):
+            return True
+        return False
+
+    return saw_sse_field
+
+
+def _provider_stream_error_from_text(
+    text: str,
+    finish_reason: Optional[str],
+    *,
+    response: Any = None,
+) -> Optional[ProviderStreamError]:
+    """Convert provider-streamed error text into an exception for retry logic."""
+    if not text:
+        return None
+
+    finish_reason_text = str(finish_reason or "").lower()
+    has_error_finish = finish_reason_text in _PROVIDER_STREAM_ERROR_FINISH_REASONS
+
+    for event in _parse_provider_sse_events(text):
+        event_name = str(event.get("event") or "").strip().lower()
+        payload = _json_object_from_text(event.get("data") or "") or {}
+        status_code = event.get("status_code") or _status_code_from_payload(payload)
+        is_error_event = event_name == "error"
+        is_http_error = status_code is not None and status_code >= 400
+        is_error_payload = _payload_has_error_shape(payload)
+        is_structured_error_event = is_error_event and (
+            has_error_finish or is_http_error or is_error_payload
+        )
+
+        if not (is_http_error or is_structured_error_event):
+            continue
+
+        headers = getattr(response, "headers", None) if response is not None else None
+        return ProviderStreamError(
+            status_code=status_code,
+            body=_provider_error_body(payload, status_code),
+            raw_text=text,
+            headers=headers,
+        )
+
+    payload = _json_object_from_text(text)
+    if payload is not None:
+        status_code = _status_code_from_payload(payload)
+        if has_error_finish or (status_code is not None and status_code >= 400):
+            headers = getattr(response, "headers", None) if response is not None else None
+            return ProviderStreamError(
+                status_code=status_code,
+                body=_provider_error_body(payload, status_code),
+                raw_text=text,
+                headers=headers,
+            )
+
+    if has_error_finish and text.strip():
+        headers = getattr(response, "headers", None) if response is not None else None
+        return ProviderStreamError(
+            status_code=None,
+            body=_provider_error_body({}, None),
+            raw_text=text,
+            headers=headers,
+        )
+    return None
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -2073,6 +2362,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        pending_text_parts: list[str] = []
+
+        def _flush_pending_stream_text():
+            if not pending_text_parts:
+                return
+            pending_parts = list(pending_text_parts)
+            pending_text_parts.clear()
+            if not tool_calls_acc:
+                for text in pending_parts:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(text)
+                    deltas_were_sent["yes"] = True
+                return
+            if agent.stream_delta_callback:
+                for text in pending_parts:
+                    try:
+                        agent.stream_delta_callback(text)
+                        agent._record_streamed_assistant_text(text)
+                    except Exception:
+                        pass
+
         for chunk in stream:
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
@@ -2121,6 +2431,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if delta and delta.content:
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
+                    if pending_text_parts or _provider_stream_text_may_be_sse(delta.content):
+                        pending_text_parts.append(delta.content)
+                        pending_text = "".join(pending_text_parts)
+                        provider_stream_error = _provider_stream_error_from_text(
+                            pending_text,
+                            None,
+                            response=getattr(stream, "response", None),
+                        )
+                        if provider_stream_error is not None:
+                            raise provider_stream_error
+                        if _provider_stream_text_may_be_sse(pending_text):
+                            continue
+                        _flush_pending_stream_text()
+                        continue
                     _fire_first_delta()
                     agent._fire_stream_delta(delta.content)
                     deltas_were_sent["yes"] = True
@@ -2144,6 +2468,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:
+                _flush_pending_stream_text()
                 for tc_delta in delta.tool_calls:
                     raw_idx = tc_delta.index if tc_delta.index is not None else 0
                     delta_id = tc_delta.id or ""
@@ -2322,6 +2647,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:
             effective_finish_reason = "length"
+
+        provider_stream_error = _provider_stream_error_from_text(
+            full_content or "",
+            effective_finish_reason,
+            response=getattr(stream, "response", None),
+        )
+        if provider_stream_error is not None:
+            raise provider_stream_error
+        _flush_pending_stream_text()
 
         full_reasoning = "".join(reasoning_parts) or None
         mock_message = SimpleNamespace(

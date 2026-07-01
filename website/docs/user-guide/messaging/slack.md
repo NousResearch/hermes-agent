@@ -346,10 +346,11 @@ platforms:
 
       # Render agent messages as Slack Block Kit blocks (default: false).
       # When true, the final agent message is sent with structured blocks —
-      # section headers, dividers, and true nested lists (via rich_text) —
-      # instead of flat mrkdwn text. A plain-text fallback is always sent
-      # alongside for notifications/accessibility. Markdown tables are
-      # rendered as aligned monospace (Block Kit has no native table block).
+      # section headers, dividers, true nested lists (via rich_text), and
+      # native Block Kit tables — instead of flat mrkdwn text. A plain-text
+      # fallback is always sent alongside for notifications/accessibility.
+      # Tables exceeding Slack's limits (100 rows / 20 cols / 10k chars)
+      # gracefully fall back to aligned monospace.
       rich_blocks: false
 ```
 
@@ -358,7 +359,7 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
-| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists). A plain-text fallback is always sent. Tables render as aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 
 ### Session Isolation
 

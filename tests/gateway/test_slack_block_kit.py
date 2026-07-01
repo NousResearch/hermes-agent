@@ -92,7 +92,7 @@ class TestInlineFormatting:
 
 
 class TestTables:
-    def test_pipe_table_renders_preformatted(self):
+    def test_pipe_table_renders_native_table_block(self):
         md = (
             "| Name | Status |\n"
             "|------|--------|\n"
@@ -101,13 +101,72 @@ class TestTables:
         )
         blocks = render_blocks(md)
         assert len(blocks) == 1
+        assert blocks[0]["type"] == "table"
+        rows = blocks[0]["rows"]
+        # header + 2 body rows, 2 columns each
+        assert len(rows) == 3
+        assert all(len(r) == 2 for r in rows)
+        # cells are rich_text carrying the values
+        assert str(rows[0]).count("Name") == 1
+        assert "fail" in str(rows[2])
+
+    def test_alignment_parsed_into_column_settings(self):
+        md = (
+            "| L | C | R |\n"
+            "|:---|:--:|---:|\n"
+            "| 1 | 2 | 3 |"
+        )
+        blocks = render_blocks(md)
+        cs = blocks[0]["column_settings"]
+        # left is default -> null; center/right emitted
+        assert cs[0] is None
+        assert cs[1] == {"align": "center"}
+        assert cs[2] == {"align": "right"}
+
+    def test_inline_formatting_inside_cells(self):
+        md = (
+            "| Item | Link |\n"
+            "|------|------|\n"
+            "| **bold** | [x](https://e.io) |"
+        )
+        blocks = render_blocks(md)
+        body = blocks[0]["rows"][1]
+        # bold styled text element in first cell
+        bold = [
+            el for el in body[0]["elements"][0]["elements"]
+            if el.get("style", {}).get("bold")
+        ]
+        assert bold
+        # link element in second cell
+        links = [el for el in body[1]["elements"][0]["elements"] if el["type"] == "link"]
+        assert links and links[0]["url"] == "https://e.io"
+
+    def test_oversized_table_falls_back_to_monospace(self):
+        # 120 rows > MAX_TABLE_ROWS -> monospace rich_text fallback, not a table
+        big = "| a | b |\n|---|---|\n" + "\n".join(f"| x{i} | y |" for i in range(120))
+        blocks = render_blocks(big)
+        assert blocks[0]["type"] == "rich_text"  # preformatted fallback
+        assert blocks[0]["elements"][0]["type"] == "rich_text_preformatted"
+
+    def test_too_many_columns_falls_back_to_monospace(self):
+        header = "|" + "|".join(f"c{i}" for i in range(25)) + "|"
+        sep = "|" + "|".join("-" for _ in range(25)) + "|"
+        row = "|" + "|".join("v" for _ in range(25)) + "|"
+        blocks = render_blocks(f"{header}\n{sep}\n{row}")
         assert blocks[0]["type"] == "rich_text"
-        pre = blocks[0]["elements"][0]
-        assert pre["type"] == "rich_text_preformatted"
-        text = pre["elements"][0]["text"]
-        # header cell values preserved and column aligned
-        assert "Name" in text and "Status" in text
-        assert "fail" in text
+
+    def test_escaped_pipe_not_a_column_separator(self):
+        md = (
+            "| Expr | Meaning |\n"
+            "|------|--------|\n"
+            "| a \\| b | or |"
+        )
+        blocks = render_blocks(md)
+        assert blocks[0]["type"] == "table"
+        # the escaped-pipe cell stays a single cell containing a literal pipe
+        body = blocks[0]["rows"][1]
+        assert len(body) == 2
+        assert "|" in str(body[0])
 
 
 class TestLimits:

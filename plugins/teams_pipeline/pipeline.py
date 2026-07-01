@@ -459,8 +459,14 @@ class TeamsMeetingPipeline:
             # display_name comes from Graph API and is ultimately set by
             # the meeting organizer — strip any directory components so a
             # crafted name like "../../etc/cron.d/evil" can't escape tmp_dir.
-            raw_name = recording.display_name or f"{recording.artifact_id}.mp4"
-            recording_name = Path(raw_name).name or f"{recording.artifact_id}.mp4"
+            # Path(...).name reduces "." / ".." / "" to themselves, so the
+            # dot-only basenames must be rejected explicitly (joining "tmp/.."
+            # resolves to the parent dir); fall back to the artifact id.
+            fallback_name = f"{recording.artifact_id}.mp4"
+            raw_name = recording.display_name or fallback_name
+            recording_name = Path(raw_name).name
+            if recording_name in ("", ".", ".."):
+                recording_name = fallback_name
             recording_path = Path(tmp_dir) / recording_name
             await download_recording_artifact(
                 self.graph_client,

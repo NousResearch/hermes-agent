@@ -4932,3 +4932,42 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+class TestResolveProviderClientWarningDedup:
+    """resolve_provider_client fall-throughs are demoted to DEBUG + deduped so
+    they don't spam logs on every retry, but the first occurrence still surfaces
+    (regression salvage of #56283)."""
+
+    def _reset_dedup(self):
+        import agent.auxiliary_client as ac
+        ac._LOGGED_UNKNOWN_PROVIDER_KEYS.clear()
+        ac._LOGGED_UNHANDLED_AUTHTYPE_KEYS.clear()
+
+    def test_unknown_provider_debug_not_warning_and_deduped(self, caplog):
+        self._reset_dedup()
+        with patch("hermes_cli.auth.PROVIDER_REGISTRY", {}):
+            with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+                r1 = resolve_provider_client("totally-made-up-provider")
+                r2 = resolve_provider_client("totally-made-up-provider")
+        assert r1 == (None, None) and r2 == (None, None)
+        recs = [r for r in caplog.records if "unknown provider" in r.getMessage()]
+        # First occurrence surfaces at DEBUG; the repeat is suppressed.
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        # No WARNING-level record for this path.
+        assert not [r for r in caplog.records
+                    if "unknown provider" in r.getMessage() and r.levelno >= logging.WARNING]
+
+    def test_unhandled_auth_type_debug_not_warning_and_deduped(self, caplog):
+        self._reset_dedup()
+        fake = SimpleNamespace(auth_type="some-unhandled-auth-type")
+        with patch("hermes_cli.auth.PROVIDER_REGISTRY", {"fakeprov": fake}):
+            with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+                resolve_provider_client("fakeprov")
+                resolve_provider_client("fakeprov")
+        recs = [r for r in caplog.records if "unhandled auth_type" in r.getMessage()]
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        assert not [r for r in caplog.records
+                    if "unhandled auth_type" in r.getMessage() and r.levelno >= logging.WARNING]

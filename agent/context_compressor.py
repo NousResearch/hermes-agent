@@ -95,6 +95,15 @@ _SUMMARY_END_MARKER = (
     "respond to the message below, not the summary above ---"
 )
 
+# When the summary must be merged into the first tail message (the alternation
+# corner case where a standalone summary role would collide with both head and
+# tail), the tail message's own prior content is preserved BEFORE the summary,
+# wrapped in these delimiters so the model doesn't read it as a fresh message.
+# The summary prefix therefore lands AFTER _MERGED_SUMMARY_DELIMITER rather than
+# at the start of the message, so _is_context_summary_content must look past it.
+_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
+_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
 # re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
@@ -640,26 +649,47 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
+        self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Clear per-session compaction state at a real session boundary.
+        """Clear all per-session compaction state at a real session boundary.
 
-        ``_previous_summary`` is per-session iterative-summary state. It is
-        cleared on ``on_session_reset()`` (/new, /reset), but session *end*
-        (CLI exit, gateway expiry, session-id rotation) goes through
-        ``on_session_end()`` instead — which inherited a no-op from
-        ``ContextEngine``. Without clearing here, a cron/background session's
-        summary could survive on a reused compressor instance and leak into the
-        next live session via the ``_generate_summary()`` iterative-update path
-        (#38788). ``compress()`` already guards the leak at the point of use;
-        this is defense-in-depth that drops the stale summary the moment the
-        owning session ends.
+        Session end (CLI exit, gateway expiry, session-id rotation) goes
+        through this method rather than ``on_session_reset()`` (/new, /reset).
+        The original fix (#38788) only cleared ``_previous_summary``, but the
+        same cross-session contamination risk applies to every per-session
+        variable that ``on_session_reset()`` clears: stale
+        ``_ineffective_compression_count`` can suppress compression in a
+        subsequent live session; ``_summary_failure_cooldown_until`` can block
+        summary generation; ``_last_compress_aborted`` can make callers think
+        compression is still aborted; ``_last_aux_model_failure_*`` can surface
+        stale error warnings; ``_last_summary_dropped_count`` /
+        ``_last_summary_fallback_used`` can produce misleading user warnings.
+
+        ``compress()`` already guards ``_previous_summary`` leakage at the
+        point of use; this is defense-in-depth that resets the full per-session
+        surface the moment the owning session ends.
         """
         self._previous_summary = None
+        self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
+        self._last_compression_savings_pct = 100.0
+        self._ineffective_compression_count = 0
+        self._summary_failure_cooldown_until = 0.0
+        self._last_compress_aborted = False
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self.last_real_prompt_tokens = 0
+        self.last_compression_rough_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.awaiting_real_usage_after_compression = False
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -1986,6 +2016,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         stale directive it carried stays embedded in the body.
         """
         text = (summary or "").strip()
+        # Merge-into-tail summaries wrap prior tail content before the summary
+        # body. Drop everything up to and including the delimiter so only the
+        # real summary body is carried forward on re-compaction — otherwise the
+        # [PRIOR CONTEXT] header and stale tail content leak into the next
+        # summarizer prompt.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
@@ -2006,6 +2043,13 @@ This compaction should PRIORITISE preserving all information related to the focu
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
+        # Merge-into-tail summaries wrap prior tail content before the summary,
+        # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
+        # at the start. Detect the summary in that region too, otherwise callers
+        # (auto-focus skip, carry-forward summary find, last-real-user anchor)
+        # mistake a merged summary message for a real user turn.
+        if _MERGED_SUMMARY_DELIMITER in text:
+            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
@@ -2865,10 +2909,25 @@ This compaction should PRIORITISE preserving all information related to the focu
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                # Merge the summary into the first tail message, but place
+                # the END MARKER at the very end so the model sees an
+                # unambiguous boundary. Old tail content is preserved as
+                # reference material BEFORE the summary, clearly delimited
+                # so it is not mistaken for a new message to respond to.
+                # Uses _append_text_to_content to safely handle both
+                # string and multimodal-list content types.
+                # Fixes ghost-message leakage across compaction boundaries
+                # where old head messages survived verbatim and appeared
+                # before the summary.
+                old_content = msg.get("content", "")
+                suffix = (
+                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+                    + summary + "\n\n"
+                    + _SUMMARY_END_MARKER
+                )
                 msg["content"] = _append_text_to_content(
-                    msg.get("content"),
-                    merged_prefix,
+                    _append_text_to_content(old_content, suffix, prepend=False),
+                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
                     prepend=True,
                 )
                 # Mark the merged message so frontends can identify it as

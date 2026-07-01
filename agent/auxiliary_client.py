@@ -110,6 +110,24 @@ from utils import base_url_host_matches, base_url_hostname, env_float, model_for
 logger = logging.getLogger(__name__)
 
 
+# ── resolve_provider_client fall-through dedup ───────────────────────────
+# Both fall-through warning sites in resolve_provider_client (the "unknown
+# provider" and "unhandled auth_type" branches) fire on every retry of a
+# misconfigured provider, spamming the logs. Demote them to logger.debug with
+# per-process dedup: the FIRST occurrence still surfaces (it carries real
+# diagnostic value — a provider-name typo or PROVIDER_REGISTRY/auth_type
+# drift), and identical repeats are suppressed for the lifetime of the
+# process. Two independent sets keep each branch linear and let tests clear
+# them independently.
+_LOGGED_UNKNOWN_PROVIDER_KEYS: set = set()
+_LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
+# Same treatment for the two "registered provider, unsupported sub-branch"
+# routing dead-ends — external-process and OAuth providers that fall through
+# with no matching handler. Keyed by provider name.
+_LOGGED_UNSUPPORTED_EXTPROC_KEYS: set = set()
+_LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
@@ -865,6 +883,32 @@ class _CodexCompletionsAdapter:
                 })
             if converted:
                 resp_kwargs["tools"] = converted
+
+        # Stable prompt-cache routing for the Codex/Responses aux path, mirroring
+        # the main transport (agent/transports/codex.py::build_kwargs, which sets
+        # prompt_cache_key = _content_cache_key(instructions, tools)). Without
+        # this, MoA acting-aggregator and other auxiliary Responses calls stay
+        # cache-cold while the main Responses transport is warm (issue #53735).
+        # The key is content-addressed from the static prefix (instructions +
+        # tool schemas) so it stays warm across turns/fires. Guard the top-level
+        # field the same way the main transport does: xAI Responses takes the
+        # key in extra_body (not top-level) and GitHub/Copilot Responses opts
+        # out of cache-key routing entirely — for those hosts, skip it here.
+        try:
+            from agent.transports.codex import _content_cache_key
+            from utils import base_url_host_matches
+
+            _host_src = str(getattr(self._client, "base_url", "") or "")
+            _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
+            _is_github = base_url_host_matches(_host_src, "githubcopilot.com")
+            if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
+                _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
+                if _cache_key:
+                    resp_kwargs["prompt_cache_key"] = _cache_key
+        except Exception:
+            logger.debug(
+                "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True
+            )
 
         # Stream and collect the response
         text_parts: List[str] = []
@@ -4336,7 +4380,11 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        logger.warning("resolve_provider_client: unknown provider %r", provider)
+        # Demoted from logger.warning to debug; dedup keyed by provider name
+        # so the first occurrence surfaces but repeated retries stay silent.
+        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+            logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -4478,9 +4526,47 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
-        logger.warning("resolve_provider_client: external-process provider %s not "
-                       "directly supported", provider)
+        if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
+            _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
+            logger.debug("resolve_provider_client: external-process provider %s not "
+                         "directly supported", provider)
         return None, None
+
+    elif pconfig.auth_type == "vertex":
+        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
+        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a fresh
+        # token; no custom SDK or message translation needed.
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not mint token / resolve project")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
@@ -4524,12 +4610,20 @@ def resolve_provider_client(
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
-        logger.warning("resolve_provider_client: OAuth provider %s not "
-                       "directly supported, try 'auto'", provider)
+        if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
+            _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
+            logger.debug("resolve_provider_client: OAuth provider %s not "
+                         "directly supported, try 'auto'", provider)
         return None, None
 
-    logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
-                   pconfig.auth_type, provider)
+    # Demoted from logger.warning to debug; dedup keyed on (auth_type,
+    # provider) so the first occurrence surfaces (real schema-drift bug) but
+    # per-call retries stay silent.
+    _auth_dedup_key = (pconfig.auth_type, provider)
+    if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
+        _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
+        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
+                     pconfig.auth_type, provider)
     return None, None
 
 

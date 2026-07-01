@@ -76,7 +76,8 @@ _PREFIX_PATTERNS = [
     r"ghu_[A-Za-z0-9]{10,}",            # GitHub user-to-server token
     r"ghs_[A-Za-z0-9]{10,}",            # GitHub server-to-server token
     r"ghr_[A-Za-z0-9]{10,}",            # GitHub refresh token
-    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack tokens
+    r"xapp-\d+-[A-Za-z0-9-]{10,}",      # Slack app-Level token
+    r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack bot/app/user tokens
     r"AIza[A-Za-z0-9_-]{30,}",          # Google API keys
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai

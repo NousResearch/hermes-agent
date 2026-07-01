@@ -618,6 +618,10 @@ class MoAChatCompletions:
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        # Resolved aggregator slot ({provider, model, ...}) from the most recent
+        # create(); read by session cost accounting to price the aggregator's
+        # acting turn at its real model instead of the virtual preset name.
+        self.last_aggregator_slot: Any = None
         # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
@@ -640,13 +644,24 @@ class MoAChatCompletions:
         self._pending_reference_cost = None
         return usage, cost
 
-    def consume_and_save_trace(self, session_id: Any = None) -> None:
+    def consume_and_save_trace(
+        self, session_id: Any = None, aggregator_output_fallback: Any = None
+    ) -> None:
         """Flush the pending full-turn trace to disk, if one is pending.
 
         No-op when tracing is off (``save_moa_turn`` checks the config), when
         there is no pending trace (a cache-HIT iteration ran no references), or
         when the aggregator input was never recorded. Clears the pending trace
         so a repeat consume cannot double-write. Best-effort — never raises.
+
+        ``aggregator_output_fallback`` is the aggregator's resolved acting text
+        as the caller already holds it in memory (the streamed assistant text).
+        On the streaming path the aggregator's output could not be captured
+        inline at ``create()`` time (the raw token stream was handed to the live
+        consumer), so ``pending["aggregator_output"]`` is None; we fold the
+        caller's resolved text in here so the trace is self-contained in BOTH
+        streaming and non-streaming modes. Non-streaming already has the inline
+        output and ignores the fallback.
         """
         pending = self._pending_trace
         self._pending_trace = None
@@ -656,6 +671,11 @@ class MoAChatCompletions:
             from agent.moa_trace import save_moa_turn
 
             agg_slot = pending.get("aggregator_slot") or {}
+            # Prefer the inline capture (non-streaming); fall back to the
+            # caller's resolved streamed text when streaming left it None.
+            agg_output = pending.get("aggregator_output")
+            if agg_output is None and aggregator_output_fallback:
+                agg_output = aggregator_output_fallback
             save_moa_turn(
                 session_id=session_id,
                 preset_name=pending.get("preset", ""),
@@ -665,7 +685,7 @@ class MoAChatCompletions:
                 aggregator_provider=agg_slot.get("provider"),
                 aggregator_temperature=pending.get("aggregator_temperature"),
                 aggregator_input_messages=pending.get("aggregator_input_messages"),
-                aggregator_output=pending.get("aggregator_output"),
+                aggregator_output=agg_output,
                 aggregator_streamed=bool(pending.get("aggregator_streamed")),
             )
         except Exception as exc:  # pragma: no cover - tracing must never break a turn
@@ -688,6 +708,13 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
+        # Expose the resolved aggregator slot so session cost accounting can
+        # price the aggregator's acting turn at its REAL model/provider. The
+        # agent's model/provider on the MoA path are the virtual preset name
+        # ("closed") and "moa", which have no pricing entry — without this the
+        # aggregator's spend (often the bulk of the turn) is silently dropped
+        # and the session cost reflects advisor fan-out only.
+        self.last_aggregator_slot = dict(aggregator) if aggregator else None
         # MoA does not cap reference or aggregator output: each model uses its
         # own maximum. Passing max_tokens=None makes call_llm omit the parameter
         # (it never caps by default), so a long aggregator synthesis is never
@@ -885,9 +912,23 @@ class MoAClient:
         """
         return self.chat.completions.consume_reference_usage()
 
-    def consume_and_save_trace(self, session_id: Any = None) -> None:
+    @property
+    def last_aggregator_slot(self) -> Any:
+        """Resolved aggregator slot ({provider, model, ...}) from the most
+        recent create(), or None. Read by session cost accounting to price the
+        aggregator's acting turn at its real model instead of the virtual
+        preset name."""
+        return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    def consume_and_save_trace(
+        self, session_id: Any = None, aggregator_output_fallback: Any = None
+    ) -> None:
         """Flush the pending full-turn MoA trace via the completions facade.
 
         No-op unless ``moa.save_traces`` is enabled and a turn is pending.
+        ``aggregator_output_fallback`` supplies the resolved acting text so the
+        streaming path's trace is self-contained (see the facade docstring).
         """
-        return self.chat.completions.consume_and_save_trace(session_id)
+        return self.chat.completions.consume_and_save_trace(
+            session_id, aggregator_output_fallback=aggregator_output_fallback
+        )

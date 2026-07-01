@@ -1984,3 +1984,186 @@ def test_managed_gateway_access_token_uses_newer_shared_token(
     profile_state = auth_mod.get_provider_auth_state("nous")
     assert profile_state is not None
     assert profile_state["refresh_token"] == "shared-fresh-refresh"
+
+class TestStalePortalBaseUrlMigration:
+    """_migrate_stale_nous_portal_url auto-corrects stale portal_base_url on load."""
+
+    def test_migrates_stale_portal_url_on_load(self, tmp_path, monkeypatch):
+        from hermes_cli.auth import _load_auth_store, DEFAULT_NOUS_PORTAL_URL
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://api.nousresearch.com",
+                    "access_token": "test-token",
+                    "refresh_token": "test-refresh",
+                }
+            },
+        }))
+
+        store = _load_auth_store(auth_file)
+        nous = store["providers"]["nous"]
+        assert nous["portal_base_url"] == DEFAULT_NOUS_PORTAL_URL
+
+    def test_preserves_correct_portal_url(self, tmp_path, monkeypatch):
+        from hermes_cli.auth import _load_auth_store, DEFAULT_NOUS_PORTAL_URL
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": DEFAULT_NOUS_PORTAL_URL,
+                    "access_token": "test-token",
+                    "refresh_token": "test-refresh",
+                }
+            },
+        }))
+
+        store = _load_auth_store(auth_file)
+        nous = store["providers"]["nous"]
+        assert nous["portal_base_url"] == DEFAULT_NOUS_PORTAL_URL
+
+    def test_ignores_other_providers(self, tmp_path, monkeypatch):
+        from hermes_cli.auth import _load_auth_store, DEFAULT_NOUS_PORTAL_URL
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {},
+        }))
+
+        store = _load_auth_store(auth_file)
+        assert "nous" not in store.get("providers", {})
+
+    def test_noop_when_nous_state_not_dict(self, tmp_path, monkeypatch):
+        from hermes_cli.auth import _load_auth_store
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {"nous": None},
+        }))
+
+        store = _load_auth_store(auth_file)
+        assert store["providers"]["nous"] is None
+
+    def test_runtime_fallback_for_invalid_portal_url(self, tmp_path, monkeypatch):
+        from hermes_cli import auth as auth_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _setup_nous_auth(
+            tmp_path,
+            access_token="expired-access",
+            refresh_token="valid-refresh",
+            expires_at="2025-01-01T00:00:00+00:00",
+        )
+        auth_file = tmp_path / "auth.json"
+        store = json.loads(auth_file.read_text())
+        store["providers"]["nous"]["portal_base_url"] = "https://api.nousresearch.com"
+        auth_file.write_text(json.dumps(store, indent=2))
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": "refreshed-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            }
+
+        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+        token = auth_mod.resolve_nous_access_token()
+        assert token == "refreshed-access"
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0] == auth_mod.DEFAULT_NOUS_PORTAL_URL
+
+    def test_runtime_accepts_localhost(self, tmp_path, monkeypatch):
+        from hermes_cli import auth as auth_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _setup_nous_auth(
+            tmp_path,
+            access_token="expired-access",
+            refresh_token="valid-refresh",
+            expires_at="2025-01-01T00:00:00+00:00",
+        )
+        auth_file = tmp_path / "auth.json"
+        store = json.loads(auth_file.read_text())
+        store["providers"]["nous"]["portal_base_url"] = "http://localhost:8080/"
+        auth_file.write_text(json.dumps(store, indent=2))
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": "refreshed-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            }
+
+        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+        token = auth_mod.resolve_nous_access_token()
+        assert token == "refreshed-access"
+        assert len(refresh_calls) == 1
+        assert "localhost" in refresh_calls[0]
+
+    def test_runtime_credentials_fallback_for_invalid_portal_url(self, tmp_path, monkeypatch):
+        """resolve_nous_runtime_credentials also rejects an off-allowlist portal host.
+
+        The refresh token is POSTed to portal_base_url on refresh; a poisoned
+        value must never receive the bearer. This mirrors the guard on
+        resolve_nous_access_token so the whole class is covered, not just the
+        managed-gateway path.
+        """
+        from hermes_cli import auth as auth_mod
+
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _setup_nous_auth(
+            hermes_home,
+            access_token=_invoke_jwt(seconds=-60),
+            refresh_token="valid-refresh",
+            expires_at=_future_iso(-60),
+            expires_in=0,
+        )
+        auth_file = hermes_home / "auth.json"
+        store = json.loads(auth_file.read_text())
+        store["providers"]["nous"]["portal_base_url"] = "https://evil.example.com"
+        auth_file.write_text(json.dumps(store, indent=2))
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": _invoke_jwt(seconds=3600),
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "inference_base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+        auth_mod.resolve_nous_runtime_credentials()
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0] == auth_mod.DEFAULT_NOUS_PORTAL_URL

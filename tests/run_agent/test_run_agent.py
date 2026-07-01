@@ -2723,6 +2723,9 @@ class TestConcurrentToolExecution:
             def submit(self, *args, **kwargs):
                 raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 
+            def shutdown(self, *args, **kwargs):
+                pass
+
         tc1 = _mock_tool_call(name="web_search", arguments='{"q": "alpha"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"q": "beta"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -2735,6 +2738,86 @@ class TestConcurrentToolExecution:
         assert messages[0]["tool_call_id"] == "c1"
         assert messages[1]["tool_call_id"] == "c2"
         assert all("Python interpreter is shutting down" in m["content"] for m in messages)
+
+    def test_concurrent_timeout_returns_finished_tools_without_hanging(self, agent, monkeypatch):
+        """A wedged worker must not freeze the whole concurrent tool batch."""
+        import threading
+        import time as _time
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        blocker = threading.Event()
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "fast"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "slow"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        flushed = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            if args.get("q") == "slow":
+                blocker.wait(5)
+                return "late"
+            return "fast-result"
+
+        def record_flush(flush_messages, conversation_history=None):
+            flushed.append([m.copy() for m in flush_messages if m.get("role") == "tool"])
+
+        agent._flush_messages_to_session_db = MagicMock(side_effect=record_flush)
+
+        start = _time.monotonic()
+        try:
+            with patch("run_agent.handle_function_call", side_effect=fake_handle):
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+        finally:
+            blocker.set()
+
+        assert _time.monotonic() - start < 1.0
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert "fast-result" in messages[0]["content"]
+        assert messages[1]["tool_call_id"] == "c2"
+        assert "timed out after" in messages[1]["content"]
+        assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
+        assert "fast-result" in flushed[0][-1]["content"]
+        assert "timed out after" in flushed[1][-1]["content"]
+
+    def test_concurrent_timeout_prefers_late_real_result_over_timeout_message(self, agent, monkeypatch):
+        """A worker that finishes in the window between the deadline snapshot
+        and the result loop must keep its real result, not be overwritten with
+        a fabricated 'timed out' message (late-completion race)."""
+        import concurrent.futures as _cf
+
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.1")
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "a"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "b"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        # Both tools return instantly, so results[*] are populated almost
+        # immediately. We still force the deadline path by making the FIRST
+        # wait() report everything as not-done (after crossing the deadline),
+        # so the loop snapshots both as timed-out even though the workers have
+        # in fact already written their results. The fix must surface the real
+        # results, not the timeout message.
+        real_wait = _cf.wait
+        calls = {"n": 0}
+
+        def fake_wait(fs, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                import time as _t
+                _t.sleep(0.15)  # ensure monotonic() >= deadline
+                return set(), set(fs)
+            return real_wait(fs, timeout=timeout)
+
+        with patch("agent.tool_executor.concurrent.futures.wait", side_effect=fake_wait), \
+             patch("run_agent.handle_function_call", side_effect=lambda name, args, task_id, **k: f"real-{args.get('q')}"):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        joined = " ".join(m["content"] for m in messages)
+        assert "timed out after" not in joined, "late-completing real results must not be discarded"
+        assert "real-a" in messages[0]["content"]
+        assert "real-b" in messages[1]["content"]
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
@@ -4994,8 +5077,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
 
         # Without think tags, the agent should attempt continuation retries
-        # (up to 3), not immediately fire thinking-exhaustion.
-        assert result["api_calls"] == 3
+        # (up to 4), not immediately fire thinking-exhaustion.
+        assert result["api_calls"] == 4
         assert result["completed"] is False
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
@@ -7068,7 +7151,16 @@ class TestPersistUserMessageOverride:
 
         agent._persist_session(messages, [])
 
-        assert messages[0]["content"] == "Hello there"
+        # The original messages list must NOT be mutated — the persist
+        # override is applied only to the DB row (resolved inside the flush
+        # chokepoint), so the live list keeps the original content for the
+        # API call (#48677).
+        assert (
+            messages[0]["content"]
+            == "[Voice input — respond concisely and conversationally, "
+            "2-3 sentences max. No code blocks or markdown.] Hello there"
+        )
+        # But the DB write must get the override.
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 

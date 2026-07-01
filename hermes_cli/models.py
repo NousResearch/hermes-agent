@@ -176,7 +176,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4.8",
+        "anthropic/claude-opus-4.8-fast",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-haiku-4.5",
         # OpenAI

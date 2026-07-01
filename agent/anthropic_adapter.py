@@ -1126,6 +1126,90 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def _keychain_account(service: str = "Claude Code-credentials") -> Optional[str]:
+    """Return the account (``-a``) of an existing keychain entry, or None."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('"acct"'):
+            # Format: "acct"<blob>="bonchaloo"
+            i = line.find('="')
+            if i != -1:
+                return line[i + 2:].rstrip('"')
+    return None
+
+
+def _write_claude_code_credentials_to_keychain(oauth_data: Dict[str, Any]) -> bool:
+    """Mirror refreshed ``claudeAiOauth`` into the macOS Keychain.
+
+    Claude Code >=2.1.114 reads its OAuth from the Keychain
+    ("Claude Code-credentials"), not the JSON file. Without this mirror, a
+    Hermes refresh rotates the single-use refresh token and writes ONLY the
+    file — the Keychain keeps the now-invalidated refresh token, so Claude
+    Code's next refresh fails and forces a re-login (the repeated-reset bug).
+
+    Read-modify-write: preserves ``mcpOAuth`` and every other key already in
+    the Keychain payload. FAIL-SAFE — any read/parse error skips the Keychain
+    write entirely (the file write already succeeded) rather than risk
+    clobbering the mcpOAuth token blob. Darwin-only; no-op elsewhere.
+    """
+    if platform.system() != "Darwin":
+        return False
+    service = "Claude Code-credentials"
+    try:
+        read = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # No entry → Claude Code uses the file only here; nothing to mirror.
+    if read.returncode != 0 or not read.stdout.strip():
+        return False
+    try:
+        payload = json.loads(read.stdout.strip())
+    except json.JSONDecodeError:
+        logger.debug("Keychain: existing payload not JSON — skipping mirror")
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    payload["claudeAiOauth"] = oauth_data
+    account = _keychain_account(service) or os.environ.get("USER", "")
+    if not account:
+        return False
+    try:
+        new_raw = json.dumps(payload)
+    except (TypeError, ValueError):
+        return False
+    try:
+        # ponytail: secret passes through argv — the `security` CLI has no
+        # stdin path for the password; acceptable on a single-user Mac.
+        # `-U` updates the existing item in place (keyed by service+account).
+        write = subprocess.run(
+            ["security", "add-generic-password", "-U",
+             "-s", service, "-a", account, "-w", new_raw],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if write.returncode != 0:
+        logger.debug("Keychain: update failed rc=%s %s",
+                     write.returncode, write.stderr.strip())
+        return False
+    return True
+
+
 def _write_claude_code_credentials(
     access_token: str,
     refresh_token: str,
@@ -1190,6 +1274,11 @@ def _write_claude_code_credentials(
             except OSError:
                 pass
             raise
+
+        # macOS: Claude Code (>=2.1.114) reads its OAuth from the Keychain, not
+        # this file. Mirror the rotated token there too, else its stale copy
+        # forces a re-login. Best-effort; never raises (the file is the floor).
+        _write_claude_code_credentials_to_keychain(oauth_data)
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 

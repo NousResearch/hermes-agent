@@ -279,10 +279,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        _compact_all_skills = bool(
+            getattr(agent, "provider", "") == "anthropic"
+            and getattr(agent, "_is_anthropic_oauth", False)
+        )
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            compact_all=_compact_all_skills,
         )
     else:
         skills_prompt = ""

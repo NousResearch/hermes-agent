@@ -82,6 +82,11 @@ class TestConfigParsing:
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
 
+    def test_include_core_parses_boolish_values(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw({"include_core": "true"}).include_core is True
+        assert ToolSearchConfig.from_raw({"include_core": "off"}).include_core is False
+
 
 # ---------------------------------------------------------------------------
 # Classification — the hard invariant: core tools NEVER defer.
@@ -90,7 +95,7 @@ class TestConfigParsing:
 
 class TestClassification:
     def test_core_tools_never_defer(self):
-        """The critical invariant from the OpenClaw report."""
+        """The default invariant from the OpenClaw report."""
         from tools.tool_search import is_deferrable_tool_name
         # Sample of core tools from _HERMES_CORE_TOOLS.
         for core_name in ["terminal", "read_file", "write_file", "patch",
@@ -100,6 +105,13 @@ class TestClassification:
             assert not is_deferrable_tool_name(core_name), (
                 f"Core tool '{core_name}' must NEVER be deferrable"
             )
+
+    def test_core_tools_defer_only_with_explicit_include_core(self):
+        """Subscription/OAuth compact mode can defer core schemas intentionally."""
+        from tools.tool_search import is_deferrable_tool_name
+
+        assert is_deferrable_tool_name("terminal", include_core=True)
+        assert is_deferrable_tool_name("read_file", include_core=True)
 
     def test_bridge_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES

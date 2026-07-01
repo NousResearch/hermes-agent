@@ -56,6 +56,36 @@ def _ra():
     return run_agent
 
 
+def _credential_pool_matches_runtime(agent: Any, pool: Any, provider: Optional[str] = None) -> bool:
+    """Return True when ``pool`` belongs to the runtime being restored.
+
+    Long-lived sessions can switch providers while retaining an older credential
+    pool object. Re-selecting from that stale pool during primary-runtime
+    restore is dangerous because ``_swap_credential`` mutates the active
+    endpoint; e.g. an Anthropic/Claude primary can inherit an OpenAI Codex
+    ``base_url`` and send Claude requests to ChatGPT. Keep restore-time pool
+    re-selection same-provider only, with the same custom-provider alias
+    exception used by recovery.
+    """
+    current_provider = (provider or getattr(agent, "provider", "") or "").strip().lower()
+    pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+    if not current_provider or not pool_provider or current_provider == pool_provider:
+        return True
+
+    if current_provider == "custom" and pool_provider.startswith("custom:"):
+        try:
+            from agent.credential_pool import get_custom_provider_pool_key
+            agent_base = (getattr(agent, "base_url", "") or "").strip()
+            return bool(agent_base) and (
+                (get_custom_provider_pool_key(agent_base) or "").strip().lower()
+                == pool_provider
+            )
+        except Exception:
+            return False
+
+    return False
+
+
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
 )
@@ -699,7 +729,7 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    if current_provider and pool_provider and current_provider != pool_provider:
+    if current_provider and pool_provider and not _credential_pool_matches_runtime(agent, pool, current_provider):
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
@@ -709,24 +739,12 @@ def recover_with_credential_pool(
         # the agent's CURRENT base_url actually resolves to this pool key,
         # so a fallback provider (or a different custom endpoint) still
         # triggers the guard.
-        _custom_match = False
-        if current_provider == "custom" and pool_provider.startswith("custom:"):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
-                _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _custom_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
-                    == pool_provider
-                )
-            except Exception:
-                _custom_match = False
-        if not _custom_match:
-            _ra().logger.warning(
-                "Credential pool provider mismatch: pool=%s, agent=%s — "
-                "skipping pool mutation to avoid cross-provider contamination",
-                pool_provider, current_provider,
-            )
-            return False, has_retried_429
+        _ra().logger.warning(
+            "Credential pool provider mismatch: pool=%s, agent=%s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            pool_provider, current_provider,
+        )
+        return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:
@@ -1181,7 +1199,13 @@ def restore_primary_runtime(agent) -> bool:
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
         pool = getattr(agent, "_credential_pool", None)
-        if pool is not None and pool.has_available():
+        if pool is not None and not _credential_pool_matches_runtime(agent, pool, rt.get("provider")):
+            logger.warning(
+                "Restore skipped credential pool re-select: pool=%s, primary=%s",
+                (getattr(pool, "provider", "") or "").strip().lower(),
+                (rt.get("provider") or "").strip().lower(),
+            )
+        elif pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
                 entry_key = (

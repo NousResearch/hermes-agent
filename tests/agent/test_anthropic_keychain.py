@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
+    _write_claude_code_credentials_to_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
 )
@@ -334,4 +335,54 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         assert result == "newly-minted"
         # Prefers the live source's refresh token over the caller's stale copy.
         assert captured["refresh_token"] == "live-refresh"
+
+
+class TestWriteClaudeCodeCredentialsToKeychain:
+    """Repeated-reset bug: a refresh must mirror the rotated token into the
+    Keychain (read-modify-write) so Claude Code's canonical store stays valid,
+    without clobbering the mcpOAuth blob that shares the same payload."""
+
+    def test_returns_false_on_linux(self):
+        with patch("agent.anthropic_adapter.platform.system", return_value="Linux"):
+            assert _write_claude_code_credentials_to_keychain({"accessToken": "x"}) is False
+
+    def test_no_entry_is_noop(self):
+        """No existing Keychain entry → nothing to mirror, no write attempted."""
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+            assert _write_claude_code_credentials_to_keychain({"accessToken": "x"}) is False
+            # Only the read was attempted, never a write.
+            assert all("add-generic-password" not in c.args[0] for c in run.call_args_list)
+
+    def test_updates_oauth_and_preserves_mcp_blob(self):
+        existing = {
+            "mcpOAuth": {"slack|abc": {"accessToken": "keep-me", "refreshToken": "keep-too"}},
+            "claudeAiOauth": {"accessToken": "OLD", "refreshToken": "OLD-REF", "expiresAt": 1},
+        }
+        new_oauth = {"accessToken": "NEW", "refreshToken": "NEW-REF", "expiresAt": 999}
+        calls = [
+            MagicMock(returncode=0, stdout=json.dumps(existing), stderr=""),   # read -w
+            MagicMock(returncode=0, stdout='    "acct"<blob>="bonchaloo"\n', stderr=""),  # acct
+            MagicMock(returncode=0, stdout="", stderr=""),                     # write -U
+        ]
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run", side_effect=calls) as run:
+            assert _write_claude_code_credentials_to_keychain(new_oauth) is True
+
+        write_argv = run.call_args_list[-1].args[0]
+        assert "add-generic-password" in write_argv and "-U" in write_argv
+        # The payload written back: claudeAiOauth replaced, mcpOAuth untouched.
+        written = json.loads(write_argv[write_argv.index("-w") + 1])
+        assert written["claudeAiOauth"] == new_oauth
+        assert written["mcpOAuth"] == existing["mcpOAuth"]
+        assert write_argv[write_argv.index("-a") + 1] == "bonchaloo"
+
+    def test_corrupt_existing_payload_skips_write(self):
+        """Unparseable existing payload must NOT trigger a write (don't clobber)."""
+        calls = [MagicMock(returncode=0, stdout="not json", stderr="")]
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run", side_effect=calls) as run:
+            assert _write_claude_code_credentials_to_keychain({"accessToken": "x"}) is False
+            assert all("add-generic-password" not in c.args[0] for c in run.call_args_list)
 

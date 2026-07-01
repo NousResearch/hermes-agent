@@ -3697,6 +3697,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session row was created. Keep the session DB metadata in sync so session
         lists, desktop/dashboard details, and follow-up session tooling report the
         backend that actually answered the latest turn.
+
+        Called from the ``run_sync`` closure, which executes off the event loop
+        in the executor thread — so the synchronous ``SessionDB`` (``_db``) is
+        used directly rather than awaiting the AsyncSessionDB forwarder.
         """
         if not session_id or agent is None or self._session_db is None:
             return
@@ -3711,38 +3715,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         }
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
 
-        def _do(conn):
-            import json as _json
-
-            row = conn.execute(
-                "SELECT model, model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
+        try:
+            db = self._session_db._db
+            row = db.get_session(session_id)
+            if not row:
                 return
+            current_model = row.get("model")
+            raw_config = row.get("model_config")
             try:
-                current_model = row["model"]
-                raw_config = row["model_config"]
-            except Exception:
-                current_model = row[0]
-                raw_config = row[1]
-            try:
-                config = _json.loads(raw_config) if raw_config else {}
+                config = json.loads(raw_config) if raw_config else {}
             except Exception:
                 config = {}
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if current_model == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            if current_model == model and all(
+                gateway_runtime.get(k) == v for k, v in runtime.items()
+            ):
                 return
             config["gateway_runtime"] = runtime
-            conn.execute(
-                "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
-                (model, _json.dumps(config), session_id),
-            )
-
-        try:
-            self._session_db._execute_write(_do)  # noqa: SLF001 - SessionDB exposes no metadata updater
+            db.update_session_meta(session_id, json.dumps(config), model=model)
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 

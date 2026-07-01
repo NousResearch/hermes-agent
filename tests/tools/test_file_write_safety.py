@@ -187,6 +187,13 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    def test_pytest_tempdir_under_private_var_allowed(self, tmp_path):
+        from tools.file_tools import _check_sensitive_path
+
+        candidate = tmp_path / "workspace" / "file.txt"
+        assert "/private/var/" in str(candidate.resolve())
+        assert _check_sensitive_path(str(candidate)) is None
+
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None

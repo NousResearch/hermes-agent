@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -489,6 +490,32 @@ _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
 
+def _is_under_path(candidate: str, root: str) -> bool:
+    """Return True when candidate resolves to root or one of its descendants."""
+    try:
+        candidate_path = Path(candidate).expanduser().resolve()
+        root_path = Path(root).expanduser().resolve()
+    except Exception:
+        return False
+    return candidate_path == root_path or root_path in candidate_path.parents
+
+
+def _is_allowed_temp_write_path(filepath: str, resolved: str, normalized: str) -> bool:
+    """Allow writes inside the process tempdir even on macOS /private/var paths.
+
+    pytest tmp_path workspaces live under tempfile.gettempdir(), which on macOS
+    resolves into /private/var/folders/.../T. The broad /private/var guard is
+    still correct for system locations such as /private/var/db, but it must not
+    block repo workspaces created under the temp root.
+    """
+    try:
+        temp_root = tempfile.gettempdir()
+    except Exception:
+        return False
+    candidates = [filepath, resolved, normalized]
+    return any(_is_under_path(candidate, temp_root) for candidate in candidates if candidate)
+
+
 def _get_hermes_config_resolved() -> str | None:
     """Return the resolved absolute path of the Hermes config file (cached)."""
     global _hermes_config_resolved, _hermes_config_resolved_loaded
@@ -513,6 +540,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    if _is_allowed_temp_write_path(filepath, resolved, normalized):
+        return None
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

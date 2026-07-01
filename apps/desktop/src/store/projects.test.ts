@@ -13,6 +13,7 @@ import {
   exitProjectScope,
   openProjectCreate,
   pickProjectFolder,
+  refreshProjectTree,
   refreshProjects,
   refreshWorktrees
 } from './projects'
@@ -188,9 +189,25 @@ describe('projects RPC capability', () => {
     $projectsRpcAvailable.set(false)
 
     openProjectCreate()
-
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
     )
+  })
+})
+
+describe('refreshProjectTree', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projectsRpcAvailable.set(null)
+  })
+
+  it('requests ten project overview preview sessions', async () => {
+    const request = vi.fn(async () => ({ active_id: null, projects: [], scoped_session_ids: [] }))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await refreshProjectTree()
+
+    expect(request).toHaveBeenCalledWith('projects.tree', { preview_limit: 10 })
+    expect($projectsRpcAvailable.get()).toBe(true)
   })
 })

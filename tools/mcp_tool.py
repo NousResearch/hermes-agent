@@ -3730,12 +3730,27 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
+    # Keys whose values are name -> schema maps. The child keys there are
+    # user-defined names (property names, definition names), NOT schema
+    # keywords, so they must be recursed into without being rewritten. A
+    # tool parameter literally named ``definitions`` is otherwise renamed to
+    # ``$defs`` (and then dropped from ``required`` by the prune pass).
+    _named_schema_map_keys = ("properties", "patternProperties", "$defs", "definitions")
+
+    def _rewrite_local_refs(node, in_named_map=False):
         if isinstance(node, dict):
+            if in_named_map:
+                # Keys name properties/definitions; preserve them verbatim and
+                # recurse each value as a schema node.
+                return {
+                    key: _rewrite_local_refs(value) for key, value in node.items()
+                }
             normalized = {}
             for key, value in node.items():
                 out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                normalized[out_key] = _rewrite_local_refs(
+                    value, in_named_map=key in _named_schema_map_keys
+                )
             ref = normalized.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/definitions/"):
                 normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]

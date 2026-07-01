@@ -235,6 +235,50 @@ class TestSchemaConversion:
         assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
         assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
 
+    def test_property_named_definitions_is_not_renamed_to_defs(self):
+        """A tool parameter literally named ``definitions`` must keep its name.
+
+        ``definitions`` is only the JSON Schema keyword at a schema-node level;
+        as a key inside ``properties`` it is a user-defined parameter name. The
+        ref-rewrite must not turn it into ``$defs`` (which also drops it from
+        ``required`` via the prune pass), or the model is handed a tool contract
+        with the wrong parameter name.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "term": {"type": "string"},
+                "definitions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["term", "definitions"],
+        })
+
+        assert "definitions" in schema["properties"]
+        assert "$defs" not in schema["properties"]
+        assert schema["properties"]["definitions"]["type"] == "array"
+        assert schema["required"] == ["term", "definitions"]
+
+    def test_definition_named_definitions_keeps_inner_name(self):
+        """The ``definitions`` keyword block is renamed, but a definition whose
+        name happens to be ``definitions`` is a name, not a keyword, and must be
+        preserved (with its ``$ref`` rewritten to point at it)."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"p": {"$ref": "#/definitions/definitions"}},
+            "definitions": {"definitions": {"type": "string"}},
+        })
+
+        assert "definitions" not in schema
+        assert list(schema["$defs"].keys()) == ["definitions"]
+        assert schema["properties"]["p"]["$ref"] == "#/$defs/definitions"
+
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
         from tools.mcp_tool import _normalize_mcp_input_schema

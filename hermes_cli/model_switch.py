@@ -1102,7 +1102,16 @@ def switch_model(
             and not resolved_in_current_catalog
             and not config_routed
         ):
-            detected = detect_provider_for_model(new_model, current_provider)
+            authed = get_authenticated_provider_slugs(
+                current_provider=current_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+            detected = detect_provider_for_model(
+                new_model,
+                current_provider,
+                authenticated_providers=authed,
+            )
             if detected:
                 target_provider, new_model = detected
 

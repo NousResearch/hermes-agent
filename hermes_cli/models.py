@@ -206,6 +206,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "z-ai/glm-5.1",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
+        "xiaomi/mimo-v2.5",
         # Tencent
         "tencent/hy3-preview",
         # StepFun
@@ -1871,6 +1872,72 @@ def _resolve_static_model_alias(
     return None
 
 
+def _aggregator_catalog_models(provider: str) -> list[str]:
+    """Return the model catalog for an aggregator provider."""
+    try:
+        from agent.models_dev import list_provider_models
+
+        catalog = list_provider_models(provider)
+    except Exception:
+        catalog = []
+    if not catalog:
+        catalog = list(_PROVIDER_MODELS.get(provider, []))
+    return catalog
+
+
+def _find_aggregator_catalog_match(
+    model_name: str,
+    aggregator_provider: str,
+) -> Optional[str]:
+    """Find a catalog entry for *model_name* on an aggregator provider."""
+    name = (model_name or "").strip()
+    if not name:
+        return None
+
+    from hermes_cli.model_normalize import _prepend_vendor
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(cand: str) -> None:
+        key = cand.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            candidates.append(cand.strip())
+
+    _add(name)
+    if "/" not in name:
+        prefixed = _prepend_vendor(name)
+        if prefixed != name:
+            _add(prefixed)
+
+    for mid in _aggregator_catalog_models(aggregator_provider):
+        mid_l = mid.lower()
+        for cand in candidates:
+            cl = cand.lower()
+            if mid_l == cl:
+                return mid
+            if "/" in mid:
+                _, bare = mid.split("/", 1)
+                if bare.lower() == cl:
+                    return mid
+    return None
+
+
+def _resolve_via_authenticated_aggregators(
+    model_name: str,
+    authenticated_providers: list[str],
+) -> Optional[tuple[str, str]]:
+    """Route a model through an authenticated aggregator when possible."""
+    for provider in authenticated_providers:
+        if provider not in _AGGREGATOR_PROVIDERS:
+            continue
+        matched = _find_aggregator_catalog_match(model_name, provider)
+        if matched:
+            return (provider, matched)
+    return None
+
+
 def detect_static_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -1947,6 +2014,7 @@ def detect_static_provider_for_model(
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
+    authenticated_providers: Optional[list[str]] = None,
 ) -> Optional[tuple[str, str]]:
     """Auto-detect the best provider for a model name.
 
@@ -1958,6 +2026,11 @@ def detect_provider_for_model(
     0. Bare provider name → switch to that provider's default model
     1. Direct provider static catalog match
     2. OpenRouter catalog match
+
+    When *authenticated_providers* is supplied, a static match that would pin
+    the model to a native provider without credentials is skipped in favour of
+    an authenticated aggregator route (e.g. bare ``mimo-v2.5`` via Nous OAuth
+    instead of direct ``xiaomi``).
     """
     name = (model_name or "").strip()
     if not name:
@@ -1965,7 +2038,17 @@ def detect_provider_for_model(
 
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
-        return static_match
+        pid, mid = static_match
+        if authenticated_providers is not None:
+            authed = set(authenticated_providers)
+            if pid in authed:
+                return static_match
+            agg = _resolve_via_authenticated_aggregators(mid, list(authed))
+            if agg:
+                return agg
+            # Fall through — do not pin to an unauthenticated native provider.
+        else:
+            return static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         return None
 

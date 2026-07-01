@@ -394,7 +394,10 @@ def env_float(key: str, default: float = 0.0) -> float:
 
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
+    raw = os.getenv(key)
+    if raw is None or not raw.strip():
+        return default
+    return is_truthy_value(raw, default=default)
 
 
 # ─── Proxy Helpers ────────────────────────────────────────────────────────────

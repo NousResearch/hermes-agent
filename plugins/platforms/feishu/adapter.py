@@ -143,7 +143,7 @@ from gateway.platforms.base import (
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, env_float, env_int
+from utils import atomic_json_write, env_bool, env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +396,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    interactive_cards: bool = True  # Card 2.0 interactive cards for all outbound content
 
 
 @dataclass
@@ -559,6 +560,25 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a Feishu Card JSON 2.0 interactive card payload from markdown content.
+
+    Card 2.0 ``body.elements[].tag:"markdown"`` renders full CommonMark
+    (tables, code blocks, lists, headings, blockquotes) natively — no
+    per-feature parsing required.
+    """
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -1587,6 +1607,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            interactive_cards=env_bool(
+                "HERMES_FEISHU_INTERACTIVE_CARDS", True
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1619,6 +1642,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._interactive_cards = settings.interactive_cards
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1859,9 +1883,32 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card send failed; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    else:
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                if (
+                    msg_type == "post"
+                    and not self._response_succeeded(response)
+                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                ):
+                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1870,11 +1917,10 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type == "interactive"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -4468,9 +4514,14 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Route **all** outbound content through Card 2.0 interactive cards.
+        # Card 2.0 ``tag:"markdown"`` renders full CommonMark (tables, code
+        # blocks, lists, headings, blockquotes) natively — no per-feature
+        # branching required.  A single code-path also eliminates the
+        # streaming ``msg_type`` drift between the first chunk and the edit.
+        if self._interactive_cards:
+            return "interactive", _build_markdown_card_payload(content)
+        # Legacy fallback when feature flag is disabled.
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)

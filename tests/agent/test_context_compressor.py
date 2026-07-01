@@ -3023,3 +3023,84 @@ class TestSanitizerStripsOrphanedToolCalls:
         asst = next(m for m in sanitized if m.get("role") == "assistant")
         assert not asst.get("tool_calls")
         # No stub tool messages (which would have call_id != id mismatch)
+
+
+
+
+class TestCooldownReentryAbort:
+    """Regression: a second compress() call during the failure cooldown must
+    still abort when the original failure was a network/auth error.
+
+    Before the fix, compress() unconditionally reset _last_summary_network_failure
+    and _last_summary_auth_failure at the top of every call.  When
+    _generate_summary() returned None from the cooldown early-return (without
+    re-setting the flags), the abort guard saw False and fell through to the
+    destructive static-fallback path — reproducing the data-loss scenario from
+    #29559 / #25585 that PR #51881 originally fixed.
+    """
+
+    def _msgs(self, n=12):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
+
+    def test_network_failure_cooldown_reentry_still_aborts(self):
+        """ConnectionError → first compress aborts (PR #51881).  Second
+        compress within the 30s cooldown must ALSO abort — not drop the
+        middle window via the static-fallback path."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=ConnectionError("Connection error."),
+        ):
+            first = c.compress(msgs, current_tokens=999999, force=True)
+        assert first == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_network_failure is True
+
+        second = c.compress(msgs, current_tokens=999999)
+        assert second == msgs, (
+            "Second compress during cooldown must abort (preserve messages), "
+            "not drop the middle window via static-fallback"
+        )
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+
+    def test_auth_failure_cooldown_reentry_still_aborts(self):
+        """Same re-entry hole for auth failures: a 401 sets the flag, cooldown
+        returns None, second compress must still abort."""
+        err = Exception("Error code: 401 - invalid api key")
+        err.status_code = 401
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+
+        with patch("agent.context_compressor.call_llm", side_effect=err):
+            first = c.compress(msgs, current_tokens=999999, force=True)
+        assert first == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_auth_failure is True
+
+        second = c.compress(msgs, current_tokens=999999)
+        assert second == msgs, (
+            "Second compress during cooldown must abort (preserve messages), "
+            "not drop the middle window via static-fallback"
+        )
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False

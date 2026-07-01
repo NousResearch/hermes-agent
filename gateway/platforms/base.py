@@ -905,6 +905,27 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 raise
 
 
+def cleanup_audio_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached audio files older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_audio_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # Video cache utilities
 #

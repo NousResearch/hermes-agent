@@ -293,3 +293,82 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+def test_current_model_not_duplicated_when_catalog_entry_is_namespaced(monkeypatch):
+    """Regression: the current model must not appear twice in the picker.
+
+    ``current_model`` is stored bare in config (e.g. ``claude-opus-4-8``) while
+    a provider's curated catalog lists it namespaced (``claude-app/claude-opus-4-8``).
+    The post-pass that injects the current model at the top of the current row
+    used a plain ``current_model not in _models`` check, which never matched the
+    namespaced entry — so the model was injected a SECOND time and the platform
+    pickers (Discord/Telegram strip the prefix for display) showed it twice.
+
+    Here the current custom row's catalog is the bare + namespaced pair; a bare
+    ``current_model`` must be recognised as already present via the namespaced
+    entry and NOT re-injected.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [])
+
+    # The custom-endpoint branch seeds the row's models from ``current_model``.
+    # Give the row a namespaced catalog entry via the config ``model`` list so
+    # the injected bare id would collide on display but not on a naive ``in``.
+    result = model_switch.list_authenticated_providers(
+        current_provider="custom:relay",
+        current_base_url="http://localhost:9099/v1",
+        current_model="claude-opus-4-8",
+        custom_providers=[
+            {
+                "name": "Relay",
+                "base_url": "http://localhost:9099/v1",
+                "api_key": "x",
+                "models": ["relay/claude-opus-4-8", "relay/claude-sonnet-5"],
+            },
+        ],
+    )
+
+    current_rows = [p for p in result if p.get("is_current")]
+    assert current_rows, "expected a current row"
+    row = current_rows[0]
+    display = [m.split("/")[-1] for m in row["models"]]
+    # The bare current model resolves to the namespaced entry — no duplicate.
+    assert display.count("claude-opus-4-8") == 1, row["models"]
+    assert row["total_models"] == len(row["models"])
+
+
+def test_current_model_injected_when_genuinely_absent(monkeypatch):
+    """Guard the other side: an uncurated current model IS still injected.
+
+    The namespace-aware check must not over-match — a model the catalog does
+    not carry (in any namespaced form) must still be prepended so it stays
+    selectable in the picker.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [])
+
+    result = model_switch.list_authenticated_providers(
+        current_provider="custom:relay",
+        current_base_url="http://localhost:9099/v1",
+        current_model="some-uncurated-model",
+        custom_providers=[
+            {
+                "name": "Relay",
+                "base_url": "http://localhost:9099/v1",
+                "api_key": "x",
+                "models": ["relay/claude-opus-4-8"],
+            },
+        ],
+    )
+
+    current_rows = [p for p in result if p.get("is_current")]
+    assert current_rows, "expected a current row"
+    row = current_rows[0]
+    assert "some-uncurated-model" in row["models"], row["models"]

@@ -270,13 +270,23 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _cleanup_ws(self) -> None:
         """Close the live websocket/session, if any."""
+        pending_tasks = getattr(self, "_pending_text_batch_tasks", None)
+        if pending_tasks is not None:
+            for task in pending_tasks.values():
+                if not task.done():
+                    task.cancel()
+            pending_tasks.clear()
+        pending_events = getattr(self, "_pending_text_batches", None)
+        if pending_events is not None:
+            pending_events.clear()
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
 
-        if self._session and not self._session.closed:
+        session = getattr(self, "_session", None)
+        if session is not None and not session.closed:
             await self._session.close()
-        self._session = None
+            self._session = None
 
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""

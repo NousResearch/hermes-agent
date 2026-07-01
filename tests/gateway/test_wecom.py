@@ -953,3 +953,21 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+def test_cleanup_ws_clears_pending_batch_state_without_assuming_full_init():
+    from gateway.platforms.wecom import WeComAdapter
+
+    adapter = WeComAdapter.__new__(WeComAdapter)
+    adapter._running = False
+    adapter._ws = None
+    adapter._session = None
+    adapter._pending_text_batch_tasks = {}
+    adapter._pending_text_batches = {}
+
+    async def _drive():
+        await adapter._cleanup_ws()
+
+    asyncio.run(_drive())
+    assert adapter._pending_text_batch_tasks == {}
+    assert adapter._pending_text_batches == {}

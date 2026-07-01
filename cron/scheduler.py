@@ -701,6 +701,102 @@ def _seed_cron_thread_session(
         )
 
 
+def _seed_cron_channel_session(
+    job: dict,
+    adapter,
+    platform_name: str,
+    chat_id: str,
+    mirror_text: str,
+    *,
+    is_dm: bool,
+    user_id: Optional[str],
+    chat_name: Optional[str] = None,
+) -> bool:
+    """Seed the FLAT (thread_id=None) session for an ``in_channel`` cron delivery.
+
+    The ``in_channel`` surface (D1/D2) delivers the brief flat into the channel
+    with no thread, so the continuation surface is the whole-channel /
+    whole-DM session keyed ``thread_id=None`` — the same bucket
+    ``reply_in_thread: false`` routes an inbound plain reply to.
+
+    Unlike the thread path, the shipped delivery-mirror alone is NOT sufficient
+    here: ``mirror_to_session`` only APPENDS to a session that already EXISTS
+    (``_find_session_id`` → no-op when none matches), and a flat channel
+    ``(…, None)`` row is only created when a human posts a top-level message the
+    bot processes — a ``chat_postMessage`` cron delivery never goes through the
+    inbound handler, so the row is usually absent and the mirror silently drops
+    the brief (verified live: the brief never landed, the reply had no context).
+    So we CREATE the flat session row first, exactly like
+    ``_seed_cron_thread_session`` does for threads, then mirror into it.
+
+    The session KEY must match what the user's later inbound reply resolves to
+    (``build_session_key``):
+    - **Channel** (``chat_type="group"``): key is
+      ``…:group:<chat_id>:<user_id>`` — user-isolated — so the seed MUST carry
+      the **origin's real ``user_id``** (the member who scheduled the job), NOT
+      a synthetic ``system:cron`` id, or the reply keys to a different session.
+    - **1:1 DM** (``chat_type="dm"``): the key is ``…:dm:<chat_id>`` and does
+      NOT embed ``user_id``, so any ``user_id`` resolves to the same session.
+    ``chat_type`` mirrors the inbound handler's own choice
+    (``"dm" if is_dm else "group"``, ``adapter.py``), so the seeded key is
+    byte-identical to the reply's key.
+
+    Returns True if a seed row was created and the brief mirrored, else False
+    (caller falls back to the plain mirror). Best-effort — a delivery that
+    already succeeded is never failed by a seeding problem.
+    """
+    text = (mirror_text or "").strip()
+    if not text:
+        return False
+    try:
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        chat_type = "dm" if is_dm else "group"
+        session_store = getattr(adapter, "_session_store", None)
+        if session_store is not None:
+            try:
+                platform_enum = Platform(platform_name.lower())
+            except (ValueError, KeyError):
+                platform_enum = None
+            if platform_enum is not None:
+                dest_source = SessionSource(
+                    platform=platform_enum,
+                    chat_id=str(chat_id),
+                    chat_name=chat_name,
+                    chat_type=chat_type,
+                    user_id=str(user_id) if user_id else None,
+                    thread_id=None,  # flat — the whole-channel/DM session
+                )
+                # Create the flat session row so the mirror has a target and the
+                # user's later plain reply joins the SAME session.
+                session_store.get_or_create_session(dest_source)
+
+        from gateway.mirror import mirror_to_session
+
+        ok = mirror_to_session(
+            platform_name,
+            str(chat_id),
+            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
+            source_label="cron",
+            thread_id=None,
+            user_id=str(user_id) if user_id else None,
+            role="user",
+        )
+        if ok:
+            logger.info(
+                "Job '%s': seeded flat in_channel session on %s:%s (chat_type=%s)",
+                job.get("id", "?"), platform_name, chat_id, chat_type,
+            )
+        return bool(ok)
+    except Exception as e:
+        logger.debug(
+            "Job '%s': seeding in_channel session failed for %s:%s: %s",
+            job.get("id", "?"), platform_name, chat_id, e,
+        )
+        return False
+
+
 def _cron_job_origin_log_suffix(job: dict) -> str:
     """Return safe provenance details for security warnings about a cron job.
 
@@ -1291,6 +1387,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
             in_channel_surface = False
 
+        # For an in_channel delivery the flat continuation session is created
+        # explicitly below (the shipped mirror only APPENDS to an existing
+        # session, and the flat channel row is otherwise absent for a
+        # chat_postMessage delivery). ``is_dm`` selects the session chat_type so
+        # the seeded key matches the inbound reply's key: a 1:1 DM keys as
+        # ``dm`` (Slack DM channel ids start with "D"; or the origin says so),
+        # everything else as ``group`` (shared channel). ``inchannel_seeded``
+        # suppresses the generic mirror below so the brief is not double-written.
+        origin_chat_type = str(origin.get("chat_type") or "").lower()
+        is_dm_target = origin_chat_type == "dm" or (
+            not origin_chat_type and str(chat_id).startswith("D")
+        )
+        inchannel_seeded = False
+
         # Continuable cron (thread-preferred): when mirroring is enabled for the
         # origin target and the gateway is live, try to open a DEDICATED thread
         # for this job and deliver the brief into it. On thread-capable
@@ -1548,10 +1658,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             chat_name=origin.get("chat_name"),
                         )
                         thread_seeded = True
+                    # in_channel surface: CREATE + seed the flat channel/DM
+                    # session (the shipped mirror only appends to an existing
+                    # session — the flat row is otherwise absent for a
+                    # chat_postMessage delivery, so the brief would be lost).
+                    if in_channel_surface and mirror_this_target and not thread_seeded:
+                        inchannel_seeded = _seed_cron_channel_session(
+                            job, runtime_adapter, platform_name, chat_id,
+                            mirror_text, is_dm=is_dm_target,
+                            user_id=origin_user_id,
+                            chat_name=origin.get("chat_name"),
+                        )
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,
                         thread_id=thread_id, user_id=origin_user_id,
-                        enabled=mirror_this_target and not thread_seeded,
+                        enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"

@@ -1,174 +1,157 @@
 """
-Offline E2E harness for continuable in-channel cron (specs/cron-inchannel-continuable).
+Offline E2E for continuable in-channel cron (specs/cron-inchannel-continuable).
 
-Drives BOTH legs of the feature against the REAL code paths — no network, no
-Slack contact, no Socket Mode — and asserts they converge on the same
-shared-channel session key ``(slack, <channel>, None)``:
+Exercises the REAL create→persist→find→append path end-to-end against a REAL
+SessionStore + REAL mirror_to_session + REAL _find_session_id + REAL
+build_session_key — NO mocking of the session layer. This is the harness that
+would have caught the shipped bug (the first version mocked mirror_to_session and
+so never exercised the fact that the mirror only APPENDS to a pre-existing
+session; the flat channel row was never created and the brief was silently lost).
 
-  LEG 1 (delivery):  cron.scheduler._deliver_result(...) with a live Slack
-    adapter + cron_continuable_surface=in_channel  →  the thread-open branch is
-    SKIPPED and the shipped origin-mirror seeds (slack, C, None) with
-    thread_id=None (F5). Asserted via the mirror_to_session call.
+Two scenarios, each asserting the brief actually lands in the SAME session the
+inbound reply resolves to:
 
-  LEG 2 (reply):  SlackAdapter._handle_slack_message(...) for a plain top-level
-    channel message under reply_in_thread=false  →  the inbound session keying
-    stamps thread_id=None, i.e. the SAME (slack, C, None) bucket the seed landed
-    in. Asserted via the dispatched MessageEvent.source.thread_id.
+  CHANNEL: cron in_channel delivery → _seed_cron_channel_session CREATES the flat
+    (slack, C, None) session (chat_type=group, keyed to the origin user) and
+    mirrors the brief in. Then a plain channel reply (reply_in_thread:false →
+    thread_id=None) keys to the SAME session → the brief is in its transcript.
 
-If both legs report thread_id=None for the same channel, a plain channel reply
-after an in_channel cron delivery resolves to the seeded session with the brief
-in context (G3) — with NO visible thread (G2).
+  1:1 DM: same, chat_type=dm. The DM session key ignores user_id, so the reply
+    resolves regardless; assert the brief lands and the key matches.
 
-Run from INSIDE the worktree so the worktree's code loads, not the editable
-main-checkout install:
+Run from INSIDE the worktree (so the worktree code loads, not the editable
+main-checkout install):
 
     cd <worktree>
     PYTHONPATH="$PWD" ../../.venv/bin/python tests/manual/cron_inchannel_e2e.py
 
-No real names anywhere (synthetic channel C_TEST / user U_TESTER / bot U_TESTBOT).
+Uses a throwaway HERMES_HOME so it never touches ~/.hermes. No real names.
 """
 
-import asyncio
+import os
 import sys
-from concurrent.futures import Future
-from unittest.mock import AsyncMock, MagicMock, patch
-
-# --- confirm we are running the WORKTREE's code, not the main checkout --------
-import cron.scheduler as _sched_mod
-import plugins.platforms.slack.adapter as _slack_mod
-
-CHANNEL = "C_TEST"
-BOT_UID = "U_TESTBOT"
-USER_UID = "U_TESTER"
-BRIEF = "Your daily brief: 3 PRs need review."
+import tempfile
+from pathlib import Path
 
 
-def leg1_delivery_seeds_flat_channel_session():
-    """Real _deliver_result down the live-adapter path, in_channel mode."""
-    from gateway.config import Platform
-
-    # A Slack pconfig opting into in_channel.
-    pconfig = MagicMock()
-    pconfig.enabled = True
-    pconfig.extra = {"cron_continuable_surface": "in_channel", "reply_in_thread": False}
-    mock_cfg = MagicMock()
-    mock_cfg.platforms = {Platform.SLACK: pconfig}
-
-    # A live Slack-like adapter that advertises the capability + sends OK.
-    adapter = AsyncMock()
-    adapter.send.return_value = MagicMock(success=True)
-    adapter.supports_inchannel_continuable = True
-
-    loop = MagicMock()
-    loop.is_running.return_value = True
-
-    def fake_run_coro(coro, _loop):
-        fut = Future()
-        try:
-            fut.set_result(asyncio.run(coro))
-        except BaseException as e:  # noqa: BLE001
-            fut.set_exception(e)
-        return fut
-
-    job = {
-        "id": "brief-job",
-        "name": "Daily Brief",
-        "deliver": "origin",
-        "origin": {"platform": "slack", "chat_id": CHANNEL},  # channel origin, no thread
-        "attach_to_session": True,
-    }
-
-    open_thread_calls = []
-    real_open = _sched_mod._open_continuable_cron_thread
-
-    def _spy_open(*a, **k):
-        open_thread_calls.append((a, k))
-        return real_open(*a, **k)
-
-    with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("cron.scheduler._open_continuable_cron_thread", side_effect=_spy_open), \
-         patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
-         patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
-        _sched_mod._deliver_result(
-            job, BRIEF, adapters={Platform.SLACK: adapter}, loop=loop,
-        )
-
-    assert not open_thread_calls, "LEG1 FAIL: thread-open was attempted in in_channel mode (G2)"
-    assert mirror_mock.call_count == 1, "LEG1 FAIL: brief was not mirrored/seeded"
-    kw = mirror_mock.call_args
-    seeded_platform = kw.args[0]
-    seeded_chat = kw.args[1]
-    seeded_text = kw.args[2]
-    seeded_thread = kw.kwargs.get("thread_id")
-    assert seeded_platform == "slack" and seeded_chat == CHANNEL, "LEG1 FAIL: wrong seed target"
-    assert seeded_thread is None, f"LEG1 FAIL: seed carried a thread_id ({seeded_thread!r}), not flat"
-    assert BRIEF in seeded_text, "LEG1 FAIL: brief text missing from seed"
-    return ("slack", seeded_chat, seeded_thread)
+def _fresh_home():
+    """Point HERMES_HOME at a throwaway dir BEFORE importing gateway modules
+    (mirror.py binds _SESSIONS_INDEX from get_hermes_home() at import time)."""
+    d = tempfile.mkdtemp(prefix="cron_inchannel_e2e_")
+    os.environ["HERMES_HOME"] = d
+    return Path(d)
 
 
-async def _leg2_reply_keys_flat_channel_session():
-    """Real _handle_slack_message for a plain channel reply, reply_in_thread=false."""
-    from gateway.config import PlatformConfig
+HOME = _fresh_home()
 
-    config = PlatformConfig(enabled=True, token="xoxb-test-not-a-real-token")
-    config.extra["reply_in_thread"] = False
-    # A channel where flat continuable-cron makes sense is one the bot answers
-    # ambiently — otherwise the user must @-mention on every reply (that is a
-    # pre-existing, orthogonal channel-gating choice, not part of this feature).
-    config.extra["require_mention"] = False
-    a = _slack_mod.SlackAdapter(config)
-    a._app = MagicMock()
-    a._app.client = AsyncMock()
-    a._bot_user_id = BOT_UID
-    a._running = True
+# Import AFTER HERMES_HOME is set.
+import cron.scheduler as sched  # noqa: E402
+import gateway.mirror as mirror  # noqa: E402
+from gateway.config import GatewayConfig, Platform  # noqa: E402
+from gateway.session import SessionStore, SessionSource, build_session_key  # noqa: E402
 
-    captured = []
-    a.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+# Force mirror.py's module-level index path to our temp home (it may have bound
+# a different get_hermes_home() at import if something imported it earlier).
+mirror._SESSIONS_DIR = HOME / "sessions"
+mirror._SESSIONS_INDEX = HOME / "sessions" / "sessions.json"
 
-    event = {
-        "channel": CHANNEL,
-        "channel_type": "channel",
-        "user": USER_UID,
-        # A plain channel reply — the user just types back, no @mention, no thread.
-        "text": "thanks, show me the first one",
-        "ts": "1700000000.000900",
-    }
+BRIEF = "brief: PRs need review\n- Harden: session lifecycle teardown"
 
-    with patch.object(a, "_resolve_user_name", new=AsyncMock(return_value="tester")):
-        await a._handle_slack_message(event)
 
-    assert len(captured) == 1, "LEG2 FAIL: plain channel reply was dropped (not continued)"
-    src = captured[0].source
-    assert src.thread_id is None, (
-        f"LEG2 FAIL: reply keyed thread_id={src.thread_id!r}, not the flat "
-        "channel session — a threaded reply would NOT resolve to the seed"
+def _real_store():
+    cfg = GatewayConfig()
+    store = SessionStore(HOME / "sessions", cfg)
+    return store
+
+
+def _run_scenario(name, chat_id, is_dm, reply_chat_type):
+    print(f"\n=== {name} (chat_id={chat_id}, is_dm={is_dm}) ===")
+    store = _real_store()
+
+    # A real Slack-like adapter exposing only what the seeder needs: the live
+    # session store. (We call the seeder directly — the delivery leg's flat-post
+    # is covered by the unit tests; here we prove the SESSION plumbing works.)
+    class _Adapter:
+        _session_store = store
+
+    ok = sched._seed_cron_channel_session(
+        {"id": "brief-job", "name": "PR review brief"},
+        _Adapter(), "slack", chat_id, BRIEF,
+        is_dm=is_dm, user_id="U_HUMAN", chat_name="test",
     )
-    return ("slack", src.chat_id, src.thread_id)
+    assert ok, f"{name}: seeder returned False — session not created/mirrored"
+
+    # LEG 1: what session key did the seed create?
+    seeded_source = SessionSource(
+        platform=Platform.SLACK, chat_id=chat_id,
+        chat_type="dm" if is_dm else "group",
+        user_id="U_HUMAN", thread_id=None,
+    )
+    seed_key = build_session_key(seeded_source)
+
+    # LEG 2: what does a plain inbound reply (reply_in_thread:false → thread None)
+    # from the same user resolve to?
+    inbound = SessionSource(
+        platform=Platform.SLACK, chat_id=chat_id, chat_type=reply_chat_type,
+        user_id="U_HUMAN", thread_id=None,
+    )
+    reply_key = build_session_key(inbound)
+    print(f"  seed key : {seed_key}")
+    print(f"  reply key: {reply_key}")
+    assert seed_key == reply_key, f"{name}: KEY MISMATCH — reply won't continue the seed"
+
+    # GROUND TRUTH: the brief must actually be in that session's transcript, and
+    # discoverable via the same _find_session_id the inbound reply path uses.
+    sid = mirror._find_session_id("slack", chat_id, thread_id=None, user_id="U_HUMAN")
+    assert sid, f"{name}: _find_session_id found NO session — the reply would dead-end"
+    # Read the session transcript back and confirm the brief text is present.
+    idx = mirror._SESSIONS_INDEX
+    import json
+    data = json.loads(idx.read_text())
+    entry = next((e for e in data.values() if isinstance(e, dict) and e.get("session_id") == sid), None)
+    assert entry, f"{name}: session {sid} not in index"
+    # transcript lives in the JSONL / SQLite; verify via the store's own read.
+    found = _brief_in_transcript(store, sid)
+    assert found, f"{name}: brief NOT found in session {sid} transcript"
+    print(f"  ✓ session {sid} created, brief present, reply resolves here")
+    return True
+
+
+def _brief_in_transcript(store, sid):
+    """Best-effort read of the session transcript to confirm the brief landed."""
+    # Try the SQLite DB first (the mirror writes both JSONL + SQLite).
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        msgs = db.get_messages(sid)
+        for m in msgs:
+            if "PRs need review" in str(m.get("content", "")):
+                return True
+    except Exception:
+        pass
+    # Fallback: scan the JSONL transcript file.
+    for p in (HOME / "sessions").glob("*.json*"):
+        try:
+            if "PRs need review" in p.read_text():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def main():
-    print(f"scheduler module: {_sched_mod.__file__}")
-    print(f"slack adapter module: {_slack_mod.__file__}")
-    if "cron-inchannel" not in _sched_mod.__file__:
-        print("WARNING: not running the worktree's scheduler — set PYTHONPATH=$PWD", file=sys.stderr)
+    print(f"scheduler module: {sched.__file__}")
+    print(f"HERMES_HOME (throwaway): {HOME}")
+    if "cron-inchannel" not in sched.__file__:
+        print("WARNING: not the worktree scheduler — set PYTHONPATH=$PWD", file=sys.stderr)
 
-    seed_key = leg1_delivery_seeds_flat_channel_session()
-    print(f"LEG 1 (delivery seed) → session key {seed_key}")
+    _run_scenario("CHANNEL", "C_TEST", is_dm=False, reply_chat_type="group")
+    _run_scenario("1:1 DM", "D_TEST", is_dm=True, reply_chat_type="dm")
 
-    reply_key = asyncio.run(_leg2_reply_keys_flat_channel_session())
-    print(f"LEG 2 (inbound reply) → session key {reply_key}")
-
-    # Convergence: both legs must land on (slack, CHANNEL, None).
-    assert seed_key[0] == reply_key[0], "platform mismatch"
-    assert str(seed_key[1]) == str(reply_key[1]), (
-        f"channel mismatch: seed {seed_key[1]} vs reply {reply_key[1]}"
-    )
-    assert seed_key[2] is None and reply_key[2] is None, "one leg was threaded"
     print(
-        f"\nPASS: both legs converge on (slack, {CHANNEL}, None) — a plain "
-        "channel reply after an in_channel cron delivery continues the job "
-        "in-context, with no visible thread."
+        "\nPASS: in_channel cron seeds the flat session for BOTH a channel and a "
+        "1:1 DM; the brief lands in the transcript and a plain reply resolves to "
+        "the same session (continuation works)."
     )
 
 

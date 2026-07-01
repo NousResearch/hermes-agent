@@ -1,0 +1,291 @@
+name: Dashboard Memory Investigation
+
+# Manual benchmark — not on every PR (fixture gen + MCP wait ~10–20 min).
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_profile:
+        description: "Fixture size (full ≈590 MB DB, quick ≈5 min)"
+        type: choice
+        options:
+          - full
+          - quick
+        default: full
+      include_electron:
+        description: "Run E — Electron dev under xvfb (adds ~5 min + npm/Electron)"
+        type: boolean
+        default: false
+      mcp_wait_sec:
+        description: "Seconds to wait for Playwright MCP child after dashboard ready"
+        type: string
+        default: "90"
+      run_linux:
+        description: "Run matrix on ubuntu-latest"
+        type: boolean
+        default: true
+      run_macos:
+        description: "Run matrix on macos-latest (vmmap + pymalloc signal)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-memory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-backend:
+    name: Linux backend matrix (A–D2)
+    if: inputs.run_linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Python dependencies
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Install websockets (session.create WS probe)
+        run: |
+          source .venv/bin/activate
+          pip install 'websockets>=14,<16'
+
+      - name: Setup Node.js (npx Playwright MCP)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Generate fixtures
+        run: |
+          source .venv/bin/activate
+          bash apps/desktop/investigation/scripts/setup-memory-homes.sh
+          if [ "${{ inputs.fixture_profile }}" = "quick" ]; then
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-control --sessions 5 --messages 50 --body-chars 400 \
+              --target-mb 0 --force
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 50 --messages 500 --body-chars 800 \
+              --target-mb 0 --force
+          else
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-control --sessions 5 --messages 50 --body-chars 400 \
+              --target-mb 0 --force
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 595 --messages 39126 --body-chars 2500 --force
+          fi
+          ls -lh /tmp/hermes-mem-test/state.db /tmp/hermes-mem-control/state.db
+
+      - name: Run memory matrix (A–D2)
+        run: |
+          source .venv/bin/activate
+          MCP_WAIT_SEC="${{ inputs.mcp_wait_sec }}" \
+            bash apps/desktop/investigation/scripts/run-dashboard-memory-matrix.sh \
+            2>&1 | tee /tmp/hermes-mem-test/logs/ci-matrix.log
+
+      - name: Print summary to job log
+        run: bash apps/desktop/investigation/scripts/print-memory-summary.sh
+
+      - name: Write GitHub Step Summary
+        run: |
+          {
+            echo "# Dashboard memory investigation"
+            echo ""
+            echo "- Fixture: **${{ inputs.fixture_profile }}**"
+            echo "- Runner: **ubuntu-latest**"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo ""
+            bash apps/desktop/investigation/scripts/print-memory-summary.sh
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-memory-linux-${{ inputs.fixture_profile }}-${{ github.run_id }}
+          path: /tmp/hermes-mem-test/logs/
+          retention-days: 14
+
+  macos-backend:
+    name: macOS backend matrix (A–D2)
+    if: inputs.run_macos
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Python dependencies
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Install websockets (session.create WS probe)
+        run: |
+          source .venv/bin/activate
+          pip install 'websockets>=14,<16'
+
+      - name: Setup Node.js (npx Playwright MCP)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Generate fixtures
+        run: |
+          source .venv/bin/activate
+          bash apps/desktop/investigation/scripts/setup-memory-homes.sh
+          if [ "${{ inputs.fixture_profile }}" = "quick" ]; then
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-control --sessions 5 --messages 50 --body-chars 400 \
+              --target-mb 0 --force
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 50 --messages 500 --body-chars 800 \
+              --target-mb 0 --force
+          else
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-control --sessions 5 --messages 50 --body-chars 400 \
+              --target-mb 0 --force
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 595 --messages 39126 --body-chars 2500 --force
+          fi
+          ls -lh /tmp/hermes-mem-test/state.db /tmp/hermes-mem-control/state.db
+
+      - name: Run memory matrix (A–D2)
+        run: |
+          source .venv/bin/activate
+          MEMORY_BASELINE=1 \
+          MCP_WAIT_SEC="${{ inputs.mcp_wait_sec }}" \
+            bash apps/desktop/investigation/scripts/run-dashboard-memory-matrix.sh \
+            2>&1 | tee /tmp/hermes-mem-test/logs/ci-matrix-macos.log
+
+      - name: Print summary to job log
+        run: bash apps/desktop/investigation/scripts/print-memory-summary.sh
+
+      - name: Write GitHub Step Summary
+        run: |
+          {
+            echo "# Dashboard memory investigation (macOS)"
+            echo ""
+            echo "- Fixture: **${{ inputs.fixture_profile }}**"
+            echo "- Runner: **macos-latest**"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Baseline: **yes** (MEMORY_BASELINE=1)"
+            echo ""
+            bash apps/desktop/investigation/scripts/print-memory-summary.sh
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-memory-macos-${{ inputs.fixture_profile }}-${{ github.run_id }}
+          path: /tmp/hermes-mem-test/logs/
+          retention-days: 14
+
+  linux-electron:
+    name: Linux Electron (Run E)
+    needs: linux-backend
+    if: inputs.include_electron && inputs.run_linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Python dependencies
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Restore fixture from backend job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-memory-linux-${{ inputs.fixture_profile }}-${{ github.run_id }}
+          path: /tmp/hermes-mem-test/logs
+
+      - name: Regenerate fixture + homes (artifact is logs-only)
+        run: |
+          source .venv/bin/activate
+          bash apps/desktop/investigation/scripts/setup-memory-homes.sh
+          if [ "${{ inputs.fixture_profile }}" = "quick" ]; then
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 50 --messages 500 --body-chars 800 \
+              --target-mb 0 --force
+          else
+            python3 apps/desktop/investigation/scripts/generate-memory-fixture.py \
+              --home /tmp/hermes-mem-test --sessions 595 --messages 39126 --body-chars 2500 --force
+          fi
+
+      - name: Run E under xvfb
+        run: |
+          source .venv/bin/activate
+          xvfb-run -a bash apps/desktop/investigation/scripts/run-electron-memory.sh \
+            2>&1 | tee /tmp/hermes-mem-test/logs/ci-electron.log
+
+      - name: Print summary
+        run: bash apps/desktop/investigation/scripts/print-memory-summary.sh
+
+      - name: Append Electron summary
+        run: |
+          {
+            echo ""
+            echo "## Run E (Electron + xvfb)"
+            echo ""
+            bash apps/desktop/investigation/scripts/print-memory-summary.sh
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Electron logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-memory-electron-${{ inputs.fixture_profile }}-${{ github.run_id }}
+          path: /tmp/hermes-mem-test/logs/
+          retention-days: 14

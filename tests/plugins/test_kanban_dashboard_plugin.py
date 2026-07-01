@@ -896,6 +896,51 @@ def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp
     assert other_task not in task_ids
 
 
+def test_ws_events_for_archived_board_does_not_recreate_empty_board(tmp_path, monkeypatch):
+    """A stale dashboard tab can keep its old board slug in localStorage and
+    reopen /events?board=<slug> after the operator archives that board.
+
+    The WS path must reject the missing board instead of calling
+    kb.connect(board=slug), because connect() creates the SQLite parent dir and
+    resurrects an empty board in the switcher.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    kb.create_board("gone")
+    active_dir = kb.board_dir("gone")
+    assert active_dir.exists()
+    kb.remove_board("gone")
+    assert not active_dir.exists()
+    assert not kb.board_exists("gone")
+
+    import hermes_cli
+    import types
+    from starlette.websockets import WebSocketDisconnect
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events?token=secret-xyz&board=gone&since=0"
+        ) as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008
+    assert not active_dir.exists()
+    assert not kb.board_exists("gone")
+
+
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     """``asyncio.CancelledError`` while sleeping in the poll loop is the
     normal uvicorn-shutdown path (``BaseException``, so the bare

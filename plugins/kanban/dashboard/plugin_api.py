@@ -108,11 +108,17 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
         normed = kanban_db._normalize_board_slug(board)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if normed and normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
-        raise HTTPException(
-            status_code=404,
-            detail=f"board {normed!r} does not exist",
-        )
+    if normed and normed != kanban_db.DEFAULT_BOARD:
+        if not kanban_db.board_exists(normed):
+            raise HTTPException(
+                status_code=404,
+                detail=f"board {normed!r} does not exist",
+            )
+        if kanban_db.read_board_metadata(normed).get("archived"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"board {normed!r} is archived",
+            )
     return normed
 
 
@@ -2398,11 +2404,18 @@ async def stream_events(ws: WebSocket):
         # switch boards. Changing boards mid-stream would require
         # reconciling two cursors, so the UI just opens a new WS on
         # board change.
-        ws_board_raw = ws.query_params.get("board")
+        #
+        # Important: validate via _resolve_board instead of normalizing and
+        # calling connect() directly.  A stale dashboard tab can keep a WS open
+        # for a board that was just archived/deleted; connect(board=slug)
+        # auto-creates the SQLite parent directory, which would resurrect an
+        # empty board in the switcher.  REST handlers already go through
+        # _resolve_board; the event stream must preserve the same contract.
         try:
-            ws_board = kanban_db._normalize_board_slug(ws_board_raw) if ws_board_raw else None
-        except ValueError:
-            ws_board = None
+            ws_board = _resolve_board(ws.query_params.get("board"))
+        except HTTPException:
+            await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+            return
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
             conn = kanban_db.connect(board=ws_board)

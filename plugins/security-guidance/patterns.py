@@ -350,7 +350,8 @@ _RULE_NAME_TO_ID = {
 
 # Fail loudly at import time if a pattern is added without a RuleId.
 # This fires in pytest on every PR, so desync is caught before merge.
-assert set(_RULE_NAME_TO_ID) == {p["ruleName"] for p in SECURITY_PATTERNS}, (
+if set(_RULE_NAME_TO_ID) != {p["ruleName"] for p in SECURITY_PATTERNS}:
+    raise RuntimeError(
     f"RuleId enum out of sync with SECURITY_PATTERNS: "
     f"missing={set(p['ruleName'] for p in SECURITY_PATTERNS) - set(_RULE_NAME_TO_ID)}, "
     f"extra={set(_RULE_NAME_TO_ID) - set(p['ruleName'] for p in SECURITY_PATTERNS)}"

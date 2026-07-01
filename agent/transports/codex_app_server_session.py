@@ -396,7 +396,8 @@ class CodexAppServerSession:
             # turn re-spawns cleanly.
             result.should_retire = True
             return result
-        assert self._client is not None and self._thread_id is not None
+        if self._client is None or self._thread_id is None:
+            raise RuntimeError("Codex session not properly initialized")
         result.thread_id = self._thread_id
 
         self._interrupt_event.clear()

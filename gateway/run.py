@@ -9220,9 +9220,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
-        if source.platform == Platform.FEISHU and not event.get_command():
+        if not event.get_command():
             try:
-                known_ops_result = render_known_ops_task("feishu", event.text or "")
+                platform_name = source.platform.value if source.platform else ""
+                known_ops_result = render_known_ops_task(platform_name, event.text or "")
             except Exception as exc:
                 logger.warning("Known ops fast path failed: %s", exc)
                 return f"已知运维快路径执行失败：{exc}"

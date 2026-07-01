@@ -9,6 +9,7 @@ duplicate agent.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -101,6 +102,27 @@ async def test_sentinel_placed_before_agent_setup():
     assert sentinel_was_set, (
         "Sentinel must be in _running_agents when _handle_message_with_agent starts"
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_token_usage_fast_path_bypasses_agent(monkeypatch):
+    runner = _make_runner()
+    event = _make_event(text="请查昨天token的使用情况")
+    session_key = build_session_key(event.source)
+
+    def fake_known_ops(platform, text):
+        assert platform == "telegram"
+        assert text == "请查昨天token的使用情况"
+        return SimpleNamespace(task=SimpleNamespace(name="token_usage_report"), text="token report")
+
+    monkeypatch.setattr("gateway.run.render_known_ops_task", fake_known_ops)
+    runner._handle_message_with_agent = AsyncMock(return_value="should not run")
+
+    result = await runner._handle_message(event)
+
+    assert result == "token report"
+    runner._handle_message_with_agent.assert_not_awaited()
+    assert session_key not in runner._running_agents
 
 
 # ------------------------------------------------------------------

@@ -863,3 +863,11 @@ gateway:
 
 
     Reply `{prefix}approve` to execute, `{prefix}approve session` to approve this pattern for the session, `{prefix}approve always` to approve permanently, or `{prefix}deny` to cancel.'
+  session_reset_reason_suspended: previous session was stopped or interrupted
+  session_reset_reason_daily: daily schedule at {hour}:00
+  session_reset_reason_idle: inactive for {duration}
+  session_reset_notice: '◐ Session automatically reset ({reason}). Conversation history cleared.
+
+    Use /resume to browse and restore a previous session.
+
+    Adjust reset timing in config.yaml under session_reset.'

@@ -851,3 +851,11 @@ Future messages in this room will use that transcript until `/reset` or another 
 
 
     Ответьте `{prefix}approve` для выполнения, `{prefix}approve session` чтобы одобрить этот шаблон на сессию, `{prefix}approve always` чтобы одобрить навсегда, или `{prefix}deny` для отмены.'
+  session_reset_reason_suspended: предыдущая сессия была остановлена или прервана
+  session_reset_reason_daily: по расписанию в {hour}:00
+  session_reset_reason_idle: неактивность {duration}
+  session_reset_notice: '◐ Сессия автоматически сброшена ({reason}). История разговора очищена.
+
+    Используйте /resume, чтобы просмотреть и восстановить предыдущую сессию.
+
+    Настройте тайминг сброса в config.yaml в разделе session_reset.'

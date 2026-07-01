@@ -1375,6 +1375,14 @@ DEFAULT_CONFIG = {
                                       # after live validation.
     },
 
+    # MongoDB tools (tools/mongodb_tool.py). Connection string is a secret in
+    # ~/.hermes/.env (MONGODB_URI); limits live here.
+    "mongodb": {
+        "default_database": "",
+        "max_rows": 100,
+        "read_only": False,
+    },
+
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
     # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
     # implementations. Per-platform notification opt-out is handled by the
@@ -3508,6 +3516,16 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Firecrawl API key",
         "url": "https://firecrawl.dev/",
         "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "MONGODB_URI": {
+        "description": "MongoDB connection string for mongo_* tools",
+        "prompt": "MongoDB URI (mongodb:// or mongodb+srv://)",
+        "url": "https://www.mongodb.com/docs/manual/reference/connection-string/",
+        "tools": [
+            "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_write",
+        ],
         "password": True,
         "category": "tool",
     },

@@ -201,6 +201,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
 
+    # ─── Database tools ────────────────────────────────────────────────────
+    "tool.mongodb": ("pymongo==4.11.3",),
+
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",

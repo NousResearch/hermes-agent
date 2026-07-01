@@ -548,7 +548,27 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity", "coder"],
+    },
+    "terminal.coder_url": {
+        "type": "string",
+        "description": "Coder deployment URL (for example https://coder.example.com)",
+    },
+    "terminal.coder_organization": {
+        "type": "string",
+        "description": "Coder organization name (blank uses the default organization)",
+    },
+    "terminal.coder_workspace": {
+        "type": "string",
+        "description": "Coder workspace name (blank creates/uses a per-session workspace)",
+    },
+    "terminal.coder_forward_env": {
+        "type": "list",
+        "description": "Environment variable names to forward into Coder terminal sessions",
+    },
+    "terminal.coder_workspace_startup_timeout": {
+        "type": "number",
+        "description": "Coder workspace build and agent startup timeout in seconds",
     },
     "terminal.modal_mode": {
         "type": "select",

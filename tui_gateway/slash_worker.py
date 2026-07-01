@@ -3,25 +3,25 @@
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
 """
 
-import os
-import sys
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
+# from shadowing Hermes's own top-level modules.  This worker is spawned as
+# ``-m tui_gateway.slash_worker`` and inherits the user's CWD, so the ``import
+# cli`` below would otherwise resolve ``utils`` to a colliding local package
+# and crash the child in a retry loop (issue #51286).  ``hermes_bootstrap``
+# lives at the repo root, so importing it is safe before the guard runs (its
+# name won't collide with a user package), and it owns the canonical
+# path-hardening logic shared with the other entry points — #51693 added the
+# guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
+import hermes_bootstrap
 
-# Guard against a local ``utils/`` (or other) package in the spawn CWD shadowing
-# installed hermes modules. This worker is spawned as ``-m tui_gateway.slash_worker``
-# and inherits the user's CWD, so the ``import cli`` below would otherwise resolve
-# ``utils`` to a colliding local package and crash the child (issue #51286). The
-# sibling entrypoint ``tui_gateway/entry.py`` applies the same guard; #15989 added
-# it there but missed this child.
-_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-if _src_root and _src_root not in sys.path:
-    sys.path.insert(0, _src_root)
-# '' and '.' both resolve to CWD at import time and can shadow installed packages.
-sys.path = [p for p in sys.path if p not in {"", "."}]
+hermes_bootstrap.harden_import_path()
 
 import argparse
 import contextlib
 import io
 import json
+import os
+import sys
 import threading
 import time
 

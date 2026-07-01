@@ -646,6 +646,17 @@ def cmd_mcp_test(args):
     start = time.monotonic()
     try:
         tools = _probe_single_server(name, cfg)
+        # _probe_single_server may return either:
+        # - a legacy list of (name, description) tuples, or
+        # - a plain list of tool names when the lower-layer MCP probe does
+        #   not expose descriptions. Normalize both for display.
+        normalized_tools = []
+        for item in tools:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                normalized_tools.append((str(item[0]), str(item[1])))
+            else:
+                normalized_tools.append((str(item), ""))
+        tools = normalized_tools
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000

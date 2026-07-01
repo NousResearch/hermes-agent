@@ -200,6 +200,54 @@ def test_quoted_and_brace_paths_are_hardline_blocked(command):
     assert desc
 
 
+# Commands that carry the literal string "rm -rf /" (or a sibling) as DATA in
+# another command's quoted argument — a PR title, a commit message, an echo /
+# printf argument. The shell never executes that text as an rm command, so the
+# hardline floor must NOT fire; otherwise the command cannot run at all (this
+# blocked `gh pr create --title "…rm -rf /…"` outright). Regression guard for
+# the command-position anchor on the rm rules.
+_DATA_ARG_NOT_A_COMMAND = [
+    'gh pr create --title "block rm -rf / spellings"',
+    'git commit -m "fixes rm -rf / bypass"',
+    'echo "run rm -rf / now"',
+    'echo "rm -rf /"',
+    'printf "%s" "rm -rf /"',
+    'gh issue comment 1 --body "the fix blocks rm -rf //"',
+]
+
+
+@pytest.mark.parametrize("command", _DATA_ARG_NOT_A_COMMAND)
+def test_root_wipe_string_as_data_arg_is_not_hardline(command):
+    """"rm -rf /" as a quoted argument to another command is data, not a wipe."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"false positive: quoted data arg hit hardline floor: {command!r} ({desc})"
+
+
+# Real root wipes at every command position — bare, chained after a separator,
+# inside a command substitution ($()/backtick), or after sudo/env wrappers.
+# The command-position anchor must keep catching all of these; the substitution
+# forms exercise the shell-metacharacter terminator on the bare path branch.
+_COMMAND_POSITION_ROOT_WIPES = [
+    "rm -rf /",
+    "ls && rm -rf /",
+    "ls; rm -rf /",
+    "echo x | rm -rf /",
+    "sudo rm -rf /",
+    "env X=1 rm -rf /",
+    "$(rm -rf /)",
+    "`rm -rf /`",
+    'echo "$(rm -rf /)"',
+]
+
+
+@pytest.mark.parametrize("command", _COMMAND_POSITION_ROOT_WIPES)
+def test_root_wipe_at_command_position_is_hardline(command):
+    """A real `rm -rf /` at any command position stays hardline-blocked."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"real root wipe leaked past the floor: {command!r}"
+    assert desc
+
+
 # -------------------------------------------------------------------------
 # Shell line-continuation bypass
 # -------------------------------------------------------------------------

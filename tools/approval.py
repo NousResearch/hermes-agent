@@ -332,12 +332,12 @@ _CMDPOS = (
 # `rm -rf "/"` slip past the unconditional floor entirely.
 #
 # Accept the path either fully wrapped in a matching quote pair OR bare with
-# a whitespace/end terminator. The matching-quote requirement is deliberate:
-# it catches `rm -rf "/"` (path quoted on its own) while NOT firing on a
-# dangerous-looking string that is merely an argument to another command —
-# e.g. `git commit -m "rm -rf /"` — where the closing quote follows the path
-# but no opening quote precedes it, so neither branch applies.
-def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$)') -> str:
+# a terminator. The matching-quote branch catches `rm -rf "/"` (path quoted
+# on its own). The bare branch's terminator accepts whitespace, end-of-string
+# OR a shell metacharacter (`) ` ; | &`) so a real root wipe inside a command
+# substitution — `$(rm -rf /)`, `` `rm -rf /` `` — whose `/` is terminated by
+# `)`/backtick is still caught.
+def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
     return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
 
 
@@ -350,7 +350,17 @@ _HARDLINE_SYSTEM_DIRS = (
 # `rm` plus its flag group, shared by the three rm hardline rules. Kept as a
 # plain concatenation (not an f-string) so the regex backslashes never live
 # inside an f-string replacement field — unsupported on the Python 3.11 floor.
-_RM_FLAG_PREFIX = r'\brm\s+(-[^\s]*\s+)*'
+#
+# Anchored to _CMDPOS (start of line, after a command separator ; && || |,
+# after a subshell opener $(/backtick, or after sudo/env/exec wrappers) so the
+# rule fires only when `rm` is an actual command word — not when the literal
+# string "rm -rf /" appears as DATA inside another command's argument, e.g.
+# `gh pr create --title "block rm -rf / spellings"` or `git commit -m "…rm -rf
+# /…"`. Those tripped the unconditional floor and could not run at all before
+# the anchor. A real wipe at any command position (bare, chained, in $()/`…`,
+# under sudo) still matches; the quoted-path branch in _hardline_rm_path keeps
+# catching `rm -rf "/"`.
+_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.

@@ -84,6 +84,18 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_secrets_redacted_in_streaming_chunks(self):
+        """API keys and credentials must be redacted from streaming chunks.
+
+        Finalized intermediate chunks are never edited again, so secrets
+        must be stripped before the chunk is sent.  Regression guard for #56039.
+        """
+        fake_key = "sk-proj-" + "a" * 30
+        text = f"Here is the key: {fake_key}"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert fake_key not in result
+        assert "Here is the key:" in result
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 

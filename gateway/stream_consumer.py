@@ -804,7 +804,7 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives and redact secrets from text before display.
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
@@ -812,8 +812,16 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        Secret redaction mirrors ``_sanitize_gateway_final_response`` so that
+        finalized intermediate chunks (sent with ``finalize=True`` and never
+        edited again) do not permanently expose credentials or tool-trace
+        diagnostics to chat participants.  (#56039)
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        from gateway.run import _redact_gateway_user_facing_secrets
+
+        cleaned = _BasePlatformAdapter.strip_media_directives_for_display(text)
+        return _redact_gateway_user_facing_secrets(cleaned)
 
     async def _send_new_chunk(
         self,

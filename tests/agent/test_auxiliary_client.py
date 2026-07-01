@@ -1079,6 +1079,44 @@ class TestGetTextAuxiliaryClient:
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
 
+    def test_named_custom_gpt5_model_uses_responses_wrapper_by_default(self):
+        provider_entry = {
+            "name": "gpt55",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        }
+
+        with patch("hermes_cli.runtime_provider._get_named_custom_provider",
+                   return_value=provider_entry), \
+             patch("agent.auxiliary_client.OpenAI"):
+            client, model = resolve_provider_client("custom:gpt55", model="gpt-5.5")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.5"
+
+    def test_explicit_chat_mode_keeps_named_custom_gpt5_on_chat_wire(self):
+        provider_entry = {
+            "name": "gpt55",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+            "api_mode": "chat_completions",
+        }
+
+        with patch("hermes_cli.runtime_provider._get_named_custom_provider",
+                   return_value=provider_entry), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client("custom:gpt55", model="gpt-5.5")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert client is mock_openai.return_value
+        assert model == "gpt-5.5"
+
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""
@@ -1520,6 +1558,11 @@ class TestIsPaymentError:
         setattr(exc, "status_code", 403)
         assert _is_payment_error(exc) is True
 
+    def test_403_chinese_quota_exhausted_is_payment(self):
+        exc = Exception("用户额度不足, 剩余额度: ＄0.000000")
+        setattr(exc, "status_code", 403)
+        assert _is_payment_error(exc) is True
+
     def test_429_session_usage_limit_is_payment(self):
         exc = Exception(
             "you have reached your session usage limit, upgrade for higher limits"
@@ -1902,6 +1945,48 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 429
         return exc
 
+    def test_empty_llm_response_is_invalid_and_falls_back(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(
+                        content=None,
+                        reasoning=None,
+                        reasoning_content=None,
+                        reasoning_details=None,
+                        tool_calls=None,
+                        function_call=None,
+                        refusal=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            model="gpt-5.5",
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from fallback"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom:gpt55", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(fallback_client, "MiniMax-M3", "custom:aicodee-main")) as mock_top_chain:
+            result = call_llm(
+                task="devreview_fallback",
+                messages=[{"role": "user", "content": "review"}],
+            )
+
+        assert result.choices[0].message.content == "from fallback"
+        mock_top_chain.assert_called_once_with(
+            "devreview_fallback", "custom:gpt55", reason="invalid provider response")
+
     def test_non_payment_error_not_caught(self, monkeypatch):
         """Non-payment/non-connection errors (500) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -2215,6 +2300,38 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_explicit_provider_uses_top_level_fallback_before_main_agent(self, monkeypatch):
+        """Explicit aux slots should honor top-level fallback_providers before main-agent fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        top_level_client = MagicMock()
+        top_level_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from top-level fallback"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "MiniMax-M3")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom:aicodee-main", "MiniMax-M3", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(top_level_client, "gpt-5.5", "custom:gpt55")) as mock_top_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main_agent:
+            result = call_llm(
+                task="kanban_decomposer",
+                messages=[{"role": "user", "content": "decompose this"}],
+            )
+
+        assert result.choices[0].message.content == "from top-level fallback"
+        assert top_level_client.chat.completions.create.called
+        mock_task_chain.assert_called_once_with(
+            "kanban_decomposer", "custom:aicodee-main", reason="payment error")
+        mock_top_chain.assert_called_once_with(
+            "kanban_decomposer", "custom:aicodee-main", reason="payment error")
+        mock_main_agent.assert_not_called()
+
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
 
@@ -2265,6 +2382,8 @@ class TestAuxiliaryFallbackLayering:
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
              patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")), \

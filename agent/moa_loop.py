@@ -15,6 +15,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.transports import get_transport
+from hermes_constants import parse_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,15 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
+def _slot_extra_body(slot: dict[str, str], extra_body: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Return per-slot request extras, including optional reasoning effort."""
+    merged = dict(extra_body or {})
+    reasoning = parse_reasoning_effort(str(slot.get("reasoning_effort") or ""))
+    if reasoning is not None:
+        merged["reasoning"] = reasoning
+    return merged or None
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
@@ -219,6 +229,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_body=_slot_extra_body(slot),
             **runtime,
         )
         usage = CanonicalUsage()
@@ -541,6 +552,7 @@ def aggregate_moa_context(
             messages=[{"role": "user", "content": synth_prompt}],
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
+            extra_body=_slot_extra_body(aggregator),
             **_slot_runtime(aggregator),
         )
         synthesis = _extract_text(response)
@@ -850,7 +862,7 @@ class MoAChatCompletions:
             temperature=aggregator_temperature,
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
+            extra_body=_slot_extra_body(aggregator, agg_kwargs.get("extra_body")),
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

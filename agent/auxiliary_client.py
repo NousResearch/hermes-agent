@@ -2553,6 +2553,7 @@ def _is_payment_error(exc: Exception) -> bool:
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
             "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
+            "额度不足", "余额不足", "剩余额度",
         )):
             return True
     return False
@@ -2854,8 +2855,13 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return (
         "auxiliary " in msg
-        and "llm returned invalid response" in msg
-        and "choices[0].message" in msg
+        and (
+            (
+                "llm returned invalid response" in msg
+                and "choices[0].message" in msg
+            )
+            or "llm returned empty response" in msg
+        )
     )
 
 
@@ -3960,30 +3966,52 @@ def resolve_provider_client(
     if not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
-    def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
+    def _model_prefers_responses_api(model_str: str) -> bool:
+        raw = (model_str or "").strip().lower()
+        if "/" in raw:
+            raw = raw.rsplit("/", 1)[-1]
+        return raw.startswith(("codex", "gpt-5", "o1", "o3", "o4"))
+
+    def _needs_codex_wrap(
+        client_obj,
+        base_url_str: str,
+        model_str: str,
+        effective_api_mode: str | None = None,
+    ) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
 
         Returns True when api_mode is explicitly "codex_responses", or when
-        auto-detection (api.openai.com + codex-family model) suggests it.
+        auto-detection suggests a newer OpenAI Responses-family model.
         Already-wrapped clients (CodexAuxiliaryClient) are skipped.
         """
         if isinstance(client_obj, CodexAuxiliaryClient):
             return False
         if raw_codex:
             return False
-        if api_mode == "codex_responses":
+        effective_api_mode = effective_api_mode if effective_api_mode is not None else api_mode
+        if effective_api_mode == "codex_responses":
             return True
-        # Auto-detect: api.openai.com + codex model name pattern
         if api_mode and api_mode != "codex_responses":
             return False  # explicit non-codex mode
+        if effective_api_mode and effective_api_mode != "codex_responses":
+            return False
+        if base_url_hostname(base_url_str).endswith("openai.azure.com"):
+            return False
+        if _model_prefers_responses_api(model_str):
+            return True
         if base_url_hostname(base_url_str) == "api.openai.com":
             model_lower = (model_str or "").lower()
             if "codex" in model_lower:
                 return True
         return False
 
-    def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = "",
-                        api_key_str: str = ""):
+    def _wrap_if_needed(
+        client_obj,
+        final_model_str: str,
+        base_url_str: str = "",
+        api_key_str: str = "",
+        effective_api_mode: str | None = None,
+    ):
         """Wrap a plain OpenAI client in the correct transport adapter.
 
         Handles two cases:
@@ -3996,17 +4024,18 @@ def resolve_provider_client(
 
         Clients that are already specialized wrappers pass through unchanged.
         """
-        if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
+        effective_api_mode = effective_api_mode if effective_api_mode is not None else api_mode
+        if _needs_codex_wrap(client_obj, base_url_str, final_model_str, effective_api_mode):
             logger.debug(
                 "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
                 "(api_mode=%s, model=%s, base_url=%s)",
-                api_mode or "auto-detected", final_model_str,
+                effective_api_mode or "auto-detected", final_model_str,
                 base_url_str[:60] if base_url_str else "")
             return CodexAuxiliaryClient(client_obj, final_model_str)
         # Anthropic-wire endpoints: rewrap plain OpenAI clients so
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(
-            client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+            client_obj, final_model_str, api_key_str, base_url_str, effective_api_mode,
         )
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -4279,7 +4308,13 @@ def resolve_provider_client(
                 ):
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
-                    client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
+                    client = _wrap_if_needed(
+                        client,
+                        final_model,
+                        raw_base_for_wrap,
+                        custom_key,
+                        entry_api_mode or None,
+                    )
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
@@ -5653,6 +5688,32 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+    msg = choices[0].message
+    content = getattr(msg, "content", None)
+    reasoning = getattr(msg, "reasoning", None)
+    reasoning_content = getattr(msg, "reasoning_content", None)
+    reasoning_details = getattr(msg, "reasoning_details", None)
+    tool_calls = getattr(msg, "tool_calls", None)
+    function_call = getattr(msg, "function_call", None)
+    refusal = getattr(msg, "refusal", None)
+    if not any(
+        (
+            isinstance(content, str) and content.strip(),
+            isinstance(reasoning, str) and reasoning.strip(),
+            isinstance(reasoning_content, str) and reasoning_content.strip(),
+            reasoning_details,
+            tool_calls,
+            function_call,
+            isinstance(refusal, str) and refusal.strip(),
+        )
+    ):
+        response_type = type(response).__name__
+        model = getattr(response, "model", "")
+        finish_reason = getattr(choices[0], "finish_reason", None)
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned empty response "
+            f"(type={response_type}, model={model!r}, finish_reason={finish_reason!r})."
+        )
     return response
 
 
@@ -6235,6 +6296,9 @@ def call_llm(
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_main_fallback_chain(
+                        task, resolved_provider or "auto", reason=reason)
+                if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -6719,6 +6783,9 @@ async def async_call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_main_fallback_chain(
+                        task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)

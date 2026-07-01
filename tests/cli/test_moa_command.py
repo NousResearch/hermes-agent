@@ -10,6 +10,7 @@ def _make_cli():
     cli.config = {
         "moa": {
             "default_preset": "default",
+            "active_preset": "",
             "presets": {
                 "default": {
                     "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
@@ -60,6 +61,17 @@ def test_moa_arg_is_always_one_shot_prompt():
     assert cli._pending_moa_disable_after_turn is True
     assert cli.provider == "moa"
     assert cli.model == "default"
+
+
+def test_moa_one_shot_uses_active_preset_when_configured():
+    cli = _make_cli()
+    cli.config["moa"]["active_preset"] = "review"
+    with patch("cli._cprint"):
+        cli.process_command("/moa inspect the flaky test")
+    assert cli._pending_agent_seed == "inspect the flaky test"
+    assert cli._pending_moa_disable_after_turn is True
+    assert cli.provider == "moa"
+    assert cli.model == "review"
 
 
 def test_moa_non_preset_is_one_shot_prompt():

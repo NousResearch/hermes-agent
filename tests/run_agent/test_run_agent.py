@@ -5313,6 +5313,50 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
+    def test_kanban_text_response_without_terminal_tool_records_failure(
+        self, agent, monkeypatch
+    ):
+        """A kanban worker that returns plain text but leaves the board task
+        running must record a protocol failure before exiting.
+
+        Otherwise the subprocess exits rc=0 and the dispatcher can only
+        discover the missing kanban_complete/kanban_block after the fact as a
+        protocol_violation crash.
+        """
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_text_only_123")
+
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Here is the checklist.", finish_reason="stop",
+        )
+
+        task = SimpleNamespace(status="running")
+        mock_record_failure = MagicMock(return_value=True)
+        mock_conn = MagicMock()
+        mock_connect = MagicMock(return_value=mock_conn)
+
+        with (
+            patch("hermes_cli.kanban_db.connect", mock_connect),
+            patch("hermes_cli.kanban_db.get_task", return_value=task),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["completed"] is False
+        mock_record_failure.assert_called_once()
+        call = mock_record_failure.call_args
+        assert call.args[1] == "t_text_only_123"
+        assert call.kwargs.get("outcome") == "protocol_violation"
+        assert call.kwargs.get("failure_limit") == 1
+        assert call.kwargs.get("release_claim") is True
+        assert call.kwargs.get("end_run") is True
+        assert "did not call kanban_complete" in call.kwargs.get("error", "")
+        assert mock_conn.close.call_count >= 1
+
 
 class TestHookPayloadSanitizesSimpleNamespace:
     """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without

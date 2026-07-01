@@ -3,6 +3,8 @@ from hermes_cli.moa_config import (
     DEFAULT_MOA_PRESET_NAME,
     DEFAULT_MOA_REFERENCE_MODELS,
     build_moa_turn_prompt,
+    current_moa_preset,
+    current_moa_preset_name,
     decode_moa_turn,
     exact_moa_preset_name,
     normalize_moa_config,
@@ -94,6 +96,39 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
     assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
 
 
+def test_normalize_moa_config_preserves_valid_slot_reasoning_effort():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.5",
+                            "reasoning_effort": "XHigh",
+                        },
+                        {
+                            "provider": "custom:aicodee-main",
+                            "model": "MiniMax-M3",
+                            "reasoning_effort": "not-real",
+                        },
+                    ],
+                    "aggregator": {
+                        "provider": "custom:gpt55",
+                        "model": "gpt-5.5",
+                        "reasoning_effort": "high",
+                    },
+                }
+            }
+        }
+    )
+
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert refs[0]["reasoning_effort"] == "xhigh"
+    assert "reasoning_effort" not in refs[1]
+    assert cfg["presets"]["p"]["aggregator"]["reasoning_effort"] == "high"
+
+
 def test_normalize_moa_config_coerces_numeric_strings():
     """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
     cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})
@@ -177,13 +212,56 @@ def test_resolve_moa_preset_returns_requested_model_set():
     ]
 
 
-def test_build_moa_turn_prompt_encodes_one_shot_default_preset():
-    prompt = build_moa_turn_prompt("write a file then inspect it")
+def test_current_moa_preset_prefers_active_over_default():
+    cfg = normalize_moa_config(
+        {
+            "default_preset": "coding",
+            "active_preset": "review",
+            "presets": {
+                "coding": {"reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}]},
+                "review": {"reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]},
+            },
+        }
+    )
+
+    assert current_moa_preset_name(cfg) == "review"
+    assert current_moa_preset(cfg)["reference_models"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+    ]
+
+
+def test_current_moa_preset_falls_back_to_default_when_inactive():
+    cfg = normalize_moa_config(
+        {
+            "default_preset": "coding",
+            "presets": {
+                "coding": {"reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}]},
+                "review": {"reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]},
+            },
+        }
+    )
+
+    assert current_moa_preset_name(cfg) == "coding"
+    assert current_moa_preset(cfg)["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5"}
+    ]
+
+
+def test_build_moa_turn_prompt_encodes_one_shot_effective_preset():
+    config = {
+        "default_preset": "coding",
+        "active_preset": "review",
+        "presets": {
+            "coding": {"reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}]},
+            "review": {"reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]},
+        },
+    }
+    prompt = build_moa_turn_prompt("write a file then inspect it", config)
 
     decoded_prompt, cfg = decode_moa_turn(prompt)
     assert decoded_prompt == "write a file then inspect it"
     assert cfg is not None
-    assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["reference_models"] == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
 
 
 def test_moa_provider_rejected_as_reference_slot():

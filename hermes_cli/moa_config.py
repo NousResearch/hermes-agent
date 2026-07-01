@@ -9,6 +9,7 @@ from typing import Any
 
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
+VALID_MOA_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
     {"provider": "openai-codex", "model": "gpt-5.5"},
@@ -56,7 +57,11 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    cleaned = {"provider": provider, "model": model}
+    effort = str(slot.get("reasoning_effort") or "").strip().lower()
+    if effort in VALID_MOA_REASONING_EFFORTS:
+        cleaned["reasoning_effort"] = effort
+    return cleaned
 
 
 def _default_preset() -> dict[str, Any]:
@@ -157,6 +162,22 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def current_moa_preset_name(config: Any) -> str:
+    """Return the active MoA preset, falling back to the default preset.
+
+    ``active_preset`` means "use this preset for MoA entry points". Older
+    callers only understood ``default_preset``; keeping this helper central
+    prevents CLI, TUI, and gateway surfaces from drifting apart again.
+    """
+    cfg = normalize_moa_config(config)
+    return cfg.get("active_preset") or cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME
+
+
+def current_moa_preset(config: Any) -> dict[str, Any]:
+    """Return the active-or-default MoA preset config."""
+    return resolve_moa_preset(config, current_moa_preset_name(config))
+
+
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 
@@ -193,7 +214,9 @@ def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) 
     """Encode a /moa one-shot turn for frontends that can only send text."""
     payload = {
         "prompt": str(prompt or ""),
-        "config": resolve_moa_preset(config or {}, preset),
+        "config": resolve_moa_preset(
+            config or {}, preset or current_moa_preset_name(config or {})
+        ),
     }
     encoded = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -220,4 +243,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
+    return "Usage: /moa <prompt>  (runs one prompt through the active MoA preset, or the default preset when none is active; pick a preset from the model picker to switch for the session)"

@@ -9291,6 +9291,7 @@ class GatewayRunner(
             # MoA preset for the session, pick it from the model picker (MoA
             # presets surface as a virtual "Mixture of Agents" provider).
             from hermes_cli.moa_config import (
+                current_moa_preset_name,
                 moa_usage,
                 normalize_moa_config,
             )
@@ -9304,7 +9305,7 @@ class GatewayRunner(
                 moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
             except Exception:
                 moa_cfg = normalize_moa_config({})
-            preset = moa_cfg["default_preset"]
+            preset = current_moa_preset_name(moa_cfg)
             try:
                 event.text = moa_payload
                 event._moa_restore_override = self._session_model_overrides.get(_quick_key)

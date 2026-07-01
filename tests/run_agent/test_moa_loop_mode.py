@@ -421,6 +421,27 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     assert msgs[-1]["role"] == "user"
 
 
+def test_run_reference_applies_slot_reasoning_effort(monkeypatch):
+    from agent.moa_loop import _run_reference
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    _run_reference(
+        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"},
+        [{"role": "user", "content": "review this PR"}],
+    )
+
+    assert captured["extra_body"] == {
+        "reasoning": {"enabled": True, "effort": "xhigh"}
+    }
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -484,6 +505,49 @@ moa:
     # Aggregator still receives the original messages + tool schema.
     agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
     assert agg_call["tools"] is not None
+
+
+def test_moa_facade_merges_aggregator_reasoning_effort_extra_body(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+        reasoning_effort: high
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("ok")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(
+        messages=[{"role": "user", "content": "question"}],
+        extra_body={"metadata": {"source": "test"}},
+    )
+
+    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert agg_call["extra_body"] == {
+        "metadata": {"source": "test"},
+        "reasoning": {"enabled": True, "effort": "high"},
+    }
 
 
 def test_moa_disabled_preset_skips_references(monkeypatch, tmp_path):

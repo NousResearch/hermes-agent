@@ -136,6 +136,13 @@ def _pip_python_version() -> Optional[str]:
     return None
 
 
+def _major_minor(version: str) -> str:
+    """Return the ``major.minor`` prefix of a version string (``3.12.4`` →
+    ``3.12``).  Used to compare interpreter versions by feature release
+    rather than by raw-string prefix."""
+    return ".".join(version.split(".")[:2])
+
+
 def _build_probe_line() -> str:
     """Build the one-liner.  Returns "" when nothing notable is detected.
 
@@ -159,7 +166,15 @@ def _build_probe_line() -> str:
     # version mismatch between `pip` and `python3` → environment is
     # clean enough to stay silent.  The model can discover details by
     # running commands if it cares.
-    mismatch = bool(pip_bound_to and py3_ver and not py3_ver.startswith(pip_bound_to))
+    # Compare on major.minor, not raw-string prefix: a plain
+    # ``py3_ver.startswith(pip_bound_to)`` treats python3=3.12.4 vs pip→3.1
+    # as a match (``"3.12.4".startswith("3.1")`` is True), silently hiding a
+    # real interpreter mismatch.
+    mismatch = bool(
+        pip_bound_to
+        and py3_ver
+        and _major_minor(py3_ver) != _major_minor(pip_bound_to)
+    )
     silent_conditions = (
         py3_ver is not None
         and py3_has_pip

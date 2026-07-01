@@ -69,6 +69,33 @@ class TestEmitsOnRealProblems:
         # Points at the right escape hatch
         assert "venv" in line or "uv" in line
 
+    def test_prefix_collision_version_mismatch_is_detected(self, monkeypatch):
+        """python3 is 3.12.4 but pip on PATH is bound to python 3.1 — a real
+        mismatch that a raw ``startswith`` check misses because
+        ``"3.12.4".startswith("3.1")`` is True. The probe must still flag it.
+        """
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: {"python3": "3.12.4", "python": None}.get(b))
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.1")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        line = env_probe.get_environment_probe_line()
+        assert line  # must not be silent
+        assert "mismatch" in line
+
+    def test_micro_only_difference_is_not_a_mismatch(self, monkeypatch):
+        """python3=3.12.4 vs pip→3.12 differ only in micro — same feature
+        release, so NOT a mismatch (stays silent when otherwise healthy)."""
+        monkeypatch.setattr(env_probe, "_python_version_of",
+                            lambda b: "3.12.4" if b == "python3" else None)
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: True)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+        assert env_probe.get_environment_probe_line() == ""
+
     def test_missing_python3_is_named(self, monkeypatch):
         """If python3 isn't installed at all, say so."""
         monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)

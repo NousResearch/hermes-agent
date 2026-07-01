@@ -201,6 +201,46 @@ class TestRestorePrimaryRuntime:
 
         assert agent._use_prompt_caching == original_caching
 
+    def test_restore_skips_cross_provider_pool_entry(self):
+        """Restore must not swap in a fallback provider credential for the primary runtime."""
+
+        class _Entry:
+            provider = "openrouter"
+            id = "fallback-entry"
+            label = "fallback"
+            runtime_api_key = "fallback-key"
+            runtime_base_url = "https://openrouter.ai/api/v1"
+            access_token = "fallback-key"
+
+        class _Pool:
+            provider = "openrouter"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://primary.example.com/v1",
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        original_base_url = agent.base_url
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "custom"
+        assert agent.base_url == original_base_url
+        agent._swap_credential.assert_not_called()
+
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""
         agent = _make_agent()

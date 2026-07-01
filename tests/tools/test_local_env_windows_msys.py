@@ -246,3 +246,24 @@ class TestWrapCommandWindowsNativeCwd:
 
         assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
         assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
+
+    def test_init_session_bootstrap_converts_native_cwd_for_cd(self, monkeypatch):
+        """The snapshot bootstrap ``cd`` must also use the Git-Bash path form,
+        not just ``_wrap_command`` — otherwise ``pwd -P`` captures the login
+        shell's directory instead of ``terminal.cwd`` on Windows."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        captured = {}
+
+        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["script"] = cmd_string
+            raise RuntimeError("stop after capturing bootstrap")
+
+        monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
+
+        # init_session swallows the exception and falls back; we only need the
+        # captured bootstrap script to assert the cd target was converted.
+        LocalEnvironment(cwd=r"C:\Users\liush", timeout=10)
+
+        assert "builtin cd -- /c/Users/liush 2>/dev/null || true" in captured["script"]
+        assert r"C:\Users\liush" not in captured["script"]

@@ -285,6 +285,28 @@ class TestClarifyMultiSelect:
         assert "error" in result
         assert "Reply with one of the listed choices" in result["error"]
 
+    def test_single_select_rejects_mixed_custom_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Alpha, custom",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one of the listed choices" in result["error"]
+
+    def test_single_select_rejects_multiple_choices_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick one",
+            choices=["Alpha", "Beta"],
+            callback=lambda q, c, **kw: "Alpha, Beta",
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with exactly one listed choice" in result["error"]
+
     def test_invalid_multi_select_bounds_return_error(self):
         result = json.loads(clarify_tool(
             "Pick",
@@ -363,6 +385,18 @@ class TestClarifyMultiSelect:
             "Pick listed choices",
             choices=["Alpha", "Beta", "Gamma"],
             callback=lambda q, c, **kw: "not listed",
+            multi_select=True,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Reply with one or more listed choices" in result["error"]
+
+    def test_multi_select_result_rejects_mixed_custom_when_other_disallowed(self):
+        result = json.loads(clarify_tool(
+            "Pick listed choices",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "Alpha, custom",
             multi_select=True,
             allow_other=False,
         ))

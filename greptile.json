@@ -1,0 +1,6 @@
+{
+  "disabledLabels": ["trivial", "skip-review", "chore-cosmetic"],
+  "ignoreKeywords": "typo\nrename\ncosmetic label\ntitle-case\ngreptile-ignore",
+  "ignorePatterns": "plugins/**/dashboard/dist/**\n*.lock\nuv.lock",
+  "commentTypes": ["logic", "syntax"]
+}

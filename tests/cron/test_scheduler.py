@@ -1225,7 +1225,7 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["web", "terminal", "file"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1259,7 +1259,7 @@ class TestRunJobSessionPersistence:
             "enabled_toolsets": ["web", "terminal", "file"],
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1286,7 +1286,7 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db, patches = self._make_run_job_patches(tmp_path)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1314,7 +1314,7 @@ class TestRunJobSessionPersistence:
         fake_db, patches = self._make_run_job_patches(tmp_path)
         # Even if the user has ``hermes tools`` configured to enable web+file
         # for cron, the per-job override wins.
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch(
                  "hermes_cli.tools_config._get_platform_tools",

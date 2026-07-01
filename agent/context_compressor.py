@@ -2748,10 +2748,25 @@ This compaction should PRIORITISE preserving all information related to the focu
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                # Merge the summary into the first tail message, but place
+                # the END MARKER at the very end so the model sees an
+                # unambiguous boundary. Old tail content is preserved as
+                # reference material BEFORE the summary, clearly delimited
+                # so it is not mistaken for a new message to respond to.
+                # Uses _append_text_to_content to safely handle both
+                # string and multimodal-list content types.
+                # Fixes ghost-message leakage across compaction boundaries
+                # where old head messages survived verbatim and appeared
+                # before the summary.
+                old_content = msg.get("content", "")
+                suffix = (
+                    "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+                    + summary + "\n\n"
+                    + _SUMMARY_END_MARKER
+                )
                 msg["content"] = _append_text_to_content(
-                    msg.get("content"),
-                    merged_prefix,
+                    _append_text_to_content(old_content, suffix, prepend=False),
+                    "[PRIOR CONTEXT — for reference only; not a new message]\n",
                     prepend=True,
                 )
                 # Mark the merged message so frontends can identify it as
@@ -2761,6 +2776,36 @@ This compaction should PRIORITISE preserving all information related to the focu
             compressed.append(msg)
 
         self.compression_count += 1
+
+        # Strip stale user messages that survived from a previous compaction's
+        # protected head. They appear at the very beginning of `compressed`
+        # before any summary marker and are mistaken by the model for fresh
+        # user input. This only activates on second+ compactions — the first
+        # compaction legitimately preserves head messages as task framing.
+        if self.compression_count >= 2:
+            _seen_summary = False
+            _cleaned = []
+            for _msg in compressed:
+                if not _seen_summary:
+                    _is_summary = _msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    _is_user = _msg.get("role") == "user"
+                    if _is_summary:
+                        _seen_summary = True
+                        _cleaned.append(_msg)
+                    elif _is_user:
+                        # Stale user message before first summary — skip it.
+                        # Its content is already captured in the summary.
+                        continue
+                    else:
+                        _cleaned.append(_msg)
+                else:
+                    _cleaned.append(_msg)
+            if len(_cleaned) < len(compressed):
+                logger.info(
+                    "Stripped %d stale user message(s) from head of compressed output",
+                    len(compressed) - len(_cleaned),
+                )
+                compressed = _cleaned
 
         compressed = self._sanitize_tool_pairs(compressed)
 

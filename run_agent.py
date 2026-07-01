@@ -3640,10 +3640,17 @@ class AIAgent:
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:
-        """Extract call ID from a tool_call entry (dict or object)."""
+        """Extract call ID from a tool_call entry (dict or object).
+
+        Priority: ``id`` (OpenAI standard, also used by
+        ``make_tool_result_message`` for ``tool_call_id``), then
+        ``call_id`` (Codex Responses API format).  Using ``call_id``
+        first caused ``[Result unavailable]`` stubs for providers that
+        set *both* fields with different values (#55626).
+        """
         if isinstance(tc, dict):
-            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
-        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
+            return (tc.get("id", "") or tc.get("call_id", "") or "").strip()
+        return (getattr(tc, "id", "") or getattr(tc, "call_id", "") or "").strip()
 
     @staticmethod
     def _get_tool_call_name_static(tc) -> str:

@@ -2097,10 +2097,18 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
-        """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
+        """Extract the call ID from a tool_call entry (dict or SimpleNamespace).
+
+        Priority: ``id`` (OpenAI standard, also used by
+        ``make_tool_result_message`` for ``tool_call_id``), then
+        ``call_id`` (Codex Responses API format).  Must match
+        ``AIAgent._get_tool_call_id_static`` so both the compressor and
+        the pre-API-call sanitizer agree on the same ID for each tool
+        call (#55626).
+        """
         if isinstance(tc, dict):
-            return tc.get("call_id", "") or tc.get("id", "") or ""
-        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+            return tc.get("id", "") or tc.get("call_id", "") or ""
+        return getattr(tc, "id", "") or getattr(tc, "call_id", "") or ""
 
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.

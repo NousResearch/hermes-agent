@@ -413,10 +413,17 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
+// Prefer the on-disk unpacked copy first: macOS `app.dock.setIcon` and
+// `nativeImage` loaders can't read an image packed inside app.asar, and the
+// build only unpacks `dist/**` (not `public/**`). Picking the in-asar
+// `public/` copy first made dock.setIcon throw "Failed to load image" and
+// crashed boot. The unpacked dist path is a real file in prod; in dev the
+// asar substitution is a no-op so it resolves to the built dist file, with
+// the source `public/` copy as the last-resort fallback before a build exists.
 const APP_ICON_PATHS = [
-  path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
+  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+  path.join(APP_ROOT, 'public', 'apple-touch-icon.png')
 ]
 
 let rendererTitleBarTheme = null
@@ -5916,7 +5923,13 @@ function createWindow() {
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     if (icon) {
-      app.dock?.setIcon(icon)
+      // Never let a bad/unreadable icon crash boot — dock.setIcon throws on a
+      // path it can't load (e.g. an image packed inside app.asar).
+      try {
+        app.dock?.setIcon(icon)
+      } catch (err) {
+        rememberLog(`dock.setIcon failed for ${icon}: ${err?.message || err}`)
+      }
     }
   }
 

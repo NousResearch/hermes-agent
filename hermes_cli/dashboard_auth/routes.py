@@ -195,6 +195,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except NotImplementedError:
+        # Password-only providers (e.g. BasicAuthProvider) don't support
+        # OAuth redirect flow.  Redirect to the login form instead.
+        login_url = request.url_for("login_page")
+        resp = RedirectResponse(url=login_url, status_code=302)
+        if next:
+            resp.set_cookie("hermes_next", next, max_age=600, httponly=True, samesite="lax")
+        return resp
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,

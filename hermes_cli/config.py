@@ -3525,8 +3525,17 @@ OPTIONAL_ENV_VARS = {
         "url": "https://www.mongodb.com/docs/manual/reference/connection-string/",
         "tools": [
             "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_write",
+            "get_active_gigs", "get_user_profile_by_id", "get_gig_details",
+            "get_user_gig_history", "get_user_joined_gigs",
         ],
         "password": True,
+        "category": "tool",
+    },
+    "APP_CHATBOT_DEFAULT_USER_ID": {
+        "description": "Default MongoDB users._id for app-chatbot CLI context and tool defaults",
+        "prompt": "Default CRWD user id (24-char hex ObjectId)",
+        "url": None,
+        "password": False,
         "category": "tool",
     },
     "FIRECRAWL_API_URL": {

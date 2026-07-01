@@ -1657,6 +1657,59 @@ class AIAgent:
         ):
             messages.pop()
 
+    def prepare_for_resume(self, messages: List[Dict]) -> int:
+        """Drop trailing orphaned tool/assistant(tool_calls) tails when resuming.
+
+        When a session dies mid-turn from a transient provider outage, the
+        persisted transcript can end in a ``tool`` message whose issuing
+        assistant(tool_calls) never got a continuation, or in an
+        ``assistant(tool_calls=...)`` message whose tool results were never
+        written. ``_drop_trailing_empty_response_scaffolding`` only rewinds
+        these when the private ``_empty_recovery_synthetic`` /
+        ``_empty_terminal_sentinel`` flags are present — but an outage-killed
+        session has no such flags, so the orphaned tail survives into the
+        resumed history. The next user turn then lands as
+        ``...tool, user`` or ``...assistant(tool_calls), user``, a
+        protocol-invalid sequence most providers reject with an empty
+        response.
+
+        This runs unconditionally on resume (before the first API call) and
+        mirrors the Pass 2 rewind in ``_drop_trailing_empty_response_scaffolding``
+        without requiring the scaffolding flags. Returns the number of
+        messages dropped. See issue #33693.
+        """
+        dropped = 0
+
+        # 1. Drop trailing tool messages that have no corresponding assistant
+        #    tool_calls to answer. A bare trailing ``tool`` message is always
+        #    an orphan: tool results must follow an assistant(tool_calls) turn,
+        #    so a tail ending in ``tool`` can never start a valid next turn.
+        while (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "tool"
+        ):
+            messages.pop()
+            dropped += 1
+
+        # 2. Drop the assistant message that issued tool calls if the tail now
+        #    ends in an assistant-with-tool_calls (the pair that owned the
+        #    just-popped tool results). Without this, the tail is
+        #    ``assistant(tool_calls=...)`` with no tool answers, which some
+        #    providers also reject. A trailing assistant message WITHOUT
+        #    tool_calls is a complete (if partial) turn — leave it intact so
+        #    the user sees the assistant's last words on resume.
+        if (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "assistant"
+            and messages[-1].get("tool_calls")
+        ):
+            messages.pop()
+            dropped += 1
+
+        return dropped
+
     def _repair_message_sequence(self, messages: List[Dict]) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""
         from agent.agent_runtime_helpers import repair_message_sequence

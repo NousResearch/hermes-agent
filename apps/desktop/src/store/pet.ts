@@ -24,6 +24,10 @@ export interface PetInfo {
   // Stable sheet revision (`mtime_ns:size`) from the gateway; lets the desktop
   // skip full sprite payload refreshes when the active pet hasn't changed.
   spritesheetRevision?: string
+  // Set by the gateway when it withheld the ~3.2MB `spritesheetBase64` on
+  // purpose because our `knownRevision` still matched (issue #54730). Not a
+  // decode failure — callers must keep their cached sheet rather than blank it.
+  spritesheetOmitted?: boolean
   frameW?: number
   frameH?: number
   framesPerState?: number

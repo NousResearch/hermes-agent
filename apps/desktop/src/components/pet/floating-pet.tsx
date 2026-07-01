@@ -167,11 +167,17 @@ export function FloatingPet() {
           }
         }
 
-        const next = await requestGateway<PetInfo>('pet.info', { profile: petProfile() })
+        const current = $petInfo.get()
+        // Tell the gateway which sheet we already hold so it can withhold the
+        // ~3.2MB base64 when nothing changed (issue #54730). Only send it while
+        // we actually have that sheet cached, so a first fetch still gets bytes.
+        const knownRevision = current.enabled && current.spritesheetBase64 ? current.spritesheetRevision : undefined
+        const next = await requestGateway<PetInfo>('pet.info', {
+          profile: petProfile(),
+          ...(knownRevision ? { knownRevision } : {})
+        })
 
         if (!cancelled && next) {
-          const current = $petInfo.get()
-
           if (
             next.enabled &&
             current.enabled &&
@@ -181,6 +187,14 @@ export function FloatingPet() {
             current.spritesheetRevision &&
             current.spritesheetRevision === next.spritesheetRevision
           ) {
+            return
+          }
+
+          // The gateway withheld the sheet because our revision still matched —
+          // keep the cached bytes, just refresh the cheap geometry alongside it.
+          if (next.enabled && next.spritesheetOmitted && current.spritesheetBase64) {
+            setPetInfo({ ...next, spritesheetBase64: current.spritesheetBase64, mime: next.mime ?? current.mime })
+
             return
           }
 

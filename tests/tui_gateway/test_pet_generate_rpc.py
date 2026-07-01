@@ -243,3 +243,42 @@ def test_pet_info_meta_avoids_full_payload(monkeypatch):
     assert result["displayName"] == "Meta Pet"
     assert result["scale"] == 0.7
     assert ":" in result["spritesheetRevision"]
+
+
+def test_pet_info_omits_sheet_when_revision_unchanged(monkeypatch):
+    """The ~3.2MB spritesheet is sent on the first/changed fetch but withheld on
+    an unchanged poll that carries the matching ``knownRevision`` (issue #54730).
+    """
+    import hermes_cli.config as cli_config
+    from agent.pet import constants, store
+
+    sheet = Image.new("RGBA", (constants.FRAME_W * 8, constants.FRAME_H * 9), (80, 120, 220, 255))
+    pet = store.register_local_pet(sheet, slug="revgate-pet", display_name="Rev Gate")
+    monkeypatch.setattr(
+        cli_config,
+        "load_config",
+        lambda: {"display": {"pet": {"enabled": True, "slug": pet.slug, "scale": 0.7}}},
+    )
+
+    # First fetch (no knownRevision) carries the full sheet.
+    first = server._methods["pet.info"]("r_first", {})["result"]
+    assert first["enabled"] is True
+    assert first["spritesheetBase64"]
+    assert not first.get("spritesheetOmitted")
+    revision = first["spritesheetRevision"]
+
+    # Unchanged poll echoing that revision omits the heavy bytes but keeps the
+    # cheap geometry + revision so the client can confirm without re-decoding.
+    same = server._methods["pet.info"]("r_same", {"knownRevision": revision})["result"]
+    assert same["enabled"] is True
+    assert same["spritesheetOmitted"] is True
+    assert "spritesheetBase64" not in same
+    assert "mime" not in same
+    assert same["spritesheetRevision"] == revision
+    assert same["frameW"] == constants.FRAME_W
+    assert same["stateRows"] == first["stateRows"]
+
+    # A stale/mismatched revision still gets the full sheet re-sent.
+    stale = server._methods["pet.info"]("r_stale", {"knownRevision": "0:0"})["result"]
+    assert stale["spritesheetBase64"] == first["spritesheetBase64"]
+    assert not stale.get("spritesheetOmitted")

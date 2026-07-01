@@ -6295,6 +6295,25 @@ def _clone_pet_payload(payload: dict) -> dict:
     return out
 
 
+# Heavy sprite fields worth ~3.2MB on the wire — omitted from ``pet.info`` when
+# the client already holds the current revision (issue #54730). Everything else
+# (geometry, row counts, revision) is cheap and always sent so the caller can
+# confirm nothing changed without re-decoding the sheet.
+_PET_HEAVY_FIELDS = ("spritesheetBase64", "mime")
+
+
+def _strip_pet_sheet_bytes(payload: dict) -> dict:
+    """Return *payload* without the heavy spritesheet bytes.
+
+    The kept ``spritesheetRevision`` lets the client verify its cached sheet is
+    still current; ``spritesheetOmitted`` flags that the bytes were withheld on
+    purpose (not a decode failure) so the caller keeps its existing base64.
+    """
+    out = {k: v for k, v in payload.items() if k not in _PET_HEAVY_FIELDS}
+    out["spritesheetOmitted"] = True
+    return out
+
+
 def _pet_row_frame_counts(spritesheet) -> dict:
     """Real frame count per concrete spritesheet row name."""
     try:
@@ -6435,6 +6454,13 @@ def _(rid, params: dict) -> dict:
     Agent-independent (reads config + disk), so it works on any session and
     before the agent finishes building. Fail-open: returns ``enabled=False``
     on any error rather than erroring the surface.
+
+    Revision gate (issue #54730): the ~3.2MB ``spritesheetBase64`` is the same
+    static asset on every poll. When the caller passes ``knownRevision`` matching
+    the current sheet, the bytes are omitted (``spritesheetOmitted=True``) and
+    only the cheap geometry + revision are returned, so the frequent poll stops
+    re-sending the sheet and stalling the WS write loop. A caller that omits
+    ``knownRevision`` (older clients) still gets the full payload.
     """
     try:
         enabled, pet, scale = _pet_active_selection()
@@ -6442,7 +6468,11 @@ def _(rid, params: dict) -> dict:
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+        payload = _pet_sprite_payload(pet, scale=scale)
+        known = params.get("knownRevision") if isinstance(params, dict) else None
+        if known and known == payload.get("spritesheetRevision"):
+            payload = _strip_pet_sheet_bytes(payload)
+        return _ok(rid, {"enabled": True, **payload})
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
         return _ok(rid, {"enabled": False})

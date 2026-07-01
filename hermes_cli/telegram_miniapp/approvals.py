@@ -8,6 +8,15 @@ _ALLOWED_RISKS = {"read_only", "critical"}
 _ALLOWED_STATUSES = {"waiting", "blocked"}
 
 
+def _preview_meta(source_label: str) -> dict[str, Any]:
+    return {
+        "source": "preview",
+        "source_label": source_label,
+        "redaction": "safe-preview",
+        "contains_live_actions": False,
+    }
+
+
 def _approval_item(
     *,
     item_id: str,
@@ -44,6 +53,7 @@ def build_approvals_snapshot() -> dict[str, Any]:
     """
     return {
         "ok": True,
+        "meta": _preview_meta("Allowlisted approval preview"),
         "items": [
             _approval_item(
                 item_id="system-mode-change-preview",

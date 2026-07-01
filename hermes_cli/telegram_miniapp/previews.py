@@ -9,6 +9,15 @@ _ALLOWED_TONES = {"ok", "warn", "muted"}
 _ALLOWED_LOG_LEVELS = {"info", "warn", "error"}
 
 
+def _preview_meta(source_label: str) -> dict[str, Any]:
+    return {
+        "source": "preview",
+        "source_label": source_label,
+        "redaction": "safe-preview",
+        "contains_live_actions": False,
+    }
+
+
 def _session_item(
     *,
     item_id: str,
@@ -46,6 +55,7 @@ def build_sessions_snapshot() -> dict[str, Any]:
     """
     return {
         "ok": True,
+        "meta": _preview_meta("Allowlisted session preview"),
         "items": [
             _session_item(
                 item_id="codex-review-preview",
@@ -79,6 +89,7 @@ def build_logs_snapshot() -> dict[str, Any]:
     """Build allowlisted redacted event preview lines."""
     return {
         "ok": True,
+        "meta": _preview_meta("Redacted event preview"),
         "items": [
             _log_line(level="info", time_label="M2", message="Status API работает только на чтение."),
             _log_line(level="info", time_label="M3", message="Telegram initData проверяется на сервере."),

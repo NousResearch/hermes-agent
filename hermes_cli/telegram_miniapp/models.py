@@ -33,6 +33,13 @@ class StatusSnapshot(TypedDict):
     miniapp: MiniAppStatus
 
 
+class PreviewSnapshotMeta(TypedDict):
+    source: str
+    source_label: str
+    redaction: str
+    contains_live_actions: bool
+
+
 class ApprovalItem(TypedDict):
     id: str
     title: str
@@ -46,6 +53,7 @@ class ApprovalItem(TypedDict):
 
 class ApprovalsSnapshot(TypedDict):
     ok: bool
+    meta: PreviewSnapshotMeta
     items: list[ApprovalItem]
 
 
@@ -60,6 +68,7 @@ class SessionPreviewItem(TypedDict):
 
 class SessionsSnapshot(TypedDict):
     ok: bool
+    meta: PreviewSnapshotMeta
     items: list[SessionPreviewItem]
 
 
@@ -71,6 +80,7 @@ class LogPreviewItem(TypedDict):
 
 class LogsSnapshot(TypedDict):
     ok: bool
+    meta: PreviewSnapshotMeta
     items: list[LogPreviewItem]
 
 

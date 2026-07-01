@@ -47,6 +47,22 @@ def auth_client(client):
     return response
 
 
+def assert_safe_preview_meta(meta):
+    assert meta == {
+        "source": "preview",
+        "source_label": meta["source_label"],
+        "redaction": "safe-preview",
+        "contains_live_actions": False,
+    }
+    assert meta["source_label"]
+    serialized = json.dumps(meta)
+    assert "/Volumes/Diver Pro/hermes" not in serialized
+    assert BOT_TOKEN not in serialized
+    assert "TELEGRAM_BOT_TOKEN" not in serialized
+    assert "pid" not in serialized.lower()
+    assert "command" not in serialized.lower()
+
+
 def test_public_health_and_ready_do_not_leak_internals():
     client = make_client()
 
@@ -161,6 +177,7 @@ def test_approvals_require_auth_then_return_safe_read_only_queue():
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
+    assert_safe_preview_meta(body["meta"])
     assert len(body["items"]) == 2
     first = body["items"][0]
     assert set(first) == {"id", "title", "source", "risk", "summary", "requested_at", "status", "checks"}
@@ -186,6 +203,7 @@ def test_sessions_and_logs_require_auth_then_return_safe_read_only_previews():
     assert sessions.status_code == 200
     sessions_body = sessions.json()
     assert sessions_body["ok"] is True
+    assert_safe_preview_meta(sessions_body["meta"])
     assert len(sessions_body["items"]) == 3
     first_session = sessions_body["items"][0]
     assert set(first_session) == {"id", "agent", "state", "meta", "time", "tone"}
@@ -195,6 +213,7 @@ def test_sessions_and_logs_require_auth_then_return_safe_read_only_previews():
     assert logs.status_code == 200
     logs_body = logs.json()
     assert logs_body["ok"] is True
+    assert_safe_preview_meta(logs_body["meta"])
     assert len(logs_body["items"]) == 4
     first_log = logs_body["items"][0]
     assert set(first_log) == {"level", "message", "time"}

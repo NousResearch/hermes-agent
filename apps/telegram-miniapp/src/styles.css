@@ -637,6 +637,50 @@ h2 {
   gap: 8px;
 }
 
+.source-strip {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: -2px 0 12px;
+  border: 1px solid rgba(21, 23, 25, 0.08);
+  border-radius: 18px;
+  padding: 9px 10px;
+  color: #075766;
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow: var(--shadow-card);
+}
+
+.source-strip span,
+.source-strip small,
+.source-strip em {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.source-strip span {
+  color: #075766;
+}
+
+.source-strip small,
+.source-strip em {
+  border-radius: 999px;
+  padding: 5px 7px;
+  color: #175c32;
+  background: rgba(183, 255, 74, 0.14);
+  font-style: normal;
+}
+
+.source-strip em {
+  color: #7a4a06;
+  background: rgba(201, 138, 19, 0.1);
+}
+
 .freshness-row {
   width: fit-content;
   max-width: 100%;

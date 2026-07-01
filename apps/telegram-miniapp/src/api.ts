@@ -34,6 +34,13 @@ export type AuthResponse = {
   expires_at: string;
 };
 
+export type SnapshotMeta = {
+  source: "preview";
+  source_label: string;
+  redaction: "safe-preview";
+  contains_live_actions: boolean;
+};
+
 export type ApprovalRisk = "read_only" | "critical";
 
 export type ApprovalStatus = "waiting" | "blocked";
@@ -51,6 +58,7 @@ export type ApprovalItem = {
 
 export type ApprovalsSnapshot = {
   ok: boolean;
+  meta?: SnapshotMeta;
   items: ApprovalItem[];
 };
 
@@ -65,6 +73,7 @@ export type SessionPreviewItem = {
 
 export type SessionsSnapshot = {
   ok: boolean;
+  meta?: SnapshotMeta;
   items: SessionPreviewItem[];
 };
 
@@ -76,6 +85,7 @@ export type LogPreviewItem = {
 
 export type LogsSnapshot = {
   ok: boolean;
+  meta?: SnapshotMeta;
   items: LogPreviewItem[];
 };
 

@@ -9,6 +9,7 @@ import {
   type ApprovalItem,
   type LogPreviewItem,
   type SessionPreviewItem,
+  type SnapshotMeta,
   type StatusSnapshot,
 } from "./api";
 import {
@@ -222,6 +223,18 @@ function SectionIntro({
         </button>
       </div>
     </section>
+  );
+}
+
+function SourceStrip({ meta }: { meta: SnapshotMeta | null }) {
+  if (!meta) return null;
+
+  return (
+    <div className="source-strip" aria-label="Источник данных">
+      <span>{meta.source_label}</span>
+      <small>{meta.redaction}</small>
+      <em>{meta.contains_live_actions ? "actions linked" : "no actions"}</em>
+    </div>
   );
 }
 
@@ -571,6 +584,7 @@ export function App() {
   const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
+  const [snapshotMeta, setSnapshotMeta] = useState<Record<"approvals" | "sessions" | "logs", SnapshotMeta | null>>({ approvals: null, sessions: null, logs: null });
   const [isPaletteOpen, setPaletteOpen] = useState(false);
   const [isRefreshing, setRefreshing] = useState(false);
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
@@ -669,6 +683,7 @@ export function App() {
         setServerApprovals(mappedApprovals);
         setServerSessions(mappedSessions);
         setServerLogs(mappedLogs);
+        setSnapshotMeta({ approvals: approvals.meta ?? null, sessions: sessions.meta ?? null, logs: logs.meta ?? null });
         setSelectedApprovalId((current) => {
           if (mappedApprovals.some((approval) => approval.id === current)) return current;
           return mappedApprovals[0]?.id ?? "";
@@ -706,6 +721,7 @@ export function App() {
       setServerApprovals([]);
       setServerSessions([]);
       setServerLogs([]);
+      setSnapshotMeta({ approvals: null, sessions: null, logs: null });
       setLastSuccessAt(null);
       setRefreshing(false);
       return;
@@ -795,6 +811,7 @@ export function App() {
   const currentFreshness = freshnessState(apiState, isRefreshing, lastSuccessAt, now);
   const lastRefreshText = lastSuccessAt ? `последнее обновление ${formatRefreshTime(lastSuccessAt)}` : formatRefreshTime(lastSuccessAt);
   const refreshEnabled = telegram.isTelegram && Boolean(telegram.initData) && apiConfigured;
+  const currentSourceMeta = activeTab === "approvals" || activeTab === "sessions" || activeTab === "logs" ? snapshotMeta[activeTab] : null;
 
   return (
     <main className="screen" data-mode={telegram.colorScheme}>
@@ -834,6 +851,7 @@ export function App() {
         onOpenPalette={() => setPaletteOpen(true)}
         onRefresh={() => void refreshSnapshots({ manual: true })}
       />
+      <SourceStrip meta={currentSourceMeta} />
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
       {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}

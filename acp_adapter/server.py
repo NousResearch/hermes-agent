@@ -1383,6 +1383,13 @@ class HermesACPAgent(acp.Agent):
                 return PromptResponse(stop_reason="end_turn")
             state.is_running = True
             state.current_prompt_text = user_text or "[Image attachment]"
+            # A real turn is starting, so any prompt salvaged for a later
+            # /steer after a prior client cancel is now stale — the user moved
+            # on to this turn. Drop it so a /steer on a future idle session
+            # can't resurrect an abandoned prompt. The /steer salvage path
+            # above already consumed and cleared it before reaching here, so
+            # this only discards a value left by an intervening completed turn.
+            state.interrupted_prompt_text = ""
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 

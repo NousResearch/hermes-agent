@@ -79,6 +79,15 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+def _try_import_slack_summary_db():
+    """Best-effort import of the Junie Live slack_summary_db module."""
+    try:
+        import slack_summary_db
+        return slack_summary_db
+    except ImportError:
+        return None
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -456,6 +465,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Cache for channel summaries from slack_summaries.db
+        self._channel_summaries_cache: Optional[_ThreadContextCache] = None
+        self._CHANNEL_SUMMARIES_CACHE_TTL = 300.0  # 5 minutes
+        # Cache for kanban board context
+        self._kanban_context_cache: Optional[_ThreadContextCache] = None
+        self._KANBAN_CACHE_TTL = 300.0  # 5 minutes
+        # Idle threshold for injecting extra context (channel summaries, kanban).
+        # If the last message from a non-bot user in the thread is older than
+        # this many seconds, inject the extra context blocks.
+        self._CONTEXT_INJECTION_IDLE_SECONDS = 60.0  # 1 minute (will be raised later)
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
         # Track active assistant thread status indicators so stop_typing can
@@ -2637,6 +2656,26 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
+        # Inject extra context (channel summaries, kanban board) when the
+        # thread has been idle for longer than _CONTEXT_INJECTION_IDLE_SECONDS
+        # (or when there is no active session at all).  This gives the agent
+        # awareness of recent Slack activity and current task backlog after
+        # a period of inactivity, not only on the very first message.
+        if await self._should_inject_extra_context(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts or ts,
+            current_ts=ts,
+            team_id=team_id,
+            user_id=user_id,
+        ):
+            kanban_ctx = await self._fetch_kanban_context()
+            if kanban_ctx:
+                text = kanban_ctx + text
+
+            channel_summary = await self._fetch_channel_summaries_context()
+            if channel_summary:
+                text = channel_summary + text
+
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
         if is_thread_reply and not self._has_active_session_for_thread(
@@ -3570,6 +3609,200 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
             return ""
+
+    async def _fetch_channel_summaries_context(self) -> str:
+        """Fetch channel/thread summaries from slack_summaries.db.
+
+        Called on the first message in a session (no active session exists)
+        to give the agent awareness of recent Slack activity.
+        Returns a formatted context block or empty string.
+        """
+        now = time.monotonic()
+        if (
+            self._channel_summaries_cache
+            and (now - self._channel_summaries_cache.fetched_at)
+            < self._CHANNEL_SUMMARIES_CACHE_TTL
+        ):
+            return self._channel_summaries_cache.content
+
+        ssdb = _try_import_slack_summary_db()
+        if ssdb is None:
+            return ""
+
+        try:
+            with ssdb.connect_closing() as conn:
+                ssdb.init_db(conn)
+                channels = ssdb.list_channel_summaries(conn)
+                if not channels:
+                    return ""
+
+                parts = []
+                for ch in channels:
+                    parts.append(
+                        f"#{ch['channel_name']} ({ch['thread_count']} threads): "
+                        f"{ch['summary']}"
+                    )
+                    threads = ssdb.list_thread_summaries(conn, ch["channel_id"])
+                    for t in threads:
+                        parts.append(
+                            f"  - Thread {t['thread_ts']} "
+                            f"({t['reply_count']} replies): {t['summary']}"
+                        )
+
+                if not parts:
+                    return ""
+
+                result = (
+                    "[Channel activity summary — recent Slack threads collected by background cron:]\n"
+                    + "\n".join(parts)
+                    + "\n[End of channel activity summary]\n\n"
+                )
+
+                self._channel_summaries_cache = _ThreadContextCache(
+                    content=result,
+                    fetched_at=now,
+                    message_count=len(parts),
+                    parent_text="",
+                )
+                return result
+
+        except Exception as e:
+            logger.warning(
+                "[Slack] Failed to fetch channel summaries from DB: %s", e
+            )
+            return ""
+
+    async def _fetch_kanban_context(self) -> str:
+        """Fetch last 10 kanban tasks for agent awareness.
+
+        Returns a formatted context block or empty string.
+        Cached for ``_KANBAN_CACHE_TTL`` seconds.
+        """
+        now = time.monotonic()
+        if (
+            self._kanban_context_cache
+            and (now - self._kanban_context_cache.fetched_at)
+            < self._KANBAN_CACHE_TTL
+        ):
+            return self._kanban_context_cache.content
+
+        try:
+            from hermes_cli import kanban_db as kb
+        except ImportError:
+            return ""
+
+        try:
+            with kb.connect_closing() as conn:
+                tasks = kb.list_tasks(
+                    conn, order_by="created-desc", limit=10, include_archived=False
+                )
+                if not tasks:
+                    return ""
+
+                parts = []
+                for t in tasks:
+                    desc = ""
+                    if t.body:
+                        desc = t.body[:120].replace("\n", " ")
+                        if len(t.body) > 120:
+                            desc += "…"
+                    line = f"- [{t.status}] {t.id}: {t.title}"
+                    if desc:
+                        line += f" — {desc}"
+                    parts.append(line)
+
+                result = (
+                    "[Kanban board — last 10 tasks:]\n"
+                    + "\n".join(parts)
+                    + "\n[End of kanban board]\n\n"
+                )
+
+                self._kanban_context_cache = _ThreadContextCache(
+                    content=result,
+                    fetched_at=now,
+                    message_count=len(parts),
+                    parent_text="",
+                )
+                return result
+
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch kanban context: %s", e)
+            return ""
+
+    async def _should_inject_extra_context(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        current_ts: str,
+        team_id: str = "",
+        user_id: str = "",
+    ) -> bool:
+        """Decide whether to inject extra context (channel summaries, kanban).
+
+        Returns True when:
+        - there is no active session for this thread (brand-new conversation), OR
+        - the last message from a non-bot user in the thread is older than
+          ``_CONTEXT_INJECTION_IDLE_SECONDS`` (the thread has been idle).
+
+        Uses ``conversations.replies`` to find the penultimate user message
+        timestamp.  Falls back to True on any error (better to inject context
+        than to silently skip it).
+        """
+        # Fast path: no session at all → always inject.
+        if not self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            user_id=user_id,
+        ):
+            return True
+
+        # Session exists — check how long the thread has been idle.
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=20,
+                inclusive=True,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return True
+
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+
+            # Walk messages in reverse to find the last non-bot user message
+            # that is NOT the current triggering message.
+            last_user_ts = None
+            for msg in reversed(messages):
+                msg_ts = msg.get("ts", "")
+                if msg_ts == current_ts:
+                    continue
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                msg_user = msg.get("user", "")
+                if is_bot and bot_uid and msg_user == bot_uid:
+                    continue
+                # This is a non-bot (or other-bot) user message.
+                last_user_ts = msg_ts
+                break
+
+            if last_user_ts is None:
+                # No prior user messages found — treat as idle.
+                return True
+
+            # Slack ts is a Unix epoch float (e.g. "1719801234.567890").
+            current_epoch = float(current_ts)
+            last_epoch = float(last_user_ts)
+            idle_seconds = current_epoch - last_epoch
+
+            return idle_seconds >= self._CONTEXT_INJECTION_IDLE_SECONDS
+
+        except Exception as e:
+            logger.debug(
+                "[Slack] Could not determine thread idle time, injecting context: %s",
+                e,
+            )
+            return True
 
     async def _fetch_thread_parent_text(
         self,

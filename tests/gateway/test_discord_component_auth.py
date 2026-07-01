@@ -349,3 +349,76 @@ def test_component_check_pairing_import_error_graceful(monkeypatch):
     with patch("gateway.pairing.PairingStore", side_effect=ImportError("simulated")):
         interaction = _interaction(11111)
         assert _component_check_auth(interaction, set(), set()) is False
+
+
+def test_exec_approval_button_defers_then_resolves(monkeypatch):
+    """Approval buttons acknowledge immediately, then resolve/edit/follow up.
+
+    This prevents Discord's opaque "This interaction failed" banner when
+    queue resolution or message editing is slow.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    import plugins.platforms.discord.adapter as adapter
+    import tools.approval as approval
+
+    async def run():
+        events = []
+
+        async def fake_log(event, **kwargs):
+            events.append((event, kwargs))
+
+        monkeypatch.setattr(adapter, "_log_discord_exec_approval_event", fake_log)
+        monkeypatch.setattr(approval, "resolve_gateway_approval", Mock(return_value=1))
+
+        view = ExecApprovalView(session_key="sess-1", allowed_user_ids={"11111"})
+        child = SimpleNamespace(disabled=False)
+        view.children = [child]
+        embed = adapter.discord.Embed(title="Approval", description="redacted", color=adapter.discord.Color.orange())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=11111, display_name="Aaron", roles=[]),
+            message=SimpleNamespace(embeds=[embed], edit=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await view._resolve(interaction, "once", adapter.discord.Color.green(), "Approved once")
+
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        approval.resolve_gateway_approval.assert_called_once_with("sess-1", "once")
+        interaction.message.edit.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once_with("Approved once.", ephemeral=True)
+        assert child.disabled is True
+        assert events[0][0] == "click_received"
+        assert events[-1][0] == "resolved"
+
+    asyncio.run(run())
+
+
+def test_exec_approval_button_acknowledges_stale_click(monkeypatch):
+    """A stale click with no pending queue still gets an ephemeral answer."""
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    import plugins.platforms.discord.adapter as adapter
+    import tools.approval as approval
+
+    async def run():
+        monkeypatch.setattr(adapter, "_log_discord_exec_approval_event", AsyncMock())
+        monkeypatch.setattr(approval, "resolve_gateway_approval", Mock(return_value=0))
+
+        view = ExecApprovalView(session_key="sess-1", allowed_user_ids={"11111"})
+        embed = adapter.discord.Embed(title="Approval", description="redacted", color=adapter.discord.Color.orange())
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=11111, display_name="Aaron", roles=[]),
+            message=SimpleNamespace(embeds=[embed], edit=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await view._resolve(interaction, "once", adapter.discord.Color.green(), "Approved once")
+
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        interaction.followup.send.assert_awaited_once()
+        assert "already timed out" in interaction.followup.send.await_args.args[0]
+
+    asyncio.run(run())

@@ -4861,6 +4861,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             msg = await channel.send(embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
+            await _log_discord_exec_approval_event(
+                "prompt_sent",
+                session_key=session_key,
+                resolved_count=None,
+            )
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -5912,6 +5917,112 @@ def _component_check_auth(
     return False
 
 
+def _safe_interaction_user_name(interaction) -> str:
+    user = getattr(interaction, "user", None)
+    return (
+        getattr(user, "display_name", None)
+        or getattr(user, "global_name", None)
+        or getattr(user, "name", None)
+        or (f"Discord user {getattr(user, 'id')}" if getattr(user, "id", None) else "unknown")
+    )
+
+
+def _safe_interaction_user_id(interaction) -> str:
+    user = getattr(interaction, "user", None)
+    return str(getattr(user, "id", "") or "")
+
+
+def _approval_session_hash(session_key: str) -> str:
+    if not session_key:
+        return ""
+    return hashlib.sha256(session_key.encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _approval_log_webhook_url() -> str:
+    """Optional secret webhook URL for approval-button audit pings.
+
+    This is a webhook URL, so it intentionally lives in env/secret storage.
+    Never log or echo the value itself.
+    """
+    return (
+        os.getenv("HERMES_APPROVAL_LOG_WEBHOOK_URL", "").strip()
+        or os.getenv("DISCORD_APPROVAL_LOG_WEBHOOK_URL", "").strip()
+    )
+
+
+async def _log_discord_exec_approval_event(
+    event: str,
+    *,
+    session_key: str = "",
+    choice: str = "",
+    user_id: str = "",
+    user_name: str = "",
+    resolved_count: Optional[int] = None,
+    error: str = "",
+) -> None:
+    """Best-effort local + optional webhook audit for exec approval buttons.
+
+    Deliberately excludes the command text, webhook URL, signatures, tokens,
+    and full session key.  The session hash is correlation-only.
+    """
+    payload = {
+        "event": event,
+        "surface": "discord.exec_approval_button",
+        "session_hash": _approval_session_hash(session_key),
+        "choice": choice,
+        "user_id": str(user_id or ""),
+        "user_name": str(user_name or "")[:80],
+        "resolved_count": resolved_count,
+        "error": str(error or "")[:400],
+        "timestamp": int(time.time()),
+    }
+    logger.info("Discord exec approval audit: %s", payload)
+
+    webhook_url = _approval_log_webhook_url()
+    if not webhook_url:
+        return
+
+    try:
+        import aiohttp
+
+        content = (
+            "🔐 **Hermes approval button** "
+            f"`{payload['event']}` choice=`{payload['choice'] or 'n/a'}` "
+            f"resolved=`{payload['resolved_count']}` "
+            f"session=`{payload['session_hash']}` "
+            f"user=`{payload['user_id'] or payload['user_name'] or 'unknown'}`"
+        )
+        if payload["error"]:
+            content += f" error=`{payload['error'][:180]}`"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                webhook_url,
+                json={"content": content[:1900]},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as response:
+                if response.status >= 300:
+                    logger.warning(
+                        "Discord exec approval audit webhook returned HTTP %s",
+                        response.status,
+                    )
+    except Exception as exc:
+        logger.warning("Discord exec approval audit webhook failed: %s", exc)
+
+
+def _exec_approval_view_timeout() -> int:
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        timeout = int(cfg_get(load_config(), "approvals", "gateway_timeout", default=300) or 300)
+    except Exception:
+        timeout = 300
+    # Keep the component alive beyond the agent wait timeout.  If the user
+    # clicks just after the wait elapsed, the callback can still acknowledge
+    # the click and explain that no approval is pending instead of surfacing
+    # Discord's opaque "This interaction failed" banner.
+    return max(timeout + 120, 600)
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -5940,7 +6051,7 @@ def _define_discord_view_classes() -> None:
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=_exec_approval_view_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -5956,10 +6067,32 @@ def _define_discord_view_classes() -> None:
             self, interaction: discord.Interaction, choice: str,
             color: discord.Color, label: str,
         ):
-            """Resolve the approval via the gateway approval queue and update the embed."""
+            """Resolve the approval via the gateway approval queue and update the embed.
+
+            Acknowledge the Discord interaction before doing queue/file work so
+            button clicks do not surface Discord's opaque "This interaction
+            failed" banner when the gateway is busy or the approval is stale.
+            """
+            user_name = _safe_interaction_user_name(interaction)
+            user_id = _safe_interaction_user_id(interaction)
+            await _log_discord_exec_approval_event(
+                "click_received",
+                session_key=self.session_key,
+                choice=choice,
+                user_id=user_id,
+                user_name=user_name,
+            )
+
             if self.resolved:
                 await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
+                    "This approval has already been resolved or expired~", ephemeral=True
+                )
+                await _log_discord_exec_approval_event(
+                    "click_already_resolved",
+                    session_key=self.session_key,
+                    choice=choice,
+                    user_id=user_id,
+                    user_name=user_name,
                 )
                 return
 
@@ -5967,32 +6100,109 @@ def _define_discord_view_classes() -> None:
                 await interaction.response.send_message(
                     "You're not authorized to approve commands~", ephemeral=True
                 )
+                await _log_discord_exec_approval_event(
+                    "click_unauthorized",
+                    session_key=self.session_key,
+                    choice=choice,
+                    user_id=user_id,
+                    user_name=user_name,
+                )
                 return
 
             self.resolved = True
-
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.defer(ephemeral=True)
 
             # Unblock the waiting agent thread via the gateway approval queue
+            count = 0
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
+                    count, self.session_key, choice, user_name,
                 )
             except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
+                logger.error("Failed to resolve gateway approval from button: %s", exc, exc_info=True)
+                await _log_discord_exec_approval_event(
+                    "resolve_error",
+                    session_key=self.session_key,
+                    choice=choice,
+                    user_id=user_id,
+                    user_name=user_name,
+                    resolved_count=count,
+                    error=str(exc),
+                )
+                await interaction.followup.send(
+                    "I received the click, but resolving the approval failed. Check gateway logs.",
+                    ephemeral=True,
+                )
+                return
+
+            # Update the embed with the decision.  This happens after the early
+            # acknowledgement so message edit failures do not break the click.
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                if count:
+                    embed.set_footer(text=f"{label} by {user_name}")
+                else:
+                    embed.color = discord.Color.greyple()
+                    embed.set_footer(text=f"No pending approval remained when {user_name} clicked")
+
+            for child in self.children:
+                child.disabled = True
+
+            edit_error = ""
+            try:
+                await interaction.message.edit(embed=embed, view=self)
+            except Exception as exc:
+                edit_error = str(exc)
+                logger.warning("Discord approval message edit failed after click: %s", exc)
+
+            if count:
+                await interaction.followup.send(f"{label}.", ephemeral=True)
+                outcome = "resolved"
+            else:
+                await interaction.followup.send(
+                    "I received the click, but the approval had already timed out or was cancelled.",
+                    ephemeral=True,
+                )
+                outcome = "no_pending"
+
+            await _log_discord_exec_approval_event(
+                outcome,
+                session_key=self.session_key,
+                choice=choice,
+                user_id=user_id,
+                user_name=user_name,
+                resolved_count=count,
+                error=edit_error,
+            )
+
+        async def on_error(self, interaction, error, item):
+            user_name = _safe_interaction_user_name(interaction)
+            user_id = _safe_interaction_user_id(interaction)
+            logger.error("Discord exec approval view callback failed: %s", error, exc_info=True)
+            await _log_discord_exec_approval_event(
+                "callback_error",
+                session_key=self.session_key,
+                user_id=user_id,
+                user_name=user_name,
+                error=str(error),
+            )
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "I received the click, but the approval button handler failed. Check gateway logs.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        "The approval button handler failed after acknowledging the click. Check gateway logs.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(

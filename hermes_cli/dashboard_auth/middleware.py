@@ -188,11 +188,19 @@ def _auto_sso_response(request: Request) -> Response | None:
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote
-    auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
-    if next_param:
-        auth_login = f"{auth_login}&next={next_param}"
 
-    resp = RedirectResponse(url=auth_login, status_code=302)
+    # Password-only providers (basic auth) have no OAuth redirect;
+    # send the user directly to the login form instead.
+    if getattr(provider, "supports_password", False):
+        login_url = f"{prefix}/login"
+        if next_param:
+            login_url = f"{login_url}?next={next_param}"
+        resp = RedirectResponse(url=login_url, status_code=302)
+    else:
+        auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
+        if next_param:
+            auth_login = f"{auth_login}&next={next_param}"
+        resp = RedirectResponse(url=auth_login, status_code=302)
     # Drop the one-shot marker so a return trip that's STILL unauthenticated
     # (portal had no session) trips the guard above next time instead of
     # looping. Detect HTTPS for the Secure flag the same way the auth routes

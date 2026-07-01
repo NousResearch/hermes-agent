@@ -5242,6 +5242,15 @@ def run_conversation(
                         # Structured recovery descriptor so every surface renders
                         # the same link + label from one signal (see helper).
                         _billing_block = _billing_block_dict(_provider, _base, _model, _billing_guidance)
+                    elif classified.reason in {FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout}:
+                        # Transient outage — the conversation was saved, so the
+                        # user can resume once the provider recovers. Don't show
+                        # this for permanent failures (billing/auth/policy) where
+                        # /resume would just hit the same wall. See issue #33693.
+                        _final_response = (
+                            f"Provider temporarily unavailable after {max_retries} retries: {_final_summary}\n\n"
+                            f"Your conversation has been saved. Use /resume to continue when the provider is back online."
+                        )
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_thinking_timeout:

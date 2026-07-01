@@ -550,7 +550,9 @@ export function App() {
       : apiState === "connecting"
         ? "подключаю локальный сервис"
         : apiState === "offline"
-          ? "локальный сервис недоступен · превью"
+          ? lastSuccessAt
+            ? "локальный сервис недоступен · сохранён последний статус"
+            : "локальный сервис недоступен · превью"
           : apiConfigured
             ? "API готов · жду Telegram initData"
             : "локальное превью";

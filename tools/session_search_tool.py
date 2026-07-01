@@ -665,6 +665,17 @@ def _discover(
     # within each class.
     raw_results = _order_for_recall(raw_results)
 
+    # Opt-in semantic re-rank (Phase 2): purely additive — runs only when the
+    # caller explicitly asks for it, over the FTS5 hit set already fetched.
+    # Falls through silently to plain FTS5/BM25 ordering on any failure
+    # (embedding provider unreachable, sidecar table not yet backfilled,
+    # etc.) so the legacy path can never be broken by this layer.
+    if semantic and raw_results:
+        try:
+            raw_results = _semantic_rank(db, query, raw_results, _DISCOVER_SCAN_LIMIT)
+        except Exception as e:
+            logging.warning("Semantic re-rank failed, falling back to FTS5 order: %s", e, exc_info=True)
+
     if not raw_results and not title_result:
         return json.dumps({
             "success": True,

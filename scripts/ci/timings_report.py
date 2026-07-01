@@ -135,9 +135,23 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     run_info = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}", token)
     created_at = run_info.get("created_at", "")
 
-    # Orchestrator direct jobs
-    orch_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
-                        token, list_key="jobs")
+    try:
+        # Orchestrator direct jobs
+        orch_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
+                            token, list_key="jobs")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            return {
+                "run_id": run_id,
+                "head_sha": head_sha,
+                "created_at": created_at,
+                "jobs": [],
+                "access_error": (
+                    "GitHub denied Actions job metadata for this run, which happens on "
+                    "some fork pull_request executions. Timing report generation was skipped."
+                ),
+            }
+        raise
 
     direct = []
     for job in orch_jobs:
@@ -662,6 +676,12 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     )
 
     html += '<h2>Global Stats</h2>\n'
+    if timings.get("access_error"):
+        html += (
+            '<p style="margin-bottom:16px;color:#8b949e">'
+            f'{escape(timings["access_error"])}'
+            '</p>\n'
+        )
     html += _stats_cards(stats)
 
     if baseline:
@@ -690,6 +710,8 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
 
     lines = ["## CI Timing Summary\n"]
+    if timings.get("access_error"):
+        lines.append(f"> {timings['access_error']}\n")
 
     # Global stats table
     lines.append("| Metric | Current | Baseline | Delta |")

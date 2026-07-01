@@ -12,7 +12,10 @@ import {
   dropdownMenuRow,
   DropdownMenuSearch,
   dropdownMenuSectionLabel,
-  DropdownMenuSeparator
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
@@ -179,7 +182,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'high') : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
@@ -229,7 +232,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const effortValue = EFFORT_OPTIONS.some(option => option.value === currentReasoningEffort)
     ? currentReasoningEffort
-    : 'medium'
+    : 'high'
+
+  // Codex-style top-level model row: shows whichever model is current; the full
+  // list is one click deeper in its submenu.
+  const currentModelLabel = optionsModel ? displayModelName(optionsModel) : copy.noModels
 
   // Mirrors ModelEditSubmenu.patchReasoning, but for the composer's active model.
   const setCurrentEffort = async (next: string) => {
@@ -302,129 +309,136 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator className="mx-0" />
         </>
       ) : null}
+
+      {/* Codex-style: the current model is one row; the full list lives in its
+          submenu, so the top level stays reasoning + model + speed. */}
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className={dropdownMenuRow}>
+          <span className="min-w-0 flex-1 truncate">{currentModelLabel}</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="w-64 p-0">
+          <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
+
+          <DropdownMenuSeparator className="mx-0" />
+
+          {loading ? (
+            <DropdownMenuGroup className="py-1">
+              {Array.from({ length: 4 }, (_, index) => (
+                <DropdownMenuItem className={dropdownMenuRow} disabled key={index} onSelect={event => event.preventDefault()}>
+                  <Skeleton className="h-4 w-full" />
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          ) : error ? (
+            <DropdownMenuItem className={dropdownMenuRow} disabled>
+              {error}
+            </DropdownMenuItem>
+          ) : groups.length === 0 ? (
+            <DropdownMenuItem className={dropdownMenuRow} disabled>
+              {copy.noModels}
+            </DropdownMenuItem>
+          ) : (
+            groups.map(group => (
+              <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
+                <DropdownMenuLabel className={dropdownMenuSectionLabel}>{providerGroupLabel(group.provider)}</DropdownMenuLabel>
+                {group.families.map(family => {
+                  // The active id may be the base or its -fast sibling; either
+                  // way this one family row represents both.
+                  const isCurrent =
+                    group.provider.slug === optionsProvider &&
+                    (optionsModel === family.id || optionsModel === family.fastId)
+
+                  const name = modelDisplayParts(family.id).name
+
+                  // Reasoning/speed live at the top for the active model, so a
+                  // row is a plain select: commit the model + close the picker.
+                  return (
+                    <DropdownMenuItem
+                      className={dropdownMenuRow}
+                      key={`${group.provider.slug}:${family.id}`}
+                      onSelect={() => {
+                        if (!isCurrent) {
+                          void selectFamily(family, group.provider)
+                        }
+
+                        closeMenu()
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{name}</span>
+                      {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+                    </DropdownMenuItem>
+                  )
+                })}
+              </DropdownMenuGroup>
+            ))
+          )}
+
+          {moaOptions.data && Object.keys(moaOptions.data.presets ?? {}).length > 0 ? (
+            <>
+              <DropdownMenuSeparator className="mx-0" />
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+              {Object.keys(moaOptions.data.presets).map(preset => (
+                <DropdownMenuItem
+                  className={dropdownMenuRow}
+                  disabled={!activeSessionId}
+                  key={`moa:${preset}`}
+                  onSelect={event => {
+                    event.preventDefault()
+                    void toggleMoaPreset(preset)
+                  }}
+                >
+                  <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+                  {activeMoaPreset === preset ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+                </DropdownMenuItem>
+              ))}
+            </>
+          ) : null}
+
+          <DropdownMenuSeparator className="mx-0" />
+
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            disabled={refreshing}
+            onSelect={event => {
+              event.preventDefault()
+              void refreshModels()
+            }}
+          >
+            <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {copy.refreshModels}
+          </DropdownMenuItem>
+
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            onSelect={() => setModelVisibilityOpen(true)}
+          >
+            {copy.editModels}
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
       {currentFastControl.kind !== 'none' ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {modelOptionsCopy.fast}
           <Switch checked={currentFastControl.on} className="ml-auto" onCheckedChange={setCurrentFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
-      <DropdownMenuSeparator className="mx-0" />
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
-
-      <DropdownMenuSeparator className="mx-0" />
-
-      {loading ? (
-        <DropdownMenuGroup className="py-1">
-          {Array.from({ length: 4 }, (_, index) => (
-            <DropdownMenuItem
-              className={dropdownMenuRow}
-              disabled
-              key={index}
-              onSelect={event => event.preventDefault()}
-            >
-              <Skeleton className="h-4 w-full" />
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      ) : error ? (
-        <DropdownMenuItem className={dropdownMenuRow} disabled>
-          {error}
-        </DropdownMenuItem>
-      ) : groups.length === 0 ? (
-        <DropdownMenuItem className={dropdownMenuRow} disabled>
-          {copy.noModels}
-        </DropdownMenuItem>
-      ) : (
-        <div className="max-h-80 overflow-y-auto py-0.5">
-          {groups.map(group => (
-            <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
-              {group.families.map(family => {
-                // The active id may be the base or its -fast sibling; either
-                // way this one family row represents both.
-                const activeId =
-                  group.provider.slug === optionsProvider &&
-                  (optionsModel === family.id || optionsModel === family.fastId)
-                    ? optionsModel
-                    : null
-
-                const isCurrent = activeId !== null
-                const name = modelDisplayParts(family.id).name
-
-                // Reasoning/speed now live at the top for the active model, so a
-                // row is a plain select: commit the model + close the picker.
-                return (
-                  <DropdownMenuItem
-                    className={dropdownMenuRow}
-                    key={`${group.provider.slug}:${family.id}`}
-                    onSelect={() => {
-                      if (!isCurrent) {
-                        void selectFamily(family, group.provider)
-                      }
-
-                      closeMenu()
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{name}</span>
-                    {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
-                  </DropdownMenuItem>
-                )
-              })}
-            </DropdownMenuGroup>
-          ))}
-        </div>
-      )}
-
-      <DropdownMenuSeparator className="mx-0" />
-
-      {moaOptions.data && Object.keys(moaOptions.data.presets ?? {}).length > 0 ? (
-        <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
-          {Object.keys(moaOptions.data.presets).map(preset => (
-            <DropdownMenuItem
-              className={dropdownMenuRow}
-              disabled={!activeSessionId}
-              key={`moa:${preset}`}
-              onSelect={event => {
-                event.preventDefault()
-                void toggleMoaPreset(preset)
-              }}
-            >
-              <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
-              {activeMoaPreset === preset ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator className="mx-0" />
-        </>
-      ) : null}
-
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        disabled={refreshing}
-        onSelect={event => {
-          event.preventDefault()
-          void refreshModels()
-        }}
-      >
-        <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-        {copy.refreshModels}
-      </DropdownMenuItem>
-
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        onSelect={() => setModelVisibilityOpen(true)}
-      >
-        {copy.editModels}
-      </DropdownMenuItem>
     </>
   )
+}
+
+// The managed relay is registered as the custom provider "Apex-nodes.com"
+// (electron/apex-managed.cjs); surface it under the clean "APEX" brand in the
+// picker. Custom BYOK / domestic providers keep their own names.
+function providerGroupLabel(provider: ModelOptionProvider): string {
+  if (provider.slug === 'custom:apex-nodes.com' || /^apex-?nodes/i.test(provider.name || '')) {
+    return 'APEX'
+  }
+
+  return provider.name
 }
 
 // Collapsed we show the user's chosen models (or the curated default); typing

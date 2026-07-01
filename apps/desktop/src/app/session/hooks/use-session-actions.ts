@@ -456,7 +456,10 @@ export function useSessionActions({
         // default (that lives in Settings → Model).
         const uiModel = $currentModel.get().trim()
         const uiProvider = $currentProvider.get().trim()
-        const uiEffort = $currentReasoningEffort.get().trim()
+        // Default reasoning effort is High: fall back to it when the composer has
+        // no explicit pick (e.g. cleared by focusing a no-override session) so a
+        // new chat always opens on High rather than the backend's medium default.
+        const uiEffort = $currentReasoningEffort.get().trim() || 'high'
         const uiFast = $currentFastMode.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
@@ -464,7 +467,7 @@ export function useSessionActions({
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
-          ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
+          reasoning_effort: uiEffort,
           ...(uiFast ? { fast: true } : {})
         })
 
@@ -709,6 +712,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)

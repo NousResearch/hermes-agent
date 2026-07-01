@@ -30,6 +30,7 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
@@ -75,6 +76,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -151,6 +153,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -237,7 +240,9 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
+// Default reasoning effort is High (product decision) — a fresh install with no
+// stored pick opens on High, and new sessions ship it (see use-session-actions).
+export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? 'high')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).

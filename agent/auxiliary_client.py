@@ -154,6 +154,32 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
+def _instrument_http_client_for_fuelix(http_client: Any, *, provider: Optional[str], base_url: Optional[str]) -> Any:
+    if not _is_fuelix_provider(provider, base_url) or http_client is None:
+        return http_client
+
+    def _capture_quota(response: Any) -> None:
+        try:
+            _update_fuelix_quota_state(response.headers, provider=provider, base_url=base_url)
+        except Exception:
+            logger.debug("FuelIX quota response hook failed", exc_info=True)
+
+    hooks = getattr(http_client, "event_hooks", None)
+    if hooks is None:
+        try:
+            http_client.event_hooks = {"response": [_capture_quota]}
+        except Exception:
+            return http_client
+        return http_client
+    try:
+        response_hooks = hooks.setdefault("response", [])
+        if _capture_quota not in response_hooks:
+            response_hooks.append(_capture_quota)
+    except Exception:
+        logger.debug("Failed to attach FuelIX quota hook", exc_info=True)
+    return http_client
+
+
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
 # Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
 # (e.g. an incoming user message while the agent is busy). Context
@@ -4201,6 +4227,7 @@ def resolve_provider_client(
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
+            client = _instrument_http_client_for_fuelix(getattr(client, "_client", None), provider=provider, base_url=_clean_base) or client
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
@@ -4305,6 +4332,8 @@ def resolve_provider_client(
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        client = _instrument_http_client_for_fuelix(getattr(client, "_client", None), provider=provider, base_url=_fb_clean) or client
+                        client = _wrap_if_needed(client, final_model, custom_base, custom_key)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -4314,6 +4343,8 @@ def resolve_provider_client(
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
                 client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _instrument_http_client_for_fuelix(getattr(client, "_client", None), provider=provider, base_url=_clean_base2) or client
+                client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -4322,8 +4353,6 @@ def resolve_provider_client(
                     client, CodexAuxiliaryClient
                 ):
                     client = CodexAuxiliaryClient(client, final_model)
-                else:
-                    client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
@@ -4461,6 +4490,7 @@ def resolve_provider_client(
             headers = _merged_main
         client = _create_openai_client(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
+        client = _instrument_http_client_for_fuelix(getattr(client, "_client", None), provider=provider, base_url=base_url) or client
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
         # API — they are not accessible via /chat/completions.  Wrap the
@@ -4992,6 +5022,61 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 _CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
+QUOTA_SAFETY_THRESHOLD = 3
+QUOTA_BACKOFF_MAX_SECONDS = 120
+_fuelix_quota_state: Dict[str, Dict[str, Any]] = {}
+
+
+def _is_fuelix_provider(provider: Optional[str], base_url: Optional[str]) -> bool:
+    provider_name = str(provider or "").strip().lower()
+    if provider_name == "api.fuelix.ai":
+        return True
+    return "fuelix.ai" in str(base_url or "").strip().lower()
+
+
+def _fuelix_quota_key(provider: Optional[str], base_url: Optional[str]) -> str:
+    return f"{str(provider or '').strip().lower()}|{str(base_url or '').strip().rstrip('/').lower()}"
+
+
+def _update_fuelix_quota_state(headers: Any, *, provider: Optional[str], base_url: Optional[str]) -> None:
+    if not _is_fuelix_provider(provider, base_url):
+        return
+    try:
+        available = headers.get("x-quota-available")
+        reset = headers.get("x-quota-reset")
+        if available is None and reset is None:
+            return
+        key = _fuelix_quota_key(provider, base_url)
+        entry = _fuelix_quota_state.setdefault(key, {})
+        if available is not None:
+            entry["available"] = int(str(available).strip())
+        if reset is not None:
+            entry["reset_ms"] = int(str(reset).strip())
+        entry["updated_at"] = time.time()
+    except Exception:
+        logger.debug("Failed to update FuelIX quota state", exc_info=True)
+
+
+def _fuelix_quota_backoff_seconds(provider: Optional[str], base_url: Optional[str]) -> float:
+    """Best-effort preemptive backoff using the last observed FuelIX quota headers.
+
+    This is reactive, not real-time: it only knows about the most recent
+    response headers seen in this process. Non-FuelIX providers are ignored.
+    """
+    if not _is_fuelix_provider(provider, base_url):
+        return 0.0
+    entry = _fuelix_quota_state.get(_fuelix_quota_key(provider, base_url)) or {}
+    available = entry.get("available")
+    reset_ms = entry.get("reset_ms")
+    if available is None or reset_ms is None:
+        return 0.0
+    try:
+        if int(available) >= QUOTA_SAFETY_THRESHOLD:
+            return 0.0
+        delay = (int(reset_ms) / 1000.0) - time.time()
+        return max(0.0, min(delay, QUOTA_BACKOFF_MAX_SECONDS))
+    except Exception:
+        return 0.0
 
 
 def _client_cache_key(
@@ -5937,10 +6022,18 @@ def call_llm(
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    fuelix_delay = _fuelix_quota_backoff_seconds(resolved_provider, resolved_base_url or _base_info)
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
                      f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
+    if fuelix_delay > 0:
+        logger.info(
+            "Auxiliary %s: FuelIX quota low (preemptive backoff %.1fs)",
+            task or "call",
+            fuelix_delay,
+        )
+        time.sleep(fuelix_delay)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish

@@ -41,6 +41,25 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('does not index the Hermes bootstrap installer as a session artifact', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content:
+          'Installer: https://hermes-assets.nousresearch.com/Hermes-Setup.dmg\n' +
+          'Generated page: https://example.com/artifacts/report.html',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://example.com/artifacts/report.html',
+      kind: 'link',
+      value: 'https://example.com/artifacts/report.html'
+    })
+  })
+
   it('indexes http links present in tool JSON payloads', () => {
     const messages: SessionMessage[] = [
       {

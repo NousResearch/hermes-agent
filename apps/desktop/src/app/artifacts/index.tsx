@@ -58,6 +58,8 @@ const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+const HERMES_ASSETS_HOST = 'hermes-assets.nousresearch.com'
+const HERMES_BOOTSTRAP_INSTALLER_RE = /^Hermes-Setup\.dmg$/i
 
 const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
@@ -95,7 +97,22 @@ function looksLikePathOrUrl(value: string): boolean {
   )
 }
 
+function isIgnoredArtifactUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const filename = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '')
+
+    return url.hostname.toLowerCase() === HERMES_ASSETS_HOST && HERMES_BOOTSTRAP_INSTALLER_RE.test(filename)
+  } catch {
+    return false
+  }
+}
+
 function looksLikeArtifact(value: string): boolean {
+  if (isIgnoredArtifactUrl(value)) {
+    return false
+  }
+
   if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
     return true
   }

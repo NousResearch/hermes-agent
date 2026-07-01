@@ -1820,6 +1820,41 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
+    def has_platform_message_id_answerable(
+        self, session_id: str, platform_message_id: str
+    ) -> tuple[bool, bool]:
+        """Answerability-preserving variant of has_platform_message_id (INV-9).
+
+        Returns ``(answered, present)``:
+        - ``(True, True)``  — the authority positively confirmed the message IS
+          in the transcript.
+        - ``(True, False)`` — the authority positively confirmed the message is
+          ABSENT.
+        - ``(False, False)`` — the authority COULD NOT answer (no session DB, or
+          the lookup raised). The caller MUST NOT treat this as "absent →
+          recover" — that fails toward guaranteed duplication.
+
+        The plain ``has_platform_message_id`` collapses the "absent" and
+        "unanswerable" cases both to ``False`` (correct for the #47237
+        re-persist guard, which fails toward re-persist-and-let-the-unique-index
+        dedup). The restart-recovery backfill needs the distinction because its
+        whole exactly-once claim rests on "the transcript is the single durable
+        authority" — a mechanism like that must tell "no" apart from "don't
+        know."
+        """
+        if not self._db:
+            return (False, False)
+        try:
+            present = self._db.has_platform_message_id(
+                session_id, platform_message_id
+            )
+            return (True, bool(present))
+        except Exception:
+            logger.debug(
+                "has_platform_message_id_answerable lookup failed", exc_info=True
+            )
+            return (False, False)
+
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 

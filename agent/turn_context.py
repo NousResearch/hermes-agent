@@ -125,6 +125,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[str],
     persist_user_timestamp: Optional[float] = None,
+    persist_user_platform_id: Optional[str] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -202,6 +203,7 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    agent._persist_user_message_platform_id = persist_user_platform_id
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -302,6 +304,12 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    # Stamp the platform-side message id (e.g. Discord message.id) as metadata on
+    # the user turn so it survives the early crash-resilience persist below
+    # (turn-start flush). Load-bearing for restart drain-window recovery: backfill
+    # -on-reconnect dedups via has_platform_message_id against this. SPEC D-10.
+    if persist_user_platform_id is not None:
+        user_msg["platform_message_id"] = persist_user_platform_id
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

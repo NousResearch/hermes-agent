@@ -48,6 +48,14 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
+_DISCORD_RESTART_RECOVERY_STATE_FILENAME = "discord_restart_recovery.json"
+# Anchor margin (s) subtracted from the persisted graceful-shutdown timestamp
+# when computing how far back the reconnect backfill scans channel.history.
+# shutdown_ts is stamped at drain-END, but the lost messages arrived DURING the
+# up-to-180s drain that preceded it, so the margin must exceed the drain window
+# to reach back before them: 180s drain + 120s headroom (mirrors the
+# safe-restart teardown/reconnect budgets). Bounded above by the lookback floor.
+_RESTART_BACKFILL_ANCHOR_MARGIN_S = 300.0
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Typing-indicator loop: give up after this many CONSECUTIVE failed typing POSTs
@@ -240,6 +248,143 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+class _DiscordRestartRecoveryState:
+    """Durable state for restart drain-window message recovery (SPEC D-4).
+
+    Two artifacts, atomic-JSON persisted under the gateway state dir (mirrors
+    ``_DiscordNonConversationalMessageTracker``):
+
+    1. ``active_channels``: ``channel_id -> last_activity_ts`` (float epoch).
+       Marked on every authorized inbound (at the TOP of ``_handle_message`` —
+       so a drain-window message marks its channel *before* the gateway drops
+       it) AND on every conversational outbound ``send()`` (so bot-post-only
+       channels like #logs/#alerts are covered). Bounded to the N most-recently
+       active channels.
+    2. ``shutdown_ts``: float epoch written on graceful shutdown — the scan
+       anchor for backfill-on-reconnect.
+
+    Persistence is DEBOUNCED (at most once per ``persist_interval_s`` on change)
+    so a hard crash keeps a recent map, plus an explicit ``flush()`` on graceful
+    shutdown. There is NO message-id cursor here — the dedup authority is the
+    session transcript (``has_platform_message_id``), not this file. This stores
+    ONLY channel ids + timestamps (no message content, no message ids).
+    """
+
+    _MAX_CHANNELS = 500  # hard cap on the persisted active-channel map size
+
+    def __init__(
+        self,
+        max_channels: int = _MAX_CHANNELS,
+        persist_interval_s: float = 10.0,
+    ):
+        self._max_channels = max_channels
+        self._persist_interval_s = persist_interval_s
+        self._lock = threading.Lock()
+        self._active_channels: Dict[str, float] = {}
+        self._shutdown_ts: Optional[float] = None
+        self._last_persist_at: float = 0.0
+        self._load()
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return (
+            get_hermes_home()
+            / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+            / _DISCORD_RESTART_RECOVERY_STATE_FILENAME
+        )
+
+    def _load(self) -> None:
+        path = self._state_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug("[Discord] Failed to load restart-recovery state", exc_info=True)
+            return
+        if not isinstance(data, dict):
+            return
+        raw_channels = data.get("active_channels")
+        if isinstance(raw_channels, dict):
+            for cid, ts in raw_channels.items():
+                try:
+                    self._active_channels[str(cid)] = float(ts)
+                except (TypeError, ValueError):
+                    continue
+        raw_shutdown = data.get("shutdown_ts")
+        if raw_shutdown is not None:
+            try:
+                self._shutdown_ts = float(raw_shutdown)
+            except (TypeError, ValueError):
+                self._shutdown_ts = None
+
+    def _bound_locked(self) -> None:
+        """Trim to the N most-recently-active channels. Caller holds the lock."""
+        if len(self._active_channels) <= self._max_channels:
+            return
+        # Keep the newest by timestamp.
+        kept = sorted(
+            self._active_channels.items(),
+            key=lambda kv: kv[1],
+        )[-self._max_channels:]
+        self._active_channels = dict(kept)
+
+    def _persist_locked(self) -> None:
+        """Write state atomically. Caller holds the lock."""
+        payload = {
+            "active_channels": self._active_channels,
+            "shutdown_ts": self._shutdown_ts,
+        }
+        try:
+            atomic_json_write(self._state_path(), payload, indent=None)
+            self._last_persist_at = time.time()
+        except Exception:
+            logger.debug("[Discord] Failed to persist restart-recovery state", exc_info=True)
+
+    def mark_channel_active(self, channel_id: Any, *, now: Optional[float] = None) -> None:
+        """Record channel activity (inbound or outbound). Debounced persist."""
+        key = str(channel_id or "").strip()
+        if not key:
+            return
+        ts = now if now is not None else time.time()
+        with self._lock:
+            self._active_channels[key] = ts
+            self._bound_locked()
+            # Debounce: only hit disk at most once per interval on change. The
+            # in-memory map is always current; a hard crash loses at most
+            # ``persist_interval_s`` of freshness (documented non-goal / R-4).
+            if ts - self._last_persist_at >= self._persist_interval_s:
+                self._persist_locked()
+
+    def flush(self, *, shutdown_ts: Optional[float] = None) -> None:
+        """Force a durable write, optionally stamping the shutdown anchor.
+
+        Called on graceful shutdown so the latest map + the shutdown_ts anchor
+        are on disk regardless of the debounce window.
+        """
+        with self._lock:
+            if shutdown_ts is not None:
+                self._shutdown_ts = shutdown_ts
+            self._persist_locked()
+
+    def recent_channels(self, lookback_s: float, *, now: Optional[float] = None) -> List[str]:
+        """Channel ids active within ``lookback_s`` of ``now``, newest-first."""
+        ref = now if now is not None else time.time()
+        with self._lock:
+            items = [
+                (cid, ts) for cid, ts in self._active_channels.items()
+                if ref - ts <= lookback_s
+            ]
+        items.sort(key=lambda kv: kv[1], reverse=True)
+        return [cid for cid, _ in items]
+
+    @property
+    def shutdown_ts(self) -> Optional[float]:
+        with self._lock:
+            return self._shutdown_ts
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -849,6 +994,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        # Durable restart drain-window recovery state: which channels were
+        # recently active (inbound OR outbound) + the graceful-shutdown anchor,
+        # so a reconnect after a self-restart can backfill messages the gateway
+        # dropped mid-drain. Constructed lazily-safe (loads from disk on init).
+        self._restart_recovery = _DiscordRestartRecoveryState()
+        # Single-flight guard so overlapping reconnect flaps can't run the
+        # backfill sweep concurrently (INV-6).
+        self._restart_backfill_lock = asyncio.Lock()
+        # Tracks the background backfill task so it isn't GC'd mid-flight and
+        # can be cancelled/replaced on a subsequent reconnect.
+        self._restart_backfill_task: Optional[asyncio.Task] = None
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1059,6 +1215,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     adapter_self._run_post_connect_initialization()
                 )
 
+                # Restart drain-window recovery (D-2): schedule the backfill
+                # sweep as its own background task on every (re)connect —
+                # NEVER blocks connect, and kept independent of slash-sync
+                # (which can take up to 600s and has several early-return
+                # paths) so recovery latency isn't coupled to it and can't be
+                # skipped. The single-flight lock inside makes overlapping
+                # reconnect flaps safe (INV-6).
+                if adapter_self._restart_backfill_task and not adapter_self._restart_backfill_task.done():
+                    adapter_self._restart_backfill_task.cancel()
+                adapter_self._restart_backfill_task = asyncio.create_task(
+                    adapter_self._backfill_missed_messages()
+                )
+
             @self._client.event
             async def on_message(message: DiscordMessage):
                 # Block until _resolve_allowed_usernames has swapped
@@ -1070,120 +1239,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.TimeoutError:
                         pass
 
-                # Dedup: Discord RESUME replays events after reconnects (#4777)
-                if adapter_self._dedup.is_duplicate(str(message.id)):
-                    return
-
-                # Always ignore our own messages
-                if message.author == self._client.user:
-                    return
-
-                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
-                # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    return
-
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
-                #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
-                # Must run BEFORE the user allowlist check so that bots
-                # permitted by DISCORD_ALLOW_BOTS are not rejected for
-                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                _role_authorized = False
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._self_is_explicitly_mentioned(message):
-                            return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
-                else:
-                    # Non-bot: enforce the configured user/role allowlists.
-                    # Pass guild + is_dm so role checks are scoped to the
-                    # originating guild (prevents cross-guild DM bypass, see
-                    # _is_allowed_user docstring).
-                    _msg_guild = getattr(message, "guild", None)
-                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                    if not self._is_allowed_user(
-                        str(message.author.id),
-                        message.author,
-                        guild=_msg_guild,
-                        is_dm=_is_dm,
-                    ):
-                        return
-                    _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-                
-                # Multi-agent filtering: if the message mentions specific bots
-                # but NOT this bot, the sender is talking to another agent —
-                # stay silent.  Messages with no bot mentions (general chat)
-                # still fall through to _handle_message for the existing
-                # DISCORD_REQUIRE_MENTION check.
-                #
-                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
-                # with bot-aware filtering that works correctly when multiple
-                # agents share a channel.
-                _raw_self_mention = self._self_is_explicitly_mentioned(message)
-                if not isinstance(message.channel, discord.DMChannel) and (
-                    message.mentions or _raw_self_mention
-                ):
-                    _self_user = self._client.user if self._client is not None else None
-                    # Upstream 852c9b3cb: use the explicit-mention detector (handles
-                    # reply-pings / role mentions), which subsumes the older
-                    # `_self_user in message.mentions` form.
-                    _self_mentioned = _raw_self_mention
-                    _other_bot_mentions = [
-                        m for m in message.mentions
-                        if m.bot and m != _self_user
-                    ]
-                    _other_bots_mentioned = bool(_other_bot_mentions)
-
-                    _channel_id = str(message.channel.id)
-                    _parent_id = None
-                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                        _parent_id = str(message.channel.parent_id)
-                    _free_channels = adapter_self._discord_free_response_channels()
-                    # Upstream d153918f1: match by ID, bare name, #name, and parent
-                    # (not just snowflake ID) so free-response config accepts either form.
-                    _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                    _is_free_response_channel = (
-                        "*" in _free_channels or bool(_channel_keys & _free_channels)
-                    )
-
-                    # If other bots are mentioned but we're not, stay silent
-                    # unless this channel explicitly opted into free-response
-                    # behavior.  Free-response channels often contain quoted
-                    # bot mentions from migration notes / prior context; those
-                    # should not be mistaken for addressing another agent.
-                    if _other_bots_mentioned and not _self_mentioned:
-                        if not _is_free_response_channel:
-                            return
-                        stripped_content = (message.content or "").lstrip()
-                        if any(
-                            stripped_content.startswith(f"<@{m.id}>")
-                            or stripped_content.startswith(f"<@!{m.id}>")
-                            for m in _other_bot_mentions
-                        ):
-                            return
-
-                    # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
-                    # EXCEPT in free-response channels where the bot should
-                    # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if (
-                        _ignore_no_mention
-                        and not _self_mentioned
-                        and not _other_bots_mentioned
-                        and not _is_free_response_channel
-                    ):
-                        return
-
-                await self._handle_message(message, role_authorized=_role_authorized)
+                await adapter_self._dispatch_incoming_message(message)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1436,6 +1492,15 @@ class DiscordAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         self._disconnecting = True
+        # Drain-window recovery (D-4): stamp the graceful-shutdown anchor and
+        # force a durable write of the active-channel map, so the post-restart
+        # backfill knows how far back to scan (ANCHOR = shutdown_ts) and has the
+        # latest activity map regardless of the debounce window. Fail-open — a
+        # flush error must never block teardown.
+        try:
+            self._restart_recovery.flush(shutdown_ts=time.time())
+        except Exception:
+            logger.debug("[%s] restart-recovery shutdown flush failed", self.name, exc_info=True)
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
@@ -2151,6 +2216,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
+                    # Drain-window recovery (D-4): a conversational outbound send
+                    # marks this channel active, so bot-post-only surfaces like
+                    # #logs/#alerts — where the bot posts but a user only
+                    # occasionally replies — are covered by the reconnect
+                    # backfill even when the drain-window message arrives after
+                    # the websocket has already closed (sub-window-2, where no
+                    # inbound mark can fire). Keyed by the effective channel
+                    # (thread id or channel id), matching D-6.
+                    try:
+                        self._restart_recovery.mark_channel_active(_target_id)
+                    except Exception:
+                        logger.debug(
+                            "[%s] restart-recovery outbound mark failed",
+                            self.name,
+                            exc_info=True,
+                        )
 
             return SendResult(
                 success=True,
@@ -4969,6 +5050,354 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    # ── Restart drain-window recovery config (Phase 4, D-9) ──────────────────
+    # All read from config.extra (discord.*) at reconnect, with a DISCORD_*
+    # env bridge for the mechanism layer. Behavioral settings live in
+    # config.yaml (AGENTS.md: .env is for secrets only).
+
+    def _discord_restart_backfill(self) -> bool:
+        """Feature flag for restart drain-window recovery (default on)."""
+        configured = self.config.extra.get("restart_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_RESTART_BACKFILL", "true").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_restart_backfill_lookback_seconds(self) -> float:
+        """How far back (s) a channel can have been active and still be scanned,
+        and the absolute floor for the history scan anchor (default 900)."""
+        configured = self.config.extra.get("restart_backfill_lookback_seconds")
+        if configured is not None:
+            try:
+                return float(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_RESTART_BACKFILL_LOOKBACK_SECONDS", "900")
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return 900.0
+
+    def _discord_restart_backfill_limit(self) -> int:
+        """Per-channel cap on messages scanned in the recovery sweep (default 50)."""
+        configured = self.config.extra.get("restart_backfill_limit")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_RESTART_BACKFILL_LIMIT", "50")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 50
+
+    def _discord_restart_backfill_max_channels(self) -> int:
+        """Aggregate cap on channels scanned per sweep (default 50)."""
+        configured = self.config.extra.get("restart_backfill_max_channels")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_RESTART_BACKFILL_MAX_CHANNELS", "50")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 50
+
+    # ── Restart drain-window recovery: the reconnect sweep (Phase 3) ─────────
+
+    def _restart_backfill_anchor_snowflake(
+        self, now: float, lookback_s: float
+    ) -> "_Snowflake":
+        """Compute the ``after=`` anchor for the history scan (D-3).
+
+        ``ANCHOR = max(shutdown_ts - margin, now - lookback)`` as a Discord
+        snowflake. Two bounds, and the ``max`` picks the more-recent (tighter):
+
+        - ``shutdown_ts - margin`` — the "since we went down" anchor. The
+          graceful ``shutdown_ts`` is stamped in ``disconnect()`` at drain-END
+          (the adapter tears down *after* the up-to-180s agent drain), but the
+          lost messages arrived *during* that drain — i.e. up to a full
+          drain-duration BEFORE ``shutdown_ts``. So ``margin`` must exceed the
+          drain window (default 180s) + the reconnect gap to reach back before
+          the earliest lost message. ``_RESTART_BACKFILL_ANCHOR_MARGIN_S`` = 300
+          (180s drain + 120s headroom, matching the safe-restart budgets).
+        - ``now - lookback`` — the absolute floor (default 900s) that bounds a
+          multi-hour outage so we never scan hours of history (accepting that a
+          >lookback outage misses its oldest messages; documented R-5).
+
+        With ``margin`` (300s) < ``lookback`` (900s), a normal short restart
+        anchors at ``shutdown_ts - 300`` (a tight ~5-min scan that still reaches
+        before the drain), and only a long outage falls back to the floor. The
+        earlier bug used ``lookback`` as the margin, which made
+        ``shutdown_ts - lookback ≤ now - lookback = floor`` in every case — the
+        ``shutdown_ts`` branch was dead and every scan silently used the floor.
+        Over-broad is always safe — the transcript authority (INV-1) dedups
+        anything already processed; the anchor only bounds how far back to look,
+        never correctness.
+        """
+        floor = now - lookback_s
+        shutdown_ts = self._restart_recovery.shutdown_ts
+        if shutdown_ts is not None:
+            anchor_epoch = max(shutdown_ts - _RESTART_BACKFILL_ANCHOR_MARGIN_S, floor)
+        else:
+            anchor_epoch = floor
+        # Discord snowflake: (ms_since_discord_epoch << 22). Discord epoch =
+        # 2015-01-01T00:00:00Z = 1420070400000 ms.
+        anchor_ms = int(anchor_epoch * 1000) - 1420070400000
+        if anchor_ms < 0:
+            anchor_ms = 0
+        return _Snowflake(anchor_ms << 22)
+
+    def _resolve_session_id_for_message(self, msg: Any) -> Optional[str]:
+        """Resolve a fetched history message to its current session_id (D-7).
+
+        Builds the same SessionSource the live inbound path builds (author +
+        channel), generates the session key via the session store's own
+        keying, and returns the mapped session_id — or None if no session
+        exists yet for that channel (never conversed ⇒ transcript check is
+        vacuously "absent", handled by the caller).
+        """
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return None
+        channel = getattr(msg, "channel", None)
+        if channel is None:
+            return None
+        is_thread = isinstance(channel, discord.Thread)
+        thread_id = str(channel.id) if is_thread else None
+        parent_chat_id = None
+        if is_thread:
+            parent_chat_id = self._get_parent_channel_id(channel)
+        effective_channel = channel
+        chat_type = "thread" if is_thread else "group"
+        guild = getattr(msg, "guild", None) or getattr(channel, "guild", None)
+        author = getattr(msg, "author", None)
+        source = self.build_source(
+            chat_id=str(getattr(effective_channel, "id", "")),
+            chat_name=getattr(effective_channel, "name", None),
+            chat_type=chat_type,
+            user_id=str(getattr(author, "id", "")) if author is not None else None,
+            user_name=getattr(author, "display_name", None),
+            thread_id=thread_id,
+            is_bot=getattr(author, "bot", False),
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_chat_id,
+            message_id=str(getattr(msg, "id", "")),
+        )
+        try:
+            session_key = store._generate_session_key(source)  # noqa: SLF001
+        except Exception:
+            logger.debug("[%s] backfill: session-key gen failed", self.name, exc_info=True)
+            return None
+        try:
+            store._ensure_loaded()  # noqa: SLF001
+            entry = store._entries.get(session_key)  # noqa: SLF001
+        except Exception:
+            logger.debug("[%s] backfill: session-entry lookup failed", self.name, exc_info=True)
+            return None
+        return entry.session_id if entry is not None else None
+
+    async def _backfill_missed_messages(self) -> None:
+        """Recover Discord messages dropped during a graceful restart drain
+        window, re-injecting each exactly once via the normal auth path (Phase
+        3). Runs as a background task after slash-sync on every (re)connect.
+
+        Correctness rests on the session transcript as the single durable
+        authority (INV-1): a fetched message is re-injected iff it is NOT
+        already persisted. See the SPEC for the full invariant set.
+        """
+        if not self._discord_restart_backfill():
+            return
+        # INV-9 (fail toward no-dup): the whole exactly-once guarantee rests on
+        # the session transcript as the dedup authority. With no session store
+        # wired (e.g. an initialization race, or a non-gateway construction),
+        # that authority is entirely unavailable — we could not confirm ANY
+        # message is absent, so recovering would blind-re-inject and duplicate
+        # already-processed turns. Skip the whole sweep rather than the
+        # per-message answerability gate (which can't fire because
+        # _resolve_session_id_for_message also returns None when store is None).
+        if getattr(self, "_session_store", None) is None:
+            logger.debug(
+                "[%s] backfill: no session store — skipping (INV-9 fail toward no-dup)",
+                self.name,
+            )
+            return
+        if self._restart_backfill_lock.locked():
+            # A concurrent sweep (reconnect flap) is already running (INV-6).
+            return
+        async with self._restart_backfill_lock:
+            now = time.time()
+            lookback_s = self._discord_restart_backfill_lookback_seconds()
+            per_channel_limit = self._discord_restart_backfill_limit()
+            max_channels = self._discord_restart_backfill_max_channels()
+
+            channel_ids = self._restart_recovery.recent_channels(lookback_s, now=now)
+            if not channel_ids:
+                return  # first boot / no recent activity (D-9)
+            channel_ids = channel_ids[:max_channels]
+
+            anchor = self._restart_backfill_anchor_snowflake(now, lookback_s)
+
+            reinject_attempts = 0
+            skipped_in_transcript = 0
+            reinject_failed = 0
+            unanswerable_channels = 0
+            scanned_channels = 0
+
+            store = getattr(self, "_session_store", None)
+
+            for channel_id in channel_ids:
+                # Per-channel fail-open: one bad channel never aborts the sweep
+                # or startup (INV-3 / ops).
+                try:
+                    channel = self._client.get_channel(int(channel_id)) if self._client else None
+                    if channel is None and self._client is not None:
+                        try:
+                            channel = await self._client.fetch_channel(int(channel_id))
+                        except Exception:
+                            channel = None
+                    if channel is None:
+                        continue
+                    scanned_channels += 1
+
+                    # Collect candidates oldest-first so re-injection order ==
+                    # execution order (INV-5).
+                    candidates: List[Any] = []
+                    async for msg in channel.history(
+                        after=anchor, oldest_first=True, limit=per_channel_limit
+                    ):
+                        candidates.append(msg)
+
+                    channel_unanswerable = False
+                    for msg in candidates:
+                        # Skip system / self / banner / other-bot (INV-2).
+                        if not self._history_message_is_conversational(msg):
+                            continue
+                        if getattr(getattr(msg, "author", None), "id", None) == getattr(
+                            getattr(self._client, "user", None), "id", None
+                        ):
+                            continue  # our own message (belt-and-suspenders with the filter)
+
+                        msg_id = str(getattr(msg, "id", ""))
+                        session_id = self._resolve_session_id_for_message(msg)
+
+                        # Transcript authority check with the INV-9 answerability
+                        # gate: recover ONLY on a positive "absent" answer.
+                        if session_id is not None and store is not None:
+                            answered, present = store.has_platform_message_id_answerable(
+                                session_id, msg_id
+                            )
+                            if not answered:
+                                # Unanswerable authority: fail toward no-dup —
+                                # skip THIS channel's recovery for the sweep
+                                # (INV-9). Do not recover anything we cannot
+                                # confirm is absent.
+                                channel_unanswerable = True
+                                break
+                            if present:
+                                skipped_in_transcript += 1
+                                continue
+                        # session_id is None ⇒ no session ever for this channel ⇒
+                        # nothing persisted ⇒ vacuously absent ⇒ recover through
+                        # the normal auth path (D-7).
+
+                        # Re-inject through the FULL normal handler (INV-4): same
+                        # dedup / self / system / bot / allowlist / mention gates
+                        # as a live message. A raised re-inject leaves the message
+                        # absent from the transcript ⇒ recoverable next sweep
+                        # (INV-8); reinject_failed is observability-only.
+                        #
+                        # NOTE this counts ATTEMPTS, not confirmed processings:
+                        # _dispatch_incoming_message can early-return without
+                        # raising (in-process _dedup hit racing a live delivery,
+                        # or an auth/mention gate), so reinject_attempts is an
+                        # upper bound on messages actually queued to
+                        # _handle_message. The transcript authority — not this
+                        # counter — is what guarantees exactly-once.
+                        try:
+                            await self._dispatch_incoming_message(msg)
+                            reinject_attempts += 1
+                        except Exception:
+                            reinject_failed += 1
+                            logger.debug(
+                                "[%s] backfill: re-inject failed for msg %s",
+                                self.name, msg_id, exc_info=True,
+                            )
+
+                    if channel_unanswerable:
+                        unanswerable_channels += 1
+                except Exception:
+                    logger.debug(
+                        "[%s] backfill: channel %s sweep failed (fail-open)",
+                        self.name, channel_id, exc_info=True,
+                    )
+                    continue
+
+            # One content-free summary line (privacy AC-12). WARNING when we
+            # attempted a re-inject or failed one (or hit an unanswerable
+            # authority), else INFO. reinject_attempts is an upper bound (see the
+            # note at the increment) — not a proven-processed count.
+            level = (
+                logging.WARNING
+                if (reinject_attempts or reinject_failed or unanswerable_channels)
+                else logging.INFO
+            )
+            logger.log(
+                level,
+                "[%s] PHASE=restart_backfill channels=%d reinject_attempts=%d "
+                "skipped_in_transcript=%d reinject_failed=%d unanswerable_channels=%d",
+                self.name, scanned_channels, reinject_attempts, skipped_in_transcript,
+                reinject_failed, unanswerable_channels,
+            )
+
+    def _history_message_is_conversational(
+        self, msg: Any, *, include_other_bots: bool = False
+    ) -> bool:
+        """Shared partition filter for channel-history messages (D-5).
+
+        Returns True when a fetched ``channel.history`` message is a real
+        conversational message that should be surfaced (as inter-turn context
+        by ``_fetch_channel_context``, or re-injected by the restart-recovery
+        backfill), and False for messages that must be skipped:
+
+        - Discord system messages (thread renames, pins, joins, …).
+        - The bot's own persisted non-conversational banners/status bumps
+          (``_nonconversational_messages`` set) and legacy status bumps the
+          regex recognizer catches.
+        - Other bots' messages, unless ``include_other_bots`` (DISCORD_ALLOW_BOTS
+          != "none").
+
+        This is the single source of truth both the history-context scan and
+        the backfill reuse so their skip rules can never drift (INV-2).
+        """
+        if getattr(msg, "type", None) not in {
+            discord.MessageType.default,
+            discord.MessageType.reply,
+        }:
+            return False
+        content = getattr(msg, "clean_content", getattr(msg, "content", "")) or ""
+        if (
+            str(getattr(msg, "id", "")) in self._nonconversational_messages
+            or _looks_like_nonconversational_history_message(content)
+        ):
+            return False
+        # Respect DISCORD_ALLOW_BOTS for other bots. For history context,
+        # "mentions" is treated as "all" — we are deciding what context to
+        # show / recover, not whether to respond.
+        author = getattr(msg, "author", None)
+        self_user = self._client.user if self._client else None
+        if (
+            getattr(author, "bot", False)
+            and author != self_user
+            and not include_other_bots
+        ):
+            return False
+        return True
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -5029,23 +5458,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 identical rules.  Does NOT enforce the self-message partition —
                 callers decide where to stop.
                 """
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                if not self._history_message_is_conversational(
+                    msg, include_other_bots=include_other_bots
+                ):
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
-                if (
-                    str(getattr(msg, "id", "")) in self._nonconversational_messages
-                    or _looks_like_nonconversational_history_message(content)
-                ):
-                    return None
-                # Respect DISCORD_ALLOW_BOTS for other bots.  For history
-                # context, "mentions" is treated as "all" — we are deciding
-                # what context to show, not whether to respond.
-                if (
-                    getattr(msg.author, "bot", False)
-                    and msg.author != self._client.user
-                    and not include_other_bots
-                ):
-                    return None
                 if not content and msg.attachments:
                     content = "(attachment)"
                 if not content:
@@ -5885,6 +6302,137 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    async def _dispatch_incoming_message(self, message: DiscordMessage) -> None:
+        """Full inbound filter + auth gate for a Discord message (INV-4).
+
+        Extracted verbatim from the ``on_message`` event closure so BOTH the
+        live event and the restart-recovery backfill re-inject through the
+        exact same path: dedup, self-message, system-message, DISCORD_ALLOW_BOTS,
+        the user/role allowlist, and multi-agent mention filtering, before
+        handing off to ``_handle_message``. A re-injected drain-window message
+        therefore gets identical authorization to a live one — backfill grants
+        no bypass (a window message from an unauthorized user/channel is still
+        rejected here).
+        """
+        # Dedup: Discord RESUME replays events after reconnects (#4777). NOTE
+        # this in-memory cache is PROCESS-LOCAL — it is empty in a freshly
+        # restarted process, so it provides NO cross-restart dedup. It only
+        # collapses a live re-delivery racing the backfill sweep WITHIN the new
+        # process. The cross-restart exactly-once guarantee rests solely on the
+        # transcript authority (has_platform_message_id), NOT on this cache.
+        if self._dedup.is_duplicate(str(message.id)):
+            return
+
+        # Always ignore our own messages
+        if message.author == self._client.user:
+            return
+
+        # Ignore Discord system messages (thread renames, pins, member joins, etc.)
+        # Allow both default and reply types — replies have a distinct MessageType.
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+            return
+
+        # Bot message filtering (DISCORD_ALLOW_BOTS):
+        #   "none"     — ignore all other bots (default)
+        #   "mentions" — accept bot messages only when they @mention us
+        #   "all"      — accept all bot messages
+        # Must run BEFORE the user allowlist check so that bots
+        # permitted by DISCORD_ALLOW_BOTS are not rejected for
+        # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+        _role_authorized = False
+        if getattr(message.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return
+            elif allow_bots == "mentions":
+                if not self._self_is_explicitly_mentioned(message):
+                    return
+            # "all" falls through; bot is permitted — skip the
+            # human-user allowlist below (bots aren't in it).
+        else:
+            # Non-bot: enforce the configured user/role allowlists.
+            # Pass guild + is_dm so role checks are scoped to the
+            # originating guild (prevents cross-guild DM bypass, see
+            # _is_allowed_user docstring).
+            _msg_guild = getattr(message, "guild", None)
+            _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
+            if not self._is_allowed_user(
+                str(message.author.id),
+                message.author,
+                guild=_msg_guild,
+                is_dm=_is_dm,
+            ):
+                return
+            _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+
+        # Multi-agent filtering: if the message mentions specific bots
+        # but NOT this bot, the sender is talking to another agent —
+        # stay silent.  Messages with no bot mentions (general chat)
+        # still fall through to _handle_message for the existing
+        # DISCORD_REQUIRE_MENTION check.
+        #
+        # This replaces the older DISCORD_IGNORE_NO_MENTION logic
+        # with bot-aware filtering that works correctly when multiple
+        # agents share a channel.
+        _raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if not isinstance(message.channel, discord.DMChannel) and (
+            message.mentions or _raw_self_mention
+        ):
+            _self_user = self._client.user if self._client is not None else None
+            # Upstream 852c9b3cb: use the explicit-mention detector (handles
+            # reply-pings / role mentions), which subsumes the older
+            # `_self_user in message.mentions` form.
+            _self_mentioned = _raw_self_mention
+            _other_bot_mentions = [
+                m for m in message.mentions
+                if m.bot and m != _self_user
+            ]
+            _other_bots_mentioned = bool(_other_bot_mentions)
+
+            _parent_id = None
+            if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                _parent_id = str(message.channel.parent_id)
+            _free_channels = self._discord_free_response_channels()
+            # Upstream d153918f1: match by ID, bare name, #name, and parent
+            # (not just snowflake ID) so free-response config accepts either form.
+            _channel_keys = self._discord_channel_keys(message, _parent_id)
+            _is_free_response_channel = (
+                "*" in _free_channels or bool(_channel_keys & _free_channels)
+            )
+
+            # If other bots are mentioned but we're not, stay silent
+            # unless this channel explicitly opted into free-response
+            # behavior.  Free-response channels often contain quoted
+            # bot mentions from migration notes / prior context; those
+            # should not be mistaken for addressing another agent.
+            if _other_bots_mentioned and not _self_mentioned:
+                if not _is_free_response_channel:
+                    return
+                stripped_content = (message.content or "").lstrip()
+                if any(
+                    stripped_content.startswith(f"<@{m.id}>")
+                    or stripped_content.startswith(f"<@!{m.id}>")
+                    for m in _other_bot_mentions
+                ):
+                    return
+
+            # If humans are mentioned but we're not → not for us
+            # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
+            # EXCEPT in free-response channels where the bot should
+            # answer regardless of who is mentioned.
+            _ignore_no_mention = os.getenv(
+                "DISCORD_IGNORE_NO_MENTION", "true"
+            ).lower() in {"true", "1", "yes"}
+            if (
+                _ignore_no_mention
+                and not _self_mentioned
+                and not _other_bots_mentioned
+                and not _is_free_response_channel
+            ):
+                return
+
+        await self._handle_message(message, role_authorized=_role_authorized)
+
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -5979,6 +6527,22 @@ class DiscordAdapter(BasePlatformAdapter):
             if require_mention and not is_free_channel and not in_bot_thread:
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
                     return
+
+            # Drain-window recovery (D-4/D-8): mark this channel active BEFORE the
+            # message is dispatched to the gateway (`await self.handle_message`),
+            # which is where a message arriving mid-restart-drain is later
+            # dropped. Marking here — after the allow/ignore/mention gates, so
+            # only channels the bot actually serves are tracked, but before the
+            # drop — lets the post-reconnect backfill re-read this channel's
+            # history and recover the lost message. Keyed by the PHYSICAL arrival
+            # channel id (thread id in a thread, channel id otherwise) so the
+            # backfill scans exactly where the message landed, independent of any
+            # later auto-threading. DMs never reach here (excluded from the
+            # non-DM block above), matching D-6.
+            try:
+                self._restart_recovery.mark_channel_active(str(message.channel.id))
+            except Exception:
+                logger.debug("[%s] restart-recovery inbound mark failed", self.name, exc_info=True)
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.

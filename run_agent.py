@@ -1596,7 +1596,8 @@ class AIAgent:
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
+        platform_id = getattr(self, "_persist_user_message_platform_id", None)
+        if idx is None or (override is None and timestamp is None and platform_id is None):
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
@@ -1613,6 +1614,14 @@ class AIAgent:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
+                # Platform-side message id (e.g. Discord message.id) — metadata,
+                # load-bearing for restart drain-window recovery dedup: it lets
+                # backfill-on-reconnect ask ``has_platform_message_id`` whether an
+                # interrupted turn already reached the transcript. Stamped here
+                # (in addition to build_turn_context) so it survives the override
+                # path. Drain-window message-loss SPEC D-10.
+                if platform_id is not None:
+                    msg["platform_message_id"] = platform_id
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -1804,6 +1813,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=msg.get("timestamp"),
+                    platform_message_id=msg.get("platform_message_id"),
                 )
                 flushed_ids.add(msg_id)
                 if isinstance(_row_id, int):
@@ -5532,6 +5542,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        persist_user_platform_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
@@ -5545,6 +5556,7 @@ class AIAgent:
             stream_callback,
             persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
+            persist_user_platform_id=persist_user_platform_id,
             moa_config=moa_config,
         )
 

@@ -6,6 +6,7 @@ and Daytona.  Docker and Singularity use bind mounts (live host FS
 view) and don't need this.
 """
 
+import errno
 import hashlib
 import logging
 import os
@@ -18,10 +19,15 @@ import tempfile
 import threading
 import time
 
+msvcrt = None
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        pass
 from pathlib import Path
 from typing import Callable
 
@@ -129,6 +135,25 @@ def _sha256_file(path: str) -> str:
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_MSVCRT_LOCK_RETRY_SECONDS = 0.1
+_MSVCRT_LOCK_RETRY_ERRNOS = {
+    errno.EACCES,
+    errno.EDEADLK,
+    getattr(errno, "EDEADLOCK", errno.EDEADLK),
+}
+
+
+def _lock_with_msvcrt(lock_fd) -> None:
+    """Acquire an msvcrt byte-range lock, waiting until it is available."""
+    while True:
+        lock_fd.seek(0)
+        try:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno not in _MSVCRT_LOCK_RETRY_ERRNOS:
+                raise
+            _sleep(_MSVCRT_LOCK_RETRY_SECONDS)
 
 
 class FileSyncManager:
@@ -324,19 +349,35 @@ class FileSyncManager:
 
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
-        if fcntl is None:
-            # Windows: no flock — run without serialization
+        if fcntl is None and msvcrt is None:
+            logger.warning(
+                "sync_back: no file-locking module available — "
+                "proceeding without serialization"
+            )
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w", encoding="utf-8")
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+
+        lock_fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            else:
+                _lock_with_msvcrt(lock_fd)
             self._sync_back_impl()
         finally:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    lock_fd.seek(0)
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

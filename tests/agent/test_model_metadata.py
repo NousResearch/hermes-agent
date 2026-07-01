@@ -751,6 +751,50 @@ class TestNousPortalContextResolution:
                 f"got {ctx}"
             )
 
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_cached_portal_value_wins_over_or_on_portal_blip(
+        self, mock_or, mock_portal, tmp_path, monkeypatch
+    ):
+        """A user who already resolved qwen3.6-plus has the authoritative
+        portal value (262144) on disk.  On the next call the portal probe
+        fails transiently while the OR catalog reports a diverging 1M.  The
+        bypassed cache value is more trustworthy than the OR fallback, so it
+        must be returned — otherwise a single outage hands the user a
+        too-large window that overflows the model."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://inference-api.nousresearch.com/v1"
+        cached_key = f"qwen3.6-plus@{base_url}"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            cached_key: 262_144,  # previously portal-derived, persisted
+        }}))
+
+        mock_portal.return_value = {}  # portal unreachable this call
+        mock_or.return_value = {
+            "qwen/qwen3.6-plus": {"context_length": 1_000_000},
+        }
+
+        ctx = mm.get_model_context_length(
+            model="qwen3.6-plus",
+            base_url=base_url,
+            api_key="fake",
+            provider="nous",
+        )
+        assert ctx == 262_144, (
+            f"Bypassed cache value must win over OR fallback on a portal blip; "
+            f"got {ctx} (OR leak)"
+        )
+
+        # The bypassed value must not be re-persisted as an OR-derived entry,
+        # and the on-disk value must remain the authoritative one untouched.
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert remaining.get(cached_key) == 262_144, (
+            "On-disk authoritative value must survive the transient outage"
+        )
+
 
 # =========================================================================
 # get_model_context_length — resolution order

@@ -1866,6 +1866,10 @@ def get_model_context_length(
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
+    # ``nous_bypassed_cache`` carries the cached value we deliberately skip
+    # for Nous URLs (see step-1 Nous branch) so step 5b can fall back to it
+    # when the portal probe fails instead of trusting the OR catalog.
+    nous_bypassed_cache: Optional[int] = None
     if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
@@ -1929,7 +1933,11 @@ def get_model_context_length(
                     "Bypassing persistent cache for %s@%s (Nous portal authoritative)",
                     model, base_url,
                 )
-                # Fall through; step 5b reconciles and overwrites if portal responds.
+                # Fall through; step 5b reconciles and overwrites if portal
+                # responds.  Remember the bypassed value so step 5b can return
+                # it when the portal probe fails — it is more trustworthy than
+                # the OR catalog fallback that resolver would otherwise serve.
+                nous_bypassed_cache = cached
             else:
                 return cached
 
@@ -2051,6 +2059,17 @@ def get_model_context_length(
         ctx, source = _resolve_nous_context_length(
             model, base_url=base_url or "", api_key=api_key or ""
         )
+        # When the portal probe fails (network blip, auth glitch, model not
+        # yet listed) the resolver falls back to the OR catalog or returns
+        # nothing.  If we bypassed an on-disk cache entry at step 1 — a value
+        # that was previously portal-derived and persisted — prefer it over
+        # the OR fallback.  OR is community-maintained and is exactly the
+        # underreport/overreport class this path guards against (e.g. OR says
+        # 1M for qwen3.6-plus, the portal correctly enforces 262144); serving
+        # it on a transient outage hands the user the wrong window after they
+        # had already resolved the right one.
+        if source != "portal" and nous_bypassed_cache is not None:
+            return nous_bypassed_cache
         if ctx:
             # Persist ONLY portal-derived values.  Caching an OR-fallback
             # value here would freeze in a wrong number on the first portal

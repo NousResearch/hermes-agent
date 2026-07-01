@@ -1601,6 +1601,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         "1",
         "yes",
     }
+    msgraph_webhook_host = os.getenv("MSGRAPH_WEBHOOK_HOST")
     msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
@@ -1610,6 +1611,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if (
         msgraph_webhook_enabled
         or Platform.MSGRAPH_WEBHOOK in config.platforms
+        or msgraph_webhook_host
         or msgraph_webhook_port
         or msgraph_webhook_client_state
         or msgraph_webhook_resources
@@ -1619,6 +1621,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
             config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+        if msgraph_webhook_host:
+            config.platforms[Platform.MSGRAPH_WEBHOOK].extra["host"] = (
+                msgraph_webhook_host
+            )
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(

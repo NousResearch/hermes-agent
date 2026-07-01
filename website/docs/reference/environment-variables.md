@@ -527,6 +527,7 @@ Inbound change-notification listener for Graph events (Teams meetings, calendar,
 | Variable | Description |
 |----------|-------------|
 | `MSGRAPH_WEBHOOK_ENABLED` | Enable the `msgraph_webhook` gateway platform (`true`/`1`/`yes`). |
+| `MSGRAPH_WEBHOOK_HOST` | Address the listener binds to (default: `0.0.0.0`). Use `127.0.0.1` for loopback-only dev tunnels / local reverse proxies; non-loopback binds also require `MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS`. |
 | `MSGRAPH_WEBHOOK_PORT` | Port the listener binds to (default: `8646`). |
 | `MSGRAPH_WEBHOOK_CLIENT_STATE` | Shared secret Graph echoes in every notification; compared with `hmac.compare_digest`. Generate with `openssl rand -hex 32`. |
 | `MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES` | Comma-separated allowlist of Graph resource paths/patterns (e.g. `communications/onlineMeetings,chats/*/messages`). Trailing `*` is prefix-matching. Empty = accept all. |

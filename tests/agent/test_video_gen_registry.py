@@ -74,6 +74,23 @@ class TestGetActiveProvider:
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "solo"
 
+    def test_single_unavailable_provider_is_not_auto_selected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("solo", available=False))
+        assert video_gen_registry.get_active_provider() is None
+
+    def test_config_selects_unavailable_provider(self, tmp_path, monkeypatch):
+        """Explicit config still returns the provider so callers surface setup errors."""
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"video_gen": {"provider": "fal"}})
+        )
+        provider = _FakeProvider("fal", available=False)
+        video_gen_registry.register_provider(provider)
+        assert video_gen_registry.get_active_provider() is provider
+
     def test_no_provider_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert video_gen_registry.get_active_provider() is None

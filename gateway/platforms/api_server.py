@@ -1999,8 +1999,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 """
                 if not tool_call_id or function_name.startswith("_"):
                     return
+                from agent.display import (
+                    build_tool_preview,
+                    get_tool_emoji,
+                    should_hide_public_tool_progress,
+                )
+                if should_hide_public_tool_progress(function_name):
+                    return
                 _started_tool_call_ids.add(tool_call_id)
-                from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
                 _stream_q.put(("__tool_progress__", {
                     "tool": function_name,
@@ -3100,6 +3106,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Queue a started tool for live function_call streaming."""
+                from agent.display import should_hide_public_tool_progress
+                if should_hide_public_tool_progress(function_name):
+                    return
                 _stream_q.put(("__tool_started__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
@@ -3108,6 +3117,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
             def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
                 """Queue a completed tool result for live function_call_output streaming."""
+                from agent.display import should_hide_public_tool_progress
+                if should_hide_public_tool_progress(function_name):
+                    return
                 _stream_q.put(("__tool_completed__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
@@ -3890,6 +3902,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+            from agent.display import should_hide_public_tool_progress
+            if should_hide_public_tool_progress(tool_name):
+                return
+
             ts = time.time()
             if event_type == "tool.started":
                 _push({

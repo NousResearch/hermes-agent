@@ -16092,6 +16092,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not progress_queue or not _run_still_current():
                 return
 
+            from agent.display import should_hide_public_tool_progress
+            if should_hide_public_tool_progress(tool_name):
+                return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting

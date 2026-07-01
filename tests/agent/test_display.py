@@ -11,6 +11,7 @@ from agent.display import (
     get_cute_tool_message,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
+    should_hide_public_tool_progress,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -202,6 +203,18 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestPublicToolProgressPolicy:
+    def test_builtin_memory_tool_is_hidden_from_public_progress(self):
+        assert should_hide_public_tool_progress("memory") is True
+
+    def test_regular_tools_remain_visible_in_public_progress(self):
+        assert should_hide_public_tool_progress("terminal") is False
+        assert should_hide_public_tool_progress("web_search") is False
+
+    def test_missing_tool_name_is_visible_by_default(self):
+        assert should_hide_public_tool_progress(None) is False
 
 
 class TestCuteToolMessagePreviewLength:

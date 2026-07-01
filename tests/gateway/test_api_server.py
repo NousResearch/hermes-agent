@@ -1394,6 +1394,70 @@ class TestChatCompletionsEndpoint:
                 assert '"toolCallId": "call_search_1"' in body
 
     @pytest.mark.asyncio
+    async def test_stream_tool_progress_skips_memory_events(self, adapter):
+        """Built-in memory tool calls stay out of public SSE progress."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                if ts_cb:
+                    ts_cb(
+                        "call_memory_1",
+                        "memory",
+                        {
+                            "action": "add",
+                            "target": "memory",
+                            "content": "private memory payload",
+                        },
+                    )
+                    ts_cb("call_search_1", "web_search", {"query": "Python docs"})
+                if tc_cb:
+                    tc_cb(
+                        "call_memory_1",
+                        "memory",
+                        {
+                            "action": "add",
+                            "target": "memory",
+                            "content": "private memory payload",
+                        },
+                        '{"success": true}',
+                    )
+                    tc_cb("call_search_1", "web_search", {"query": "Python docs"}, "ok")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Found it.")
+                return (
+                    {"final_response": "Found it.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "search"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: hermes.tool.progress" in body
+                assert '"tool": "web_search"' in body
+                assert '"toolCallId": "call_search_1"' in body
+                assert '"tool": "memory"' not in body
+                assert "call_memory_1" not in body
+                assert "private memory payload" not in body
+                assert "old_text" not in body
+                assert "+memory" not in body
+                assert "~memory" not in body
+                assert "-memory" not in body
+
+    @pytest.mark.asyncio
     async def test_stream_emits_tool_lifecycle_with_call_id(self, adapter):
         """Regression for #16588.
 
@@ -2383,6 +2447,60 @@ class TestResponsesStreaming:
                 assert '"call_id": "call_123"' in body
                 assert '"name": "read_file"' in body
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
+
+    @pytest.mark.asyncio
+    async def test_stream_function_call_items_skip_memory_tool(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb(
+                        "call_memory_1",
+                        "memory",
+                        {
+                            "action": "add",
+                            "target": "memory",
+                            "content": "private memory payload",
+                        },
+                    )
+                    start_cb("call_search_1", "web_search", {"query": "Python docs"})
+                if complete_cb:
+                    complete_cb(
+                        "call_memory_1",
+                        "memory",
+                        {
+                            "action": "add",
+                            "target": "memory",
+                            "content": "private memory payload",
+                        },
+                        '{"success": true}',
+                    )
+                    complete_cb("call_search_1", "web_search", {"query": "Python docs"}, "ok")
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "search", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert '"name": "web_search"' in body
+                assert '"call_id": "call_search_1"' in body
+                assert '"name": "memory"' not in body
+                assert "call_memory_1" not in body
+                assert "private memory payload" not in body
+                assert "+memory" not in body
+                assert "~memory" not in body
+                assert "-memory" not in body
 
     @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
@@ -3492,6 +3610,43 @@ class TestConversationParameter:
                     "conversation": "my-chat",
                 })
                 assert resp3.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs structured tool progress
+# ---------------------------------------------------------------------------
+
+
+class TestRunStructuredEvents:
+    @pytest.mark.asyncio
+    async def test_run_event_callback_skips_memory_tool_progress(self, adapter):
+        run_id = "run_memory_privacy"
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_statuses[run_id] = {"status": "running"}
+
+        callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+        callback(
+            "tool.started",
+            "memory",
+            '+memory: "private memory payload"',
+            {
+                "action": "add",
+                "target": "memory",
+                "content": "private memory payload",
+            },
+        )
+        callback("tool.completed", "memory", None, None, duration=31)
+        callback("tool.started", "web_search", "Python docs", {"query": "Python docs"})
+
+        await asyncio.sleep(0)
+        event = await asyncio.wait_for(queue.get(), timeout=0.5)
+        assert event["event"] == "tool.started"
+        assert event["tool"] == "web_search"
+        assert event["preview"] == "Python docs"
+        assert queue.empty()
+        assert "private memory payload" not in json.dumps(adapter._run_statuses[run_id])
+        assert adapter._run_statuses[run_id]["last_event"] == "tool.started"
 
 
 # ---------------------------------------------------------------------------

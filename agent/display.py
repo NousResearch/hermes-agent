@@ -166,6 +166,14 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
+_PUBLIC_SILENT_TOOL_PROGRESS = frozenset({"memory"})
+
+
+def should_hide_public_tool_progress(tool_name: str | None) -> bool:
+    """Return True when a tool's lifecycle should stay out of public progress UI."""
+    return str(tool_name or "") in _PUBLIC_SILENT_TOOL_PROGRESS
+
+
 def _oneline(text: str) -> str:
     """Collapse whitespace (including newlines) to single spaces."""
     return " ".join(text.split())
@@ -1422,5 +1430,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

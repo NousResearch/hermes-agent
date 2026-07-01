@@ -115,10 +115,14 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
     assert provider is not None
+    provider._initialized = True
 
-    # First call: records mtime (zero -> real) -> returns True
+    # First call: records mtime (zero -> real) as baseline, returns False.
+    # Forcing a reload on first observation tears down the streamable-http
+    # connection before tools register (NousResearch/hermes-agent#39551).
     changed1 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed1 is True
+    assert changed1 is False
+    assert provider._initialized is True
 
     # No file change -> False
     changed2 = await mgr.invalidate_if_disk_changed("srv")
@@ -127,6 +131,7 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     # Touch file with a newer mtime
     future_mtime = time.time() + 10
     os.utime(tokens_file, (future_mtime, future_mtime))
+    provider._initialized = True
 
     changed3 = await mgr.invalidate_if_disk_changed("srv")
     assert changed3 is True

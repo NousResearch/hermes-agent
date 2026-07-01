@@ -599,6 +599,19 @@ class MCPOAuthManager:
             if mtime_ns != entry.last_mtime_ns:
                 old = entry.last_mtime_ns
                 entry.last_mtime_ns = mtime_ns
+                # First observation of an existing tokens file: record the
+                # baseline mtime and DO NOT force a reload. Forcing a reload
+                # here resets _initialized in the middle of the first auth
+                # flow and tears the streamable-http connection down before
+                # tools register (NousResearch/hermes-agent#39551). A reload
+                # is only meaningful for catching external refreshes after
+                # the baseline already exists.
+                if old == 0:
+                    logger.debug(
+                        "MCP OAuth '%s': baseline tokens mtime recorded (%d)",
+                        server_name, mtime_ns,
+                    )
+                    return False
                 # Force the SDK's OAuthClientProvider to reload from storage
                 # on its next auth flow. `_initialized` is private API but
                 # stable across the MCP SDK versions we pin (>=1.26.0).

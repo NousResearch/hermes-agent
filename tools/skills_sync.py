@@ -306,6 +306,13 @@ def sync_skills(quiet: bool = False) -> dict:
 
     _write_manifest(manifest)
 
+    # Deploy scripts from skill scripts/ subdirectories to ~/.hermes/scripts/
+    _scripts_home = HERMES_HOME / "scripts"
+    try:
+        deploy_skill_scripts(SKILLS_DIR, _scripts_home)
+    except Exception:
+        pass  # non-fatal
+
     return {
         "copied": copied,
         "updated": updated,
@@ -314,6 +321,48 @@ def sync_skills(quiet: bool = False) -> dict:
         "cleaned": cleaned,
         "total_bundled": len(bundled_skills),
     }
+
+
+def deploy_skill_scripts(skills_home: Path, scripts_dir: Path) -> int:
+    """Deploy or update scripts from skill scripts/ subdirectories to ~/.hermes/scripts/.
+
+    Scans all installed skills for a scripts/ subdirectory and copies any .py
+    files found into *scripts_dir*.  Files are only written when the content
+    has changed, making repeated calls fast.
+
+    Args:
+        skills_home: Path to ~/.hermes/skills (or equivalent).
+        scripts_dir: Path to ~/.hermes/scripts (or equivalent).
+
+    Returns:
+        Number of scripts deployed or updated this call.
+    """
+    import hashlib
+
+    def _file_md5(path: Path) -> str:
+        return hashlib.md5(path.read_bytes()).hexdigest()
+
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    deployed = 0
+
+    # Scan both flat (skills_home/<skill>/scripts/) and
+    # category-nested (skills_home/<cat>/<skill>/scripts/) layouts.
+    for scripts_subdir in sorted(skills_home.rglob("scripts")):
+        if not scripts_subdir.is_dir():
+            continue
+        for src in sorted(scripts_subdir.glob("*.py")):
+            dst = scripts_dir / src.name
+            if dst.exists() and _file_md5(src) == _file_md5(dst):
+                continue  # unchanged — skip
+            try:
+                import shutil
+                shutil.copy2(src, dst)
+                dst.chmod(0o755)
+                deployed += 1
+            except OSError:
+                pass  # non-fatal — log if logger is available
+
+    return deployed
 
 
 def reset_bundled_skill(name: str, restore: bool = False) -> dict:

@@ -8,10 +8,10 @@ Hermes automatically syncs this skill to `~/.hermes/skills/devops/ugw-health-che
 
 ```bash
 # Copy (simple)
-cp ~/.hermes/skills/devops/ugw-health-check/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
+cp ~/.hermes/skills/devops/ugw-health-check/scripts/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
 
 # Or symlink (stays up to date with skill updates)
-ln -sf ~/.hermes/skills/devops/ugw-health-check/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
+ln -sf ~/.hermes/skills/devops/ugw-health-check/scripts/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
 ```
 
 Then verify it works:
@@ -66,7 +66,7 @@ Platforms: slack:disconnected
 ## Install
 
 ```bash
-cp ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
+cp scripts/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
 chmod +x ~/.hermes/scripts/ugw-health-check.py
 ```
 

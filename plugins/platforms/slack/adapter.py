@@ -1811,8 +1811,9 @@ class SlackAdapter(BasePlatformAdapter):
         Opt-in via ``platforms.slack.extra.rich_blocks`` (config.yaml). Default
         off: messages continue to go out as flat mrkdwn ``text``. Enabling it
         renders the *final* agent message with real structural primitives
-        (headers, dividers, true nested lists via ``rich_text``); tables are
-        rendered as aligned monospace (Block Kit has no robust table block).
+        (headers, dividers, true nested lists via ``rich_text``, and native
+        Block Kit ``table`` blocks with per-column alignment); over-limit
+        tables fall back to aligned monospace.
         """
         raw = self.config.extra.get("rich_blocks")
         if raw is None:

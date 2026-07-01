@@ -7,11 +7,11 @@ gives us real structural primitives — section headers, dividers, and true
 
 Design constraints (why this module is deliberately conservative):
 
-* **Block Kit has no robust table primitive.**  The newer ``table`` block is
-  limited and fragile, so markdown pipe-tables are rendered as monospace
-  ``rich_text_preformatted`` — the same thing a human would paste today, just
-  aligned.  Proper ``table`` blocks are a future iteration (see the PR's Open
-  Questions), not a v1 gate.
+* **Markdown pipe-tables render as native ``table`` blocks** — real grid
+  cells with per-column alignment and inline-formatted ``rich_text`` content.
+  A table that exceeds Slack's limits (100 rows / 20 cols / 10k aggregate
+  cell chars) or won't parse falls back to aligned monospace
+  ``rich_text_preformatted`` so a large table never breaks the message.
 * **Slack caps a message at 50 blocks** and a ``section``/text object at 3000
   characters.  :func:`render_blocks` enforces both and, if the content simply
   cannot be expressed within them, returns ``None`` so the caller falls back

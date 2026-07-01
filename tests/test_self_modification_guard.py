@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from model_tools import handle_function_call
 
 
@@ -31,53 +33,122 @@ def _blocked_call(function_name: str, args: dict, user_task: str):
 
 
 class TestSelfModificationGuard:
-    def test_ordinary_task_cannot_mutate_protected_skill_path(self):
+    def test_explicit_self_improvement_without_target_files_is_blocked(self):
         target = _repo_root() / "skills/productivity/notion/SKILL.md"
         result = _blocked_call(
             "write_file",
             {"path": str(target), "content": "patched"},
-            "Please update the launch checklist.",
+            "Explicit self-improvement request: update Hermes guardrails.",
         )
         assert "error" in result
         assert "self-modification" in result["error"].lower()
         assert "explicit user instruction" in result["error"].lower()
 
-    def test_explicit_self_improvement_request_can_pass(self):
+    def test_explicit_self_improvement_request_with_named_target_files_can_pass(self):
         target = _repo_root() / "skills/autonomous-ai-agents/hermes-agent/SKILL.md"
         with patch("hermes_cli.plugins.has_hook", return_value=False), patch(
             "model_tools.registry.dispatch",
-            return_value='{"ok": true}',
-        ) as dispatch:
-            result = handle_function_call(
-                "write_file",
-                {"path": str(target), "content": "patched"},
-                task_id="task-2",
-                user_task=f"Explicit self-improvement request: edit the target file {target} and validate it.",
-                skip_pre_tool_call_hook=True,
-                skip_tool_request_middleware=True,
+            return_value='{"success": true, "message": "updated", "path": "SKILL.md"}',
+        ) as dispatch, patch("agent.self_modification_guard._capture_git_status", side_effect=["M tests/test_self_modification_guard.py", "M tests/test_self_modification_guard.py"]):
+            result = json.loads(
+                handle_function_call(
+                    "write_file",
+                    {"path": str(target), "content": "patched"},
+                    task_id="task-2",
+                    user_task=f"Explicit self-improvement request: edit the target file {target} and validate it.",
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                )
             )
-        assert result == '{"ok": true}'
+        assert result["success"] is True
+        assert "self_modification_report" in result
+        report = result["self_modification_report"]
+        assert report["files_changed"] == [str(target)]
+        assert "git status --short (pre-edit)" in report["validation_tests_run"]
+        assert report["commit_happened"] is False
+        assert report["push_happened"] is False
         dispatch.assert_called_once()
 
-    def test_blocked_tool_call_does_not_execute_terminal_write(self):
-        target = _repo_root() / "docs/hermes-guardrails.md"
-        result = _blocked_call(
-            "terminal",
-            {"command": f"cat > {target} <<'EOF'\nmutated\nEOF"},
-            "Please improve the launch notes.",
-        )
+    def test_protected_write_without_pre_edit_git_status_is_blocked(self):
+        target = _repo_root() / "skills/autonomous-ai-agents/hermes-agent/SKILL.md"
+        with patch("hermes_cli.plugins.has_hook", return_value=False), patch(
+            "agent.self_modification_guard._capture_git_status",
+            return_value=None,
+        ):
+            result = _blocked_call(
+                "write_file",
+                {"path": str(target), "content": "patched"},
+                f"Explicit self-improvement request: edit the target file {target} and validate it.",
+            )
         assert "error" in result
-        assert "terminal" in result["error"].lower()
+        assert "pre-edit git status" in result["error"].lower()
 
-    def test_blocked_shell_redirection_without_space_is_detected(self):
-        target = _repo_root() / "docs/hermes-guardrails.md"
-        result = _blocked_call(
-            "terminal",
-            {"command": f"echo mutated >{target}"},
-            "Please improve the launch notes.",
-        )
+    def test_after_protected_write_includes_validation_diff_and_status_summary(self):
+        target = _repo_root() / "skills/autonomous-ai-agents/hermes-agent/SKILL.md"
+        with patch("hermes_cli.plugins.has_hook", return_value=False), patch(
+            "model_tools.registry.dispatch",
+            return_value='{"success": true, "message": "updated", "path": "SKILL.md"}',
+        ), patch("agent.self_modification_guard._capture_git_status", side_effect=[" M pre.txt", " M post.txt"]), patch("agent.self_modification_guard._capture_git_diff_summary", return_value=" pre.txt | 1 +"):
+            result = json.loads(
+                handle_function_call(
+                    "write_file",
+                    {"path": str(target), "content": "patched"},
+                    task_id="task-3",
+                    user_task=f"Explicit self-improvement request: edit the target file {target} and validate it.",
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                )
+            )
+        report = result["self_modification_report"]
+        assert report["files_changed"] == [str(target)]
+        assert report["validation_tests_run"]
+        assert report["final_diff_summary"] == "pre.txt | 1 +"
+        assert report["final_git_status"] == "M post.txt"
+        assert "pre-edit" in report["validation_summary"].lower() or report["validation_summary"]
+
+    @pytest.mark.parametrize(
+        ("function_name", "args", "user_task"),
+        [
+            (
+                "terminal",
+                {"command": f"printf hi > {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "terminal",
+                {"command": f"printf hi >> {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "terminal",
+                {"command": f"printf hi | tee {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "terminal",
+                {"command": f"sed -i 's/a/b/' {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "execute_code",
+                {"code": "with open(r'" + str(_repo_root() / 'docs/hermes-guardrails.md') + "', 'w') as f:\n    f.write('patched')"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "terminal",
+                {"command": f"cp source.txt {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+            (
+                "terminal",
+                {"command": f"mv source.txt {_repo_root() / 'docs/hermes-guardrails.md'}"},
+                "Please improve the launch notes.",
+            ),
+        ],
+    )
+    def test_shell_write_variants_are_blocked_when_unrequested(self, function_name, args, user_task):
+        result = _blocked_call(function_name, args, user_task)
         assert "error" in result
-        assert target.name.lower() in result["error"].lower()
         assert "blocked self-modification" in result["error"].lower()
 
     def test_skill_manage_is_blocked_for_unrequested_skill_writes(self):

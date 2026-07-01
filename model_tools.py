@@ -31,7 +31,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
-from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call
+from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call, clear_lifecycle_state, finalize_protected_write_result
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -1193,6 +1193,7 @@ def handle_function_call(
                     reset_current_observability_context(_approval_tokens)
                 except Exception:
                     pass
+        result = finalize_protected_write_result(function_name, result)
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         _emit_post_tool_call_hook(
@@ -1248,6 +1249,7 @@ def handle_function_call(
         logger.exception(error_msg)
         return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
     finally:
+        clear_lifecycle_state()
         _current_user_task.reset(_user_task_token)
 
 

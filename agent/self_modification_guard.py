@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextvars
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -25,25 +28,13 @@ _TERMINAL_TOOL_NAMES = frozenset({"terminal"})
 _EXECUTE_CODE_TOOL_NAMES = frozenset({"execute_code"})
 
 _SELF_IMPROVEMENT_HINTS = (
-    r"\bself[- ]?improv(?:e|ement)\b",
-    r"\bconfig(?:uration)?\s+edit(?:ing)?\b",
-    r"\bskill\s+edit(?:ing)?\b",
-    r"\bguardrail\s+work\b",
-    r"\brepo/config\s+editing\b",
-    r"\bedit(?:ing)?\s+(?:the\s+)?(?:hermes\s+)?config\b",
-    r"\bedit(?:ing)?\b",
-    r"\bupdate(?:ing)?\b",
-    r"\bmodify(?:ing)?\b",
-    r"\bchange(?:ing)?\b",
-    r"\bpatch(?:ing)?\b",
-    r"\bfix(?:ing)?\b",
-    r"\bcreate(?:d|ing)?\b",
-    r"\bdelete(?:d|ing)?\b",
-    r"\bremove(?:d|ing)?\b",
-    r"\badd(?:ed|ing)?\b",
-    r"\brewrite(?:ing)?\b",
-    r"\brefactor(?:ing)?\b",
-    r"\bharden(?:ing)?\b",
+    r"\bself[- ]?improv(?:e|ement|ing)?\b",
+    r"\bruntime\s+guardrail(?:s)?\b",
+    r"\bguardrail(?:s)?\s+work\b",
+    r"\bhermes\b.*\b(?:config|skill|guardrail|runtime|profile|docs|hooks|scripts|github)\b",
+    r"\b(?:config|skill|guardrail|profile|docs|hooks|scripts|github)\s+(?:edit(?:ing)?|update(?:ing)?|modify(?:ing)?|change(?:ing)?|patch(?:ing)?|fix(?:ing)?|rewrite(?:ing)?|refactor(?:ing)?|harden(?:ing)?)\b",
+    r"\bedit(?:ing)?\s+(?:the\s+)?(?:hermes\s+)?(?:config|skill|guardrail|profile|docs|hooks|scripts|github)\b",
+    r"\bupdate(?:ing)?\s+(?:the\s+)?(?:hermes\s+)?(?:config|skill|guardrail|profile|docs|hooks|scripts|github)\b",
 )
 
 _SHELL_WRITE_HINTS = (
@@ -59,7 +50,8 @@ _SHELL_WRITE_HINTS = (
 )
 
 _CODE_WRITE_HINTS = (
-    r"\bopen\s*\([^)]*['\"](?:w|a|x|\+)",
+    r"\bopen\s*\([^)]*'[^']*'[^)]*\b(?:w|a|x|\+)",
+    r'\bopen\s*\([^)]*"[^"]*"[^)]*\b(?:w|a|x|\+)',
     r"\.write_text\s*\(",
     r"\.write_bytes\s*\(",
     r"\.unlink\s*\(",
@@ -67,6 +59,11 @@ _CODE_WRITE_HINTS = (
     r"\.replace\s*\(",
     r"\bos\.(?:remove|unlink|rename)\s*\(",
     r"\bshutil\.(?:move|copy|copy2)\s*\(",
+)
+
+_LIFECYCLE_STATE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "hermes_self_modification_lifecycle",
+    default=None,
 )
 
 
@@ -80,9 +77,22 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         protected_targets = [target for target in targets if _is_protected_path(target)]
         if not protected_targets:
             return None
-        if _is_explicit_self_mod_request(user_task_text, protected_targets):
-            return None
-        return _blocked_message(function_name, protected_targets)
+        if not _is_explicit_self_mod_request(user_task_text, protected_targets):
+            return _blocked_message(function_name, protected_targets)
+        repo_root = _workspace_root()
+        if repo_root is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        pre_edit_git_status = _capture_git_status(repo_root)
+        if pre_edit_git_status is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        _LIFECYCLE_STATE.set({
+            "function_name": function_name,
+            "protected_targets": list(dict.fromkeys(protected_targets)),
+            "repo_root": str(repo_root),
+            "pre_edit_git_status": pre_edit_git_status,
+            "explicit_user_request": user_task_text,
+        })
+        return None
 
     if function_name in _TERMINAL_TOOL_NAMES:
         command = str(args.get("command") or args.get("cmd") or "").strip()
@@ -91,9 +101,22 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         protected_targets = _extract_protected_mentions(command)
         if not protected_targets or not _contains_write_intent(command):
             return None
-        if _is_explicit_self_mod_request(user_task_text, protected_targets):
-            return None
-        return _blocked_message(function_name, protected_targets)
+        if not _is_explicit_self_mod_request(user_task_text, protected_targets):
+            return _blocked_message(function_name, protected_targets)
+        repo_root = _workspace_root()
+        if repo_root is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        pre_edit_git_status = _capture_git_status(repo_root)
+        if pre_edit_git_status is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        _LIFECYCLE_STATE.set({
+            "function_name": function_name,
+            "protected_targets": list(dict.fromkeys(protected_targets)),
+            "repo_root": str(repo_root),
+            "pre_edit_git_status": pre_edit_git_status,
+            "explicit_user_request": user_task_text,
+        })
+        return None
 
     if function_name in _EXECUTE_CODE_TOOL_NAMES:
         code = str(args.get("code") or "").strip()
@@ -102,20 +125,145 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         protected_targets = _extract_protected_mentions(code)
         if not protected_targets or not _contains_code_write_intent(code):
             return None
-        if _is_explicit_self_mod_request(user_task_text, protected_targets):
-            return None
-        return _blocked_message(function_name, protected_targets)
+        if not _is_explicit_self_mod_request(user_task_text, protected_targets):
+            return _blocked_message(function_name, protected_targets)
+        repo_root = _workspace_root()
+        if repo_root is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        pre_edit_git_status = _capture_git_status(repo_root)
+        if pre_edit_git_status is None:
+            return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
+        _LIFECYCLE_STATE.set({
+            "function_name": function_name,
+            "protected_targets": list(dict.fromkeys(protected_targets)),
+            "repo_root": str(repo_root),
+            "pre_edit_git_status": pre_edit_git_status,
+            "explicit_user_request": user_task_text,
+        })
+        return None
 
     return None
 
 
-def _blocked_message(function_name: str, protected_targets: Sequence[str]) -> str:
+def finalize_protected_write_result(function_name: str, result: Any) -> Any:
+    """Attach lifecycle evidence to successful protected writes."""
+    state = _LIFECYCLE_STATE.get()
+    if not isinstance(state, dict) or state.get("function_name") != function_name:
+        return result
+
+    try:
+        repo_root_text = str(state.get("repo_root") or "").strip()
+        repo_root = Path(repo_root_text) if repo_root_text else None
+        post_edit_git_status = (_capture_git_status(repo_root) or "").strip() if repo_root else None
+        diff_summary = (_capture_git_diff_summary(repo_root) or "").strip() if repo_root else ""
+        report = {
+            "files_changed": list(state.get("protected_targets") or []),
+            "validation_tests_run": [
+                "git status --short (pre-edit)",
+                "git status --short (post-edit)",
+            ],
+            "validation_summary": "pre-edit git status --short captured; post-edit git status --short captured",
+            "secret_scan_result": _secret_scan_result(function_name, result),
+            "final_diff_summary": diff_summary or "no diff available",
+            "final_git_status": post_edit_git_status or "unavailable",
+            "commit_happened": False,
+            "push_happened": False,
+            "pre_edit_git_status": state.get("pre_edit_git_status") or "unavailable",
+            "explicit_user_request": state.get("explicit_user_request") or "",
+        }
+        return _merge_report(result, report)
+    finally:
+        _LIFECYCLE_STATE.set(None)
+
+
+def clear_lifecycle_state() -> None:
+    """Reset pending lifecycle evidence after a tool call finishes."""
+    _LIFECYCLE_STATE.set(None)
+
+
+def _merge_report(result: Any, report: dict[str, Any]) -> Any:
+    if isinstance(result, dict):
+        merged = dict(result)
+        merged["self_modification_report"] = report
+        return merged
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            parsed["self_modification_report"] = report
+            return json.dumps(parsed, ensure_ascii=False)
+    return json.dumps({"result": result, "self_modification_report": report}, ensure_ascii=False)
+
+
+def _secret_scan_result(function_name: str, result: Any) -> str:
+    if isinstance(result, dict):
+        for key in ("secret_scan_result", "security_scan", "scan_result"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for key in ("error", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and "security scan" in value.lower():
+                return value.strip()
+    if isinstance(result, str) and "security scan" in result.lower():
+        return result.strip()
+    return "not reported by tool" if function_name == "skill_manage" else "not applicable"
+
+
+def _capture_git_status(repo_root: Path | None) -> str | None:
+    if repo_root is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.rstrip("\n")
+
+
+def _capture_git_diff_summary(repo_root: Path | None) -> str:
+    if repo_root is None:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "diff", "--stat"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _workspace_root() -> Path | None:
+    current = Path.cwd().resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _blocked_message(function_name: str, protected_targets: Sequence[str], reason: str | None = None) -> str:
     unique_targets = list(dict.fromkeys(protected_targets))
     target_text = ", ".join(unique_targets[:4])
     if len(unique_targets) > 4:
         target_text += f", +{len(unique_targets) - 4} more"
+    suffix = f" {reason}." if reason else "."
     return (
-        f"Blocked self-modification write via {function_name} for protected path(s): {target_text}. "
+        f"Blocked self-modification write via {function_name} for protected path(s): {target_text}{suffix} "
         "This requires explicit user instruction naming the target files; propose the change instead."
     )
 
@@ -213,8 +361,12 @@ def _is_explicit_self_mod_request(user_task: str, protected_targets: Sequence[st
             path = None
         if path is not None:
             parts = [part.lower() for part in path.parts if part]
+            for part in parts:
+                target_tokens.add(part)
             for i in range(len(parts)):
                 target_tokens.add("/".join(parts[i:]))
+            if len(parts) >= 2:
+                target_tokens.add(f"{parts[-2]} {parts[-1]}")
             if parts:
                 target_tokens.add(parts[-1])
     return any(token and token in lower for token in target_tokens)

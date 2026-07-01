@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from agent.pr_head_guard import enforce_pr_head_invariant, resolve_repo_root_for_path
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -1528,6 +1529,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # subagents can't interleave on the same file.  Different paths
         # remain fully parallel.
         with file_state.lock_path(_resolved):
+            pr_repo_root = resolve_repo_root_for_path(_resolved)
+            pr_head_block = enforce_pr_head_invariant(
+                repo_root=pr_repo_root,
+                action_label="file write",
+            )
+            if pr_head_block is not None:
+                return tool_error(pr_head_block)
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
@@ -1648,6 +1656,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         with ExitStack() as _locks:
             for _r in _resolved_paths:
                 _locks.enter_context(file_state.lock_path(_r))
+
+            _repo_roots = [resolve_repo_root_for_path(_p) for _p in _paths_to_check]
+            _repo_roots = [str(_r) for _r in _repo_roots if _r is not None]
+            if len(set(_repo_roots)) > 1:
+                return tool_error(
+                    "Blocked file patch: targets span multiple git roots. "
+                    "Align the patch to a single checkout before retrying."
+                )
+            pr_repo_root = Path(_repo_roots[0]) if _repo_roots else None
+            pr_head_block = enforce_pr_head_invariant(
+                repo_root=pr_repo_root,
+                action_label="file patch",
+            )
+            if pr_head_block is not None:
+                return tool_error(pr_head_block)
 
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.

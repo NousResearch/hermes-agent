@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from agent.pr_head_guard import enforce_pr_head_invariant
 from agent.runtime_evidence import update_runtime_evidence
 
 _PROTECTED_ROOT_NAMES = frozenset({
@@ -84,6 +85,12 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         repo_root, repo_root_error = _resolve_audit_repo_root(protected_targets)
         if repo_root is None:
             return _blocked_message(function_name, protected_targets, repo_root_error or "pre-edit git status --short could not be captured")
+        pr_head_block = enforce_pr_head_invariant(
+            repo_root=repo_root,
+            action_label="file patch",
+        )
+        if pr_head_block is not None:
+            return _blocked_message(function_name, protected_targets, pr_head_block)
         pre_edit_git_status = _capture_git_status(repo_root)
         if pre_edit_git_status is None:
             return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
@@ -113,6 +120,12 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         repo_root, repo_root_error = _resolve_audit_repo_root(protected_targets)
         if repo_root is None:
             return _blocked_message(function_name, protected_targets, repo_root_error or "pre-edit git status --short could not be captured")
+        pr_head_block = enforce_pr_head_invariant(
+            repo_root=repo_root,
+            action_label="file patch",
+        )
+        if pr_head_block is not None:
+            return _blocked_message(function_name, protected_targets, pr_head_block)
         pre_edit_git_status = _capture_git_status(repo_root)
         if pre_edit_git_status is None:
             return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")
@@ -142,6 +155,12 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
         repo_root, repo_root_error = _resolve_audit_repo_root(protected_targets)
         if repo_root is None:
             return _blocked_message(function_name, protected_targets, repo_root_error or "pre-edit git status --short could not be captured")
+        pr_head_block = enforce_pr_head_invariant(
+            repo_root=repo_root,
+            action_label="file patch",
+        )
+        if pr_head_block is not None:
+            return _blocked_message(function_name, protected_targets, pr_head_block)
         pre_edit_git_status = _capture_git_status(repo_root)
         if pre_edit_git_status is None:
             return _blocked_message(function_name, protected_targets, "pre-edit git status --short could not be captured")

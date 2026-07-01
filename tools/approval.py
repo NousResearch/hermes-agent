@@ -19,10 +19,12 @@ import sys
 import threading
 import time
 import unicodedata
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
+from agent.pr_head_guard import enforce_pr_head_invariant
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -2211,7 +2213,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             repo_root: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -2247,6 +2250,20 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    pr_head_block = enforce_pr_head_invariant(
+        repo_root=Path(repo_root) if repo_root else None,
+        action_label="PR action",
+        command=command,
+    )
+    if pr_head_block is not None:
+        logger.warning("PR-head invariant block: %s (command: %s)",
+                       pr_head_block.splitlines()[0], command[:200])
+        return {
+            "approved": False,
+            "message": pr_head_block,
+            "code": "pr_head_mismatch",
+        }
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

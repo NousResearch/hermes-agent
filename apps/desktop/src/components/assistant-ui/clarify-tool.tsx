@@ -16,8 +16,6 @@ import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 
-import { selectMessageRunning } from './tool/fallback-model'
-
 interface ClarifyArgs {
   allowOther?: boolean
   choices?: string[] | null

@@ -58,8 +58,8 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
-import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
@@ -100,7 +100,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -502,18 +502,23 @@ export default function App() {
     <ProfileProvider>
     <div
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
-      <Backdrop />
-      <PluginSlot name="backdrop" />
+
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0"
+      >
+        <PluginSlot name="backdrop" />
+      </div>
 
       <header
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
+          "bg-background-base",
         )}
         style={{
           background: "var(--component-header-background)",
@@ -533,10 +538,7 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
-        >
+        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
           {t.app.brand}
         </Typography>
       </header>
@@ -548,7 +550,7 @@ export default function App() {
           onClick={closeMobile}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
+            "bg-black/70",
           )}
         />
       )}
@@ -562,13 +564,13 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
               "border-r border-current/20",
-              "bg-background-base/95 backdrop-blur-sm",
-              "transition-[transform] duration-200 ease-out",
+              "bg-background-base",
+              "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-              "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
+              "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",
             )}
             style={{
@@ -592,10 +594,7 @@ export default function App() {
               >
                 <PluginSlot name="header-left" />
 
-                <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-                  style={{ mixBlendMode: "plus-lighter" }}
-                >
+                <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
                   Hermes
                   <br />
                   Agent
@@ -657,7 +656,7 @@ export default function App() {
                   <span
                     className={cn(
                       "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
                       isDesktopCollapsed && "lg:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
@@ -863,7 +862,7 @@ function SidebarNavLink({
           cn(
             "group/nav relative flex items-center gap-3",
             "px-5 py-2.5",
-            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
+            "font-sans text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
             isActive
@@ -897,7 +896,6 @@ function SidebarNavLink({
               <span
                 aria-hidden
                 className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
               />
             )}
           </>
@@ -922,6 +920,47 @@ function SidebarSystemActions({
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
   const canUpdateHermes = status?.can_update_hermes === true;
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+  const [updateConfirmInfo, setUpdateConfirmInfo] =
+    useState<UpdateCheckResponse | null>(null);
+  const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
+
+  useEffect(() => {
+    if (!updateConfirmOpen) {
+      setUpdateConfirmInfo(null);
+      return;
+    }
+    let cancelled = false;
+    setUpdateConfirmChecking(true);
+    api
+      .checkHermesUpdate(false)
+      .then((info) => {
+        if (!cancelled) setUpdateConfirmInfo(info);
+      })
+      .catch(() => {
+        if (!cancelled) setUpdateConfirmInfo(null);
+      })
+      .finally(() => {
+        if (!cancelled) setUpdateConfirmChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [updateConfirmOpen]);
+
+  const updateConfirmDescription = useMemo(() => {
+    if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
+      const cmd = updateConfirmInfo.update_command;
+      const n = updateConfirmInfo.behind;
+      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+    }
+    const cmd = updateConfirmInfo?.update_command ?? "hermes update";
+    return (
+      t.status.updateHermesConfirmMessage ??
+      `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
+    );
+  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
 
   const items: SystemActionItem[] = [
     {
@@ -944,12 +983,35 @@ function SidebarSystemActions({
 
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
+    if (action === "restart") {
+      setRestartConfirmOpen(true);
+      return;
+    }
+    if (action === "update") {
+      setUpdateConfirmOpen(true);
+      return;
+    }
     void runAction(action);
     navigate("/sessions");
     onNavigate();
   };
 
+  const confirmRestart = () => {
+    setRestartConfirmOpen(false);
+    void runAction("restart");
+    navigate("/sessions");
+    onNavigate();
+  };
+
+  const confirmUpdate = () => {
+    setUpdateConfirmOpen(false);
+    void runAction("update");
+    navigate("/sessions");
+    onNavigate();
+  };
+
   return (
+    <>
     <div
       className={cn(
         "shrink-0 flex flex-col",
@@ -960,7 +1022,7 @@ function SidebarSystemActions({
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
           collapsed && "lg:hidden",
         )}
       >
@@ -988,6 +1050,36 @@ function SidebarSystemActions({
         ))}
       </ul>
     </div>
+
+    <ConfirmDialog
+      cancelLabel={t.common.cancel}
+      confirmLabel={t.status.restartGateway}
+      description={
+        t.status.restartGatewayConfirmMessage ??
+        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+      }
+      loading={pendingAction === "restart"}
+      onCancel={() => setRestartConfirmOpen(false)}
+      onConfirm={confirmRestart}
+      open={restartConfirmOpen}
+      title={
+        t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+      }
+    />
+
+    <ConfirmDialog
+      cancelLabel={t.common.cancel}
+      confirmLabel={t.status.updateHermesConfirmNow ?? "Update now"}
+      description={
+        updateConfirmChecking ? t.common.loading : updateConfirmDescription
+      }
+      loading={pendingAction === "update" || updateConfirmChecking}
+      onCancel={() => setUpdateConfirmOpen(false)}
+      onConfirm={confirmUpdate}
+      open={updateConfirmOpen}
+      title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
+    />
+    </>
   );
 }
 
@@ -1030,7 +1122,7 @@ function SystemActionButton({
         className={cn(
           "group/action relative flex w-full items-center gap-3",
           "px-5 py-2.5",
-          "font-mondwest text-display text-xs tracking-[0.1em]",
+          "font-sans text-display text-xs tracking-[0.1em]",
           "whitespace-nowrap transition-colors cursor-pointer",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
           busy
@@ -1068,7 +1160,6 @@ function SystemActionButton({
           <span
             aria-hidden
             className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-            style={{ mixBlendMode: "plus-lighter" }}
           />
         )}
       </button>
@@ -1204,8 +1295,8 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
       className={cn(
         "fixed z-[100] pointer-events-none",
         "px-2 py-1",
-        "bg-background-base/95 border border-current/20 backdrop-blur-sm shadow-lg",
-        "font-mondwest text-display text-xs tracking-[0.1em] text-midground uppercase",
+        "bg-background-base border border-current/20 shadow-lg",
+        "font-sans text-display text-xs tracking-[0.1em] text-midground uppercase",
       )}
       style={{
         top: rect.top + rect.height / 2,

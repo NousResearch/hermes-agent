@@ -524,6 +524,14 @@ export const af: Translations = {
     replaceCurrentValue: "Vervang huidige waarde ({preview})",
     showValue: "Wys werklike waarde",
     hideValue: "Versteek waarde",
+    customTitle: "Pasgemaakte sleutels",
+    customHint: "Arbitrêre omgewingsveranderlikes wat in jou .env gestoor is en wat Hermes nie herken nie. Gebruik dit om omgewingsveranderlikes vir vaardighede, MCP-bedieners of jou eie gereedskap in te spuit.",
+    customConfigured: "{count} pasgemaakte sleutel(s) gestel",
+    addCustomKey: "Voeg 'n pasgemaakte sleutel by",
+    customKeyName: "Veranderlike naam",
+    customKeyNamePlaceholder: "bv. MY_SERVICE_API_KEY",
+    add: "Voeg by",
+    invalidKeyName: "Gebruik slegs letters, syfers en onderstrepe (moet met 'n letter of onderstreep begin).",
   },
 
   toolCall: {

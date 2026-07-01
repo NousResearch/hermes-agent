@@ -25,6 +25,8 @@ from hermes_constants import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
+from tools.environments.local import hermes_subprocess_env
+from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -199,9 +201,12 @@ _LONG_HANDLERS = frozenset(
         # round-trips per call — so it must never block the reader thread.
         "pet.generate",
         "pet.hatch",
+        "pet.info",
         "pet.select",
         "pet.thumb",
+        "learning.frames",
         "plugins.manage",
+        "process.list",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -209,6 +214,7 @@ _LONG_HANDLERS = frozenset(
         "projects.project_sessions",
         "session.branch",
         "session.compress",
+        "session.list",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -218,7 +224,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
@@ -276,6 +282,8 @@ class _SlashWorker:
             argv += ["--model", model]
 
         self._closed = False
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -284,7 +292,10 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # slash_worker runs the Hermes agent → needs provider credentials.
+            # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
+            creationflags=windows_hide_flags(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -2203,7 +2214,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    entry = {"role": "system", "content": marker}
+    # Persist as a user message, not a system message.  The gateway appends
+    # this marker after prior conversation turns, and strict OpenAI-compatible
+    # providers (vLLM, Qwen) reject system messages that are not at the
+    # beginning of the API message list (#48338).
+    entry = {"role": "user", "content": marker}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2218,14 +2233,14 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="system", content=marker)
+            db.append_message(session_id=session_key, role="user", content=marker)
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="system", content=marker
+                    session_id=session_key, role="user", content=marker
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -3158,9 +3173,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 def _tool_ctx(name: str, args: dict) -> str:
     try:
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_label
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_label(name, args, max_len=80) or ""
     except Exception:
         return ""
 
@@ -4207,12 +4222,25 @@ def _make_agent(
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
-        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
         if missing_skills:
-            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            missing_display = ", ".join(missing_skills)
+            # Degrade gracefully when some skills loaded; only hard-fail when
+            # every requested skill is missing. Mirrors cli.py — a typo'd skill
+            # name should not crash the worker and auto-block the Kanban task.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
@@ -5387,13 +5415,17 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            history = db.get_messages_as_conversation(target)
+            raw_history = db.get_messages_as_conversation(target)
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        prefix = display_history[: max(0, len(display_history) - len(history))]
+        # Display keeps the full transcript; the model-fed history drops a
+        # dangling/interrupted tool-call tail so a session killed mid-loop does
+        # not replay the unanswered call forever (#29086).
+        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
+        history = sanitize_replay_history(raw_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
         # the build drops the provider ("No LLM provider configured").
@@ -5454,13 +5486,21 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
+        raw_history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
+        # The display transcript keeps every row so the user still sees their
+        # full history.  The model-fed history is sanitized: a session whose
+        # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
+        # (or interrupted assistant→tool) tail; replaying it makes the model
+        # re-issue the unanswered call forever — the permanent-"thinking" stuck
+        # session in #29086.  The messaging gateway already strips this; this is
+        # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = display_history[
-            : max(0, len(display_history) - len(history))
+            : max(0, len(display_history) - len(raw_history))
         ]
+        history = sanitize_replay_history(raw_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -6149,6 +6189,36 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("session.context_breakdown")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        usage = _get_usage(None)
+        return _ok(
+            rid,
+            {
+                "categories": [],
+                "context_max": usage.get("context_max", 0) or 0,
+                "context_percent": usage.get("context_percent", 0) or 0,
+                "context_used": usage.get("context_used", 0) or 0,
+                "estimated_total": 0,
+                "model": "",
+            },
+        )
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    try:
+        from agent.context_breakdown import compute_session_context_breakdown
+
+        payload = compute_session_context_breakdown(agent, history)
+    except Exception as exc:
+        return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+    return _ok(rid, payload)
 
 
 def _pet_frame_counts(spritesheet) -> dict:
@@ -8297,8 +8367,54 @@ def _notification_poller_loop(
         process_registry.completion_queue.put(evt)
 
 
+def _wire_agent_terminal_output() -> None:
+    """Idempotently route background-process output (and tab-close requests) to
+    the desktop, keyed by process id. Read-only agent terminal tabs stream
+    `agent.terminal.output` chunks live instead of polling the output tail, and
+    `process_registry.request_close_terminal` emits `terminal.close` so the agent
+    can drop a tab without killing the process. Events are routed to the window
+    that owns the process (its gateway session); `_emit`/`write_json` is
+    `_stdout_lock`-guarded, so calling it from the registry's reader threads is
+    safe."""
+    from tools.process_registry import process_registry
+
+    has_output_sink = getattr(process_registry, "on_output", None) is not None
+    has_close_sink = getattr(process_registry, "on_close", None) is not None
+    if has_output_sink and has_close_sink:
+        return
+
+    def _owner_sid_for_process(session) -> str:
+        session_key = str(getattr(session, "session_key", "") or "")
+        if not session_key:
+            return ""
+        with _sessions_lock:
+            for sid, tui_session in _sessions.items():
+                if str(tui_session.get("session_key") or "") == session_key:
+                    return sid
+        return ""
+
+    def _emit_agent_terminal_output(session, chunk):
+        _emit(
+            "agent.terminal.output",
+            _owner_sid_for_process(session),
+            {"process_id": session.id, "chunk": chunk},
+        )
+
+    def _emit_agent_terminal_close(session, process_id):
+        # session may be None (process already finished/pruned) — the tab can
+        # still linger and be closed; route to the owning window when we can.
+        sid = _owner_sid_for_process(session) if session is not None else ""
+        _emit("terminal.close", sid, {"process_id": process_id})
+
+    if not has_output_sink:
+        process_registry.on_output = _emit_agent_terminal_output
+    if not has_close_sink:
+        process_registry.on_close = _emit_agent_terminal_close
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
+    _wire_agent_terminal_output()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,
@@ -9112,8 +9228,13 @@ def _(rid, params: dict) -> dict:
             "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(out_prefix),
         ]
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = subprocess.run(
+                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -11160,7 +11281,9 @@ def _(rid, params: dict) -> dict:
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
+            # needs provider credentials. Tier-1 secrets still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]
@@ -11675,6 +11798,9 @@ def _list_repo_files(root: str) -> list[str]:
             return cached[1]
 
     files: list[str] = []
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    _creationflags = windows_hide_flags()
     try:
         top_result = subprocess.run(
             ["git", "-C", root, "rev-parse", "--show-toplevel"],
@@ -11682,6 +11808,7 @@ def _list_repo_files(root: str) -> list[str]:
             timeout=2.0,
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=_creationflags,
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
@@ -11700,6 +11827,7 @@ def _list_repo_files(root: str) -> list[str]:
                 timeout=2.0,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=_creationflags,
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
@@ -13352,6 +13480,63 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))
+
+
+@method("learning.frames")
+def _(rid, params: dict) -> dict:
+    """Pre-render the learning timeline for the TUI ``/journey`` overlay.
+
+    Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
+    so Ink can render and walk the tree locally without round-tripping the
+    gateway. Shares its renderer with the ``hermes journey`` CLI.
+    """
+    try:
+        cols = int(params.get("cols", 80) or 80)
+        rows = int(params.get("rows", 24) or 24)
+        frames = int(params.get("frames", 48) or 48)
+    except (TypeError, ValueError):
+        cols, rows, frames = 80, 24, 48
+    try:
+        from agent.learning_graph import build_learning_graph
+        from agent.learning_graph_render import render_frames
+
+        payload = build_learning_graph()
+        return _ok(rid, render_frames(payload, cols=max(20, cols), rows=max(10, rows), frames=frames))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.frames failed: {exc}")
+
+
+@method("learning.detail")
+def _(rid, params: dict) -> dict:
+    """Current content of a journey node, for an edit prefill."""
+    try:
+        from agent.learning_mutations import node_detail
+
+        return _ok(rid, node_detail(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.detail failed: {exc}")
+
+
+@method("learning.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    try:
+        from agent.learning_mutations import delete_node
+
+        return _ok(rid, delete_node(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.delete failed: {exc}")
+
+
+@method("learning.edit")
+def _(rid, params: dict) -> dict:
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    try:
+        from agent.learning_mutations import edit_node
+
+        return _ok(rid, edit_node(str(params.get("id", "")), str(params.get("content", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.edit failed: {exc}")
 
 
 @method("skills.manage")

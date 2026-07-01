@@ -191,6 +191,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (overlay.agents) {
       return patchOverlayState({ agents: false })
     }
+
+    if (overlay.journey) {
+      return patchOverlayState({ journey: false })
+    }
   }
 
   const cycleQueue = (dir: 1 | -1) => {

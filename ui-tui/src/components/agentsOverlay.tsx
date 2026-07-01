@@ -1,6 +1,6 @@
 import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   $delegationState,
@@ -33,6 +33,8 @@ import {
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
+
+import { OverlayScrollbar } from './overlayScrollbar.js'
 
 // ── Types + lookup tables ────────────────────────────────────────────
 
@@ -125,91 +127,6 @@ const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => 
 }
 
 // ── Sub-components ───────────────────────────────────────────────────
-
-/** Polled on parent `tick` so accordions can resize the thumb without a scroll event. */
-function OverlayScrollbar({
-  scrollRef,
-  t,
-  tick
-}: {
-  scrollRef: RefObject<null | ScrollBoxHandle>
-  t: Theme
-  tick: number
-}) {
-  void tick // ensures re-render when the parent clock advances
-
-  const [hover, setHover] = useState(false)
-  const [grab, setGrab] = useState<null | number>(null)
-
-  const s = scrollRef.current
-  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
-
-  if (!vp) {
-    return <Box width={1} />
-  }
-
-  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
-  const scrollable = total > vp
-  const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
-  const travel = Math.max(1, vp - thumb)
-  const pos = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const below = Math.max(0, vp - thumbTop - thumb)
-
-  const vBar = (n: number) => (n > 0 ? `${'│\n'.repeat(n - 1)}│` : '')
-  const thumbBody = `${'┃\n'.repeat(Math.max(0, thumb - 1))}┃`
-  const thumbColor = grab !== null ? t.color.primary : t.color.accent
-  const trackColor = hover ? t.color.border : t.color.muted
-
-  const jump = (row: number, offset: number) => {
-    if (!s || !scrollable) {
-      return
-    }
-
-    s.scrollTo(Math.round((Math.max(0, Math.min(travel, row - offset)) / travel) * Math.max(0, total - vp)))
-  }
-
-  return (
-    <Box
-      flexDirection="column"
-      onMouseDown={(e: { localRow?: number }) => {
-        const row = Math.max(0, Math.min(vp - 1, e.localRow ?? 0))
-        const off = row >= thumbTop && row < thumbTop + thumb ? row - thumbTop : Math.floor(thumb / 2)
-        setGrab(off)
-        jump(row, off)
-      }}
-      onMouseDrag={(e: { localRow?: number }) =>
-        jump(Math.max(0, Math.min(vp - 1, e.localRow ?? 0)), grab ?? Math.floor(thumb / 2))
-      }
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onMouseUp={() => setGrab(null)}
-      width={1}
-    >
-      {!scrollable ? (
-        <Text color={trackColor} dim>
-          {vBar(vp)}
-        </Text>
-      ) : (
-        <>
-          {thumbTop > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {vBar(thumbTop)}
-            </Text>
-          ) : null}
-
-          <Text color={thumbColor}>{thumbBody}</Text>
-
-          {below > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {vBar(below)}
-            </Text>
-          ) : null}
-        </>
-      )}
-    </Box>
-  )
-}
 
 function GanttStrip({
   cols,

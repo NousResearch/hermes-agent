@@ -518,6 +518,14 @@ export const zh: Translations = {
     replaceCurrentValue: "替换当前值（{preview}）",
     showValue: "显示实际值",
     hideValue: "隐藏值",
+    customTitle: "自定义密钥",
+    customHint: "存储在 .env 中、Hermes 无法识别的任意环境变量。可用于为技能、MCP 服务器或你自己的工具注入环境变量。",
+    customConfigured: "已设置 {count} 个自定义密钥",
+    addCustomKey: "添加自定义密钥",
+    customKeyName: "变量名",
+    customKeyNamePlaceholder: "例如 MY_SERVICE_API_KEY",
+    add: "添加",
+    invalidKeyName: "只能使用字母、数字和下划线（必须以字母或下划线开头）。",
   },
 
   toolCall: {

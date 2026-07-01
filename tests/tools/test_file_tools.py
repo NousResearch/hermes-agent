@@ -275,6 +275,104 @@ class TestPatchHandler:
         assert "traversal" in result["error"].lower()
 
 
+class TestPatchSensitivePathExtraction:
+    """Regression tests for patch_tool sensitive-path extraction.
+
+    The sensitive path check relies on a regex that parses V4A patch
+    headers. These tests cover:
+
+    1. ``*** Move File:`` operations (previously missed — the regex only
+       matched Update/Add/Delete, so Move could target /etc/* without
+       hitting the check).
+    2. ``***Keyword File:`` with no space after ``***`` (previously missed —
+       the regex required ``\\s+`` even though patch_parser accepts ``\\s*``).
+    3. ``..`` traversal in Move headers (the Move endpoints run through the
+       same traversal rejection as the other V4A headers).
+    """
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> /etc/crontab\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_from_sensitive_src_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /etc/hosts -> /tmp/leak.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
+        """``***Update File:`` (no space after asterisks) must also be caught.
+
+        patch_parser.py accepts this form (``\\s*`` in its regex), so the
+        sensitive path check must be at least as lenient or the check
+        is bypassed.
+        """
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "***Update File: /etc/resolv.conf\n"
+            "@@ @@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_rejects_traversal_endpoint(self, mock_get):
+        """A Move endpoint with ``..`` traversal is rejected, same as the
+        Update/Add/Delete headers."""
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> ../../../etc/shadow\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_safe_paths_not_blocked(self, mock_get):
+        """Safe Move operations should still reach the file_ops dispatch."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/a.txt -> /tmp/b.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" not in result
+        mock_ops.patch_v4a.assert_called_once()
+
+
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):

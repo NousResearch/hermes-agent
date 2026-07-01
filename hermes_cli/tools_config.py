@@ -66,7 +66,7 @@ CONFIGURABLE_TOOLSETS = [
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
-    ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -1736,6 +1736,32 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         config.setdefault("known_plugin_toolsets", {})
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
+    # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
+    # that list as a final override AFTER reading platform_toolsets.<platform>,
+    # so a toolset listed there stays permanently OFF no matter what this
+    # function writes — the toggle "saves" but silently can't ever take
+    # effect. Blank Slate installs pre-populate this list with ~27 toolsets,
+    # making most of the desktop Toolsets UI unusable for re-enabling
+    # anything (issue #49995).
+    #
+    # Only toolsets the user just explicitly enabled FOR THIS PLATFORM are
+    # cleared from the global disabled list — toolsets the user did not
+    # touch (still unchecked) or that remain disabled on other platforms
+    # are left alone, so agent.disabled_toolsets keeps working as a
+    # cross-platform suppression list for anything not actively re-enabled.
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        if isinstance(disabled_toolsets, list) and disabled_toolsets:
+            newly_enabled = enabled_toolset_keys - preserved_entries
+            if newly_enabled:
+                remaining = [
+                    ts for ts in disabled_toolsets
+                    if str(ts) not in newly_enabled
+                ]
+                if remaining != disabled_toolsets:
+                    agent_cfg["disabled_toolsets"] = remaining
+
     save_config(config)
 
 
@@ -2759,6 +2785,49 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
+def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
+    """Prompt for xAI Imagine stored public URL behavior."""
+    section = config.setdefault(section_name, {})
+    if not isinstance(section, dict):
+        section = {}
+        config[section_name] = section
+    xai_cfg = section.setdefault("xai", {})
+    if not isinstance(xai_cfg, dict):
+        xai_cfg = {}
+        section["xai"] = xai_cfg
+    storage_cfg = xai_cfg.setdefault("storage", {})
+    if not isinstance(storage_cfg, dict):
+        storage_cfg = {}
+        xai_cfg["storage"] = storage_cfg
+
+    _print_warning(
+        "  xAI Imagine can store generated media and create reusable public URLs. "
+        "xAI may bill for stored files and public URL hosting."
+    )
+    idx = _prompt_choice(
+        "  Stored public URLs:",
+        [
+            "Enable public URLs without automatic expiry (recommended)",
+            "Disable stored public URLs",
+            "Enable public URLs for 2 days",
+        ],
+        default=0,
+    )
+    if idx == 1:
+        storage_cfg["enabled"] = False
+        _print_success("  xAI stored public URLs disabled")
+    elif idx == 2:
+        storage_cfg["enabled"] = True
+        storage_cfg["public_url"] = True
+        storage_cfg["expires_after"] = 2 * 24 * 60 * 60
+        _print_success("  xAI stored public URLs enabled for 2 days")
+    else:
+        storage_cfg["enabled"] = True
+        storage_cfg["public_url"] = True
+        storage_cfg["expires_after"] = None
+        _print_success("  xAI stored public URLs enabled without automatic expiry")
+
+
 def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
     """Persist a plugin-backed image generation provider selection."""
     img_cfg = config.setdefault("image_gen", {})
@@ -2769,6 +2838,8 @@ def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
     img_cfg["use_gateway"] = False
     _print_success(f"  image_gen.provider set to: {plugin_name}")
     _configure_imagegen_model_for_plugin(plugin_name, config)
+    if plugin_name == "xai":
+        _configure_xai_imagine_storage("image_gen", config)
 
 
 # ─── Video Generation Model Pickers ───────────────────────────────────────────
@@ -2869,6 +2940,8 @@ def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gat
     vid_cfg["use_gateway"] = use_gateway
     _print_success(f"  video_gen.provider set to: {plugin_name}")
     _configure_videogen_model_for_plugin(plugin_name, config)
+    if plugin_name == "xai":
+        _configure_xai_imagine_storage("video_gen", config)
 
 
 def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> None:

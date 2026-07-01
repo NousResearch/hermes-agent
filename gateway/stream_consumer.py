@@ -121,6 +121,7 @@ class GatewayStreamConsumer:
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
+        run_still_current: Optional[Callable[[], bool]] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -175,6 +176,7 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        self._delivered_commentary_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -183,6 +185,11 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+
+        # Session staleness guard — when set to False (e.g. after /new or
+        # /stop), the run() loop will abandon the stream early instead of
+        # continuing to edit and deliver stale deltas.
+        self._run_still_current = run_still_current or (lambda: True)
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -290,6 +297,16 @@ class GatewayStreamConsumer:
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
+
+    def has_delivered_text(self, text: str) -> bool:
+        """Return True if *text* was already delivered as visible chat content."""
+        target = self._clean_for_display(text or "").strip()
+        if not target:
+            return False
+        visible_prefix = self._visible_prefix().strip()
+        if visible_prefix == target:
+            return True
+        return any(sent.strip() == target for sent in self._delivered_commentary_texts)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -493,6 +510,12 @@ class GatewayStreamConsumer:
 
         try:
             while True:
+                # Abandon the stream early if the session has been reset
+                # (e.g. /new or /stop). Prevents stale deltas from being
+                # delivered after the user has already moved on.
+                if not self._run_still_current():
+                    return
+
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
@@ -790,14 +813,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        # Strip trailing whitespace/newlines but preserve leading content
-        return cleaned.rstrip()
+        return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     async def _send_new_chunk(
         self,
@@ -1173,6 +1189,10 @@ class GatewayStreamConsumer:
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.
                 self._notify_new_message()
+                # Record the exact delivered text so run.py can confirm whether
+                # an interim "preview" actually carried the final response, vs.
+                # unrelated commentary delivered during a session split (#14238).
+                self._delivered_commentary_texts.append(text)
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)

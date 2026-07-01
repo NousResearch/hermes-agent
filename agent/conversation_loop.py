@@ -52,6 +52,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
+    is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
 )
@@ -1167,10 +1168,21 @@ def run_conversation(
                 # stream.  Mirror the ACP exclusion used for Responses
                 # API upgrade (lines ~1083-1085).
                 elif (
-                    agent.provider in {"copilot-acp", "moa"}
+                    agent.provider in {"copilot-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
+                    _use_streaming = False
+                # MoA streams only when a display/TTS consumer is present to
+                # receive the deltas. MoAChatCompletions.create() honors
+                # stream=True (runs the references, then returns the aggregator's
+                # raw token stream) and is reached here because, for provider
+                # "moa", _create_request_openai_client returns the MoA facade
+                # itself. Without consumers (quiet mode, subagents, health-check
+                # probes) we keep the complete-response path: the facade returns a
+                # whole response when stream is not requested, preserving the
+                # prior behavior for those callers.
+                elif agent.provider == "moa" and not agent._has_stream_consumers():
                     _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for
@@ -1699,6 +1711,56 @@ def run_conversation(
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg
+                        # ── Content-filter stream stall → fallback (#32421) ──
+                        # When the provider's output-layer safety filter (e.g.
+                        # MiniMax "output new_sensitive (1027)", Azure
+                        # content_filter) kills the stream mid-delivery, the
+                        # raw error was classified at the swallow point and the
+                        # stub tagged ``_content_filter_terminated``.  This
+                        # filter is content-deterministic — continuation
+                        # retries against the SAME primary just re-hit it and
+                        # burn paid attempts (the loop used to give up with
+                        # "Response remained truncated after 3 continuation
+                        # attempts" and never consult the fallback chain).
+                        # Escalate to the configured fallback BEFORE retrying.
+                        _cf_terminated = getattr(
+                            response, "_content_filter_terminated", False
+                        )
+                        if (
+                            _cf_terminated
+                            and agent._fallback_index < len(agent._fallback_chain)
+                        ):
+                            agent._vprint(
+                                f"{agent.log_prefix}🛡️  Content filter terminated "
+                                f"stream — activating fallback provider...",
+                                force=True,
+                            )
+                            agent._emit_status(
+                                "Content filter terminated stream; switching to fallback..."
+                            )
+                            if agent._try_activate_fallback():
+                                # Roll the partial content (if any was already
+                                # appended in a prior continuation pass) back to
+                                # the last clean turn so the fallback provider
+                                # gets a coherent continuation point.
+                                if truncated_response_parts:
+                                    messages = agent._get_messages_up_to_last_assistant(messages)
+                                agent._session_messages = messages
+                                length_continue_retries = 0
+                                truncated_response_parts = []
+                                retry_count = 0
+                                compression_attempts = 0
+                                _retry.primary_recovery_attempted = False
+                                _retry.restart_with_rebuilt_messages = True
+                                break
+                            # No fallback available — fall through to normal
+                            # continuation (best-effort, may loop).
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  No fallback provider "
+                                f"configured — retrying with same provider "
+                                f"(may re-hit filter)...",
+                                force=True,
+                            )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -1860,6 +1922,25 @@ def run_conversation(
                         provider=agent.provider,
                         api_mode=agent.api_mode,
                     )
+                    # Aggregator-only usage is retained for cost pricing: MoA
+                    # advisor tokens must be priced at each advisor's OWN model
+                    # rate, not the aggregator's, so they are added as dollars
+                    # (below) rather than folded into the priced usage.
+                    aggregator_usage = canonical_usage
+                    # MoA: fold the reference (advisor) fan-out's token usage
+                    # into this turn's REPORTED token counts. MoA runs advisors
+                    # before the aggregator and returns only the aggregator's
+                    # usage, so without this the entire advisor spend — usually
+                    # the bulk of a MoA turn — is invisible in token counts.
+                    _moa_ref_cost = None
+                    _moa_client = getattr(agent, "client", None)
+                    if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
+                        try:
+                            _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
+                            if _ref_usage is not None:
+                                canonical_usage = canonical_usage + _ref_usage
+                        except Exception as _moa_acct_exc:  # pragma: no cover - defensive
+                            logger.debug("MoA reference usage accounting failed: %s", _moa_acct_exc)
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
@@ -1913,13 +1994,20 @@ def run_conversation(
 
                     cost_result = estimate_usage_cost(
                         agent.model,
-                        canonical_usage,
+                        aggregator_usage,
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_key=getattr(agent, "api_key", ""),
                     )
                     if cost_result.amount_usd is not None:
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+                    # Add MoA advisor cost (already priced per-advisor at each
+                    # advisor's own model rate) on top of the aggregator cost.
+                    if _moa_ref_cost is not None:
+                        try:
+                            agent.session_estimated_cost_usd += float(_moa_ref_cost)
+                        except (TypeError, ValueError):  # pragma: no cover - defensive
+                            pass
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
@@ -1940,6 +2028,18 @@ def run_conversation(
                             # affects 0 rows without error).
                             if not agent._session_db_created:
                                 agent._ensure_db_session()
+                            # Per-call cost delta = aggregator cost + MoA
+                            # advisor cost (each priced at its own rate). Folded
+                            # here so state.db's estimated_cost_usd includes the
+                            # full MoA spend, matching the folded token counts.
+                            _cost_delta = None
+                            if cost_result.amount_usd is not None:
+                                _cost_delta = float(cost_result.amount_usd)
+                            if _moa_ref_cost is not None:
+                                try:
+                                    _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
+                                except (TypeError, ValueError):  # pragma: no cover
+                                    pass
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -1947,8 +2047,7 @@ def run_conversation(
                                 cache_read_tokens=canonical_usage.cache_read_tokens,
                                 cache_write_tokens=canonical_usage.cache_write_tokens,
                                 reasoning_tokens=canonical_usage.reasoning_tokens,
-                                estimated_cost_usd=float(cost_result.amount_usd)
-                                if cost_result.amount_usd is not None else None,
+                                estimated_cost_usd=_cost_delta,
                                 cost_status=cost_result.status,
                                 cost_source=cost_result.source,
                                 billing_provider=agent.provider,
@@ -2869,6 +2968,7 @@ def run_conversation(
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.upstream_rate_limit,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
@@ -2883,13 +2983,30 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
+                    #
+                    # Exception: an upstream-aggregator 429 — the credential
+                    # pool can't help when the *upstream* model (DeepSeek,
+                    # etc.) is throttling OpenRouter, so always fall back to a
+                    # different model regardless of pool state.
+                    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    pool_may_recover = (
+                        False if _is_upstream
+                        else _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
                     )
                     if not pool_may_recover:
-                        if classified.reason == FailoverReason.billing:
+                        if _is_upstream:
+                            _upstream_name = (classified.error_context or {}).get(
+                                "upstream_provider", "aggregator"
+                            )
+                            agent._buffer_status(
+                                f"⚠️ Upstream {_upstream_name} rate-limited — "
+                                "switching to fallback model..."
+                            )
+                        elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
                             )
@@ -3162,6 +3279,45 @@ def run_conversation(
                             }
                         _retry.restart_with_compressed_messages = True
                         break
+
+                    # The error is output-cap-shaped (about max_tokens being
+                    # too large) but the provider's wording didn't let us parse
+                    # the available output budget.  Compression CANNOT help here
+                    # — the input already fits; the call fails deterministically
+                    # on the oversized max_tokens.  Routing it into compression
+                    # re-sends the same max_tokens, gets the identical 400, and
+                    # death-loops until "cannot compress further" (#55546).
+                    # Fail fast with an actionable message instead of looping.
+                    if is_output_cap_error(error_msg):
+                        agent._flush_status_buffer()
+                        agent._vprint(
+                            f"{agent.log_prefix}❌ The provider rejected the request because "
+                            f"max_tokens exceeds its output cap for this model.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.yaml to "
+                            f"at or below the model's max-output limit. "
+                            f"(This is an output-cap error, not a context overflow — "
+                            f"compression cannot fix it.)",
+                            force=True,
+                        )
+                        logger.error(
+                            f"{agent.log_prefix}Output-cap error not routed into compression "
+                            f"(max_tokens over provider cap): {error_msg[:200]}"
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": (
+                                "max_tokens exceeds the provider's output cap for this model. "
+                                "Lower model.max_tokens in config.yaml."
+                            ),
+                            "partial": True,
+                            "failed": True,
+                        }
 
                     # Error is about the INPUT being too large.  Only reduce
                     # context_length when the provider explicitly reports the
@@ -3501,6 +3657,13 @@ def run_conversation(
                     ):
                         _retry.primary_recovery_attempted = True
                         retry_count = 0
+                        # Primary transport recovery starts a fresh attempt
+                        # cycle. Re-open fallback state so a follow-on 429 can
+                        # still activate fallback_providers after stale
+                        # pre-recovery fallback/credential-pool bookkeeping.
+                        _retry.has_retried_429 = False
+                        agent._fallback_index = 0
+                        agent._fallback_activated = False
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
@@ -3772,6 +3935,17 @@ def run_conversation(
             # to fit the context window.
             retry_count += 1
             _retry.restart_with_compressed_messages = False
+            continue
+
+        if _retry.restart_with_rebuilt_messages:
+            # A content-filter stream stall (#32421) was escalated to the
+            # fallback chain and the partial content rolled back.  Re-issue
+            # the API call against the now-active fallback provider.  Refund
+            # the budget/count for the stalled attempt so the fallback gets a
+            # fair turn.
+            api_call_count -= 1
+            agent.iteration_budget.refund()
+            _retry.restart_with_rebuilt_messages = False
             continue
 
         if _retry.restart_with_length_continuation:
@@ -4392,7 +4566,11 @@ def run_conversation(
                             "as final response"
                         )
                         final_response = _recovered
-                        agent._response_was_previewed = True
+                        # Streaming delivered a fragment, not a confirmed
+                        # final preview. Leave response_previewed false so
+                        # gateway fallback delivery can send the recovered
+                        # text plus the abnormal-turn explanation.
+                        agent._response_was_previewed = False
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -4637,14 +4815,20 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
+                from agent.agent_runtime_helpers import (
+                    intent_ack_continuation_mode,
+                )
+
+                _ack_mode = intent_ack_continuation_mode(agent)
                 if (
-                    agent.api_mode == "codex_responses"
+                    _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
                     and agent._looks_like_codex_intermediate_ack(
                         user_message=user_message,
                         assistant_content=final_response,
                         messages=messages,
+                        require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
                     codex_ack_continuations += 1
@@ -4730,6 +4914,55 @@ def run_conversation(
                     # terminal. Keep a debug breadcrumb in agent.log for tracing.
                     logger.debug("verification stop-loop nudge issued (attempt %d)",
                                  agent._verification_stop_nudges)
+                    continue
+
+                # User verification-loop gate: when the agent edited code this
+                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
+                # going one more turn. The shipped guidance is folded into the
+                # evidence-based verify-on-stop nudge above, so this path has no
+                # default continuation cost.
+                _verify_nudge2 = None
+                _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
+                _attempt = getattr(agent, "_pre_verify_nudges", 0)
+                try:
+                    from agent.verify_hooks import max_verify_nudges
+                    from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
+
+                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                        # Posture is fixed for the session — resolve once + cache.
+                        coding = getattr(agent, "_resolved_is_coding", None)
+                        if coding is None:
+                            from agent.coding_context import is_coding_context
+                            coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
+                            agent._resolved_is_coding = coding
+                        _verify_nudge2 = get_pre_verify_continue_message(
+                            session_id=getattr(agent, "session_id", None) or "",
+                            platform=getattr(agent, "platform", "") or "",
+                            model=getattr(agent, "model", "") or "",
+                            coding=coding,
+                            attempt=_attempt,
+                            final_response=final_response,
+                            changed_paths=_edited,
+                        )
+                except Exception:
+                    logger.debug("pre_verify hook check failed", exc_info=True)
+                    _verify_nudge2 = None
+
+                if _verify_nudge2:
+                    agent._pre_verify_nudges = _attempt + 1
+                    final_msg["finish_reason"] = "verify_hook_continue"
+                    # Same alternation contract as verify-on-stop: keep the
+                    # attempted answer in history, follow it with a synthetic
+                    # user nudge, and don't surface the premature answer.
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _verify_nudge2,
+                        "_pre_verify_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.debug("pre_verify nudge issued (attempt %d)",
+                                 agent._pre_verify_nudges)
                     continue
 
                 messages.append(final_msg)

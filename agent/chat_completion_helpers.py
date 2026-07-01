@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -631,7 +632,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _ct = agent._get_transport()
         is_github_responses = (
             base_url_host_matches(agent.base_url, "models.github.ai")
-            or base_url_host_matches(agent.base_url, "api.githubcopilot.com")
+            or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
         is_codex_backend = (
             agent.provider == "openai-codex"
@@ -701,7 +702,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
-        or base_url_host_matches(agent._base_url_lower, "api.githubcopilot.com")
+        or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
     )
     _is_nous = "nousresearch" in agent._base_url_lower
     _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
@@ -740,14 +741,26 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.provider_data_collection:
         _prefs["data_collection"] = agent.provider_data_collection
 
-    # Claude max-output override on aggregators
+    # Anthropic-compatible max-output fallback (last resort only — applied in
+    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
+    # an explicit value).  Model-gated, not URL-gated: any chat-completions
+    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
+    # Anthropic Messages API treats it as mandatory and proxies that omit it
+    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
+    # as 4096 output tokens — easily exhausted by thinking + large tool calls
+    # like write_file/patch.  OpenRouter/Nous were the only routes covered
+    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
     _ant_max = None
-    if (_is_or or _is_nous) and "claude" in (agent.model or "").lower():
-        try:
-            from agent.anthropic_adapter import _get_anthropic_max_output
+    try:
+        from agent.anthropic_adapter import (
+            _get_anthropic_max_output,
+            _ANTHROPIC_OUTPUT_LIMITS,
+        )
+        _model_norm = (agent.model or "").lower().replace(".", "-")
+        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
             _ant_max = _get_anthropic_max_output(agent.model)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Qwen session metadata
     _qwen_meta = None
@@ -1050,18 +1063,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     "arguments": tool_call.function.arguments
                 },
             }
-            # Defence-in-depth: redact credentials from tool call arguments
-            # before they enter conversation history. Tool execution uses the
-            # raw API response object, not this dict, so redacting the
-            # persisted shape is safe and only affects storage. Catches the
-            # case where a model accidentally inlines a secret into a tool
-            # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
-            # sk-...'")`). (#19798)
-            if isinstance(tc_dict["function"]["arguments"], str):
-                from agent.redact import redact_sensitive_text
-                tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"]
-                )
+            # Tool-call arguments are intentionally NOT redacted here. This
+            # dict enters the in-memory conversation history that is replayed
+            # to the model on every subsequent turn AND persisted to state.db,
+            # which is itself replayed verbatim on session resume
+            # (get_messages_as_conversation). Masking a credential to `***`
+            # here poisons that replay: the model reads back its own
+            # `PGPASSWORD='***' psql ...` call and copies the placeholder into
+            # the next tool call, breaking every credential-dependent command
+            # on the second turn (#43083). The masking also provided no real
+            # protection — the same secret still leaks verbatim through tool
+            # OUTPUT (file contents, command output, diffs, the compaction
+            # block), none of which this pass ever touched. Keeping secrets
+            # out of the replayable store is a separate tokenization/vault
+            # concern, not something arg-redaction can deliver without
+            # breaking replay. Storage-time redaction remains governed by the
+            # `security.redact_secrets` toggle. (#19798 introduced this;
+            # #43083 removed it.)
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3
             # thinking models reject the request with a 400 error.
@@ -1118,7 +1136,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
-    if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
+    if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
         # source of the 429 so the cooldown should not be reset/extended.
@@ -1136,7 +1154,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # provider again.  Guards the cross-turn replay storm in #24996.
         if (
             len(agent._fallback_chain) > 0
-            and reason not in {FailoverReason.rate_limit, FailoverReason.billing}
+            and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
         ):
             _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
             agent._rate_limited_until = max(
@@ -1906,7 +1924,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         stream_kwargs = {
             **api_kwargs,
             "stream": True,
-            "stream_options": {"include_usage": True},
             "timeout": _httpx.Timeout(
                 connect=_conn_cap,
                 read=_stream_read_timeout,
@@ -1914,6 +1931,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
+        # OpenAI's `stream_options={"include_usage": True}` drives usage
+        # accounting on OpenAI-compatible endpoints (incl. the Gemini OpenAI
+        # compat shim and aggregators like OpenRouter).  Google's *native*
+        # Gemini REST endpoint rejects the keyword outright
+        # (`Completions.create() got an unexpected keyword argument
+        # 'stream_options'`), so omit it only for that endpoint.
+        if not is_native_gemini_base_url(agent.base_url):
+            stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = _set_request_client(
             agent._create_request_openai_client(
                 reason="chat_completion_stream_request",
@@ -1930,6 +1955,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+
+        # Some OpenAI-compatible adapters (for example copilot-acp) accept
+        # stream=True but still return a completed response object rather than
+        # an iterator of chunks.  Treat that as "streaming unsupported" for the
+        # rest of this session instead of crashing on ``for chunk in stream``
+        # with ``'types.SimpleNamespace' object is not iterable`` (#11732).
+        response_choices = getattr(stream, "choices", None)
+        if isinstance(response_choices, list) and response_choices:
+            logger.info(
+                "Streaming request returned a final response object instead of "
+                "an iterator; switching %s/%s to non-streaming for this session.",
+                agent.provider or "unknown",
+                agent.model or "unknown",
+            )
+            agent._disable_streaming = True
+            message = getattr(response_choices[0], "message", None)
+            if message is not None:
+                reasoning_text = (
+                    getattr(message, "reasoning_content", None)
+                    or getattr(message, "reasoning", None)
+                )
+                if isinstance(reasoning_text, str) and reasoning_text:
+                    _fire_first_delta()
+                    agent._fire_reasoning_delta(reasoning_text)
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            return stream
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -2073,7 +2127,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["arguments"] += tc_delta.function.arguments
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
-                        extra = (tc_delta.model_extra or {}).get("extra_content")
+                        extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
                             extra = extra.model_dump()
@@ -2314,7 +2368,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
 
-            # Return the native Anthropic Message for downstream processing
+            # Return the native Anthropic Message for downstream processing.
+            # If the stream was interrupted (the event loop broke out above on
+            # agent._interrupt_requested), do NOT call get_final_message() — on
+            # a partially-consumed stream the SDK may hang draining remaining
+            # events or return a Message with incomplete tool_use blocks (partial
+            # JSON in `input`). The outer poll loop raises InterruptedError, so
+            # this return value is discarded anyway.
+            if agent._interrupt_requested:
+                return None
             return stream.get_final_message()
 
     def _call():
@@ -2788,7 +2850,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
-            return SimpleNamespace(
+            # Detect provider output-layer content filtering (e.g. MiniMax
+            # "output new_sensitive (1027)", Azure/OpenAI content_filter,
+            # Anthropic safety refusal).  The raw error is about to be
+            # swallowed into a finish_reason=length stub, so classify it HERE
+            # while we still have it and stamp the stub.  Retrying such a
+            # content-deterministic filter on the same primary just re-hits
+            # the filter — the conversation loop reads this tag and activates
+            # the fallback chain instead of burning continuation retries.
+            # error_classifier is the single source of truth for "what counts
+            # as a content filter" (#32421).
+            _content_filter_terminated = False
+            try:
+                from agent.error_classifier import classify_api_error, FailoverReason
+                _cls = classify_api_error(
+                    result["error"],
+                    provider=str(getattr(agent, "provider", "") or ""),
+                    model=str(getattr(agent, "model", "") or ""),
+                )
+                _content_filter_terminated = (
+                    _cls.reason == FailoverReason.content_policy_blocked
+                )
+            except Exception:
+                _content_filter_terminated = False
+            _stub = SimpleNamespace(
                 id=PARTIAL_STREAM_STUB_ID,
                 model=getattr(agent, "model", "unknown"),
                 choices=[SimpleNamespace(
@@ -2797,6 +2882,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+            if _content_filter_terminated:
+                _stub._content_filter_terminated = True
+            return _stub
         raise result["error"]
     return result["response"]
 

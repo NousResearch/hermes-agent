@@ -2848,6 +2848,27 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
 
 
+_RATE_LIMIT_ERROR_MARKERS: tuple = (
+    "http 429",
+    "429 too many requests",
+    "rate limit exceeded",
+    "retry-after",
+)
+
+
+def _is_rate_limit_error_text(text: str) -> bool:
+    """Return True when a tool error is an upstream throttling response.
+
+    A 429 means the MCP server/session is reachable and correctly reporting
+    backpressure from its backing API. Treating that as a transport failure
+    trips the generic MCP circuit breaker and makes normal multi-call workflows
+    worse: after a few throttled calls Hermes announces the server is
+    "unreachable" even though waiting/retrying is the correct behavior.
+    """
+    msg = (text or "").lower()
+    return any(marker in msg for marker in _RATE_LIMIT_ERROR_MARKERS)
+
+
 def _handle_session_expired_and_retry(
     server_name: str,
     exc: BaseException,
@@ -3390,7 +3411,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    error_text = str(parsed.get("error", ""))
+                    if _is_rate_limit_error_text(error_text):
+                        # Upstream 429/backpressure is not an MCP transport
+                        # outage. Leave the breaker closed so callers can wait
+                        # and retry instead of being told the server is down.
+                        _reset_server_error(server_name)
+                    else:
+                        _bump_server_error(server_name)
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):

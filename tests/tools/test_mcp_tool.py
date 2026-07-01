@@ -571,6 +571,35 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_rate_limit_error_does_not_trip_circuit_breaker(self):
+        from tools.mcp_tool import (
+            _make_tool_handler,
+            _server_error_counts,
+            _servers,
+        )
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                "hmt notes get failed: HTTP 429 Too Many Requests: Rate limit exceeded (Retry-After: 1)",
+                is_error=True,
+            )
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        _server_error_counts["test_srv"] = 0
+
+        try:
+            handler = _make_tool_handler("test_srv", "fail_tool", 120)
+            with self._patch_mcp_loop():
+                for _ in range(3):
+                    result = json.loads(handler({}))
+                    assert "error" in result
+            assert _server_error_counts["test_srv"] == 0
+        finally:
+            _servers.pop("test_srv", None)
+            _server_error_counts.pop("test_srv", None)
+
     def test_disconnected_server(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

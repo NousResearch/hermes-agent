@@ -67,6 +67,7 @@ from acp.schema import (
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
+    _send_update,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -383,10 +384,47 @@ def _extract_text(
     parts: list[str] = []
     for block in prompt:
         if isinstance(block, TextContentBlock):
-            parts.append(block.text)
-        elif hasattr(block, "text"):
-            parts.append(str(block.text))
+            text = str(block.text or "").strip()
+            if text:
+                parts.append(text)
+            continue
+        if isinstance(block, ResourceContentBlock):
+            for part in _resource_link_to_parts(block):
+                if part.get("type") == "text" and part.get("text"):
+                    parts.append(str(part["text"]).strip())
+            continue
+        if isinstance(block, EmbeddedResourceContentBlock):
+            for part in _embedded_resource_to_parts(block):
+                if part.get("type") == "text" and part.get("text"):
+                    parts.append(str(part["text"]).strip())
+            continue
+        if isinstance(block, ImageContentBlock):
+            label = str(getattr(block, "uri", "") or "").strip() or "inline image"
+            parts.append(f"[Image attachment: {label}]")
+            continue
+        if isinstance(block, AudioContentBlock):
+            mime_type = str(getattr(block, "mime_type", "") or "").strip() or "unknown"
+            parts.append(f"[Audio attachment: {mime_type}]")
+            continue
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(str(text).strip())
     return "\n".join(parts)
+
+
+def _build_plan_update_from_todo_args(args: Any) -> Any | None:
+    """Translate todo tool args into an ACP plan update."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return None
+    if not isinstance(args, dict) or not isinstance(args.get("todos"), list):
+        return None
+    try:
+        return _build_plan_update_from_todo_result(json.dumps({"todos": args["todos"]}))
+    except Exception:
+        return None
 
 
 def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | None:
@@ -475,47 +513,77 @@ class HermesACPAgent(acp.Agent):
     _ADVERTISED_COMMANDS = (
         {
             "name": "help",
+            "display_name": "Help",
             "description": "List available commands",
+            "tool_tip": "Show Hermes slash commands available in ACP sessions.",
+            "icon": "question-mark",
         },
         {
             "name": "model",
+            "display_name": "Model",
             "description": "Show current model and provider, or switch models",
             "input_hint": "model name to switch to",
+            "tool_tip": "Inspect the active model or switch to another provider:model pair.",
+            "icon": "cpu",
         },
         {
             "name": "tools",
+            "display_name": "Tools",
             "description": "List available tools with descriptions",
+            "tool_tip": "Inspect the currently enabled Hermes tools.",
+            "icon": "wrench",
         },
         {
             "name": "skill",
+            "display_name": "Skill",
             "description": "Load, list, or use skills",
             "input_hint": "list | load <name>",
+            "tool_tip": "Browse and load Hermes skills into the current session.",
+            "icon": "sparkles",
         },
         {
             "name": "context",
+            "display_name": "Context",
             "description": "Show conversation message counts by role",
+            "tool_tip": "Summarize the current session context footprint.",
+            "icon": "list-tree",
         },
         {
             "name": "reset",
+            "display_name": "Reset",
             "description": "Clear conversation history",
+            "tool_tip": "Clear the ACP session history and start fresh.",
+            "icon": "trash",
         },
         {
             "name": "compact",
+            "display_name": "Compact",
             "description": "Compress conversation context",
+            "tool_tip": "Compress the current session to recover context window space.",
+            "icon": "archive",
         },
         {
             "name": "steer",
+            "display_name": "Steer",
             "description": "Inject guidance into the currently running agent turn",
             "input_hint": "guidance for the active turn",
+            "tool_tip": "Send corrective guidance to the active turn without losing work.",
+            "icon": "navigation",
         },
         {
             "name": "queue",
+            "display_name": "Queue",
             "description": "Queue a prompt to run after the current turn finishes",
             "input_hint": "prompt to run next",
+            "tool_tip": "Queue a follow-up prompt behind the currently running turn.",
+            "icon": "list-plus",
         },
         {
             "name": "version",
+            "display_name": "Version",
             "description": "Show Hermes version",
+            "tool_tip": "Display the Hermes Agent version backing this ACP session.",
+            "icon": "info",
         },
     )
 
@@ -524,6 +592,7 @@ class HermesACPAgent(acp.Agent):
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
+    _MODE_CONFIG_ID = "mode"
     _MODE_TO_EDIT_APPROVAL_POLICY = {
         _MODE_DEFAULT: "ask",
         _MODE_ACCEPT_EDITS: "workspace_session",
@@ -668,6 +737,8 @@ class HermesACPAgent(acp.Agent):
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
+        config_options: list[SessionConfigOptionSelect] = []
+
         try:
             from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
 
@@ -708,7 +779,7 @@ class HermesACPAgent(acp.Agent):
                 )
 
             if options:
-                return [
+                config_options.append(
                     SessionConfigOptionSelect(
                         id="model",
                         name="Model",
@@ -718,11 +789,31 @@ class HermesACPAgent(acp.Agent):
                         options=options,
                         current_value=current_choice or options[0].value,
                     )
-                ]
+                )
         except Exception:
             logger.debug("Could not build ACP config_options", exc_info=True)
 
-        return None
+        modes = self._session_modes(state)
+        config_options.append(
+            SessionConfigOptionSelect(
+                id=self._MODE_CONFIG_ID,
+                name="Mode",
+                description="Choose how Hermes handles edit approvals for this session",
+                type="select",
+                category="mode",
+                options=[
+                    SessionConfigSelectOption(
+                        name=mode.name,
+                        value=mode.id,
+                        description=mode.description,
+                    )
+                    for mode in modes.available_modes
+                ],
+                current_value=modes.current_mode_id,
+            )
+        )
+
+        return config_options or None
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -968,7 +1059,11 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True),
+                prompt_capabilities=PromptCapabilities(
+                    image=True,
+                    audio=False,
+                    embedded_context=True,
+                ),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
@@ -1405,6 +1500,14 @@ class HermesACPAgent(acp.Agent):
             isinstance(user_content, list) and bool(user_content)
         )
         if not has_content:
+            if self._conn:
+                await self._conn.session_update(
+                    session_id,
+                    acp.update_agent_message_text(
+                        "Prompt was empty or contained no readable text/resources."
+                    ),
+                )
+                await self._send_usage_update(state)
             return PromptResponse(stop_reason="end_turn")
 
         # /steer on an idle session has no in-flight tool call to inject into.
@@ -1487,7 +1590,7 @@ class HermesACPAgent(acp.Agent):
         streamed_message = False
 
         if conn:
-            tool_progress_cb = make_tool_progress_cb(
+            base_tool_progress_cb = make_tool_progress_cb(
                 conn,
                 session_id,
                 loop,
@@ -1495,6 +1598,24 @@ class HermesACPAgent(acp.Agent):
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
             )
+            def tool_progress_cb(
+                event_type: str,
+                name: str = None,
+                preview: str = None,
+                args: Any = None,
+                **cb_kwargs: Any,
+            ) -> None:
+                base_tool_progress_cb(
+                    event_type,
+                    name=name,
+                    preview=preview,
+                    args=args,
+                    **cb_kwargs,
+                )
+                if event_type == "tool.started" and name == "todo":
+                    plan_update = _build_plan_update_from_todo_args(args)
+                    if plan_update is not None:
+                        _send_update(conn, session_id, loop, plan_update)
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
@@ -1773,6 +1894,11 @@ class HermesACPAgent(acp.Agent):
                 AvailableCommand(
                     name=spec["name"],
                     description=spec["description"],
+                    field_meta={
+                        "displayName": spec.get("display_name", spec["name"]),
+                        "toolTip": spec.get("tool_tip", spec["description"]),
+                        "icon": spec.get("icon"),
+                    },
                     input=UnstructuredCommandInput(hint=input_hint)
                     if input_hint
                     else None,
@@ -2278,6 +2404,11 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+        elif str(config_id) == self._MODE_CONFIG_ID:
+            normalized_mode = str(value or "").strip()
+            if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+                normalized_mode = self._MODE_DEFAULT
+            setattr(state, "mode", normalized_mode)
         elif str(config_id) == "model":
             # Zed's model selector uses configOptions with id="model";
             # route to the dedicated model switch handler.

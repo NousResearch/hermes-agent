@@ -1,0 +1,9 @@
+name: minimax
+version: 1.0.0
+description: "MiniMax image generation backend (image-01 / image-01-live). Native endpoint, not OpenAI-compatible."
+author: Vality
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY
+optional_env:
+  - MINIMAX_GROUP_ID

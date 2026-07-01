@@ -8,6 +8,12 @@ import type { ProjectInfo, SessionInfo } from '@/hermes'
 // pure helpers and the VISUAL-ONLY worktree enhancer that injects empty lanes
 // from `git worktree list`. It never decides session membership.
 
+// Overview rows are previews, but they are also the first history surface users
+// see in grouped/project mode. Keep the preview large enough that project mode
+// does not look like chat history is capped at three sessions; full drill-in
+// remains available for very large histories.
+export const PROJECT_OVERVIEW_PREVIEW_LIMIT = 10
+
 export interface SidebarSessionGroup {
   id: string
   label: string

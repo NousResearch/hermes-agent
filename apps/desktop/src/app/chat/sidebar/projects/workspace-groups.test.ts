@@ -10,6 +10,7 @@ import {
   mergeRepoWorktreeGroups,
   overlayLiveLanes,
   overlayLivePreviews,
+  PROJECT_OVERVIEW_PREVIEW_LIMIT,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   sortWorktreeGroups
@@ -53,6 +54,12 @@ describe('baseName', () => {
     expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
     expect(baseName('C:\\repos\\app')).toBe('app')
     expect(baseName('')).toBeUndefined()
+  })
+})
+
+describe('PROJECT_OVERVIEW_PREVIEW_LIMIT', () => {
+  it('keeps project overview history from looking capped at three rows', () => {
+    expect(PROJECT_OVERVIEW_PREVIEW_LIMIT).toBe(10)
   })
 })
 

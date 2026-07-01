@@ -8,13 +8,13 @@ import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceCollapsedIds, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
 
-import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
+import { PROJECT_OVERVIEW_PREVIEW_LIMIT, sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
 // Page size when revealing more already-loaded rows within a workspace group.
 export const SIDEBAR_GROUP_PAGE = 5
 
 // Recent sessions previewed under each project in the overview.
-export const PROJECT_PREVIEW_COUNT = 3
+export const PROJECT_PREVIEW_COUNT = PROJECT_OVERVIEW_PREVIEW_LIMIT
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4

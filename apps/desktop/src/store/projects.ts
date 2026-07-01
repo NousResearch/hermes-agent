@@ -1,15 +1,19 @@
 import { atom } from 'nanostores'
 
-import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  liveSessionProjectId,
+  PROJECT_OVERVIEW_PREVIEW_LIMIT,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBranch } from '@/global'
+import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
-import { translateNow } from '@/i18n'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { notify } from '@/store/notifications'
 import { setSidebarAgentsGrouped } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
@@ -257,7 +261,10 @@ export async function refreshProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
+    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', {
+      preview_limit: PROJECT_OVERVIEW_PREVIEW_LIMIT
+    })
+
     // The flat Sessions list shows everything; scoped ids are only used here to
     // reconcile the optimistic eviction layer against what the server still lists.
     const scoped = new Set(res.scoped_session_ids ?? [])

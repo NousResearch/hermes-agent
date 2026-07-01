@@ -533,6 +533,25 @@ class TestReapplyReasoningEchoForProviderSwitch:
         assert msgs[2]["reasoning_content"] == "summary from codex"
         assert msgs[4]["reasoning_content"] == " "
 
+    def test_switch_to_deepseek_strips_stale_reasoning_when_content_exists(self) -> None:
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "done",
+                "reasoning": "stale provider-private trace",
+                "reasoning_content": "summary from codex",
+            }
+        ]
+
+        changed = reapply_reasoning_echo_for_provider(agent, msgs)
+
+        assert changed == 1
+        assert msgs[0]["reasoning_content"] == "summary from codex"
+        assert "reasoning" not in msgs[0]
+
     def test_strips_stale_pad_under_strict_provider(self) -> None:
         """Switching TO a strict provider (Codex/Mistral/Cerebras) must STRIP
         stale reasoning_content baked in under a reasoning primary, otherwise

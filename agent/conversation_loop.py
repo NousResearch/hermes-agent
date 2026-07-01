@@ -805,9 +805,12 @@ def run_conversation(
             # This ensures multi-turn reasoning context is preserved
             agent._copy_reasoning_content_for_api(msg, api_msg)
 
-            # Remove 'reasoning' field - it's for trajectory storage only
-            # We've copied it to 'reasoning_content' for the API above
-            if "reasoning" in api_msg:
+            # Remove 'reasoning' unless this provider explicitly replays
+            # historical thinking through that field (vLLM/Qwen preserve_thinking).
+            if (
+                "reasoning" in api_msg
+                and agent._reasoning_replay_field_for_api() != "reasoning"
+            ):
                 api_msg.pop("reasoning")
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:

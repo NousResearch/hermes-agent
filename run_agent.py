@@ -5457,6 +5457,11 @@ class AIAgent:
         from agent.agent_runtime_helpers import copy_reasoning_content_for_api
         return copy_reasoning_content_for_api(self, source_msg, api_msg)
 
+    def _reasoning_replay_field_for_api(self) -> Optional[str]:
+        """Forwarder — see ``agent.agent_runtime_helpers.reasoning_replay_field_for_api``."""
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+        return reasoning_replay_field_for_api(self)
+
     def _reapply_reasoning_echo_for_provider(self, api_messages: list) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.reapply_reasoning_echo_for_provider``."""
         from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider

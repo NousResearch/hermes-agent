@@ -3152,6 +3152,8 @@ class SlackAdapter(BasePlatformAdapter):
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
         # Build source
+        is_bot_author = bool(event.get("bot_id") or event.get("subtype") == "bot_message")
+
         source = self.build_source(
             chat_id=channel_id,
             chat_name=channel_id,  # Will be resolved later if needed
@@ -3159,6 +3161,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            is_bot=is_bot_author,
         )
 
         # Per-channel ephemeral prompt

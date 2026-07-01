@@ -62,8 +62,10 @@ class _AuthRunner:
     def __init__(self, auth_fn=None):
         self._auth_fn = auth_fn or (lambda _source: True)
         self.seen_sources = []
+        self.seen_events = []
 
     async def handle(self, event):
+        self.seen_events.append(event)
         return None
 
     def _is_user_authorized(self, source):
@@ -75,6 +77,47 @@ def _attach_auth_runner(adapter, auth_fn=None):
     runner = _AuthRunner(auth_fn=auth_fn)
     adapter.set_message_handler(runner.handle)
     return runner
+
+
+# ===========================================================================
+# incoming bot-authored mentions
+# ===========================================================================
+
+class TestSlackBotAuthoredMentions:
+    """Bot-authored Slack messages should be routed when explicitly allowed and addressed."""
+
+    @pytest.mark.asyncio
+    async def test_allowed_bot_mention_marks_source_as_bot(self):
+        adapter = _make_adapter()
+        adapter.config.extra["allow_bots"] = "mentions"
+        adapter._user_name_cache["U_OTHER_BOT"] = "grainfs-dev"
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "subtype": "bot_message",
+                "bot_id": "B_OTHER",
+                "user": "U_OTHER_BOT",
+                "username": "grainfs-dev",
+                "text": "<@U_BOT> PR #999 is ready for review",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "ts": "1000.1",
+            }
+        )
+
+        assert len(captured) == 1
+        source = captured[0].source
+        assert source.user_id == "U_OTHER_BOT"
+        assert source.is_bot is True
+        assert "<@U_BOT>" not in captured[0].text
 
 
 # ===========================================================================

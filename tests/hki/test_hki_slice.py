@@ -10,7 +10,7 @@ import pytest
 from hermes_cli import hki_cmd
 from hki.inventory import build_inventory, write_inventory
 from hki.manifest import build_manifest, source_id_for, write_manifest
-from hki.paths import resolve_scope
+from hki.paths import find_git_worktree_root, resolve_scope
 from hki.report import write_sources_report
 
 
@@ -47,6 +47,60 @@ def test_basic_inventory_creation_records_text_binary_and_hash(tmp_path):
     assert by_path["blob.bin"].is_text is False
     assert by_path["blob.bin"].classification == "binary"
     assert by_path["blob.bin"].sha256
+
+
+def test_resolve_scope_uses_git_root_when_cwd_is_repo_root(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    scope = resolve_scope(tmp_path)
+
+    assert scope.cwd == tmp_path.resolve()
+    assert scope.root == tmp_path.resolve()
+    assert scope.inventory_path == tmp_path / ".hermes" / "hki" / "inventory.json"
+
+
+def test_cli_from_nested_git_directory_writes_to_repo_root(tmp_path, capsys):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    nested = tmp_path / "src" / "pkg"
+    nested.mkdir(parents=True)
+    (nested / "module.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Repo\n", encoding="utf-8")
+
+    assert _run_cli(["inventory", "--cwd", str(nested)]) == 0
+    assert "Wrote HKI inventory" in capsys.readouterr().out
+
+    root_inventory_path = tmp_path / ".hermes" / "hki" / "inventory.json"
+    nested_inventory_path = nested / ".hermes" / "hki" / "inventory.json"
+    assert root_inventory_path.exists()
+    assert not nested_inventory_path.exists()
+
+    inventory = json.loads(root_inventory_path.read_text(encoding="utf-8"))
+    assert inventory["root"] == str(tmp_path.resolve())
+    assert [item["relative_path"] for item in inventory["files"]] == [
+        "README.md",
+        "src/pkg/module.py",
+    ]
+
+
+def test_resolve_scope_outside_repo_falls_back_to_cwd(tmp_path):
+    nested = tmp_path / "notes"
+    nested.mkdir()
+
+    scope = resolve_scope(nested)
+
+    assert scope.cwd == nested.resolve()
+    assert scope.root == nested.resolve()
+    assert scope.inventory_path == nested / ".hermes" / "hki" / "inventory.json"
+
+
+def test_find_git_worktree_root_accepts_git_file_marker(tmp_path):
+    (tmp_path / ".git").write_text("gitdir: /tmp/example/worktrees/repo\n", encoding="utf-8")
+    nested = tmp_path / "src"
+    nested.mkdir()
+
+    assert find_git_worktree_root(nested) == tmp_path.resolve()
 
 
 def test_inventory_excludes_common_generated_and_secret_paths(tmp_path):
@@ -155,3 +209,8 @@ def test_resolve_scope_rejects_file_cwd(tmp_path):
 
     with pytest.raises(ValueError, match="cwd is not a directory"):
         resolve_scope(Path(file_path))
+
+
+def test_resolve_scope_rejects_missing_cwd(tmp_path):
+    with pytest.raises(ValueError, match="cwd does not exist"):
+        resolve_scope(tmp_path / "missing")

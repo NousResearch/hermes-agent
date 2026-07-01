@@ -37,8 +37,9 @@ class HkiScope:
 def resolve_scope(cwd: str | Path | None = None) -> HkiScope:
     """Resolve the HKI workspace root from ``cwd``.
 
-    The first slice is intentionally cwd-rooted. Project DB aware resolution can
-    be added here later without changing the CLI or the HKI domain modules.
+    Prefer the containing Git worktree root when it can be detected with a
+    filesystem-only parent walk. Project DB aware resolution can be added here
+    later without changing the CLI or the HKI domain modules.
     """
 
     raw = Path.cwd() if cwd is None else Path(cwd).expanduser()
@@ -50,8 +51,35 @@ def resolve_scope(cwd: str | Path | None = None) -> HkiScope:
     if not resolved.is_dir():
         raise ValueError(f"cwd is not a directory: {resolved}")
 
-    root = resolved
+    root = find_git_worktree_root(resolved) or resolved
     return HkiScope(cwd=resolved, root=root, output_dir=root / HKI_RELATIVE_DIR)
+
+
+def find_git_worktree_root(path: Path) -> Path | None:
+    """Return the nearest ancestor that looks like a Git worktree root.
+
+    Git worktrees and submodules often use a ``.git`` file rather than a
+    directory. For HKI's purpose, either marker is enough: the marker's parent is
+    the stable workspace root where artifacts should live.
+    """
+
+    current = path.resolve()
+    for candidate in (current, *current.parents):
+        git_marker = candidate / ".git"
+        if _is_git_marker(git_marker):
+            return candidate
+    return None
+
+
+def _is_git_marker(path: Path) -> bool:
+    if path.is_dir():
+        return (path / "HEAD").is_file()
+    if not path.is_file():
+        return False
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").lstrip().startswith("gitdir:")
+    except OSError:
+        return False
 
 
 def ensure_output_dir(scope: HkiScope) -> Path:

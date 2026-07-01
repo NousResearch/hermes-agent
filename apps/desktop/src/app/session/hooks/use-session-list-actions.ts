@@ -99,7 +99,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      // Scope the fetch to the active profile so switching profiles updates the
+      // messaging sidebar (Telegram, Discord, …) — previously hardcoded to
+      // 'all', which meant the sidebar always showed every profile's chats
+      // regardless of the active profile switcher.
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
 
@@ -114,7 +120,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
@@ -122,8 +128,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
       source: platform
     })
 
@@ -136,7 +143,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right

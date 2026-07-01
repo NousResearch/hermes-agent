@@ -56,6 +56,7 @@ _EMAIL_ADDRESS_RE = re.compile(
 
 _PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
+_MAX_PASTE_URL_RESPONSE_BYTES = 4096
 
 # Maximum bytes to read from a single log file for upload.
 # paste.rs caps at ~1 MB; we stay under that with headroom.
@@ -253,6 +254,18 @@ def delete_paste(url: str) -> bool:
         return 200 <= resp.status < 300
 
 
+def _read_bounded_text_response(resp, *, limit: int, description: str) -> str:
+    headers = getattr(resp, "headers", None)
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if isinstance(raw_length, (str, bytes, int)) and int(raw_length) > limit:
+        raise ValueError(f"{description} response body is too large")
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"{description} response body is too large")
+    return body.decode("utf-8")
+
+
 def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
     """Record *urls* for deletion ``delay_seconds`` from now.
 
@@ -284,7 +297,11 @@ def _upload_paste_rs(content: str) -> str:
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        url = resp.read().decode("utf-8").strip()
+        url = _read_bounded_text_response(
+            resp,
+            limit=_MAX_PASTE_URL_RESPONSE_BYTES,
+            description="paste.rs",
+        ).strip()
     if not url.startswith("http"):
         raise ValueError(f"Unexpected response from paste.rs: {url[:200]}")
     return url
@@ -320,7 +337,11 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        url = resp.read().decode("utf-8").strip()
+        url = _read_bounded_text_response(
+            resp,
+            limit=_MAX_PASTE_URL_RESPONSE_BYTES,
+            description="dpaste.com",
+        ).strip()
     if not url.startswith("http"):
         raise ValueError(f"Unexpected response from dpaste.com: {url[:200]}")
     return url

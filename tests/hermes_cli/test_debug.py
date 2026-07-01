@@ -61,6 +61,37 @@ class TestUploadPasteRs:
 
         assert url == "https://paste.rs/abc123"
 
+    def test_upload_paste_rs_rejects_oversized_response_before_reading(self):
+        import hermes_cli.debug as debug
+
+        mock_resp = MagicMock()
+        mock_resp.headers = {
+            "Content-Length": str(debug._MAX_PASTE_URL_RESPONSE_BYTES + 1)
+        }
+        mock_resp.read.side_effect = AssertionError("body should not be read")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=mock_resp):
+            with pytest.raises(ValueError, match="too large"):
+                debug._upload_paste_rs("hello world")
+
+        mock_resp.read.assert_not_called()
+
+    def test_upload_paste_rs_reads_missing_content_length_with_cap(self):
+        import hermes_cli.debug as debug
+
+        mock_resp = MagicMock()
+        mock_resp.headers = {}
+        mock_resp.read.return_value = b"https://paste.rs/abc123\n"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=mock_resp):
+            assert debug._upload_paste_rs("hello world") == "https://paste.rs/abc123"
+
+        mock_resp.read.assert_called_once_with(debug._MAX_PASTE_URL_RESPONSE_BYTES + 1)
+
     def test_upload_paste_rs_bad_response(self):
         from hermes_cli.debug import _upload_paste_rs
 
@@ -99,6 +130,23 @@ class TestUploadDpasteCom:
             url = _upload_dpaste_com("hello world", expiry_days=7)
 
         assert url == "https://dpaste.com/ABCDEFG"
+
+    def test_upload_dpaste_com_rejects_oversized_response_before_reading(self):
+        import hermes_cli.debug as debug
+
+        mock_resp = MagicMock()
+        mock_resp.headers = {
+            "Content-Length": str(debug._MAX_PASTE_URL_RESPONSE_BYTES + 1)
+        }
+        mock_resp.read.side_effect = AssertionError("body should not be read")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=mock_resp):
+            with pytest.raises(ValueError, match="too large"):
+                debug._upload_dpaste_com("hello world", expiry_days=7)
+
+        mock_resp.read.assert_not_called()
 
 
 class TestUploadToPastebin:

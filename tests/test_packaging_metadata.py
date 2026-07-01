@@ -265,3 +265,43 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+def test_optional_mcps_ship_in_both_wheel_and_sdist():
+    """Every optional-mcps/<name>/manifest.yaml must be declared as a
+    setuptools data-files entry (wheel) AND covered by `graft optional-mcps`
+    in MANIFEST.in (sdist).
+
+    Without the per-entry data-files target, the wheel drops the manifest and
+    `hermes mcp catalog` comes up empty on packaged installs even though the
+    file exists in the repo. One target per entry is required because
+    data-files flattens globs into a single target dir (a shared
+    `optional-mcps/*/*` glob would collapse all manifests into one colliding
+    file).
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships MCP catalog manifests"
+    )
+
+    on_disk = sorted(
+        p.parent.name
+        for p in (REPO_ROOT / "optional-mcps").glob("*/manifest.yaml")
+    )
+    assert on_disk, "expected optional-mcps/*/manifest.yaml on disk"
+
+    missing = []
+    for name in on_disk:
+        key = f"optional-mcps/{name}"
+        expected = [f"optional-mcps/{name}/manifest.yaml"]
+        if data_files.get(key) != expected:
+            missing.append(name)
+
+    assert not missing, (
+        "pyproject [tool.setuptools.data-files] must declare one entry per "
+        f"optional-mcps/<name> (missing or mismatched: {missing}). "
+        "See the comment block above the data-files entries in pyproject.toml."
+    )
+

@@ -159,5 +159,15 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)
+
+    # cron daemon (standalone cron scheduler)
+    cron_daemon_parser = cron_subparsers.add_parser(
+        "daemon", help="Run cron scheduler as standalone daemon (independent of gateway)"
+    )
+    cron_daemon_parser.add_argument(
+        "--interval", type=int, default=60, help="Tick interval in seconds (default: 60)"
+    )
+    add_accept_hooks_flag(cron_daemon_parser)
+
     add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)

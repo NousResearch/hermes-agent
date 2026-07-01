@@ -2,14 +2,20 @@
 Cron subcommand for hermes CLI.
 
 Handles standalone cron management commands like list, create, edit,
-pause/resume/run/remove, status, and tick.
+pause/resume/run/remove, status, tick, and daemon.
 """
 
 import json
+import logging
 import re
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -18,9 +24,6 @@ from hermes_cli.colors import Colors, color
 
 # Patterns that indicate a cron job targets the gateway lifecycle.
 # Matches commands that restart/stop the gateway or its service manager.
-# Deliberately specific — a bare "gateway ... restart" catch-all would block
-# legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
-# the API gateway logs and report restart events").
 _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
@@ -437,6 +440,43 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_daemon(args):
+    """Run the cron scheduler as a standalone daemon (independent of gateway)."""
+    interval = getattr(args, 'interval', 60)
+    stop_event = threading.Event()
+
+    def _signal_handler(signum, frame):
+        logger.info("Shutdown signal received, stopping cron daemon...")
+        stop_event.set()
+
+    # Only set up signal handlers in the main thread
+    try:
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+    except ValueError:
+        # Not in main thread (e.g., when imported and called programmatically)
+        # The caller is responsible for handling shutdown
+        pass
+
+    logger.info(f"Cron daemon started (interval={interval}s). Press Ctrl+C to stop.")
+    print(f"Cron daemon started (interval={interval}s). Press Ctrl+C to stop.")
+
+    tick_count = 0
+    while not stop_event.is_set():
+        try:
+            from cron.scheduler import tick
+            tick(verbose=True, sync=True)
+        except Exception as e:
+            logger.error(f"Cron tick error: {e}")
+
+        tick_count += 1
+        stop_event.wait(timeout=interval)
+
+    logger.info("Cron daemon stopped")
+    print("Cron daemon stopped")
+    return 0
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -453,6 +493,9 @@ def cron_command(args):
     if subcmd == "tick":
         cron_tick()
         return 0
+
+    if subcmd == "daemon":
+        return cron_daemon(args)
 
     if subcmd in {"create", "add"}:
         return cron_create(args)
@@ -473,5 +516,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|daemon]")
     sys.exit(1)

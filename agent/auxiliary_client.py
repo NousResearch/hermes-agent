@@ -126,6 +126,13 @@ _LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
 # with no matching handler. Keyed by provider name.
 _LOGGED_UNSUPPORTED_EXTPROC_KEYS: set = set()
 _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
+# Same treatment for the remaining static-misconfiguration dead-ends in the
+# named-custom-provider and copilot-acp branches: a provider/entry with a
+# permanently-missing api_key, base_url, or model repeats the identical
+# warning on every call until the user edits config.yaml.
+_LOGGED_NAMED_CUSTOM_NOKEY_KEYS: set = set()
+_LOGGED_NAMED_CUSTOM_NOBASEURL_KEYS: set = set()
+_LOGGED_COPILOT_ACP_NOMODEL_KEYS: set = set()
 
 
 def _openai_http_client_kwargs(
@@ -4220,12 +4227,15 @@ def resolve_provider_client(
                 custom_key = os.getenv(custom_key_env, "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
-                logger.warning(
-                    "resolve_provider_client: named custom provider %r has no resolvable "
-                    "api_key — request will be sent with placeholder no-key-required "
-                    "and will 401 on auth-required endpoints",
-                    custom_entry.get("name") or provider,
-                )
+                _custom_nokey_key = custom_entry.get("name") or provider
+                if _custom_nokey_key not in _LOGGED_NAMED_CUSTOM_NOKEY_KEYS:
+                    _LOGGED_NAMED_CUSTOM_NOKEY_KEYS.add(_custom_nokey_key)
+                    logger.debug(
+                        "resolve_provider_client: named custom provider %r has no resolvable "
+                        "api_key — request will be sent with placeholder no-key-required "
+                        "and will 401 on auth-required endpoints",
+                        _custom_nokey_key,
+                    )
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
             entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()
@@ -4300,9 +4310,11 @@ def resolve_provider_client(
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
-            logger.warning(
-                "resolve_provider_client: named custom provider %r has no base_url",
-                provider)
+            if provider not in _LOGGED_NAMED_CUSTOM_NOBASEURL_KEYS:
+                _LOGGED_NAMED_CUSTOM_NOBASEURL_KEYS.add(provider)
+                logger.debug(
+                    "resolve_provider_client: named custom provider %r has no base_url",
+                    provider)
             return None, None
     except ImportError:
         pass
@@ -4478,10 +4490,12 @@ def resolve_provider_client(
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
             if not final_model:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
-                )
+                if provider not in _LOGGED_COPILOT_ACP_NOMODEL_KEYS:
+                    _LOGGED_COPILOT_ACP_NOMODEL_KEYS.add(provider)
+                    logger.debug(
+                        "resolve_provider_client: copilot-acp requested but no model "
+                        "was provided or configured"
+                    )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(

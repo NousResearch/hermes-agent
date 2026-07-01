@@ -1624,7 +1624,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
         "moa_aggregator": {
@@ -1632,7 +1632,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
     },

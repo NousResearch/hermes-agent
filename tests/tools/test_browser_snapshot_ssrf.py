@@ -30,11 +30,6 @@ def _make_eval_result(result):
     return {"success": True, "data": {"result": result}}
 
 
-# ---------------------------------------------------------------------------
-# browser_snapshot: private-network guard after eval navigation
-# ---------------------------------------------------------------------------
-
-
 class TestBrowserSnapshotPrivateNetworkGuard:
     """browser_snapshot must block content from private pages navigated via eval."""
 
@@ -127,7 +122,6 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         """Local sidecar sessions can legitimately access private URLs."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        # Simulate the effective_task_id being a local sidecar key
         monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -178,7 +172,6 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        # Should succeed — eval failure means we can't determine URL, fail-open
         assert result["success"] is True
 
     def test_handles_empty_url_result(self, monkeypatch):
@@ -279,11 +272,6 @@ def _make_screenshot_result(path="/tmp/test_screenshot.png"):
     return {"success": True, "data": {"path": path}}
 
 
-# ---------------------------------------------------------------------------
-# browser_vision: private-network guard after eval navigation
-# ---------------------------------------------------------------------------
-
-
 class TestBrowserVisionPrivateNetworkGuard:
     """browser_vision must block screenshots from private pages navigated via eval."""
 
@@ -331,14 +319,8 @@ class TestBrowserVisionPrivateNetworkGuard:
         monkeypatch.setattr(
             browser_tool, "_run_browser_command", mock_run_browser_command
         )
-        # Screenshot file won't exist — that's fine, function returns error
-        # but the important thing is the guard didn't block it.
-
         result_raw = browser_browser_vision(question="what do you see", task_id="test")
         result = json.loads(result_raw)
-        # Guard passed; function continues to screenshot path.
-        # Since screenshot file doesn't exist, it returns a file-not-found error,
-        # NOT the "private or internal address" error.
         assert "private or internal address" not in result.get("error", "")
 
     def test_skips_check_in_local_backend_mode(self, monkeypatch):
@@ -363,7 +345,6 @@ class TestBrowserVisionPrivateNetworkGuard:
         """Local sidecar sessions can legitimately access private URLs."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        # Simulate the effective_task_id being a local sidecar key
         monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
@@ -436,3 +417,83 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+
+CLOUD_METADATA_URL = "http://169.254.169.254/latest/meta-data/"
+
+
+class TestSnapshotBlocksCloudMetadataViaAlwaysBlocked:
+    """browser_snapshot must block 169.254.169.254 via _is_always_blocked_url."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(
+            browser_tool,
+            "_get_session_info",
+            lambda task_id: {
+                "session_name": f"s_{task_id}",
+                "bb_session_id": None,
+                "cdp_url": None,
+                "features": {"local": True},
+                "_first_nav": False,
+            },
+        )
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(
+            browser_tool,
+            "_is_always_blocked_url",
+            lambda url: "169.254.169.254" in url,
+        )
+
+    def test_blocks_cloud_metadata_url(self, monkeypatch):
+        """169.254.169.254 must be blocked even when _is_safe_url says True."""
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "snapshot":
+                return _make_snapshot_result()
+            elif command == "eval":
+                return _make_eval_result(CLOUD_METADATA_URL)
+            return {"success": False, "error": "unknown"}
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", mock_run_browser_command)
+
+        result = json.loads(browser_browser_snapshot(task_id="test"))
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+        assert CLOUD_METADATA_URL in result["error"]
+
+
+class TestVisionBlocksCloudMetadataViaAlwaysBlocked:
+    """browser_vision must block 169.254.169.254 via _is_always_blocked_url."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(
+            browser_tool,
+            "_is_always_blocked_url",
+            lambda url: "169.254.169.254" in url,
+        )
+
+    def test_blocks_cloud_metadata_url(self, monkeypatch):
+        """169.254.169.254 must be blocked even when _is_safe_url says True."""
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                return _make_eval_result(CLOUD_METADATA_URL)
+            return {"success": False, "error": "should not reach screenshot"}
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", mock_run_browser_command)
+
+        result = json.loads(browser_browser_vision(question="what do you see", task_id="test"))
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+        assert CLOUD_METADATA_URL in result["error"]

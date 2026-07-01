@@ -3045,7 +3045,9 @@ def browser_snapshot(
                         _url_result.get("data", {}).get("result", "")
                         .strip().strip('"').strip("'")
                     )
-                    if _current_url and not _is_safe_url(_current_url):
+                    if _current_url and (
+                        _is_always_blocked_url(_current_url) or not _is_safe_url(_current_url)
+                    ):
                         return json.dumps({
                             "success": False,
                             "error": (
@@ -4044,7 +4046,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     _url_result.get("data", {}).get("result", "")
                     .strip().strip('"').strip("'")
                 )
-                if _current_url and not _is_safe_url(_current_url):
+                if _current_url and (
+                    _is_always_blocked_url(_current_url) or not _is_safe_url(_current_url)
+                ):
                     return json.dumps({
                         "success": False,
                         "error": (

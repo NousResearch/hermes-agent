@@ -1358,10 +1358,16 @@ class GatewaySlashCommandsMixin:
                                     _persist_cfg["model"] = _persist_model_cfg
                                 _persist_model_cfg["default"] = result.new_model
                                 _persist_model_cfg["provider"] = result.target_provider
-                                if result.base_url:
+                                _is_custom = (
+                                    str(result.target_provider or "")
+                                    .strip().lower() == "custom"
+                                )
+                                if _is_custom and result.base_url:
                                     _persist_model_cfg["base_url"] = result.base_url
-                                if str(result.target_provider or "").strip().lower() != "custom":
-                                    clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
+                                else:
+                                    clear_model_endpoint_credentials(
+                                        _persist_model_cfg, clear_base_url=True
+                                    )
                                 from hermes_cli.config import save_config
                                 save_config(_persist_cfg)
                             except Exception as e:
@@ -1595,10 +1601,16 @@ class GatewaySlashCommandsMixin:
                         cfg["model"] = model_cfg
                     model_cfg["default"] = result.new_model
                     model_cfg["provider"] = result.target_provider
-                    if result.base_url:
+                    _is_custom = (
+                        str(result.target_provider or "")
+                        .strip().lower() == "custom"
+                    )
+                    if _is_custom and result.base_url:
                         model_cfg["base_url"] = result.base_url
-                    if str(result.target_provider or "").strip().lower() != "custom":
-                        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+                    else:
+                        clear_model_endpoint_credentials(
+                            model_cfg, clear_base_url=True
+                        )
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:

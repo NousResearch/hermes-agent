@@ -1,5 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
-import { authenticateTelegram, fetchStatusSnapshot, hasMiniAppApi, type StatusSnapshot } from "./api";
+import { authenticateTelegram, fetchApprovalsSnapshot, fetchStatusSnapshot, hasMiniAppApi, type ApprovalItem, type StatusSnapshot } from "./api";
 import {
   approvalPreviews,
   navItems,
@@ -51,6 +51,19 @@ function gatewayMeta(snapshot: StatusSnapshot | null) {
 function actionValue(snapshot: StatusSnapshot | null) {
   if (!snapshot) return "Блок";
   return snapshot.miniapp.actions_enabled ? "Вкл" : "Блок";
+}
+
+function mapServerApproval(item: ApprovalItem): ApprovalPreview {
+  return {
+    id: item.id,
+    title: item.title,
+    source: item.source,
+    risk: item.risk,
+    summary: item.summary,
+    requestedAt: item.requested_at,
+    status: item.status === "waiting" ? "ожидает" : "заблокировано",
+    checks: item.checks,
+  };
 }
 
 function SectionIntro({ activeTab, onOpenPalette }: { activeTab: NavKey; onOpenPalette: () => void }) {
@@ -141,13 +154,13 @@ function SessionsSection() {
   );
 }
 
-function ApprovalsSection({ selectedId, onSelect }: { selectedId: string; onSelect: (approval: ApprovalPreview) => void }) {
-  const selected = approvalPreviews.find((approval) => approval.id === selectedId) ?? approvalPreviews[0];
+function ApprovalsSection({ approvals, selectedId, onSelect }: { approvals: ApprovalPreview[]; selectedId: string; onSelect: (approval: ApprovalPreview) => void }) {
+  const selected = approvals.find((approval) => approval.id === selectedId) ?? approvals[0];
 
   return (
     <section className="approval-workspace" aria-label="Очередь одобрений">
       <div className="stack-list compact-stack">
-        {approvalPreviews.map((approval) => (
+        {approvals.map((approval) => (
           <button className="approval-row glass-card tap" data-selected={approval.id === selected.id} key={approval.id} type="button" onClick={() => onSelect(approval)}>
             <span>
               <strong>{approval.title}</strong>
@@ -262,6 +275,7 @@ export function App() {
   const [apiState, setApiState] = useState<"mock" | "connecting" | "connected" | "offline">("mock");
   const [activeTab, setActiveTab] = useState<NavKey>("status");
   const [selectedApprovalId, setSelectedApprovalId] = useState(approvalPreviews[0]?.id ?? "");
+  const [serverApprovals, setServerApprovals] = useState<ApprovalPreview[]>([]);
   const [isPaletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
@@ -287,22 +301,27 @@ export function App() {
     if (!telegram.isTelegram || !telegram.initData || !apiConfigured) {
       setApiState("mock");
       setSnapshot(null);
+      setServerApprovals([]);
       return;
     }
 
     let cancelled = false;
     setApiState("connecting");
     authenticateTelegram(telegram.initData)
-      .then(() => fetchStatusSnapshot())
-      .then((status) => {
+      .then(() => Promise.all([fetchStatusSnapshot(), fetchApprovalsSnapshot()]))
+      .then(([status, approvals]) => {
         if (!cancelled) {
           setSnapshot(status);
+          const mappedApprovals = approvals.items.map(mapServerApproval);
+          setServerApprovals(mappedApprovals);
+          if (mappedApprovals[0]) setSelectedApprovalId(mappedApprovals[0].id);
           setApiState("connected");
         }
       })
       .catch(() => {
         if (!cancelled) {
           setSnapshot(null);
+          setServerApprovals([]);
           setApiState("offline");
         }
       });
@@ -314,6 +333,8 @@ export function App() {
   const displayName = telegram.user?.username
     ? `@${telegram.user.username}`
     : telegram.user?.first_name ?? "локальное превью";
+
+  const approvals = serverApprovals.length > 0 ? serverApprovals : approvalPreviews;
 
   const cards = useMemo(() => {
     if (!snapshot) return statusCards;
@@ -332,9 +353,9 @@ export function App() {
       },
       {
         label: "Одобрения",
-        value: "0",
-        meta: "очередь пуста",
-        tone: "ok",
+        value: String(approvals.length),
+        meta: approvals.length > 0 ? "очередь на чтение" : "очередь пуста",
+        tone: approvals.length > 0 ? "warn" : "ok",
       },
       {
         label: "Действия",
@@ -343,7 +364,7 @@ export function App() {
         tone: "warn",
       },
     ] as const;
-  }, [snapshot]);
+  }, [approvals.length, snapshot]);
 
   const connectionLabel =
     apiState === "connected"
@@ -361,7 +382,7 @@ export function App() {
   const safetyText = snapshot?.miniapp.actions_enabled
     ? "Сервер сообщил о включённых действиях. Перед любым запуском нужен контур одобрений."
     : "Ничего не будет выполнено без вашего явного одобрения.";
-  const approvalCount = snapshot ? 0 : approvalPreviews.length;
+  const approvalCount = approvals.length;
 
   return (
     <main className="screen" data-mode={telegram.colorScheme}>
@@ -397,7 +418,7 @@ export function App() {
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} /> : null}
       {activeTab === "sessions" ? <SessionsSection /> : null}
-      {activeTab === "approvals" ? <ApprovalsSection selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
+      {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
       {activeTab === "logs" ? <LogsSection /> : null}
 
       <nav className="bottom-nav" aria-label="Навигация">

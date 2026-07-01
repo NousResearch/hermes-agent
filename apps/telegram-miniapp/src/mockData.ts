@@ -130,11 +130,11 @@ export const sessionPreviews: SessionPreview[] = [
 
 export const approvalPreviews: ApprovalPreview[] = [
   {
-    id: "restart-gateway",
-    title: "Перезапуск gateway",
+    id: "system-mode-change-preview",
+    title: "Изменить системный режим",
     source: "будущий системный запрос",
     risk: "critical",
-    summary: "Показывает, как будет выглядеть опасное действие перед ручным одобрением.",
+    summary: "Макет высокорискового действия перед ручным решением владельца.",
     requestedAt: "макет",
     status: "заблокировано",
     checks: ["нужен владелец", "нужна причина", "нужен rollback-план"],

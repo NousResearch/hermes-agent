@@ -201,6 +201,30 @@ def test_public_smoke_cookie_security_headers_and_status_shape():
     assert "camera=()" in status.headers["permissions-policy"]
 
 
+def test_public_smoke_approvals_are_authenticated_no_store_and_rate_limited():
+    client = make_client(public_settings(status_rate_limit_per_minute=1))
+    headers = {"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}
+
+    unauthenticated = client.get("/api/approvals", headers=headers)
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers["cache-control"] == "no-store"
+
+    auth_client(client)
+    first = client.get("/api/approvals", headers=headers)
+    limited = client.get("/api/approvals", headers=headers)
+
+    assert first.status_code == 200
+    assert first.headers["cache-control"] == "no-store"
+    assert first.headers["x-content-type-options"] == "nosniff"
+    assert first.json()["ok"] is True
+    assert len(first.json()["items"]) == 2
+    assert SMOKE_ORIGIN not in first.text
+    assert BOT_TOKEN not in first.text
+    assert "/Volumes/Diver Pro/hermes" not in first.text
+    assert limited.status_code == 429
+    assert BOT_TOKEN not in limited.text
+
+
 def test_public_smoke_default_status_provider_overlays_authoritative_public_mode():
     app = create_app(settings=public_settings())
     client = TestClient(app, base_url=SMOKE_ORIGIN)

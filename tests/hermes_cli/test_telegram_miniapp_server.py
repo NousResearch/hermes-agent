@@ -79,6 +79,7 @@ def test_route_inventory_and_forbidden_routes_are_absent():
         ("POST", "/api/logout"),
         ("GET", "/api/me"),
         ("GET", "/api/status"),
+        ("GET", "/api/approvals"),
     }
 
     assert client.get("/does-not-exist").status_code == 404
@@ -145,6 +146,29 @@ def test_me_and_status_require_auth_then_return_safe_schema():
     serialized = status.text
     assert "/Volumes/Diver Pro/hermes" not in serialized
     assert BOT_TOKEN not in serialized
+
+
+def test_approvals_require_auth_then_return_safe_read_only_queue():
+    client = make_client()
+
+    assert client.get("/api/approvals").status_code == 401
+
+    auth_client(client)
+    response = client.get("/api/approvals")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert len(body["items"]) == 2
+    first = body["items"][0]
+    assert set(first) == {"id", "title", "source", "risk", "summary", "requested_at", "status", "checks"}
+    assert first["risk"] in {"read_only", "critical"}
+    assert first["status"] in {"waiting", "blocked"}
+    serialized = response.text
+    assert "/Volumes/Diver Pro/hermes" not in serialized
+    assert BOT_TOKEN not in serialized
+    assert "TELEGRAM_BOT_TOKEN" not in serialized
+    assert "pid" not in serialized.lower()
 
 
 def test_logout_clears_only_miniapp_session():

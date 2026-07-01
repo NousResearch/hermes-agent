@@ -33,4 +33,20 @@ class StatusSnapshot(TypedDict):
     miniapp: MiniAppStatus
 
 
+class ApprovalItem(TypedDict):
+    id: str
+    title: str
+    source: str
+    risk: str
+    summary: str
+    requested_at: str
+    status: str
+    checks: list[str]
+
+
+class ApprovalsSnapshot(TypedDict):
+    ok: bool
+    items: list[ApprovalItem]
+
+
 JsonDict = dict[str, Any]

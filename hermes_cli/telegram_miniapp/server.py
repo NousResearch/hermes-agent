@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from hermes_cli.config import get_env_value
 
 from .auth import InitDataAuthError, TelegramMiniAppUser, VerifiedInitData, verify_init_data
+from .approvals import build_approvals_snapshot
 from .status import build_status_snapshot
 
 
@@ -250,11 +251,13 @@ def create_app(
     *,
     settings: MiniAppSettings | None = None,
     status_provider: Callable[[], dict[str, Any]] | None = None,
+    approvals_provider: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     settings = settings or MiniAppSettings()
     sessions = SessionStore()
     rate_limiter = RateLimiter()
     status_provider = status_provider or (lambda: build_status_snapshot(hermes_home_configured=True))
+    approvals_provider = approvals_provider or build_approvals_snapshot
     app = FastAPI(title="Hermes Telegram Mini App", docs_url=None, redoc_url=None, openapi_url=None)
 
     def guarded_response(request: Request, response: Response) -> Response:
@@ -380,6 +383,19 @@ def create_app(
         if settings.public_smoke:
             snapshot = dict(snapshot)
             snapshot["miniapp"] = {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True}
+        return _apply_api_no_store(JSONResponse(snapshot), settings)
+
+    @app.get("/api/approvals")
+    def approvals(request: Request):
+        session = current_session(request)
+        if settings.public_smoke:
+            if not rate_limiter.check(
+                f"approvals:{session.session_id}",
+                limit=settings.status_rate_limit_per_minute,
+                now=settings.now(),
+            ):
+                raise HTTPException(status_code=429, detail="Too many requests")
+        snapshot = approvals_provider()
         return _apply_api_no_store(JSONResponse(snapshot), settings)
 
     return app

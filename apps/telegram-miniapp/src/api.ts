@@ -34,6 +34,26 @@ export type AuthResponse = {
   expires_at: string;
 };
 
+export type ApprovalRisk = "read_only" | "critical";
+
+export type ApprovalStatus = "waiting" | "blocked";
+
+export type ApprovalItem = {
+  id: string;
+  title: string;
+  source: string;
+  risk: ApprovalRisk;
+  summary: string;
+  requested_at: string;
+  status: ApprovalStatus;
+  checks: string[];
+};
+
+export type ApprovalsSnapshot = {
+  ok: boolean;
+  items: ApprovalItem[];
+};
+
 const API_URL = (import.meta.env.VITE_HERMES_MINIAPP_API_URL ?? "").replace(/\/$/, "");
 
 export function hasMiniAppApi(isTelegramRuntime = false): boolean {
@@ -64,4 +84,8 @@ export async function authenticateTelegram(initData: string): Promise<AuthRespon
 
 export async function fetchStatusSnapshot(): Promise<StatusSnapshot> {
   return requestJson<StatusSnapshot>("/api/status");
+}
+
+export async function fetchApprovalsSnapshot(): Promise<ApprovalsSnapshot> {
+  return requestJson<ApprovalsSnapshot>("/api/approvals");
 }

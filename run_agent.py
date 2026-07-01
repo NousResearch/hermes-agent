@@ -5149,6 +5149,49 @@ class AIAgent:
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _preserves_thinking_history(self) -> bool:
+        """Return True when the active provider re-renders prior reasoning from history.
+
+        Qwen3.6 (and similar) templates read the assistant turn's ``reasoning``
+        field and use the server-side ``preserve_thinking`` chat-template flag
+        to decide whether to render it as a historical ``<think>`` block. The
+        DeepSeek/Kimi/MiMo echo-back path replays under ``reasoning_content``,
+        which vLLM ≥0.20 drops on input (vllm-project/vllm#38488) and which
+        modern templates render differently from ``reasoning``.
+
+        For these providers, the message-build pipeline must:
+          * NOT strip the ``reasoning_content`` field in
+            ``copy_reasoning_content_for_api`` (strict-provider strip).
+          * NOT pop the ``reasoning`` field in ``conversation_loop``.
+          * NOT strip ``reasoning`` in ``reapply_reasoning_echo_for_provider``
+            on the way out (preserve-thinking on the wire).
+          * Strip ``reasoning`` on fallback to a strict provider (Mistral,
+            Cerebras, Groq) so the strict provider doesn't 400/422 on it.
+
+        Detection (initial): model-name match on ``qwen3.6`` or ``qwen-3.6``
+        — the maintainer-friendly default per the issue author's note.
+        A future config-driven flag (e.g. ``custom_providers[*].preserve_thinking``)
+        would be more robust; today this covers the reported Qwen3.6 / vLLM case.
+
+        Refs #56004.
+
+        Result cached on the AIAgent instance keyed by (provider, model,
+        base_url) — same invalidation contract as ``_thinking_pad_cache``.
+        """
+        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        cached = getattr(self, "_preserves_thinking_history_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        model = (self.model or "").lower()
+        # Word-boundary style match: "qwen3.6" / "qwen-3.6" with an optional
+        # version suffix. We intentionally do NOT match plain "qwen3" —
+        # the preserve_thinking feature was introduced in Qwen3.6 per the
+        # model card, and a too-greedy match would falsely tag older Qwen
+        # models that don't render ``reasoning``.
+        result = bool(re.search(r"qwen[\-_]?3\.6", model))
+        self._preserves_thinking_history_cache = (key, result)
+        return result
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

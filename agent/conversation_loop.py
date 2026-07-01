@@ -786,8 +786,17 @@ def run_conversation(
             agent._copy_reasoning_content_for_api(msg, api_msg)
 
             # Remove 'reasoning' field - it's for trajectory storage only
-            # We've copied it to 'reasoning_content' for the API above
-            if "reasoning" in api_msg:
+            # We've copied it to 'reasoning_content' for the API above.
+            #
+            # Exception: providers that preserve thinking history (Qwen3.6 /
+            # vLLM, refs #56004) read the ``reasoning`` field directly to
+            # render prior turns when the chat template is configured with
+            # ``preserve_thinking: true``. For those providers, keep the
+            # field on the outgoing message so vLLM ≥0.20 sees the prior
+            # thinking trace (the ``reasoning_content`` echo-back path is
+            # incompatible — vLLM drops it on input, refs
+            # vllm-project/vllm#38488).
+            if "reasoning" in api_msg and not agent._preserves_thinking_history():
                 api_msg.pop("reasoning")
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:

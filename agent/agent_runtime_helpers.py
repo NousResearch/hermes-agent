@@ -2518,17 +2518,20 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # rejects those with HTTP 400, so upgrade "" → " " on replay.
     #
     # When the active provider does NOT enforce echo-back, strip the field
-    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
-    # SambaNova, …) reject ANY reasoning_content key in input messages with
-    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
-    # or a single-space pad. This is the cross-provider fallback case: a
-    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
-    # fallback to a strict provider replays that pad and 422s. Stripping
-    # here covers the rebuild path; reapply_reasoning_echo_for_provider()
-    # covers the already-built api_messages path. Refs #45655.
+    # entirely — UNLESS it is a "preserves thinking history" provider
+    # (Qwen3.6 / vLLM, refs #56004). Strict OpenAI-compatible providers
+    # (Mistral, Cerebras, Groq, SambaNova, …) reject ANY reasoning_content
+    # key in input messages with HTTP 400/422 ("Extra inputs are not
+    # permitted"), even an empty string or a single-space pad. This is the
+    # cross-provider fallback case: a reasoning primary (DeepSeek/Kimi/MiMo)
+    # pads history with " ", then a fallback to a strict provider replays
+    # that pad and 422s. Stripping here covers the rebuild path;
+    # reapply_reasoning_echo_for_provider() covers the already-built
+    # api_messages path. Refs #45655.
+    preserves_thinking_history = agent._preserves_thinking_history()
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if not needs_thinking_pad:
+        if not needs_thinking_pad and not preserves_thinking_history:
             api_msg.pop("reasoning_content", None)
         elif existing == "":
             api_msg["reasoning_content"] = " "
@@ -2588,7 +2591,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+    """Re-pad (or strip) assistant turns' reasoning fields for the active provider.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
     provider is active.  A mid-conversation fallback can then switch providers,
@@ -2609,6 +2612,14 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
       fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
       the request falls back to Mistral, and Mistral 422s on the stale pad.
 
+    * Switching TO a "preserves thinking history" provider (Qwen3.6 / vLLM,
+      refs #56004): the provider reads the ``reasoning`` field on assistant
+      turns to render prior thinking (via the ``preserve_thinking`` chat-
+      template flag). Keep the field on the outgoing message.
+      Conversely, switching FROM a preserves-thinking-history provider TO a
+      strict provider must strip ``reasoning`` — strict providers reject
+      unknown fields too.
+
     Calling this immediately before building the request kwargs reconciles the
     fields against the *current* provider.  It is idempotent and safe to call
     every iteration; it covers every fallback path.
@@ -2617,6 +2628,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     removed.
     """
     needs_pad = agent._needs_thinking_reasoning_pad()
+    preserves_thinking_history = agent._preserves_thinking_history()
     changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
@@ -2627,13 +2639,18 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
             copy_reasoning_content_for_api(agent, api_msg, api_msg)
             if api_msg.get("reasoning_content"):
                 changed += 1
-        else:
-            # Strict provider — strip any stale reasoning_content pad left
-            # over from a reasoning primary so the fallback request doesn't
-            # 400/422 on it.
-            if "reasoning_content" in api_msg:
-                api_msg.pop("reasoning_content", None)
-                changed += 1
+            continue
+        # Strict or preserves-thinking-history provider: strip the
+        # ``reasoning_content`` pad (strict providers 400/422 on it), but
+        # only strip the ``reasoning`` field if we are NOT on a
+        # preserves-thinking-history provider (it would defeat the
+        # ``preserve_thinking`` template).
+        if "reasoning_content" in api_msg:
+            api_msg.pop("reasoning_content", None)
+            changed += 1
+        if "reasoning" in api_msg and not preserves_thinking_history:
+            api_msg.pop("reasoning", None)
+            changed += 1
     return changed
 
 

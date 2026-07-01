@@ -29,9 +29,9 @@ export const statusCards: StatusCard[] = [
 export const quickActions: QuickAction[] = [
   {
     label: "Refresh status",
-    command: "mock:refresh-status",
+    command: "mock:read-status",
     risk: "read_only",
-    description: "Local UI-only refresh. No Hermes API call yet.",
+    description: "Reads the M2 safe status snapshot when the local sidecar is connected.",
   },
   {
     label: "Open sessions",
@@ -43,7 +43,7 @@ export const quickActions: QuickAction[] = [
     label: "Run healthcheck",
     command: "disabled:healthcheck",
     risk: "disabled",
-    description: "Requires sidecar + approve gate in a later milestone.",
+    description: "Still disabled. Requires approve gate in a later milestone.",
   },
   {
     label: "Restart gateway",
@@ -54,7 +54,7 @@ export const quickActions: QuickAction[] = [
 ];
 
 export const recentLogs: LogLine[] = [
-  { level: "info", time: "02:34", message: "Gate A validation passed: 203 tests." },
-  { level: "info", time: "02:35", message: "Codex R2 review: OK." },
-  { level: "warn", time: "02:37", message: "Runtime actions disabled until approve-gate milestone." },
+  { level: "info", time: "M2", message: "Status API is read-only and allowlisted." },
+  { level: "info", time: "M2", message: "Telegram initData is verified only on the server." },
+  { level: "warn", time: "M2", message: "Runtime actions disabled until approve-gate milestone." },
 ];

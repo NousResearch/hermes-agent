@@ -89,6 +89,27 @@ h2 {
   margin: 14px 0 0;
 }
 
+.connection-banner {
+  display: inline-flex;
+  margin-top: 16px;
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: #bae6fd;
+  background: rgba(14, 165, 233, 0.12);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.connection-banner.state-connected {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.connection-banner.state-offline {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+}
+
 .identity-card {
   min-width: 180px;
   display: flex;

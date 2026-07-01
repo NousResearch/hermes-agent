@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.runtime_evidence import clear_runtime_evidence, current_runtime_evidence, seed_turn_runtime_evidence
 from model_tools import handle_function_call
 
 
@@ -46,9 +47,17 @@ class TestSelfModificationGuard:
 
     def test_explicit_self_improvement_request_with_named_target_files_can_pass(self):
         target = _repo_root() / "skills/autonomous-ai-agents/hermes-agent/SKILL.md"
+
+        def _dispatch(*_args, **_kwargs):
+            evidence = current_runtime_evidence()
+            assert evidence is not None
+            assert evidence["latest_user_request"].startswith("Explicit self-improvement request")
+            assert evidence["pre_edit_git_status"] == "M tests/test_self_modification_guard.py"
+            return '{"success": true, "message": "updated", "path": "SKILL.md"}'
+
         with patch("hermes_cli.plugins.has_hook", return_value=False), patch(
             "model_tools.registry.dispatch",
-            return_value='{"success": true, "message": "updated", "path": "SKILL.md"}',
+            side_effect=_dispatch,
         ) as dispatch, patch("agent.self_modification_guard._capture_git_status", side_effect=["M tests/test_self_modification_guard.py", "M tests/test_self_modification_guard.py"]):
             result = json.loads(
                 handle_function_call(
@@ -82,6 +91,25 @@ class TestSelfModificationGuard:
             )
         assert "error" in result
         assert "pre-edit git status" in result["error"].lower()
+
+    def test_runtime_evidence_is_shared_across_nested_calls(self):
+        clear_runtime_evidence()
+        seed_turn_runtime_evidence(latest_user_request="Explicit self-improvement request: update Hermes guardrails.")
+
+        def _nested_update() -> None:
+            evidence = current_runtime_evidence()
+            assert evidence is not None
+            assert evidence["latest_user_request"] == "Explicit self-improvement request: update Hermes guardrails."
+            evidence["failing_file"] = "docs/runtime-guardrails-roadmap.md"
+            evidence["failing_line"] = 103
+
+        _nested_update()
+
+        evidence = current_runtime_evidence()
+        assert evidence is not None
+        assert evidence["failing_file"] == "docs/runtime-guardrails-roadmap.md"
+        assert evidence["failing_line"] == 103
+        clear_runtime_evidence()
 
     def test_after_protected_write_includes_validation_diff_and_status_summary(self):
         target = _repo_root() / "skills/autonomous-ai-agents/hermes-agent/SKILL.md"

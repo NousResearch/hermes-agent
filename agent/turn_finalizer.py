@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.runtime_evidence import clear_runtime_evidence
 
 
 def finalize_turn(
@@ -504,4 +505,5 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    clear_runtime_evidence()
     return result

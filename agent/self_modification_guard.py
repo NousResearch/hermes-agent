@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from agent.runtime_evidence import update_runtime_evidence
+
 _PROTECTED_ROOT_NAMES = frozenset({
     "skills",
     "profiles",
@@ -92,6 +94,7 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
             "pre_edit_git_status": pre_edit_git_status,
             "explicit_user_request": user_task_text,
         })
+        update_runtime_evidence(latest_user_request=user_task_text or None, pre_edit_git_status=pre_edit_git_status)
         return None
 
     if function_name in _TERMINAL_TOOL_NAMES:
@@ -116,6 +119,7 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
             "pre_edit_git_status": pre_edit_git_status,
             "explicit_user_request": user_task_text,
         })
+        update_runtime_evidence(latest_user_request=user_task_text or None, pre_edit_git_status=pre_edit_git_status)
         return None
 
     if function_name in _EXECUTE_CODE_TOOL_NAMES:
@@ -140,6 +144,7 @@ def before_tool_call(function_name: str, function_args: Mapping[str, Any] | None
             "pre_edit_git_status": pre_edit_git_status,
             "explicit_user_request": user_task_text,
         })
+        update_runtime_evidence(latest_user_request=user_task_text or None, pre_edit_git_status=pre_edit_git_status)
         return None
 
     return None

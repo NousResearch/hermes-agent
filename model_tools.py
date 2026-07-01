@@ -32,6 +32,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from agent.self_modification_guard import before_tool_call as before_self_modification_tool_call, clear_lifecycle_state, finalize_protected_write_result
+from agent.runtime_evidence import update_runtime_evidence
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -950,6 +951,8 @@ def handle_function_call(
         function_args = {}
     _user_task = user_task if user_task is not None else _current_user_task.get()
     _user_task_token = _current_user_task.set(_user_task)
+    if _user_task is not None:
+        update_runtime_evidence(latest_user_request=_user_task)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         # ── Tool Search bridge dispatch ──────────────────────────────────

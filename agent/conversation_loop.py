@@ -2006,6 +2006,34 @@ def run_conversation(
                         provider=agent.provider,
                         api_mode=agent.api_mode,
                     )
+                    # Aggregator-only usage is retained for cost pricing: MoA
+                    # advisor tokens must be priced at each advisor's OWN model
+                    # rate, not the aggregator's, so they are added as dollars
+                    # (below) rather than folded into the priced usage.
+                    aggregator_usage = canonical_usage
+                    # MoA: fold the reference (advisor) fan-out's token usage
+                    # into this turn's REPORTED token counts. MoA runs advisors
+                    # before the aggregator and returns only the aggregator's
+                    # usage, so without this the entire advisor spend — usually
+                    # the bulk of a MoA turn — is invisible in token counts.
+                    _moa_ref_cost = None
+                    _moa_client = getattr(agent, "client", None)
+                    if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
+                        try:
+                            _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
+                            if _ref_usage is not None:
+                                canonical_usage = canonical_usage + _ref_usage
+                        except Exception as _moa_acct_exc:  # pragma: no cover - defensive
+                            logger.debug("MoA reference usage accounting failed: %s", _moa_acct_exc)
+                    # Flush the full-turn MoA trace (references + aggregator I/O)
+                    # to disk when moa.save_traces is on. No-op otherwise and
+                    # for non-MoA clients. Uses the live session_id so traces
+                    # land in the right per-session file.
+                    if _moa_client is not None and hasattr(_moa_client, "consume_and_save_trace"):
+                        try:
+                            _moa_client.consume_and_save_trace(agent.session_id)
+                        except Exception as _moa_trace_exc:  # pragma: no cover - defensive
+                            logger.debug("MoA trace flush failed: %s", _moa_trace_exc)
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
@@ -2098,13 +2126,20 @@ def run_conversation(
 
                     cost_result = estimate_usage_cost(
                         agent.model,
-                        canonical_usage,
+                        aggregator_usage,
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_key=getattr(agent, "api_key", ""),
                     )
                     if cost_result.amount_usd is not None:
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+                    # Add MoA advisor cost (already priced per-advisor at each
+                    # advisor's own model rate) on top of the aggregator cost.
+                    if _moa_ref_cost is not None:
+                        try:
+                            agent.session_estimated_cost_usd += float(_moa_ref_cost)
+                        except (TypeError, ValueError):  # pragma: no cover - defensive
+                            pass
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
@@ -2125,6 +2160,18 @@ def run_conversation(
                             # affects 0 rows without error).
                             if not agent._session_db_created:
                                 agent._ensure_db_session()
+                            # Per-call cost delta = aggregator cost + MoA
+                            # advisor cost (each priced at its own rate). Folded
+                            # here so state.db's estimated_cost_usd includes the
+                            # full MoA spend, matching the folded token counts.
+                            _cost_delta = None
+                            if cost_result.amount_usd is not None:
+                                _cost_delta = float(cost_result.amount_usd)
+                            if _moa_ref_cost is not None:
+                                try:
+                                    _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
+                                except (TypeError, ValueError):  # pragma: no cover
+                                    pass
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -2132,8 +2179,7 @@ def run_conversation(
                                 cache_read_tokens=canonical_usage.cache_read_tokens,
                                 cache_write_tokens=canonical_usage.cache_write_tokens,
                                 reasoning_tokens=canonical_usage.reasoning_tokens,
-                                estimated_cost_usd=float(cost_result.amount_usd)
-                                if cost_result.amount_usd is not None else None,
+                                estimated_cost_usd=_cost_delta,
                                 cost_status=cost_result.status,
                                 cost_source=cost_result.source,
                                 billing_provider=agent.provider,

@@ -324,3 +324,74 @@ def test_tool_reminder_is_memory_skill_only_when_flag_off():
     msg = captured.get("user_message", "")
     assert "only call memory and skill" in msg.lower()
     assert "mem0_remember" not in msg
+
+
+def test_background_review_excludes_memory_when_disabled():
+    """A memory-disabled profile must NOT get the memory tool in the review fork.
+
+    Regression for #54937 layer 2: the whitelist hardcoded ["memory", "skills"],
+    so a skill-review fork on a profile with memory_enabled=false still granted
+    the LLM the MEMORY.md read/write tool, contaminating a profile that opted
+    out of built-in memory. The whitelist must gate "memory" on the flag.
+    """
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    whitelist = captured["whitelist"]
+    # Skill tools still allowed...
+    assert "skill_manage" in whitelist
+    assert "skill_view" in whitelist
+    # ...but the built-in memory tool must be gated out.
+    assert "memory" not in whitelist
+
+
+def test_background_review_includes_memory_when_user_profile_enabled():
+    """user_profile_enabled alone (USER.md) still needs the memory tool."""
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = True
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "memory" in captured["whitelist"]

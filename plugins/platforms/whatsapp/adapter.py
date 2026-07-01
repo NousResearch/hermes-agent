@@ -272,10 +272,6 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
-    IMAGE_CACHE_DIR,
-    AUDIO_CACHE_DIR,
-    VIDEO_CACHE_DIR,
-    DOCUMENT_CACHE_DIR,
 )
 from utils import env_int
 
@@ -296,7 +292,23 @@ def _is_allowed_bridge_path(url: str) -> bool:
         resolved = Path(url).resolve()
     except (OSError, ValueError):
         return False
-    for root in (IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR):
+    # Resolve the cache roots per-call via the getters (not the import-time
+    # constants) so this validator follows the active profile override; under a
+    # profile override the inbound bridge writes media into that profile's
+    # cache, which the frozen constants would not match.
+    from gateway.platforms.base import (
+        get_audio_cache_dir,
+        get_document_cache_dir,
+        get_image_cache_dir,
+        get_video_cache_dir,
+    )
+
+    for root in (
+        get_image_cache_dir(),
+        get_audio_cache_dir(),
+        get_video_cache_dir(),
+        get_document_cache_dir(),
+    ):
         try:
             if resolved.is_relative_to(Path(root).resolve()):
                 return True

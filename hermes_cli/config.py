@@ -2171,6 +2171,14 @@ DEFAULT_CONFIG = {
     "moa": {
         "default_preset": "default",
         "active_preset": "",
+        # When true, every MoA turn that runs the reference fan-out writes the
+        # FULL turn (each reference's exact input messages + output + usage/cost,
+        # and the aggregator's exact input + output) to a JSONL file at
+        # <hermes_home>/moa-traces/<session_id>.jsonl. Off by default — turn it
+        # on to audit / improve MoA behavior from real runs. Set trace_dir to
+        # override the output directory.
+        "save_traces": False,
+        "trace_dir": "",
         "presets": {
             "default": {
                 "reference_models": [
@@ -2702,6 +2710,17 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Seconds the gateway waits for a single messaging platform to finish
+        # connecting during startup (and on reconnect). Discord in particular
+        # can blow past the old fixed 30s when an account has many slash
+        # commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this
+        # if your gateway hits "discord connect timed out" / "Timeout waiting
+        # for connection to Discord" restart loops. ``0`` or negative disables
+        # the timeout entirely (wait indefinitely). Bridged at startup to the
+        # internal HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT env var, which still
+        # works as a manual override and wins if set explicitly.
+        "platform_connect_timeout": 30,
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent

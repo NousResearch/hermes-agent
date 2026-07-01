@@ -20,7 +20,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-_MEMORY_DELIM = "\n§\n"
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
 
 
@@ -63,20 +62,18 @@ def _memory_local_index(source: str, global_index: int) -> int:
     return global_index - sum(1 for c in cards if c.get("source") == "memory")
 
 
-def _read_chunks(path: Path) -> list[str]:
-    """Raw ``§``-delimited chunks, preserving formatting; empties dropped to
-    match ``_memory_cards`` indexing."""
-    text = path.read_text(encoding="utf-8")
-
-    return [c for c in text.split(_MEMORY_DELIM) if c.strip()]
-
-
 def _locate_memory(source: str, gidx: int) -> tuple[Path, list[str], int]:
-    """Resolve a memory card to its file, all chunks, and local index."""
+    """Resolve a memory card to its file, all §-delimited entries, and local index.
+
+    Entries come from ``MemoryStore._read_file`` — the same parser the memory
+    tool uses — so journey indices stay aligned with what the graph renders.
+    """
+    from tools.memory_tool import MemoryStore
+
     path = _memories_dir() / _MEMORY_FILES[source]
     if not path.exists():
         raise ValueError(f"{path.name} not found")
-    chunks = _read_chunks(path)
+    chunks = MemoryStore._read_file(path)
     local = _memory_local_index(source, gidx)
     if not 0 <= local < len(chunks):
         raise ValueError("memory node id is stale — refresh the graph")
@@ -149,7 +146,7 @@ def _delete_memory(node_id: str) -> dict[str, Any]:
     path, chunks, local = _locate_memory(source, gidx)
 
     del chunks[local]
-    _write_chunks(path, chunks)
+    _write_memory(path, chunks)
 
     return {"ok": True, "message": f"deleted memory from {path.name}"}
 
@@ -184,7 +181,7 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     path, chunks, local = _locate_memory(source, gidx)
 
     chunks[local] = body
-    _write_chunks(path, chunks)
+    _write_memory(path, chunks)
 
     return {"ok": True, "message": f"updated memory in {path.name}"}
 
@@ -192,9 +189,12 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _write_chunks(path: Path, chunks: list[str]) -> None:
-    body = _MEMORY_DELIM.join(c.strip() for c in chunks)
-    path.write_text(f"{body}\n" if body else "", encoding="utf-8")
+def _write_memory(path: Path, chunks: list[str]) -> None:
+    """Atomic temp-file + rename via the memory tool, so a concurrent reader
+    never sees a half-written file (and the §-join stays single-sourced)."""
+    from tools.memory_tool import MemoryStore
+
+    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
 
 
 def _clear_skill_cache() -> None:

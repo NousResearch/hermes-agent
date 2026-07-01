@@ -903,19 +903,22 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
-    def test_matrix_text_only_uses_lightweight_path(self):
-        """Text-only Matrix sends should NOT go through the heavy adapter path.
+    def test_matrix_text_only_uses_adapter_path(self):
+        """Text-only Matrix sends must go through the E2EE-capable adapter.
 
-        Post-#41112 the lightweight text path flows through the matrix plugin's
-        registry standalone_sender_fn (not the via-adapter media path)."""
+        The raw-HTTP standalone path (registry standalone_sender_fn) sends
+        cleartext, so in an E2EE room text-only messages arrived with a red
+        padlock. All Matrix sends now route through _send_matrix_via_adapter,
+        which encrypts via the mautrix adapter (live gateway session when
+        available, encryption-aware ephemeral adapter otherwise)."""
         from hermes_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
         discover_plugins()
-        helper = AsyncMock()
-        lightweight = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:ex.com", "message_id": "$txt"})
+        standalone = AsyncMock()
         matrix_entry = platform_registry.get("matrix")
         original_sender = matrix_entry.standalone_sender_fn
-        matrix_entry.standalone_sender_fn = lightweight
+        matrix_entry.standalone_sender_fn = standalone
         try:
             with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
                 result = asyncio.run(
@@ -930,8 +933,8 @@ class TestSendToPlatformChunking:
             matrix_entry.standalone_sender_fn = original_sender
 
         assert result["success"] is True
-        helper.assert_not_awaited()
-        lightweight.assert_awaited_once()
+        helper.assert_awaited_once()
+        standalone.assert_not_awaited()
 
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"

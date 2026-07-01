@@ -10,13 +10,13 @@ import type { StarmapGraph } from '@/types/hermes'
 import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
 import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
+import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
 import { drawScene, drawScramble } from './render'
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 import { ShareControls } from './share-controls'
 import { buildSimulation } from './simulation'
 import { formatDate } from './text'
 import { buildTimeAxis, dateAtReveal, type TimeAxis } from './time-axis'
-import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
 import { Timeline } from './timeline'
 import type { FadeBuckets, MemoryCard, Palette, Ring, RingLabelRect, SimLink, SimNode, Viewport } from './types'
 
@@ -918,10 +918,10 @@ export function StarMap({
     <div className="relative min-h-0 flex-1 overflow-hidden" ref={wrapRef}>
       <canvas
         className="block touch-none select-none text-foreground"
+        onContextMenu={onContextMenu}
         onDoubleClick={resetView}
         onMouseDown={onMouseDown}
         onMouseLeave={onMouseLeave}
-        onContextMenu={onContextMenu}
         onMouseMove={onMouseMove}
         onMouseUp={endDrag}
         onWheel={onWheel}

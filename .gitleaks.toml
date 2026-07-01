@@ -48,6 +48,8 @@ paths = [
   '''tests/hermes_cli/test_debug\.py''',
   '''tests/hermes_cli/test_web_oauth_dispatch\.py''',
   '''tests/tools/test_mcp_tool\.py''',
+  '''tests/tools/test_approval\.py''',  # fake `sk-proj-...cdef` approval-redaction fixture — mapped 2026-07-01 upstream parity sync
+  '''tests/run_agent/test_run_agent_codex_responses\.py''',  # fake `ntn_...` Notion-token fixture (codex-responses test) — mapped 2026-07-01 upstream parity sync
   '''tests/tools/test_local_env_blocklist\.py''',  # canonical AWS docs example key (AKIAIOSFODNN7EXAMPLE) — blocklist test fixture
   '''tests/tools/test_credential_pool_env_fallback\.py''',  # fake `sk-dot...-789` dotenv fixtures (credential-pool env fallback test) — mapped 2026-06-30 upstream parity sync
   # --- Docs: placeholder config examples & curl snippets (incl. zh-Hans i18n) ---

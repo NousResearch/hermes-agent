@@ -17671,16 +17671,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             """Return True only when the actual final reply reached the user."""
             if consumer is None:
                 return False
-            if getattr(consumer, "final_response_sent", False):
-                return True
-            if previewed:
-                has_delivered_text = getattr(consumer, "has_delivered_text", None)
-                if callable(has_delivered_text):
-                    try:
-                        return bool(has_delivered_text(final_text))
-                    except Exception:
-                        return False
-            return False
+            delivery_flag = (
+                getattr(consumer, "final_response_sent", False)
+                or getattr(consumer, "final_content_delivered", False)
+                or previewed
+            )
+            if not delivery_flag:
+                return False
+            has_delivered_text = getattr(consumer, "has_delivered_text", None)
+            if callable(has_delivered_text):
+                try:
+                    return bool(has_delivered_text(final_text))
+                except Exception:
+                    return False
+            return bool(
+                getattr(consumer, "final_response_sent", False)
+                or getattr(consumer, "final_content_delivered", False)
+            )
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -18232,9 +18239,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # exact final text was delivered. Unrelated commentary/progress
             # must not be mistaken for the final response (#14238).
             _previewed = bool(response.get("response_previewed"))
-            _content_delivered = bool(
-                _sc and getattr(_sc, "final_content_delivered", False)
-            )
             # Plugin hooks (e.g. transform_llm_output) may have appended content
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
@@ -18250,13 +18254,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _final,
                 previewed=_previewed,
             )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
+            if not _is_empty_sentinel and not _transformed and _streamed:
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
-                    _content_delivered,
+                    bool(_sc and getattr(_sc, "final_content_delivered", False)),
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:

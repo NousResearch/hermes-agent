@@ -679,6 +679,22 @@ class StreamingRefineAgent:
         }
 
 
+class StreamingMismatchAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("intermediate streamed text")
+        return {
+            "final_response": "real final answer",
+            "response_previewed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -1014,6 +1030,29 @@ async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     assert all_text, "expected streamed Matrix content to be sent or edited"
     assert all("▉" not in text for text in all_text)
     assert any("Continuing to refine:" in text for text in all_text)
+
+
+@pytest.mark.asyncio
+async def test_stream_delivery_flag_without_final_text_does_not_suppress_send(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingMismatchAgent,
+        session_id="sess-stream-mismatch",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result.get("already_sent") is not True
+    assert any(call["content"] == "intermediate streamed text" for call in adapter.sent)
 
 
 class TransformedStreamAgent:

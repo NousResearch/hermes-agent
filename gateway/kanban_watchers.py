@@ -377,6 +377,12 @@ class GatewayKanbanWatchersMixin:
                         else:
                             continue
                         metadata: dict[str, Any] = {}
+                        # Terminal-event alerts are standalone FINAL messages;
+                        # mark them notify-worthy so the Telegram adapter does
+                        # not re-arm its ~5s typing indicator after the alert
+                        # lands (an unmarked send is treated as intermediate
+                        # progress and leaves a phantom "…typing" bubble).
+                        metadata["notify"] = True
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (

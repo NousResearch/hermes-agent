@@ -189,6 +189,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                "notify": True,
                 "thread_id": "38049",
                 "telegram_dm_topic_created_for_send": True,
             },
@@ -232,6 +233,7 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                "notify": True,
                 "telegram_reply_to_message_id": "9001",
                 "thread_id": "32344",
                 "telegram_dm_topic_reply_fallback": True,
@@ -253,7 +255,10 @@ async def test_explicit_telegram_direct_messages_topic_metadata_is_respected(tmp
         metadata={"telegram_direct_messages_topic_id": "32344"},
     )
 
-    assert adapter.calls[0]["metadata"] == {"telegram_direct_messages_topic_id": "32344"}
+    assert adapter.calls[0]["metadata"] == {
+        "notify": True,
+        "telegram_direct_messages_topic_id": "32344",
+    }
 
 
 @pytest.mark.asyncio
@@ -265,7 +270,7 @@ async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path
 
     await router._deliver_to_platform(target, "hello", metadata=None)
 
-    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+    assert adapter.calls[0]["metadata"] == {"notify": True, "thread_id": "42"}
 
 
 class FailingAdapter:
@@ -419,5 +424,51 @@ async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tm
     # retry (footer needs the path) re-raises.
     with pytest.raises(OSError, match="No space left on device"):
         await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
+
+
+# ---------------------------------------------------------------------------
+# Proactive deliveries are FINAL messages → must suppress the typing re-arm
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proactive_delivery_marks_notify_to_prevent_phantom_typing(tmp_path, monkeypatch):
+    """Router deliveries (cron jobs, proactive notices) are standalone FINAL
+    messages, so they must be marked ``notify=True``.
+
+    The Telegram adapter re-arms its ~5s typing indicator after any send that
+    is NOT marked ``notify`` (it assumes an unmarked send is an intermediate
+    progress message and keeps the "…typing" bubble alive). Proactive/cron
+    deliveries never go through the interactive gateway path that sets the
+    marker, so without this they leave a phantom "…typing" bubble with nothing
+    behind it. Mirror of the interactive-reply contract pinned by
+    tests/gateway/test_telegram_format.py::test_final_send_does_not_retrigger_typing.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(
+        target, "Morning briefing ready.", metadata={"job_id": "brief1"}
+    )
+
+    assert adapter.calls[0]["metadata"].get("notify") is True
+
+
+@pytest.mark.asyncio
+async def test_proactive_delivery_respects_explicit_notify_opt_out(tmp_path, monkeypatch):
+    """A caller may explicitly send silently by passing ``notify=False``; the
+    router must not clobber that intent."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(
+        target, "quietly", metadata={"job_id": "brief2", "notify": False}
+    )
+
+    assert adapter.calls[0]["metadata"].get("notify") is False
 
 

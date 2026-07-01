@@ -350,6 +350,56 @@ def _shutdown_parallel_pool() -> None:
 atexit.register(_shutdown_parallel_pool)
 
 
+def _submit_with_guard(
+    job: dict,
+    pool: concurrent.futures.ThreadPoolExecutor,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = True,
+) -> Optional[concurrent.futures.Future]:
+    """Submit ``job`` to ``pool`` with the in-flight dedup guard and a
+    shutdown guard.
+
+    Returns the future, or ``None`` if the job was skipped because:
+
+    1. A prior tick's run of the same job is still in flight (dedup guard).
+    2. The Python interpreter is finalizing — i.e. SIGTERM / ``hermes update``
+       / ``hermes gateway stop`` / system shutdown — in which case calling
+       ``pool.submit`` would raise
+       ``RuntimeError: cannot schedule new futures after interpreter shutdown``
+       and pollute ``~/.hermes/logs/errors.log`` (#55924).
+
+    Exposed at module level (not nested inside ``tick``) so it can be
+    unit-tested directly and reused from any future dispatch site.
+
+    The wrapped worker preserves the pre-existing ``contextvars`` copy so
+    ContextVars propagation across threads is unaffected.
+    """
+    job_id = job["id"]
+    if sys.is_finalizing():
+        logger.warning(
+            "Job '%s': skipping submit — interpreter is finalizing (#55924)",
+            job_id,
+        )
+        return None
+    with _running_lock:
+        if job_id in _running_job_ids:
+            logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+            return None
+        _running_job_ids.add(job_id)
+    _ctx = contextvars.copy_context()
+
+    def _run_and_release(j=job, ctx=_ctx):
+        try:
+            return ctx.run(run_one_job, j, adapters=adapters, loop=loop, verbose=verbose)
+        finally:
+            with _running_lock:
+                _running_job_ids.discard(j["id"])
+
+    return pool.submit(_run_and_release)
+
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -1469,6 +1519,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
+            # (#55924) Guard against interpreter finalization: during gateway SIGTERM
+            # teardown (``hermes update`` / ``hermes gateway stop`` / system shutdown),
+            # ``asyncio.run`` / ``pool.submit`` raise
+            # ``RuntimeError: cannot schedule new futures after interpreter shutdown``
+            # and pollute ``~/.hermes/logs/errors.log``. Skip the delivery attempt
+            # and record the skip so the user can correlate with the gateway log.
+            if sys.is_finalizing():
+                logger.warning(
+                    "Job '%s': skipping standalone delivery to %s:%s — interpreter is finalizing (#55924)",
+                    job["id"], platform_name, chat_id,
+                )
+                continue
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
@@ -1478,6 +1540,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
+                # (#55924) Same shutdown guard on the fallback path: a SIGTERM-during-
+                # delivery race that triggered the first RuntimeError is also the
+                # moment the interpreter is most likely finalizing. The recovery
+                # ThreadPoolExecutor.submit() would raise the same RuntimeError.
+                if sys.is_finalizing():
+                    logger.warning(
+                        "Job '%s': skipping fallback delivery to %s:%s — interpreter is finalizing (#55924)",
+                        job["id"], platform_name, chat_id,
+                    )
+                    continue
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                     result = future.result(timeout=30)
@@ -2930,29 +3002,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         _results: list = []
         _all_futures: list = []
 
-        def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
-            """Submit a job fire-and-forget with the in-flight dedup guard.
-
-            Returns the future, or None if the job was skipped because a prior
-            tick's run of the same job is still in flight.  The running-set
-            membership is released in the worker's finally block.
-            """
-            job_id = job["id"]
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
-            _ctx = contextvars.copy_context()
-
-            def _run_and_release(j=job, ctx=_ctx):
-                try:
-                    return ctx.run(_process_job, j)
-                finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
-
-            return pool.submit(_run_and_release)
+        # Submission is delegated to the module-level _submit_with_guard
+        # so the shutdown guard (sys.is_finalizing) lives in one place and
+        # is unit-testable in isolation (#55924).
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time
@@ -2963,7 +3015,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         if sequential_jobs:
             seq_pool = _get_sequential_pool()
             for job in sequential_jobs:
-                fut = _submit_with_guard(job, seq_pool)
+                fut = _submit_with_guard(
+                    job, seq_pool, adapters=adapters, loop=loop, verbose=verbose
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)
@@ -2978,7 +3032,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         if parallel_jobs:
             pool = _get_parallel_pool(_max_workers)
             for job in parallel_jobs:
-                fut = _submit_with_guard(job, pool)
+                fut = _submit_with_guard(
+                    job, pool, adapters=adapters, loop=loop, verbose=verbose
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)

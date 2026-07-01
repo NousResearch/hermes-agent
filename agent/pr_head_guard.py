@@ -122,6 +122,12 @@ def enforce_pr_head_invariant(
 
     evidence = collect_pr_head_evidence(repo_root)
     if not evidence:
+        if risk_label == "review-thread resolution":
+            return (
+                "Blocked review-thread resolution: verified live PR-head evidence is "
+                "unavailable. Review-thread resolution requires verified live PR-head "
+                "evidence before resolving it."
+            )
         return None
     if evidence.get("pr_head_verified"):
         if command is not None:

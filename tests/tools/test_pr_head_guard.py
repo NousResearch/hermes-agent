@@ -54,6 +54,15 @@ def _mock_gh_pr_view(number: int, branch: str, sha: str, repo_name: str):
     return _run
 
 
+def _mock_gh_pr_view_failure():
+    def _run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "gh pr view failed")
+        return _REAL_RUN(cmd, *args, **kwargs)
+
+    return _run
+
+
 def _mock_gh_pr_view_and_diff(
     number: int,
     branch: str,
@@ -180,6 +189,27 @@ def test_missing_thread_id_blocks_review_thread_resolution(tmp_path):
 
     assert result["approved"] is False
     assert "no review thread/comment ID is available" in result["message"]
+    clear_runtime_evidence()
+
+
+def test_missing_live_pr_head_evidence_blocks_review_thread_resolution(tmp_path):
+    repo, _ = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+    seed_turn_runtime_evidence(
+        review_thread_comment_id="T123",
+        failing_file="src/app.py",
+        failing_line=17,
+    )
+
+    with patch("agent.pr_head_guard.subprocess.run", side_effect=_mock_gh_pr_view_failure()):
+        result = check_all_command_guards(
+            "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"T123\"}) { clientMutationId } }'",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is False
+    assert "verified live PR-head evidence is unavailable" in result["message"]
     clear_runtime_evidence()
 
 

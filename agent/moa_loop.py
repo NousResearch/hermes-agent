@@ -618,6 +618,10 @@ class MoAChatCompletions:
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        # Resolved aggregator slot ({provider, model, ...}) from the most recent
+        # create(); read by session cost accounting to price the aggregator's
+        # acting turn at its real model instead of the virtual preset name.
+        self.last_aggregator_slot: Any = None
         # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
@@ -704,6 +708,13 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
+        # Expose the resolved aggregator slot so session cost accounting can
+        # price the aggregator's acting turn at its REAL model/provider. The
+        # agent's model/provider on the MoA path are the virtual preset name
+        # ("closed") and "moa", which have no pricing entry — without this the
+        # aggregator's spend (often the bulk of the turn) is silently dropped
+        # and the session cost reflects advisor fan-out only.
+        self.last_aggregator_slot = dict(aggregator) if aggregator else None
         # MoA does not cap reference or aggregator output: each model uses its
         # own maximum. Passing max_tokens=None makes call_llm omit the parameter
         # (it never caps by default), so a long aggregator synthesis is never
@@ -900,6 +911,14 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    @property
+    def last_aggregator_slot(self) -> Any:
+        """Resolved aggregator slot ({provider, model, ...}) from the most
+        recent create(), or None. Read by session cost accounting to price the
+        aggregator's acting turn at its real model instead of the virtual
+        preset name."""
+        return getattr(self.chat.completions, "last_aggregator_slot", None)
 
     def consume_and_save_trace(
         self, session_id: Any = None, aggregator_output_fallback: Any = None

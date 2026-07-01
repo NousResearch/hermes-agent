@@ -102,6 +102,11 @@ class TestDebugSessionEnabled:
             ds = DebugSession("t", env_var="TEST_DEBUG")
         assert ds.enabled is True
 
+    def test_env_var_strips_surrounding_whitespace(self, tmp_path):
+        with patch.dict(os.environ, {"TEST_DEBUG": " true "}):
+            ds = DebugSession("t", env_var="TEST_DEBUG")
+        assert ds.enabled is True
+
     def test_env_var_false_disables(self):
         with patch.dict(os.environ, {"TEST_DEBUG": "false"}):
             ds = DebugSession("t", env_var="TEST_DEBUG")

@@ -42,7 +42,7 @@ class DebugSession:
 
     def __init__(self, tool_name: str, *, env_var: str) -> None:
         self.tool_name = tool_name
-        self.enabled = os.getenv(env_var, "false").lower() == "true"
+        self.enabled = os.getenv(env_var, "false").strip().lower() == "true"
         self.session_id = str(uuid.uuid4()) if self.enabled else ""
         self.log_dir = get_hermes_home() / "logs"
         self._calls: list[Dict[str, Any]] = []

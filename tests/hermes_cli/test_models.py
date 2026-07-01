@@ -57,6 +57,24 @@ class TestOpenRouterModels:
             assert isinstance(desc, str)
 
 
+class TestKiloCodeModels:
+    def test_kilocode_static_picker_includes_openrouter_alpha_models(self):
+        """Kilo Gateway exposes OpenRouter alpha routers, so keep them in the fallback picker."""
+        openrouter_alpha_models = {
+            mid
+            for mid, desc in _models_mod.OPENROUTER_MODELS
+            if desc == "free" and mid.startswith("openrouter/") and "alpha" in mid
+        }
+
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            kilo_models = {
+                mid for mid, _ in _models_mod.curated_models_for_provider("kilocode")
+            }
+
+        assert openrouter_alpha_models
+        assert openrouter_alpha_models <= kilo_models
+
+
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
         class _Resp:

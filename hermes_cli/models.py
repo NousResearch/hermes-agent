@@ -450,6 +450,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+        "openrouter/elephant-alpha",
+        "openrouter/owl-alpha",
     ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).

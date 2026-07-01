@@ -1607,8 +1607,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             return future.result(timeout=hard_timeout)
         except concurrent.futures.TimeoutError as exc:
             future.cancel()
+            # Message MUST contain the substring "timeout" so the caller's
+            # _is_timeout check (which matches `"timeout" in err_str`) routes
+            # this into the existing timeout fallback path — the whole point of
+            # the hard timeout is to fall back to the deterministic summary.
             raise TimeoutError(
-                f"Context compression hard-timed out after {hard_timeout:g}s"
+                f"Context compression summary timeout: hard-timed out after {hard_timeout:g}s"
             ) from exc
         finally:
             # Do not wait for a stuck network stack to unwind in the caller's
@@ -1939,7 +1943,16 @@ This compaction should PRIORITISE preserving all information related to the focu
             # transient network events; treat them like a timeout so we fall
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
-            _is_streaming_closed = _is_connection_error(e)
+            # A genuine mid-stream connection drop. Deliberately exclude
+            # timeouts: our own hard-timeout (``_call_summary_llm_with_hard_timeout``)
+            # raises a builtin ``TimeoutError`` whose type name contains
+            # "Timeout", which ``_is_connection_error`` reports as a connection
+            # error. That is NOT a network stream-close — it is us abandoning a
+            # slow summary — and must not set ``_last_summary_network_failure``
+            # (which would make compress() ABORT instead of taking the intended
+            # deterministic-fallback path). Timeouts are already handled by
+            # ``_is_timeout`` above.
+            _is_streaming_closed = _is_connection_error(e) and not _is_timeout
             # Authentication / permission failures (401/403) are NOT transient
             # and NOT fixable by retrying the same request: the credential is
             # invalid/blocked/expired or the endpoint is wrong (e.g. a prod

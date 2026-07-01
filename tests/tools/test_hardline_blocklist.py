@@ -118,6 +118,23 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # Bare subshell `(cmd)` and brace-group `{ cmd; }` openers put the trigger
+    # at a real command position, so they must hit the floor just like `$(…)`.
+    # These slipped through before the quote-aware command-start tokenizer
+    # learned to recognize `(` / `{` (issue: (reboot) walked past --yolo).
+    "(reboot)",
+    "( reboot )",
+    "(shutdown -h now)",
+    "(poweroff)",
+    "(halt)",
+    "(init 0)",
+    "(systemctl reboot)",
+    "(sudo reboot)",
+    "{ reboot; }",
+    "{ shutdown -h now; }",
+    "{ poweroff; }",
+    "true && (reboot)",
+    "echo hi; { reboot; }",
 ]
 
 
@@ -225,6 +242,18 @@ _DATA_ARG_NOT_A_COMMAND = [
     'echo "rm -rf /"',
     'printf "%s" "rm -rf /"',
     'gh issue comment 1 --body "the fix blocks rm -rf //"',
+    # A `(` or `{` INSIDE a quoted argument is prose, not a subshell/brace
+    # opener — the trigger word after it is data. Naively adding `(` / `{` to
+    # the flat command-position class blocked these (it broke our own
+    # `gh pr create --title "…(reboot)…"` workflow); the quote-aware tokenizer
+    # must leave them alone.
+    'gh pr create --title "block (reboot) spellings"',
+    'git commit -m "(rm -rf /) note"',
+    'echo "(reboot)"',
+    'echo "{ reboot; }"',
+    "echo '(poweroff)'",
+    "echo '{ rm -rf /; }'",
+    'find . -name "*(reboot)*"',
 ]
 
 
@@ -249,6 +278,11 @@ _COMMAND_POSITION_ROOT_WIPES = [
     "$(rm -rf /)",
     "`rm -rf /`",
     'echo "$(rm -rf /)"',
+    # Bare subshell / brace-group openers are real command positions too.
+    "(rm -rf /)",
+    "{ rm -rf /; }",
+    "(rm -rf ~)",
+    "(sudo rm -rf /)",
 ]
 
 
@@ -370,6 +404,47 @@ def test_root_collapse_pattern_leaves_real_paths_alone(clean_session):
                 "rm -rf /.config", "rm -rf ./build", "rm -rf /opt/foo"]:
         is_hl, _ = detect_hardline_command(cmd)
         assert not is_hl, f"{cmd!r} must not be hardline-blocked (over-match)"
+
+
+def test_subshell_brace_group_cannot_bypass_hardline(clean_session, monkeypatch):
+    """Wrapping a catastrophic command in `(…)` or `{ …; }` must not bypass
+    the floor, even under yolo. `(reboot)` / `{ shutdown -h now; }` walked
+    straight past the guard before the command-start tokenizer recognized the
+    subshell and brace-group openers.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in ["(reboot)", "( reboot )", "(shutdown -h now)", "(poweroff)",
+                "(systemctl reboot)", "(init 0)", "(sudo reboot)",
+                "{ reboot; }", "{ shutdown -h now; }", "{ poweroff; }",
+                "(rm -rf /)", "{ rm -rf /; }", "(rm -rf ~)",
+                "true && (reboot)", "echo hi; { reboot; }"]:
+        r1 = check_dangerous_command(cmd, "local")
+        assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
+        assert r1.get("hardline") is True
+
+        r2 = check_all_command_guards(cmd, "local")
+        assert r2["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_all_command_guards)"
+        assert r2.get("hardline") is True
+
+
+def test_quoted_paren_brace_prose_not_blocked_under_yolo(clean_session, monkeypatch):
+    """A `(` / `{` inside a quoted argument is prose, not a command opener.
+
+    Regression guard: naively adding `(` / `{` to the flat command-position
+    class blocked ordinary quoted arguments — including our own
+    `gh pr create --title "…(reboot)…"` workflow. The quote-aware tokenizer
+    must leave quoted text untouched, so these stay runnable.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in ['gh pr create --title "block (reboot) spellings"',
+                'git commit -m "(rm -rf /) note"',
+                'echo "(reboot)"', 'echo "{ reboot; }"',
+                "echo '(poweroff)'", 'find . -name "*(reboot)*"']:
+        assert detect_hardline_command(cmd)[0] is False, (
+            f"quoted prose false-positived on the hardline floor: {cmd!r}"
+        )
 
 
 def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monkeypatch):

@@ -1158,6 +1158,17 @@ def _iter_shell_command_starts(command: str):
             starts.append(i + 2)
             i += 2
             continue
+        # Bare subshell `(cmd)` and brace group `{ cmd; }` openers begin a new
+        # command context, just like `;` or `$(`. We only reach this branch
+        # OUTSIDE any quote (the quote arms above `continue` first), so a `(`
+        # or `{` sitting inside a quoted argument — `--title "block (reboot)"`,
+        # `echo "{ reboot; }"` — never registers a command start. That is the
+        # whole reason this lives in the quote-aware tokenizer instead of the
+        # flat `_CMDPOS` regex, which cannot tell quoted text from real syntax.
+        if ch in ("(", "{"):
+            starts.append(i + 1)
+            i += 1
+            continue
         if ch == ";":
             starts.append(i + 1)
             i += 1
@@ -1188,6 +1199,29 @@ def _iter_shell_command_starts(command: str):
         if start < len(command) and start not in seen:
             seen.add(start)
             yield start
+
+
+def _mark_command_starts(command: str) -> str:
+    """Insert a newline before each real (quote-aware) command start.
+
+    ``\\n`` is already a ``_CMDPOS`` separator, so this rewrites subshell
+    ``(cmd)`` and brace-group ``{ cmd; }`` openers — which the flat pattern
+    class deliberately omits — into a form the anchored hardline/dangerous
+    patterns recognize, WITHOUT the quoted-prose false positives that adding
+    ``(`` / ``{`` to ``_CMDPOS`` would cause. Starts inside quotes are never
+    produced by ``_iter_shell_command_starts``, so quoted arguments such as
+    ``--title "block (reboot)"`` are left exactly as-is.
+    """
+    # Collect the (whitespace-skipped) start offsets, drop 0 (already anchored
+    # by ``^``), and splice a newline in front of each — right-to-left so the
+    # earlier offsets stay valid as we mutate.
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    if not offsets:
+        return command
+    out = command
+    for offset in reversed(offsets):
+        out = out[:offset] + "\n" + out[offset:]
+    return out
 
 
 def _iter_shell_command_word_spans(command: str):
@@ -1236,6 +1270,21 @@ def _command_detection_variants(command: str):
     normalized = _normalize_command_for_detection(command)
     seen = {normalized}
     yield normalized
+    # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
+    # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
+    # their start-position class deliberately omits `(`/`{` because a bare
+    # regex cannot tell `(reboot)` (real subshell) from `--title "(reboot)"`
+    # (quoted prose) — adding them there regresses ordinary quoted arguments.
+    # Instead, reconstruct the command with a newline (already a `_CMDPOS`
+    # separator) inserted at each command start the QUOTE-AWARE tokenizer
+    # found. Openers inside quotes never yield a start, so quoted prose is
+    # untouched, while `(reboot)` / `{ shutdown -h now; }` now anchor. This
+    # covers every `_CMDPOS` rule (shutdown/reboot/init/systemctl/telinit and
+    # the rm root/home/system floor) in one place.
+    marked = _mark_command_starts(normalized)
+    if marked != normalized and marked not in seen:
+        seen.add(marked)
+        yield marked
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.

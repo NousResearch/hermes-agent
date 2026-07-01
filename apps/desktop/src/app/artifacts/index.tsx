@@ -66,6 +66,10 @@ const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
   month: 'short'
 })
 
+function normalizeTimestamp(timestamp: number): number {
+  return timestamp > 0 && timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp
+}
+
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
 }
@@ -104,7 +108,7 @@ function looksLikeArtifact(value: string): boolean {
     return true
   }
 
-  return value.startsWith('/') && value.includes('.')
+  return false
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -298,7 +302,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: normalizeTimestamp(message.timestamp || session.last_active || session.started_at || Date.now())
       })
     })
   }
@@ -307,7 +311,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 }
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return ARTIFACT_TIME_FMT.format(new Date(normalizeTimestamp(timestamp)))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

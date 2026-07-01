@@ -29,7 +29,7 @@ describe('collectArtifactsForSession', () => {
       {
         content: 'Reference: https://example.com/docs/getting-started',
         role: 'assistant',
-        timestamp: 2000
+        timestamp: 1_780_732_996
       }
     ])
 
@@ -37,6 +37,7 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts[0]).toMatchObject({
       href: 'https://example.com/docs/getting-started',
       kind: 'link',
+      timestamp: 1_780_732_996_000,
       value: 'https://example.com/docs/getting-started'
     })
   })
@@ -57,6 +58,35 @@ describe('collectArtifactsForSession', () => {
       href: 'https://example.com/changelog/latest',
       kind: 'link',
       value: 'https://example.com/changelog/latest'
+    })
+  })
+
+  it('does not treat arbitrary source paths as artifacts', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Touched files: /Users/dev/hermes/apps/desktop/src/app/artifacts/index.tsx',
+        role: 'assistant',
+        timestamp: 4000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(0)
+  })
+
+  it('keeps real file outputs with supported extensions', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Wrote report to /tmp/hermes-artifacts/session-summary.pdf',
+        role: 'assistant',
+        timestamp: 5000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'file:///tmp/hermes-artifacts/session-summary.pdf',
+      kind: 'file',
+      value: '/tmp/hermes-artifacts/session-summary.pdf'
     })
   })
 })

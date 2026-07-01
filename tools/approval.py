@@ -1770,6 +1770,27 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
+def is_approval_bypass_active() -> bool:
+    """Return True when the user has opted out of Hermes approval prompts.
+
+    Collapses the canonical three-source bypass check used across the codebase
+    into one place:
+      - process-scoped ``--yolo`` / ``HERMES_YOLO_MODE`` (frozen at import time
+        so a mid-process skill can't flip it — a prompt-injection escalation
+        path; see ``_YOLO_MODE_FROZEN`` above),
+      - the session-scoped gateway ``/yolo`` toggle,
+      - ``approvals.mode: off`` in config.
+
+    This is the pure-bypass sub-expression only. Callers that also honor a
+    hardline blocklist / permanent allowlist must check those separately.
+    """
+    return (
+        _YOLO_MODE_FROZEN
+        or is_current_session_yolo_enabled()
+        or _get_approval_mode() == "off"
+    )
+
+
 def _get_approval_timeout() -> int:
     """Read the approval timeout from config. Defaults to 60 seconds."""
     try:

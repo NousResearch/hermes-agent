@@ -3620,6 +3620,43 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert seen["args"] == ("sid", "session-key", "new/model")
 
 
+def test_config_set_rejects_unknown_session_id_before_key_dispatch(monkeypatch):
+    server._sessions.pop("missing", None)
+
+    def _unexpected_mutation(*_args, **_kwargs):
+        raise AssertionError("missing session must not fall through to config handlers")
+
+    monkeypatch.setattr(server, "_write_config_key", _unexpected_mutation)
+    monkeypatch.setattr(server, "_save_cfg", _unexpected_mutation)
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        _unexpected_mutation,
+    )
+    monkeypatch.setattr(server, "_apply_personality_to_session", _unexpected_mutation)
+
+    for key, value in (
+        ("model", "new/model"),
+        ("fast", "fast"),
+        ("verbose", "verbose"),
+        ("yolo", "1"),
+        ("reasoning", "low"),
+        ("personality", "helpful"),
+    ):
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "missing",
+                "key": key,
+                "value": value,
+            },
+        })
+
+        assert resp["error"]["code"] == 4001, key
+        assert resp["error"]["message"] == "session not found"
+
+
 def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
     class _Agent:
         provider = "openrouter"

@@ -169,6 +169,12 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._pending_guest_queries = {}
+    adapter._guest_only_chats = set()
+    adapter._guest_reply_buffer = {}
+    adapter._guest_inline_message_ids = {}
+    adapter._seen_guest_update_ids = set()
+    adapter._last_guest_update_id = 0
     adapter.platform = Platform.TELEGRAM
     return adapter
 

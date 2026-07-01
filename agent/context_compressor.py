@@ -2224,9 +2224,21 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _find_last_user_message_idx(
         self, messages: List[Dict[str, Any]], head_end: int
     ) -> int:
-        """Return the index of the last user-role message at or after *head_end*, or -1."""
+        """Return the index of the last user-role message at or after *head_end*, or -1.
+
+        A context-compaction handoff banner can be inserted as a ``role="user"``
+        message (see the summary-role selection in ``compress``). It is internal
+        continuity state, not a real user turn, so it must not be picked as the
+        tail anchor — otherwise ``_ensure_last_user_message_in_tail`` protects
+        the summary and rolls the genuine last user message into the next
+        compaction, re-triggering the active-task loss the anchor exists to
+        prevent.
+        """
         for i in range(len(messages) - 1, head_end - 1, -1):
-            if messages[i].get("role") == "user":
+            msg = messages[i]
+            if msg.get("role") == "user" and not self._is_context_summary_content(
+                msg.get("content")
+            ):
                 return i
         return -1
 

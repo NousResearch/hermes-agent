@@ -1742,6 +1742,14 @@ class AIAgent:
             return
         if not self._session_db:
             return
+        # Deep-copy the override target so the persist-override rewrite
+        # doesn't mutate the caller's live messages list — the
+        # tool-execution loop re-uses that list for subsequent API calls
+        # where the original user text must remain intact. (#56303)
+        idx = getattr(self, "_persist_user_message_idx", None)
+        if idx is not None and 0 <= idx < len(messages):
+            messages = list(messages)
+            messages[idx] = dict(messages[idx])
         self._apply_persist_user_message_override(messages)
         try:
             # Retry row creation if the earlier attempt failed transiently.

@@ -526,6 +526,433 @@
   display: none;
 }
 
+:root[data-hermes-theme='atlas'] {
+  --composer-shell-pad-block-end: 1.7rem;
+  --composer-control-size: 1.95rem;
+  --composer-control-primary-size: 2.2rem;
+  --composer-control-gap: 0.5rem;
+  --composer-row-gap: 0.42rem;
+  --composer-surface-pad-x: 0.82rem;
+  --composer-surface-pad-y: 0.68rem;
+  --composer-input-min-height: 2.15rem;
+  --composer-fallback-height: 3.95rem;
+  --file-tree-row-height: 1.5rem;
+  --atlas-panel-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #8eb7ff 8%, transparent),
+    0 1.6rem 3.4rem -2.1rem color-mix(in srgb, var(--theme-primary) 52%, transparent),
+    0 0.55rem 1.45rem color-mix(in srgb, #5f85d3 12%, transparent);
+  --atlas-card-border: color-mix(in srgb, var(--theme-primary) 31%, color-mix(in srgb, #fff 62%, transparent));
+  --atlas-glass-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(231, 243, 255, 0.52));
+}
+
+:root[data-hermes-theme='atlas'] body {
+  background:
+    radial-gradient(58rem 38rem at 49% 36%, color-mix(in srgb, var(--theme-primary) 20%, transparent), transparent 66%),
+    radial-gradient(46rem 31rem at 77% 34%, color-mix(in srgb, #cfe2ff 82%, transparent), transparent 74%),
+    radial-gradient(42rem 24rem at 32% 78%, rgba(255, 255, 255, 0.78), transparent 70%),
+    linear-gradient(135deg, #f7fbff 0%, #eaf4ff 47%, #f8fbff 100%);
+}
+
+:root[data-hermes-theme='atlas'] #root {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(49rem 31rem at 51% 38%, color-mix(in srgb, var(--theme-primary) 18%, transparent), transparent 66%),
+    radial-gradient(34rem 23rem at 38% 76%, color-mix(in srgb, #ffffff 78%, transparent), transparent 72%),
+    radial-gradient(22rem 18rem at 69% 47%, rgba(88, 119, 178, 0.1), transparent 76%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.48), rgba(219, 236, 255, 0.5));
+}
+
+:root[data-hermes-theme='atlas'] #root::before,
+:root[data-hermes-theme='atlas'] #root::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+:root[data-hermes-theme='atlas'] #root > * {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-hermes-theme='atlas'] #root::before {
+  opacity: 0.98;
+  background:
+    url('./assets/atlas-dream-background.png'),
+    radial-gradient(ellipse at 67% 31%, rgba(66, 88, 142, 0.3) 0%, rgba(105, 135, 190, 0.17) 22%, transparent 43%),
+    radial-gradient(ellipse at 53% 48%, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.2) 25%, transparent 48%),
+    radial-gradient(ellipse at 66% 76%, rgba(123, 153, 209, 0.27) 0%, transparent 38%),
+    linear-gradient(80deg, transparent 0 34%, rgba(255, 255, 255, 0.3) 43%, transparent 55%),
+    linear-gradient(106deg, transparent 0 48%, rgba(48, 74, 130, 0.2) 61%, transparent 75%);
+  background-position:
+    clamp(17rem, 42vw, 45rem) 2.4rem,
+    center,
+    center,
+    center,
+    center,
+    center;
+  background-repeat: no-repeat;
+  background-size:
+    clamp(40rem, 53vw, 59rem) auto,
+    auto,
+    auto,
+    auto,
+    auto,
+    auto;
+  filter: saturate(1.16) contrast(1.28) brightness(0.99);
+  mask-image:
+    radial-gradient(ellipse 58rem 44rem at 65% 40%, #000 0%, #000 52%, rgb(0 0 0 / 72%) 68%, transparent 91%),
+    linear-gradient(90deg, transparent 0%, #000 10%, #000 91%, transparent 100%),
+    linear-gradient(180deg, #000 0%, #000 72%, transparent 100%);
+  -webkit-mask-image:
+    radial-gradient(ellipse 58rem 44rem at 65% 40%, #000 0%, #000 52%, rgb(0 0 0 / 72%) 68%, transparent 91%),
+    linear-gradient(90deg, transparent 0%, #000 10%, #000 91%, transparent 100%),
+    linear-gradient(180deg, #000 0%, #000 72%, transparent 100%);
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in, source-in;
+}
+
+:root[data-hermes-theme='atlas'] #root::after {
+  opacity: 0.76;
+  background:
+    radial-gradient(32rem 21rem at 50% 42%, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.24) 45%, transparent 74%),
+    radial-gradient(42rem 25rem at 47% 88%, rgba(255, 255, 255, 0.66), transparent 69%),
+    radial-gradient(34rem 24rem at 9% 42%, rgba(249, 252, 255, 0.78), transparent 74%),
+    radial-gradient(23rem 24rem at 94% 46%, rgba(249, 252, 255, 0.72), transparent 78%),
+    linear-gradient(115deg, rgba(255, 255, 255, 0.26), transparent 31%, rgba(95, 141, 221, 0.1) 72%, transparent);
+  mix-blend-mode: normal;
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='sidebar'],
+:root[data-hermes-theme='atlas'] aside[aria-label] {
+  background: var(--atlas-glass-fill), var(--ui-sidebar-surface-background) !important;
+  border-color: var(--atlas-card-border) !important;
+  box-shadow: var(--atlas-panel-shadow) !important;
+  backdrop-filter: blur(1.25rem) saturate(1.22);
+  -webkit-backdrop-filter: blur(1.25rem) saturate(1.22);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='sidebar-content'] {
+  padding-inline: 0.85rem;
+}
+
+:root[data-hermes-theme='atlas'] .hermes-sidebar-brand {
+  min-height: 2.3rem;
+}
+
+:root[data-hermes-theme='atlas'] .hermes-sidebar-brand-mark {
+  display: grid;
+  width: 2.1rem;
+  height: 2.1rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 25%, #fff);
+  border-radius: 0.82rem;
+  background:
+    radial-gradient(circle at 38% 25%, rgba(255, 255, 255, 0.94), transparent 45%),
+    linear-gradient(180deg, rgba(221, 236, 255, 0.72), rgba(255, 255, 255, 0.5));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 0.55rem 1.2rem color-mix(in srgb, var(--theme-primary) 16%, transparent);
+  color: var(--theme-primary);
+}
+
+:root[data-hermes-theme='atlas'] .hermes-sidebar-brand-title {
+  color: #1f5ff2;
+  font-size: 0.78rem;
+  font-weight: 760;
+  line-height: 1;
+  letter-spacing: 0.045em;
+  text-shadow: 0 0.6rem 1.2rem rgba(37, 99, 235, 0.16);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='sidebar-menu-button'] {
+  height: 2.08rem;
+  border-radius: 0.72rem;
+  color: color-mix(in srgb, var(--theme-foreground) 70%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] .hermes-sidebar-nav-icon {
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 16%, transparent);
+  border-radius: 0.58rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(225, 238, 255, 0.34));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='sidebar-menu-button']:hover,
+:root[data-hermes-theme='atlas'] [data-slot='sidebar-menu-button'][data-active='true'] {
+  border-color: color-mix(in srgb, var(--theme-primary) 22%, #fff);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(215, 232, 255, 0.42));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.66),
+    0 0.45rem 1rem rgba(77, 118, 207, 0.1);
+  color: #1d4ed8;
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='aui_intro'] {
+  min-height: calc(100% - var(--composer-measured-height));
+  padding-bottom: calc(var(--composer-measured-height) + 1.25rem);
+  color: color-mix(in srgb, var(--theme-foreground) 68%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='aui_intro'] > div {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: min(47rem, 76vw);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='aui_intro'] > div::before {
+  content: '';
+  position: absolute;
+  inset: -9rem -12rem -6rem;
+  z-index: -1;
+  border-radius: 999rem;
+  background:
+    radial-gradient(closest-side, color-mix(in srgb, var(--theme-primary) 14%, transparent), transparent 70%),
+    radial-gradient(20rem 10rem at 63% 24%, rgba(255, 255, 255, 0.64), transparent 76%),
+    radial-gradient(25rem 16rem at 53% 54%, rgba(255, 255, 255, 0.46), transparent 79%);
+  filter: blur(0.32rem);
+}
+
+.hermes-intro-medallion {
+  position: relative;
+  display: grid;
+  width: 4.8rem;
+  height: 4.8rem;
+  margin-bottom: 1.28rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, #fff);
+  border-radius: 999rem;
+  background:
+    radial-gradient(circle at 36% 28%, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.42) 47%, transparent 68%),
+    color-mix(in srgb, var(--dt-card) 72%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -0.45rem 1rem rgba(78, 119, 202, 0.1),
+    0 0 0 0.78rem color-mix(in srgb, var(--theme-primary) 6%, transparent),
+    0 0 0 1.55rem color-mix(in srgb, var(--theme-primary) 3%, transparent),
+    0 1rem 2.7rem color-mix(in srgb, var(--theme-primary) 22%, transparent);
+  backdrop-filter: blur(0.9rem) saturate(1.18);
+  -webkit-backdrop-filter: blur(0.9rem) saturate(1.18);
+}
+
+.hermes-intro-medallion::before {
+  content: '';
+  position: absolute;
+  inset: -1.25rem;
+  border-radius: inherit;
+  background: conic-gradient(
+    from 12deg,
+    transparent 0 8%,
+    color-mix(in srgb, var(--theme-primary) 20%, transparent) 8% 9%,
+    transparent 9% 25%
+  );
+  opacity: 0.9;
+}
+
+.hermes-intro-medallion img {
+  position: relative;
+  z-index: 1;
+  width: 3.35rem;
+  height: 3.35rem;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 18%, rgba(255, 255, 255, 0.86));
+  border-radius: 999rem;
+  object-fit: cover;
+  object-position: 49% 49%;
+  box-shadow:
+    inset 0 0 0 0.18rem rgba(255, 255, 255, 0.62),
+    0 0 1.1rem color-mix(in srgb, var(--theme-primary) 24%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] .hermes-intro-wordmark {
+  color: #235ff0;
+  filter: drop-shadow(0 0.28rem 1.35rem rgba(37, 99, 235, 0.24));
+  letter-spacing: 0.072em;
+  mix-blend-mode: normal;
+}
+
+.hermes-intro-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(19.5rem, 50vw);
+  margin: 0.82rem auto 1rem;
+  color: color-mix(in srgb, var(--theme-primary) 50%, transparent);
+}
+
+.hermes-intro-divider::before,
+.hermes-intro-divider::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(to right, transparent, currentColor);
+}
+
+.hermes-intro-divider::after {
+  background: linear-gradient(to left, transparent, currentColor);
+}
+
+.hermes-intro-divider span {
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-inline: 1.1rem;
+  transform: rotate(45deg);
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 54%, transparent);
+  border-radius: 0.1rem;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='aui_intro'] p:last-child {
+  max-width: 36rem;
+  color: color-mix(in srgb, var(--theme-foreground) 64%, transparent);
+  font-size: 0.95rem;
+  line-height: 1.58;
+}
+
+.hermes-intro-ready-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.18rem;
+  margin-top: 1.55rem;
+  padding: 0 1.38rem;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 22%, #fff);
+  border-radius: 999rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(230, 241, 255, 0.56));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 0.75rem 1.65rem rgba(54, 103, 204, 0.16);
+  color: #1f5ff2;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  backdrop-filter: blur(0.9rem) saturate(1.15);
+  -webkit-backdrop-filter: blur(0.9rem) saturate(1.15);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-root']:not([data-popped-out]) {
+  border-color: color-mix(in srgb, var(--dt-composer-ring) 30%, #fff) !important;
+  border-radius: 1.45rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(221, 236, 255, 0.38)),
+    color-mix(in srgb, var(--dt-user-bubble) 78%, transparent) !important;
+  box-shadow:
+    0 1.25rem 3.4rem -1.75rem rgba(37, 99, 235, 0.56),
+    0 0.35rem 1.25rem rgba(61, 104, 196, 0.13),
+    0 0 0 1px rgba(255, 255, 255, 0.62),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68) !important;
+  backdrop-filter: blur(1.35rem) saturate(1.24);
+  -webkit-backdrop-filter: blur(1.35rem) saturate(1.24);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-surface'] {
+  border-color: color-mix(in srgb, var(--dt-composer-ring) 38%, #fff) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 0 -1px 0 rgba(88, 129, 211, 0.08),
+    0 0.75rem 1.9rem rgba(53, 100, 194, 0.16);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] {
+  --composer-fill: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dt-card) 86%, transparent),
+    color-mix(in srgb, var(--dt-user-bubble) 76%, transparent)
+  );
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-rich-input'] {
+  font-size: 0.88rem;
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-rich-input']:empty::before {
+  color: color-mix(in srgb, var(--theme-foreground) 42%, transparent) !important;
+}
+
+:root[data-hermes-theme='atlas'] aside[aria-label] [data-slot='tree-skeleton'],
+:root[data-hermes-theme='atlas'] aside[aria-label] [data-slot='diff-skeleton'] {
+  opacity: 0.72;
+}
+
+:root[data-hermes-theme='atlas'] .group\/review-row,
+:root[data-hermes-theme='atlas'] .group\/row {
+  border-radius: 0.55rem;
+}
+
+:root[data-hermes-theme='atlas'] .group\/row [class*='text-(--ui-text-secondary)'] {
+  color: color-mix(in srgb, var(--theme-foreground) 82%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] .group\/row [class*='text-(--ui-text-tertiary)'] {
+  color: color-mix(in srgb, var(--theme-foreground) 62%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] .group\/review-row:hover,
+:root[data-hermes-theme='atlas'] .group\/row:hover,
+:root[data-hermes-theme='atlas'] .group\/review-row[aria-selected='true'],
+:root[data-hermes-theme='atlas'] .group\/row[aria-selected='true'] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.44), rgba(222, 237, 255, 0.34)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 0.45rem 1rem rgba(67, 107, 196, 0.08);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='preview-rail'] {
+  background: var(--atlas-glass-fill), var(--ui-sidebar-surface-background) !important;
+  border-color: var(--atlas-card-border) !important;
+  box-shadow: var(--atlas-panel-shadow) !important;
+  backdrop-filter: blur(1.25rem) saturate(1.22);
+  -webkit-backdrop-filter: blur(1.25rem) saturate(1.22);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='preview-rail'] [role='tablist'],
+:root[data-hermes-theme='atlas'] aside[aria-label] [data-slot='sidebar-menu-button'] {
+  color: color-mix(in srgb, var(--theme-foreground) 66%, transparent);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='preview-rail'] [role='tab'] {
+  color: inherit;
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='preview-rail'] > div:first-child,
+:root[data-hermes-theme='atlas'] aside[aria-label] > div:first-child {
+  border-color: color-mix(in srgb, var(--theme-primary) 19%, transparent) !important;
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] button,
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] [role='button'] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 0.4rem 0.9rem rgba(58, 103, 199, 0.08);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] button:is(:hover, :focus-visible),
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] [role='button']:is(:hover, :focus-visible) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 0.55rem 1.1rem rgba(58, 103, 199, 0.14);
+}
+
+:root[data-hermes-theme='atlas'] [data-slot='composer-root'] button[type='submit'] {
+  background: linear-gradient(180deg, #2d6cff, #174fde) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 0.7rem 1.25rem rgba(31, 95, 242, 0.28),
+    0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, #fff);
+}
+
+:root[data-hermes-theme='atlas'] textarea[data-slot='textarea'],
+:root[data-hermes-theme='atlas'] [data-slot='input'] {
+  background: color-mix(in srgb, var(--dt-card) 62%, transparent);
+  border-color: color-mix(in srgb, var(--theme-primary) 17%, #fff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
+}
+
 /* Primitive-level pointer cursor for every interactive control (buttons,
    selects, menu items, switches, tabs, summaries). Keeps individual
    components from having to hardcode `cursor-pointer`; explicit cursor

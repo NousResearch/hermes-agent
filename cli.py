@@ -15437,6 +15437,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
+    reasoning_effort: str = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
@@ -15570,6 +15571,25 @@ def main(
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
+
+    # Per-run reasoning-effort override (the `--reasoning-effort` flag). Validated
+    # and applied over the in-process config BEFORE the agent reads
+    # agent.reasoning_effort at construction, so it overrides the configured
+    # default for this session only without mutating the user's config.yaml.
+    if reasoning_effort is not None and str(reasoning_effort).strip():
+        from hermes_constants import parse_reasoning_effort, VALID_REASONING_EFFORTS
+        _eff = str(reasoning_effort).strip().lower()
+        if parse_reasoning_effort(_eff) is not None or _eff == "none":
+            agent_cfg = CLI_CONFIG.get("agent")
+            if not isinstance(agent_cfg, dict):
+                agent_cfg = {}
+                CLI_CONFIG["agent"] = agent_cfg
+            agent_cfg["reasoning_effort"] = _eff
+        else:
+            logger.warning(
+                "Ignoring invalid --reasoning-effort %r (valid: none, %s)",
+                reasoning_effort, ", ".join(VALID_REASONING_EFFORTS),
+            )
 
     # Create CLI instance
     cli = HermesCLI(

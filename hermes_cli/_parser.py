@@ -345,6 +345,17 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )
+    chat_parser.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Override reasoning effort for this run "
+            "(none, minimal, low, medium, high, xhigh). Overrides "
+            "agent.reasoning_effort in config; unset uses the configured default."
+        ),
+    )
     _inherited_flag(
         chat_parser,
         "--yolo",

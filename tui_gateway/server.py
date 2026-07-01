@@ -2318,7 +2318,11 @@ def _display_mouse_tracking(display: dict) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(
+    # A per-run --reasoning-effort flag is forwarded into the re-exec'd TUI as
+    # HERMES_TUI_REASONING_EFFORT (mirrors HERMES_TUI_MAX_TURNS); it overrides the
+    # configured agent.reasoning_effort for this session only.
+    env_effort = str(os.environ.get("HERMES_TUI_REASONING_EFFORT", "") or "").strip()
+    effort = env_effort or str(
         (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
     ).strip()
     return parse_reasoning_effort(effort)

@@ -1640,6 +1640,30 @@ class GoogleChatAdapter(BasePlatformAdapter):
             thread_id=session_thread_id,
             user_id_alt=(sender_name or None),
         )
+        # --- Reply / quote context (#56607) ---
+        # Google Chat delivers the quoted message's snapshot in
+        # ``quotedMessageMetadata.quotedMessageSnapshot``. Populate the
+        # generic ``reply_to_*`` fields so ``gateway/run.py`` injects
+        # ``[Replying to: "..."]`` context — the same mechanism every
+        # other reply-capable adapter (Signal, WhatsApp Cloud, Feishu,
+        # Telegram, …) already wires into. Without a snapshot (deleted
+        # message, permission gap) there is no quotable context to show,
+        # so all fields stay at their defaults.
+        quoted_meta = msg.get("quotedMessageMetadata") or {}
+        snapshot = quoted_meta.get("quotedMessageSnapshot") or {}
+        if snapshot:
+            reply_to_text = (snapshot.get("text") or "").strip() or None
+            reply_to_message_id = quoted_meta.get("name") or None
+            quoted_sender = (snapshot.get("sender") or {}).get("name") or ""
+            reply_to_is_own_message = bool(
+                quoted_sender
+                and self._bot_user_id
+                and quoted_sender == self._bot_user_id
+            )
+        else:
+            reply_to_text = None
+            reply_to_message_id = None
+            reply_to_is_own_message = False
         return MessageEvent(
             text=text,
             message_type=message_type,
@@ -1648,6 +1672,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             message_id=msg.get("name") or None,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_text=reply_to_text,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_is_own_message=reply_to_is_own_message,
         )
 
     async def _download_attachment(

@@ -885,6 +885,117 @@ class TestBuildMessageEvent:
         assert event.message_type == MessageType.PHOTO
 
 
+class TestQuotedMessageMetadata:
+    """Regression tests for #56607: when a user replies by quoting a
+    message, the Google Chat API delivers the quoted text in
+    ``quotedMessageMetadata.quotedMessageSnapshot.text``. The adapter
+    must populate the generic ``reply_to_*`` fields on ``MessageEvent``
+    so ``gateway/run.py`` can inject ``[Replying to: "..."]`` context —
+    matching every other reply-capable adapter (Signal, WhatsApp Cloud,
+    Feishu, Telegram, BlueBubbles)."""
+
+    @pytest.mark.asyncio
+    async def test_quoted_message_populates_reply_context(self, adapter):
+        env = _make_chat_envelope(text="what did you mean by this?")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {
+            "name": "spaces/S/messages/QUOTED",
+            "quotedMessageSnapshot": {
+                "name": "spaces/S/messages/QUOTED",
+                "text": "Set phasers to stun",
+                "sender": {"name": "users/99999", "displayName": "Picard"},
+            },
+        }
+        event = await adapter._build_message_event(msg, env)
+        assert event is not None
+        assert event.reply_to_text == "Set phasers to stun"
+        assert event.reply_to_message_id == "spaces/S/messages/QUOTED"
+        # Quoted sender is a human, not the bot.
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_quoted_bot_message_sets_own_flag(self, adapter):
+        """When the quoted message was sent by this bot, run.py emits
+        ``[Replying to your previous message: "..."]`` — the adapter
+        must flag it via ``reply_to_is_own_message``."""
+        adapter._bot_user_id = "users/BOT_ID"
+        env = _make_chat_envelope(text="can you redo that?")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {
+            "name": "spaces/S/messages/BOTMSG",
+            "quotedMessageSnapshot": {
+                "name": "spaces/S/messages/BOTMSG",
+                "text": "Engaging warp drive now",
+                "sender": {"name": "users/BOT_ID", "displayName": "HermesBot"},
+            },
+        }
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_text == "Engaging warp drive now"
+        assert event.reply_to_message_id == "spaces/S/messages/BOTMSG"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_missing_snapshot_no_reply_fields(self, adapter):
+        """``quotedMessageMetadata`` present but no snapshot — degrade
+        gracefully without crashing or injecting stale/empty fields."""
+        env = _make_chat_envelope(text="hello")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {"name": "spaces/S/messages/Q"}
+        event = await adapter._build_message_event(msg, env)
+        assert event is not None
+        assert event.reply_to_text is None
+        assert event.reply_to_message_id is None
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_no_quote_leaves_defaults(self, adapter):
+        """Normal message with no ``quotedMessageMetadata`` — reply
+        fields stay at their defaults (the common case)."""
+        env = _make_chat_envelope(text="just chatting")
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_text is None
+        assert event.reply_to_message_id is None
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_empty_snapshot_text_no_reply_text(self, adapter):
+        """Snapshot present but text is whitespace-only — treat as no
+        quotable text so run.py doesn't inject an empty snippet."""
+        env = _make_chat_envelope(text="reply")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {
+            "name": "spaces/S/messages/Q",
+            "quotedMessageSnapshot": {
+                "text": "   ",
+                "sender": {"name": "users/99999"},
+            },
+        }
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_quoted_message_in_group_space(self, adapter):
+        """Quote handling is independent of space type — a quoted reply
+        in a group space must also populate reply context."""
+        env = _make_chat_envelope(text="nice point")
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = {
+            "name": "spaces/G/messages/QG",
+            "quotedMessageSnapshot": {
+                "text": "Great work team",
+                "sender": {"name": "users/11111"},
+            },
+        }
+        event = await adapter._build_message_event(msg, env)
+        assert event.source.chat_type == "group"
+        assert event.reply_to_text == "Great work team"
+        assert event.reply_to_message_id == "spaces/G/messages/QG"
+        assert event.reply_to_is_own_message is False
+
+
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling
 # ===========================================================================

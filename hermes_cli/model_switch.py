@@ -34,6 +34,7 @@ from hermes_cli.providers import (
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
+    detect_vendor,
     normalize_model_for_provider,
 )
 from agent.models_dev import (
@@ -1034,6 +1035,26 @@ def switch_model(
                                 new_model = mid
                                 resolved_in_current_catalog = True
                                 break
+
+        # --- Step d.25: aggregator vendor-prefix normalization (#56465) ---
+        # A bare vendor model selected while already on an aggregator should stay
+        # on that authenticated aggregator.  Otherwise step e sees the bare name
+        # in a native provider's static catalog (e.g. ``mimo-v2.5`` -> Xiaomi),
+        # rewrites ``model.provider`` to that direct API, and the next gateway
+        # turn fails before credentials can fall back to the user's aggregator
+        # auth.  Normalize to the aggregator slug now and mark it resolved so the
+        # native-provider detector cannot second-guess the current route.
+        if (
+            is_aggregator(target_provider)
+            and not resolved_alias
+            and not resolved_in_current_catalog
+            and "/" not in new_model
+        ):
+            if detect_vendor(new_model):
+                normalized = normalize_model_for_provider(new_model, target_provider)
+                if normalized and normalized != new_model:
+                    new_model = normalized
+                    resolved_in_current_catalog = True
 
         # --- Step d.5: configured-provider exact-match detection (#45006) ---
         # If the typed model is declared in user/custom provider config, route

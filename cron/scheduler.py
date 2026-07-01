@@ -2734,6 +2734,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Drain memory-provider queues (e.g. Hindsight's async retain
+        # writer) while the worker-thread event loop is still alive.
+        # Without this, the ThreadPoolExecutor's cancel_futures=True
+        # destroys the loop before the writer can flush, producing
+        # "cannot schedule new futures after interpreter shutdown".  (#42466)
+        try:
+            if agent is not None:
+                agent.shutdown_memory_provider()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to shutdown memory provider: %s", job_id, e)
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job

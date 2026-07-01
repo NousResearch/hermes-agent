@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -1190,6 +1190,81 @@ class TestRunJobSessionPersistence:
 
         assert success is True
         cleanup_mock.assert_called_once()
+
+    def test_run_job_shuts_down_memory_provider_before_close(self, tmp_path):
+        # Regression: Hindsight's async retain writer uses the worker-thread
+        # event loop.  If agent.close() runs without first draining the
+        # memory provider, the ThreadPoolExecutor's cancel_futures=True
+        # destroys the loop mid-flush → "cannot schedule new futures after
+        # interpreter shutdown".  (#42466)
+        job = {
+            "id": "mem-shutdown-job",
+            "name": "mem-shutdown",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        # shutdown_memory_provider must be called BEFORE close.
+        mock_agent.assert_has_calls([
+            call.shutdown_memory_provider(),
+            call.close(),
+        ])
+
+    def test_run_job_shuts_down_memory_provider_on_failure(self, tmp_path):
+        # Even when run_conversation raises, the memory provider must still
+        # be drained before the agent is closed.
+        job = {
+            "id": "mem-shutdown-fail-job",
+            "name": "mem-shutdown-fail",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = RuntimeError("pool died")
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is False
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
 
     def _make_run_job_patches(self, tmp_path):
         """Common patches for run_job tests."""

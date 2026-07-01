@@ -1749,6 +1749,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
+    # 1b. Bundled in wheel (pip install) — check before workspace validation
+    #     so pip/pipx installs (which ship tui_dist/ but not ui-tui/) don't
+    #     hit _ensure_tui_workspace's sys.exit(1).
+    if not tui_dev:
+        bundled = _find_bundled_tui()
+        if bundled is not None:
+            node = _node_bin("node")
+            return [node, "--expose-gc", str(bundled)], bundled.parent
+
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
@@ -1759,12 +1768,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
                 return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
-
-        # 1b. Bundled in wheel (pip install)
-        bundled = _find_bundled_tui()
-        if bundled is not None:
-            node = _node_bin("node")
-            return [node, "--expose-gc", str(bundled)], bundled.parent
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.

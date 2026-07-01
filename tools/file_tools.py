@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -350,6 +351,43 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             )
     except Exception:
         return None
+
+
+_V4A_FILE_HEADER_RE = re.compile(
+    r"^(\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*)(.+)$",
+    re.MULTILINE,
+)
+
+
+def _file_ops_uses_host_paths(file_ops) -> bool:
+    """Return True when file_ops targets the same host filesystem as Hermes."""
+    env = getattr(file_ops, "env", None)
+    if env is None:
+        return True
+    try:
+        from tools.environments.local import LocalEnvironment
+    except ImportError:
+        return True
+    return isinstance(env, LocalEnvironment)
+
+
+def _rewrite_v4a_patch_paths_for_host(
+    patch: str,
+    path_to_resolved: dict[str, str | None],
+    file_ops,
+) -> str:
+    """Rewrite local V4A headers to the exact resolved host paths."""
+    if not _file_ops_uses_host_paths(file_ops):
+        return patch
+
+    def _replace(match: re.Match) -> str:
+        original = match.group(2).strip()
+        resolved = path_to_resolved.get(original)
+        if not resolved:
+            return match.group(0)
+        return f"{match.group(1)}{resolved}"
+
+    return _V4A_FILE_HEADER_RE.sub(_replace, patch)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -1685,7 +1723,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                patch_for_ops = _rewrite_v4a_patch_paths_for_host(
+                    patch,
+                    _path_to_resolved,
+                    file_ops,
+                )
+                result = file_ops.patch_v4a(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 

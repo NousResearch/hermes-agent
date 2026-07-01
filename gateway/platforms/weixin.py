@@ -1158,6 +1158,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        self._lock_contention_detected = False
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
@@ -1280,6 +1281,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         try:
             if not self._acquire_platform_lock('weixin-bot-token', self._token, 'Weixin bot token'):
+                self._lock_contention_detected = True
                 return False
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
@@ -1292,7 +1294,9 @@ class WeixinAdapter(BasePlatformAdapter):
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
-        self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
+        clear_sync_buf = self._lock_contention_detected
+        self._lock_contention_detected = False
+        self._poll_task = asyncio.create_task(self._poll_loop(clear_sync_buf=clear_sync_buf), name="weixin-poll")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
@@ -1334,9 +1338,14 @@ class WeixinAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
-    async def _poll_loop(self) -> None:
+    async def _poll_loop(self, *, clear_sync_buf: bool = False) -> None:
         assert self._poll_session is not None
-        sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
+        if clear_sync_buf:
+            _save_sync_buf(self._hermes_home, self._account_id, "")
+            sync_buf = ""
+            logger.info("[%s] Cleared stale sync_buf after lock contention recovery", self.name)
+        else:
+            sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
 

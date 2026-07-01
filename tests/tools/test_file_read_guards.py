@@ -109,6 +109,21 @@ class TestDevicePathBlocking(unittest.TestCase):
             "/proc/1/numa_maps",
             "/proc/self/mem",
             "/proc/12345/mem",
+            "/proc/self/auxv",
+            "/proc/1/auxv",
+            "/proc/self/pagemap",
+            "/proc/99/pagemap",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_task_thread_sensitive_files_blocked(self):
+        """Per-thread /proc/<pid>/task/<tid>/<file> aliases leak the same data."""
+        for path in (
+            "/proc/self/task/1234/maps",
+            "/proc/self/task/1234/smaps",
+            "/proc/self/task/1234/auxv",
+            "/proc/self/task/1234/pagemap",
+            "/proc/self/task/1234/environ",
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 

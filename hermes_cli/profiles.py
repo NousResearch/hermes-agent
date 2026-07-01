@@ -1954,8 +1954,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 2. Rename directory
-    old_dir.rename(new_dir)
+    # 2. Rename directory. shutil.move() preserves the fast rename path on the
+    # same filesystem and falls back to copy+remove across mounts.
+    shutil.move(str(old_dir), str(new_dir))
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity

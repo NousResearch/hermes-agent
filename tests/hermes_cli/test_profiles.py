@@ -7,6 +7,8 @@ and shell completion generation.
 
 import json
 import io
+import errno
+import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -985,6 +987,29 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
+
+    def test_renames_directory_across_devices(self, profile_env):
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+
+        real_rename = os.rename
+
+        def rename_side_effect(src, dst, *args, **kwargs):
+            if Path(os.fspath(src)) == old_dir and Path(os.fspath(dst)) == new_dir:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real_rename(src, dst, *args, **kwargs)
+
+        with (
+            patch("os.rename", side_effect=rename_side_effect),
+            patch("hermes_cli.profiles.check_alias_collision", return_value="skip"),
+        ):
+            renamed_dir = rename_profile("oldname", "newname")
+
+        assert not old_dir.exists()
+        assert renamed_dir.is_dir()
+        assert renamed_dir == new_dir
 
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env

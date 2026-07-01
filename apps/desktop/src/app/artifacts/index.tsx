@@ -306,8 +306,11 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
-function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+export function formatArtifactTime(timestamp: number): string {
+  // Backend stores timestamps as epoch seconds (Python time.time()), but
+  // Date() expects milliseconds.  Values >= 1e12 are already in ms (from
+  // Date.now() or similar); smaller values are seconds and need conversion.
+  return ARTIFACT_TIME_FMT.format(new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

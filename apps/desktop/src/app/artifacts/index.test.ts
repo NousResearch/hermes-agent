@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { collectArtifactsForSession } from './index'
+import { collectArtifactsForSession, formatArtifactTime } from './index'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -58,5 +58,28 @@ describe('collectArtifactsForSession', () => {
       kind: 'link',
       value: 'https://example.com/changelog/latest'
     })
+  })
+})
+
+describe('formatArtifactTime', () => {
+  it('treats small values as epoch seconds and converts to ms', () => {
+    // 1780936770 = 2026-06-08 ~19:39 UTC (epoch seconds)
+    const result = formatArtifactTime(1780936770)
+    // Should NOT be Jan 1970 — should contain a June date
+    expect(result).not.toMatch(/Jan/)
+    expect(result).toMatch(/Jun/)
+  })
+
+  it('passes through values already in milliseconds', () => {
+    // 1781036951103 = epoch milliseconds (already > 1e12)
+    const result = formatArtifactTime(1781036951103)
+    expect(result).not.toMatch(/Jan/)
+    expect(result).toMatch(/Jun/)
+  })
+
+  it('handles fractional epoch seconds', () => {
+    // 1780936770.62 — Python time.time() returns floats
+    const result = formatArtifactTime(1780936770.62)
+    expect(result).toMatch(/Jun/)
   })
 })

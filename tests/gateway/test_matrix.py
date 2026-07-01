@@ -2230,6 +2230,40 @@ class TestMatrixSyncLoop:
 
         await adapter.disconnect()
         assert adapter._invite_join_tasks == {}
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_introspect_error(self):
+        """Sync loop should stop (not retry forever) on token introspection errors.
+
+        Regression test for #56532: 'Unable to introspect the access token'
+        was not matched by the permanent-auth check, causing an infinite 5s
+        retry loop even though the token itself remained valid.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        call_count = 0
+
+        async def _sync_raises(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise Exception("Unable to introspect the access token")
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_raises)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+
+        # Should have stopped after the first failure, not retried indefinitely.
+        assert call_count == 1
+        assert adapter._closing is False  # loop exited, not cancelled
+
+
 
 class TestMatrixUploadAndSend:
     @pytest.mark.asyncio

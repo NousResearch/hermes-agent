@@ -177,11 +177,14 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     """Codex slots must not become custom chat-completions endpoints.
 
-    _resolve_task_provider_model treats any explicit base_url as provider=custom.
-    For openai-codex that bypasses the Codex auxiliary branch, losing the
-    Cloudflare headers and Responses adapter required for chatgpt.com/backend-api/codex.
+    _slot_runtime forwards the resolved base_url/api_key/api_mode; the single
+    chokepoint that must NOT collapse openai-codex to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, the Codex auxiliary branch — Cloudflare headers + Responses
+    adapter for chatgpt.com/backend-api/codex — would be bypassed.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -196,8 +199,20 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     )
 
     rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
 
-    assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+    # The chokepoint preserves openai-codex identity despite the explicit
+    # base_url (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "openai-codex"
+    assert base_url == "https://chatgpt.com/backend-api/codex"
 
 
 @pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
@@ -686,17 +701,17 @@ def test_moa_facade_reruns_references_on_new_turn(monkeypatch, tmp_path):
 
 
 def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch):
-    """Native anthropic slots must NOT forward base_url/api_key.
+    """Native anthropic slots must keep their provider identity, not collapse to custom.
 
     anthropic OAuth setup-tokens (sk-ant-oat*) require Bearer auth + the
-    ``anthropic-beta: oauth-*`` header, which only the provider branch of
-    call_llm adds. If _slot_runtime forwarded base_url/api_key, call_llm would
-    treat the slot as a plain custom endpoint and send the token as x-api-key,
-    which Anthropic rejects with a bare 429. So a whitelisted provider
-    (anthropic) returns only provider/model, while a non-whitelisted provider
-    (openrouter) forwards the resolved base_url/api_key.
+    ``anthropic-beta: oauth-*`` header, which only the anthropic provider branch
+    of call_llm adds. _slot_runtime forwards the resolved base_url/api_key for
+    every provider now; the single chokepoint that must NOT collapse anthropic
+    to provider=custom (which would send the token as x-api-key → bare 429) is
+    _resolve_task_provider_model via _preserve_provider_with_base_url.
     """
     from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
 
     def fake_resolve(*, requested, target_model=None):
         return {
@@ -709,15 +724,25 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
         "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
     )
 
-    # Whitelisted: anthropic must skip base_url/api_key forwarding.
+    # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
     anthropic_rt = moa_loop._slot_runtime(
         {"provider": "anthropic", "model": "claude-opus-4-8"}
     )
-    assert anthropic_rt == {"provider": "anthropic", "model": "claude-opus-4-8"}
-    assert "base_url" not in anthropic_rt
-    assert "api_key" not in anthropic_rt
+    assert anthropic_rt["provider"] == "anthropic"
+    assert anthropic_rt["base_url"] == "https://resolved.example/v1"
 
-    # Non-whitelisted: openrouter still forwards the resolved endpoint.
+    # The chokepoint preserves anthropic identity despite the explicit base_url,
+    # so call_llm routes through the anthropic provider branch (not custom).
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        provider="anthropic",
+        model="claude-opus-4-8",
+        base_url="https://resolved.example/v1",
+        api_key="resolved-key",
+    )
+    assert resolved_provider == "anthropic"
+
+    # A generic provider (openrouter) is likewise forwarded and preserved.
     other_rt = moa_loop._slot_runtime(
         {"provider": "openrouter", "model": "some-model"}
     )

@@ -56,6 +56,27 @@ CASES = {
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
+    # Built dashboard browser bundles are served verbatim — they can't touch
+    # Python, so a compiled asset edit must NOT trigger the pytest matrix.
+    "dashboard dist js → nothing heavy": (
+        ["plugins/kanban/dashboard/dist/index.js"], _lanes()),
+    "dashboard dist css → nothing heavy": (
+        ["plugins/kanban/dashboard/dist/style.css"], _lanes()),
+    # Vite/webpack also emit index.html + asset-manifest.json into dist/ (Greptile P2).
+    "dashboard dist html → nothing heavy": (
+        ["plugins/kanban/dashboard/dist/index.html"], _lanes()),
+    "dashboard dist manifest json → nothing heavy": (
+        ["plugins/kanban/dashboard/dist/asset-manifest.json"], _lanes()),
+    # But the plugin's .py backend is NOT under dist/ → still python-relevant.
+    "dashboard plugin_api.py → python": (
+        ["plugins/kanban/dashboard/plugin_api.py"], _lanes(python=True, scan=True)),
+    # A plugin .py OUTSIDE dashboard/dist still runs Python (fail-open).
+    "plugin source py → python": (
+        ["plugins/memory/mem0/__init__.py"], _lanes(python=True, scan=True)),
+    # Mixed: a dashboard bundle + a real python file still runs Python.
+    "mixed dashboard-js + python → python": (
+        ["plugins/kanban/dashboard/dist/index.js", "agent/x.py"],
+        _lanes(python=True, scan=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),

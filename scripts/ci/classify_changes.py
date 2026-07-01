@@ -41,6 +41,26 @@ _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 
+# Built browser assets served verbatim to the dashboard SPA. A compiled bundle
+# under a plugin's ``dashboard/dist/`` (or an installed dashboard's asset dir)
+# cannot import or execute Python — it's served as-is by ``serve_plugin_asset``.
+# Editing one must NOT trigger the whole pytest matrix. The plugin's ``.py``
+# backend (``plugin_api.py``) is NOT under ``dist/`` and stays python-relevant.
+# Covers the full set of Vite/webpack ``dist/`` outputs: scripts, styles, source
+# maps, fonts, images, plus ``index.html`` / ``asset-manifest.json`` / ``stats.json``.
+_BROWSER_ASSET_EXTS = (".js", ".mjs", ".css", ".map", ".woff", ".woff2", ".svg",
+                       ".png", ".jpg", ".jpeg", ".gif", ".ico", ".html", ".json",
+                       ".txt", ".ttf", ".eot", ".webp", ".avif", ".wasm")
+
+
+def _is_built_dashboard_asset(p: str) -> bool:
+    # e.g. plugins/kanban/dashboard/dist/index.js, plugins/*/dashboard/dist/style.css
+    return (
+        p.startswith("plugins/")
+        and "/dashboard/dist/" in p
+        and p.endswith(_BROWSER_ASSET_EXTS)
+    )
+
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
 _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
@@ -56,7 +76,13 @@ def _is_docs(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
+    return (
+        _is_docs(p)
+        or _is_built_dashboard_asset(p)
+        or p in _ROOT_NPM
+        or p.startswith(_PY_SKIP)
+        or p.startswith(_DOCKER_META)
+    )
 
 
 def _is_scan(p: str) -> bool:

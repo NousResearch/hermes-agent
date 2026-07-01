@@ -60,7 +60,6 @@ def test_web_extract_uses_fxtwitter_for_x_status(monkeypatch):
     result_str = asyncio.get_event_loop().run_until_complete(
         web_tools.web_extract_tool(
             ["https://x.com/MatthewBerman/status/2062628512243347566?s=12"],
-            use_llm_processing=False,
         )
     )
     result = json.loads(result_str)
@@ -85,7 +84,6 @@ def test_web_extract_reports_fxtwitter_error(monkeypatch):
     result_str = asyncio.get_event_loop().run_until_complete(
         web_tools.web_extract_tool(
             ["https://x.com/nope/status/2062546475888845157"],
-            use_llm_processing=False,
         )
     )
     result = json.loads(result_str)

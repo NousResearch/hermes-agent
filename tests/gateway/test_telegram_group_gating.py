@@ -77,6 +77,7 @@ def _make_adapter(
     adapter._forum_command_registered = set()
     adapter._active_sessions = {}
     adapter._pending_messages = {}
+    adapter._group_access_notices_sent = set()
     # Trigger-gating tests don't exercise the allowlist gate (added by
     # #23795 + #24468).  Force-authorize all senders so the trigger logic
     # under test runs.  Without this, every fake message hits the new
@@ -112,6 +113,16 @@ def _group_message(
         from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
         reply_to_message=reply_to_message,
         date=None,
+    )
+
+
+def _my_chat_member_update(*, chat_id=-100, chat_title="Test Group", old_status="left", new_status="member"):
+    return SimpleNamespace(
+        my_chat_member=SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id, type="group", title=chat_title, is_forum=False),
+            old_chat_member=SimpleNamespace(status=old_status),
+            new_chat_member=SimpleNamespace(status=new_status),
+        )
     )
 
 
@@ -154,6 +165,24 @@ def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)
 
     assert adapter._should_process_message(_group_message("hello everyone")) is True
+
+
+def test_bot_join_posts_one_time_group_access_notice():
+    async def _run():
+        adapter = _make_adapter()
+        adapter.send = AsyncMock()
+
+        await adapter._handle_my_chat_member(_my_chat_member_update(), SimpleNamespace())
+        await adapter._handle_my_chat_member(_my_chat_member_update(), SimpleNamespace())
+
+        adapter.send.assert_awaited_once()
+        chat_id, content = adapter.send.await_args.args[:2]
+        assert chat_id == "-100"
+        assert "allowlisted" in content
+        assert "admin" in content
+        assert "privacy mode" in content
+
+    asyncio.run(_run())
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():

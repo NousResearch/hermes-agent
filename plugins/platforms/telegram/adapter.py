@@ -30,6 +30,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        ChatMemberHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -48,6 +49,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    ChatMemberHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -120,7 +122,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, ChatMemberHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -139,6 +141,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            ChatMemberHandler as _CMH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -155,6 +158,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    ChatMemberHandler = _CMH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -391,6 +395,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        self._group_access_notices_sent: Set[str] = set()
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
@@ -2703,6 +2708,10 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
+            ))
+            self._app.add_handler(ChatMemberHandler(
+                self._handle_my_chat_member,
+                ChatMemberHandler.MY_CHAT_MEMBER,
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -6108,6 +6117,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return group_allowed & response_allowed
         return group_allowed
 
+    def _telegram_group_access_notice(self, chat_title: str | None = None) -> str:
+        title = chat_title or "this group"
+        return (
+            f"Hi, I'm Hermes.\n\n"
+            f"To reply in {title}, this chat must be allowlisted in the gateway "
+            f"configuration. For Telegram groups, the bot also needs enough "
+            f"group delivery permissions to see messages reliably, which usually "
+            f"means disabling privacy mode or promoting the bot to admin.\n\n"
+            f"If you've just changed those settings, remove and re-add the bot "
+            f"to refresh Telegram's cached group state."
+        )
+
     def _telegram_allowed_topics(self) -> set[str]:
         """Return the whitelist of Telegram forum topic IDs this bot handles.
 
@@ -6194,6 +6215,44 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
+
+    async def _handle_my_chat_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Surface a one-time onboarding notice when the bot is added to a group."""
+        member_update = getattr(update, "my_chat_member", None)
+        if not member_update:
+            return
+
+        chat = getattr(member_update, "chat", None)
+        if not chat:
+            return
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        if chat_type not in {"group", "supergroup"}:
+            return
+
+        old_member = getattr(member_update, "old_chat_member", None)
+        new_member = getattr(member_update, "new_chat_member", None)
+        old_status = str(getattr(old_member, "status", "")).split(".")[-1].lower()
+        new_status = str(getattr(new_member, "status", "")).split(".")[-1].lower()
+
+        if old_status not in {"left", "kicked"}:
+            return
+        if new_status not in {"member", "administrator", "creator"}:
+            return
+
+        chat_id = str(getattr(chat, "id", "")).strip()
+        if not chat_id or chat_id in self._group_access_notices_sent:
+            return
+        self._group_access_notices_sent.add(chat_id)
+
+        notice = self._telegram_group_access_notice(getattr(chat, "title", None))
+        try:
+            await self.send(chat_id, notice)
+        except Exception:
+            logger.debug(
+                "[Telegram] Failed to send group access notice for chat %s",
+                chat_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _extract_bot_mention_usernames(message: Message) -> set[str]:

@@ -208,6 +208,35 @@ tts:
 
 See the [xAI Custom Voices docs](https://docs.x.ai/developers/model-capabilities/audio/custom-voices) for details on recording, supported formats, and limits.
 
+### xAI Configuration Reference
+
+All xAI TTS options live under `tts.xai`:
+
+```yaml
+tts:
+  provider: xai
+  xai:
+    voice_id: ""                # custom voice ID (default: "eve")
+    language: "auto"              # BCP-47 code (e.g. "en", "pt-BR") or "auto" for detection
+    speed: 1.0                  # 0.7–1.5, playback speed (default: 1.0)
+    optimize_streaming_latency: 0  # 0–2, trades quality for lower latency (default: 0)
+    auto_speech_tags: false     # insert expressive audio tags via LLM rewrite (default: false)
+    text_normalization: false   # normalize numbers/abbreviations to spoken form (default: false)
+    sample_rate: 24000          # audio sample rate in Hz (default: 24000)
+    bit_rate: 128000            # MP3 bit rate (default: 128000)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `voice_id` | string | `"eve"` | Built-in voice or custom voice ID from the xAI Console |
+| `language` | string | `"en"` | BCP-47 language code (e.g. `en`, `pt-BR`) or `"auto"` for automatic detection |
+| `speed` | float | `1.0` | Playback speed. Clamped to 0.7–1.5. Also reads from global `tts.speed` as fallback |
+| `optimize_streaming_latency` | int | `0` | Latency vs quality trade-off. 0 = best quality, 2 = lowest latency |
+| `auto_speech_tags` | bool | `false` | Uses an LLM rewrite pass to insert expressive `[square-bracket]` audio tags (e.g. `[excited]`, `[light pause]`) into the script before synthesis |
+| `text_normalization` | bool | `false` | Normalizes written-form text (numbers, abbreviations, symbols) into spoken-form before synthesis |
+| `sample_rate` | int | `24000` | Output audio sample rate in Hz |
+| `bit_rate` | int | `128000` | MP3 encoding bit rate |
+
 ### Piper (local, 44 languages)
 
 Piper is a fast, local neural TTS engine from the Open Home Foundation (the Home Assistant maintainers). It runs entirely on CPU, supports **44 languages** with pre-trained voices, and needs no API key.

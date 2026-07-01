@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { collectArtifactsForSession } from './index'
+import { artifactSessionProfileScope, collectArtifactsForSession } from './index'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -58,5 +58,15 @@ describe('collectArtifactsForSession', () => {
       kind: 'link',
       value: 'https://example.com/changelog/latest'
     })
+  })
+})
+
+describe('artifactSessionProfileScope', () => {
+  it('maps the unified profile sentinel to the all-profiles API scope', () => {
+    expect(artifactSessionProfileScope('__all__')).toBe('all')
+  })
+
+  it('keeps concrete profile keys scoped to that profile', () => {
+    expect(artifactSessionProfileScope('work')).toBe('work')
   })
 })

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -27,6 +28,7 @@ import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { mediaExternalUrl } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { $profileScope, ALL_PROFILES } from '@/store/profile'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -363,6 +365,10 @@ interface ArtifactColumn {
 const itemsLabel = (f: ArtifactFilter, a: Translations['artifacts']) =>
   f === 'link' ? a.itemsLink : f === 'file' ? a.itemsFile : a.itemsGeneric
 
+export function artifactSessionProfileScope(profileScope: string): 'all' | (string & {}) {
+  return profileScope === ALL_PROFILES ? 'all' : profileScope
+}
+
 interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
@@ -371,6 +377,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
+  const profileScope = useStore($profileScope)
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -385,7 +392,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRefreshing(true)
 
     try {
-      const sessions = (await listAllProfileSessions(30, 1)).sessions
+      const sessions = (await listAllProfileSessions(30, 1, 'exclude', 'recent', artifactSessionProfileScope(profileScope)))
+        .sessions
+
       const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
       const nextArtifacts: ArtifactRecord[] = []
 
@@ -405,7 +414,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     } finally {
       setRefreshing(false)
     }
-  }, [a])
+  }, [a, profileScope])
 
   useRefreshHotkey(refreshArtifacts)
 

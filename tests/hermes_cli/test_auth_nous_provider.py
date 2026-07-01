@@ -2123,3 +2123,47 @@ class TestStalePortalBaseUrlMigration:
         assert token == "refreshed-access"
         assert len(refresh_calls) == 1
         assert "localhost" in refresh_calls[0]
+
+    def test_runtime_credentials_fallback_for_invalid_portal_url(self, tmp_path, monkeypatch):
+        """resolve_nous_runtime_credentials also rejects an off-allowlist portal host.
+
+        The refresh token is POSTed to portal_base_url on refresh; a poisoned
+        value must never receive the bearer. This mirrors the guard on
+        resolve_nous_access_token so the whole class is covered, not just the
+        managed-gateway path.
+        """
+        from hermes_cli import auth as auth_mod
+
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _setup_nous_auth(
+            hermes_home,
+            access_token=_invoke_jwt(seconds=-60),
+            refresh_token="valid-refresh",
+            expires_at=_future_iso(-60),
+            expires_in=0,
+        )
+        auth_file = hermes_home / "auth.json"
+        store = json.loads(auth_file.read_text())
+        store["providers"]["nous"]["portal_base_url"] = "https://evil.example.com"
+        auth_file.write_text(json.dumps(store, indent=2))
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": _invoke_jwt(seconds=3600),
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "inference_base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+        auth_mod.resolve_nous_runtime_credentials()
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0] == auth_mod.DEFAULT_NOUS_PORTAL_URL

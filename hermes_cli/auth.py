@@ -1812,7 +1812,7 @@ def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
             )
             nous["portal_base_url"] = DEFAULT_NOUS_PORTAL_URL
 
-# Allowlist of hosts the Nous Portal proxy is willing to forward inference
+
 # Allowlist of hosts the Nous Portal proxy is willing to forward inference
 # JWTs to. Sending a bearer anywhere else would leak it.
 #
@@ -5677,6 +5677,18 @@ def resolve_nous_runtime_credentials(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
+
+        # A persisted/stale portal_base_url is where the refresh token gets
+        # POSTed on refresh — reject any host outside the allowlist so a
+        # poisoned value can't exfiltrate the bearer, healing to the default.
+        parsed_portal_url = urlparse(portal_base_url)
+        if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
+            logger.warning(
+                "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
+                portal_base_url, parsed_portal_url.hostname,
+            )
+            portal_base_url = DEFAULT_NOUS_PORTAL_URL
+
         # Persisted value: validated network-provenance only. The stored
         # inference_base_url is re-validated on read so a poisoned/stale
         # staging host (persisted before the allowlist existed) heals to the

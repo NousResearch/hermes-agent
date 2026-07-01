@@ -3,7 +3,3 @@ WARNING tools.registry: check_fn _browser_cdp_check returned False; dependent to
 WARNING tools.registry: check_fn _browser_dialog_check returned False; dependent tools will be unavailable this turn
 WARNING tools.registry: check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
 WARNING tools.registry: check_fn check_web_api_key returned False; dependent tools will be unavailable this turn
-WARNING agent.tool_executor: Tool execute_code returned error (0.01s): {"status": "error", "error": "⚠️ execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run..
-WARNING agent.tool_executor: Tool execute_code returned error (0.00s): {"status": "error", "error": "⚠️ execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run..
-WARNING agent.tool_executor: Tool execute_code returned error (0.00s): {"status": "error", "error": "⚠️ execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run..
-WARNING agent.tool_executor: Tool execute_code returned error (0.00s): {"status": "error", "error": "⚠️ execute_code script execution. The script can spawn subprocesses or mutate files without passing through terminal command approval; approval is one-shot for this run..

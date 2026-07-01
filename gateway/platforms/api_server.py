@@ -4027,6 +4027,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 self._active_run_agents[run_id] = agent
 
+                def _card_notify(card_type: str, data: Any) -> None:
+                    """Push a card event to the run's SSE queue (mirrors _approval_notify)."""
+                    try:
+                        loop.call_soon_threadsafe(q.put_nowait, {
+                            "event": "card",
+                            "card": card_type,
+                            "data": data,
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                        })
+                    except Exception:
+                        pass
+
+                agent.push_card = _card_notify
+
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
                     # Redact credentials from the command before it enters the
@@ -4244,6 +4259,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
+                # CORS：cors_middleware 无法对 StreamResponse 注入 header（prepare 后已发送），
+                # 手动补，否则浏览器跨域订阅 events stream 被 CORS 拦截
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+                "Access-Control-Max-Age": "600",
             },
         )
         await response.prepare(request)

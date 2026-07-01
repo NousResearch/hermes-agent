@@ -250,6 +250,12 @@ TOOLSETS = {
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
+    "attractions": {
+        "description": "景点 demo 工具（find_attractions mock + send_attraction_card 推卡片）",
+        "tools": ["find_attractions", "send_attraction_card"],
+        "includes": []
+    },
+
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
@@ -421,6 +427,8 @@ TOOLSETS = {
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            # Attractions demo (find_attractions mock + send_attraction_card)
+            "find_attractions", "send_attraction_card",
 
         ],
         "includes": []

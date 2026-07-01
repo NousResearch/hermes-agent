@@ -45,6 +45,25 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
+    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+        """Sum two usage buckets (e.g. MoA advisor fan-out + aggregator).
+
+        ``raw_usage`` is dropped on the sum — it describes a single API
+        response and cannot be meaningfully merged. ``request_count`` adds so
+        callers can see how many underlying API calls a combined figure covers.
+        """
+        if not isinstance(other, CanonicalUsage):
+            return NotImplemented
+        return CanonicalUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            request_count=self.request_count + other.request_count,
+            raw_usage=None,
+        )
+
 
 @dataclass(frozen=True)
 class BillingRoute:

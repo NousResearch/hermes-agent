@@ -1394,6 +1394,33 @@ class TestGitDestructiveOps:
         assert dangerous is True
         assert "reset" in desc.lower() or "hard" in desc.lower()
 
+    def test_git_reset_hard_abbreviated_har_detected(self):
+        # git's own option parser resolves unambiguous long-flag prefixes,
+        # so `git reset --har` executes identically to `--hard` (verified
+        # against a live git binary) — confirmed real bypass of the
+        # exact-string `--hard` pattern.
+        cmd = "git reset --har HEAD~3"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "reset" in desc.lower() or "hard" in desc.lower()
+
+    def test_git_reset_hard_abbreviated_single_h_detected(self):
+        cmd = "git reset --h"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_reset_soft_not_flagged(self):
+        """--soft doesn't discard uncommitted work; must not be flagged."""
+        cmd = "git reset --soft HEAD~1"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_git_reset_help_not_flagged(self):
+        """--help must not resolve as an abbreviation of --hard."""
+        cmd = "git reset --help"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
     def test_git_push_force_detected(self):
         cmd = "git push --force origin main"
         dangerous, _, desc = detect_dangerous_command(cmd)
@@ -1436,6 +1463,34 @@ class TestGitDestructiveOps:
         cmd = "git branch -d feature-branch"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is True
+
+    def test_git_branch_long_flag_delete_force_detected(self):
+        # `--delete --force` performs the exact same unmerged-branch force
+        # delete as `-D` (verified live), but is a different token
+        # spelling entirely so the `-D\b` pattern never sees it.
+        cmd = "git branch --delete --force feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force delete" in desc.lower()
+
+    def test_git_branch_short_delete_long_force_detected(self):
+        # `-d --force` is git's own documented equivalent of `-D`.
+        cmd = "git branch -d --force feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_branch_force_first_delete_detected(self):
+        cmd = "git branch --force --delete feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_branch_long_delete_without_force_not_flagged(self):
+        """Plain --delete (merged-only, equivalent to -d) has no force
+        token, so the new combined delete+force patterns must not fire —
+        only an actual force flag alongside it should trigger."""
+        cmd = "git branch --delete feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
 
 
 class TestChmodExecuteCombo:
@@ -1604,6 +1659,25 @@ class TestDetectSudoStdin:
         is_dangerous, _, _ = detect_dangerous_command("sudo --askpass id")
         assert is_dangerous is True
 
+    def test_stdin_abbreviated_flag_detected(self):
+        # sudo's option parser resolves unambiguous long-flag prefixes
+        # just like git's does — `sudo --stdi` runs identically to
+        # `sudo --stdin` (verified against a live sudo binary: both
+        # produce the same "a password is required" outcome, versus a
+        # genuinely unrecognized option which errors differently).
+        is_dangerous, _, _ = detect_dangerous_command("sudo --stdi id")
+        assert is_dangerous is True
+
+    def test_askpass_abbreviated_flag_detected(self):
+        # `--askpass` is the only sudo long option starting with "a", so
+        # any prefix from `--a` up resolves to it unambiguously.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --ask id")
+        assert is_dangerous is True
+
+    def test_askpass_single_char_abbreviation_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --a id")
+        assert is_dangerous is True
+
     def test_two_sudo_invocations_second_caught(self):
         # The first sudo here is benign (no -S); the second has -S.
         # Lazy [^;|&\n]*? does NOT span past `;`, so re.search anchors
@@ -1625,6 +1699,17 @@ class TestDetectSudoStdin:
 
     def test_sudo_with_user_no_stdin_flag_safe(self):
         is_dangerous, _, _ = detect_dangerous_command("sudo -u root -i")
+        assert is_dangerous is False
+
+    def test_sudo_set_home_not_confused_with_stdin_abbreviation(self):
+        # `--set-home` shares no prefix with `--stdin` beyond "--s", so
+        # the broadened `--st[a-z]*` pattern must not catch it.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --set-home id")
+        assert is_dangerous is False
+
+    def test_sudo_shell_flag_not_confused_with_stdin_abbreviation(self):
+        # `--shell` shares "--s" but not "--st" with `--stdin`.
+        is_dangerous, _, _ = detect_dangerous_command("sudo --shell id")
         assert is_dangerous is False
 
     def test_man_sudo_safe(self):

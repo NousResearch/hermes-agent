@@ -1055,6 +1055,35 @@ def init_agent(
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
+    # ── Lazy tool-loading mode ─────────────────────────────────────
+    # When enabled, the API tools parameter starts with only describe_tool and
+    # clarify.  The full tool schemas are stored in agent._all_tool_schemas and
+    # loaded on demand when the model calls describe_tool("tool_name").
+    # Controlled by config.yaml agent.lazy_tool_loading (default: false).
+    _lazy_mode = (
+        getattr(agent, "_lazy_tool_loading", False)
+        or os.environ.get("HERMES_LAZY_TOOLS", "").lower() in ("1", "true", "yes")
+    )
+    if _lazy_mode and agent.tools:
+        agent._lazy_tool_mode = True
+        # Store ALL schemas so describe_tool can look them up
+        agent._all_tool_schemas = {t["function"]["name"]: t for t in agent.tools}
+        # Start with only the bootstrapping tools
+        agent._lazy_tool_names = {"describe_tool", "clarify"}
+        # Tools that have been requested via describe_tool but not yet added
+        agent._lazy_tool_pending = set()
+        # Filter: keep only describe_tool + clarify
+        agent.tools = [
+            t for t in agent.tools
+            if t["function"]["name"] in agent._lazy_tool_names
+        ]
+        agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
+        if not agent.quiet_mode:
+            print(f"   🐢 Lazy tool mode: {len(agent._all_tool_schemas)} schemas stored, "
+                  f"{len(agent.tools)} tools active (describe_tool + clarify)")
+    else:
+        agent._lazy_tool_mode = False
+
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
     # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).

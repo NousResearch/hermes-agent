@@ -370,6 +370,37 @@ class TestTranscribeOpenAIExtended:
 
 
 class TestTranscribeLocalCommand:
+    def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-vision")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("MY_SAFE_STT_VAR", "keep")
+
+        captured = {}
+
+        class Proc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.transcription_tools.subprocess.Popen", fake_popen)
+
+        from tools.transcription_tools import _run_command_stt
+
+        result = _run_command_stt("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env["MY_SAFE_STT_VAR"] == "keep"
+
     def test_auto_detects_local_whisper_binary(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")

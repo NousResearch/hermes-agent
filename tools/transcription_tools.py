@@ -546,11 +546,14 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
 
     Mirrors ``tools.tts_tool._run_command_tts``.
     """
+    from tools.environments.local import hermes_subprocess_env
+
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": hermes_subprocess_env(inherit_credentials=False),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

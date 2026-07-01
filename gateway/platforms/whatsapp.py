@@ -839,6 +839,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
 
+
+        # Cancel any in-flight text-batch tasks and clear buffers so
+        # disconnect does not retain references across reconnects (#55866).
+        pending_tasks = getattr(self, "_pending_text_batch_tasks", None)
+        if pending_tasks is not None:
+            for task in pending_tasks.values():
+                if not task.done():
+                    task.cancel()
+            pending_tasks.clear()
+        pending_events = getattr(self, "_pending_text_batches", None)
+        if pending_events is not None:
+            pending_events.clear()
+
         # Close the persistent HTTP session
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()

@@ -105,3 +105,24 @@ def test_lone_message_dispatched_alone():
 
     asyncio.run(_drive())
     assert dispatched == ["solo"]
+
+
+def test_disconnect_cancels_pending_batch_tasks():
+    adapter = _make_adapter(
+        text_batch_delay_seconds=0.1,
+        text_batch_split_delay_seconds=0.2,
+    )
+
+    async def _noop(event):
+        return None
+
+    adapter.handle_message = _noop
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("keep"))
+        await asyncio.sleep(0.05)
+        await adapter.disconnect()
+
+    asyncio.run(_drive())
+    assert adapter._pending_text_batch_tasks == {}
+    assert adapter._pending_text_batches == {}

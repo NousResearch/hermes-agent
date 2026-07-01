@@ -5475,7 +5475,7 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        return result.get("final_response", "")
 
     def _run_codex_app_server_turn(
         self,
@@ -5668,7 +5668,7 @@ def main(
     print(f"📞 API Calls: {result['api_calls']}")
     print(f"💬 Messages: {len(result['messages'])}")
     
-    if result['final_response']:
+    if result.get('final_response'):
         print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])

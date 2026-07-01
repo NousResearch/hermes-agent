@@ -633,6 +633,9 @@ def init_agent(
     # access for Codex Responses API streaming.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
+    # Set when model.claude_agent_sdk is configured (inference|delegate|hybrid);
+    # routes anthropic_messages inference through agent/claude_agent_sdk_adapter.
+    agent._claude_agent_sdk_mode = None
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
@@ -645,7 +648,39 @@ def init_agent(
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
-        if _is_bedrock_anthropic:
+        # Optional opt-in: drive inference/agent turns through the Claude Agent
+        # SDK (`claude-agent-sdk`) instead of the native anthropic client. The
+        # SDK spawns the `claude` CLI and authenticates via env (OAuth
+        # subscription token or API key), so there is NO anthropic.Anthropic
+        # client to build. api_mode stays "anthropic_messages"; the leaf call in
+        # _anthropic_messages_create routes to the SDK adapter when
+        # _claude_agent_sdk_mode is set. Only enabled for the native anthropic
+        # provider (see resolve_claude_agent_sdk_settings).
+        from agent.claude_agent_sdk_adapter import resolve_claude_agent_sdk_settings
+        _claude_sdk_settings = resolve_claude_agent_sdk_settings(agent.provider)
+        if _claude_sdk_settings and not _is_bedrock_anthropic:
+            from agent.anthropic_adapter import _is_oauth_token as _is_oat
+            _sdk_key = (api_key or resolve_anthropic_token() or "")
+            agent._claude_agent_sdk_mode = _claude_sdk_settings["mode"]
+            agent._claude_agent_sdk_settings = _claude_sdk_settings
+            agent._claude_sdk_session_id = None
+            # The SDK owns its own transport/streaming; route through Hermes'
+            # non-streaming call path so the leaf swap in
+            # _anthropic_messages_create is reached.
+            agent._disable_streaming = True
+            agent.api_key = _sdk_key
+            agent._anthropic_api_key = _sdk_key
+            agent._anthropic_base_url = base_url
+            agent._is_anthropic_oauth = _is_oat(_sdk_key) if isinstance(_sdk_key, str) else False
+            agent._anthropic_client = None
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(
+                    f"🤖 AI Agent initialized with model: {agent.model} "
+                    f"(Claude Agent SDK · mode={_claude_sdk_settings['mode']})"
+                )
+        elif _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
             _br_region = _region_match.group(1) if _region_match else "us-east-1"

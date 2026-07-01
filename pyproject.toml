@@ -144,6 +144,12 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# Claude Agent SDK — optional backend that drives inference/agent turns
+# through the `claude` CLI (enables Claude Code OAuth/subscription auth).
+# Only loaded when model.claude_agent_sdk is configured. Deliberately NOT in
+# [all] (lazy-installed via tools/lazy_deps.py; keep in sync). Also needs the
+# `claude` CLI at runtime (Node) — a runtime, not a pip, dependency.
+claude-agent-sdk = ["claude-agent-sdk==0.2.110"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

@@ -4289,6 +4289,10 @@ class AIAgent:
         return True
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
+        # SDK runtime resolves auth via env at call time (build_auth_env);
+        # there is no long-lived anthropic client to rebuild on refresh.
+        if getattr(self, "_claude_agent_sdk_mode", None):
+            return False
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
         # Only refresh credentials for the native Anthropic provider.
@@ -4418,6 +4422,17 @@ class AIAgent:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
+        if getattr(self, "_claude_agent_sdk_mode", None):
+            # SDK runtime: update credential state only; auth env is recomputed
+            # per call in build_auth_env, and there is no anthropic client.
+            from agent.anthropic_adapter import _is_oauth_token
+            self._anthropic_api_key = runtime_key
+            self._anthropic_base_url = runtime_base
+            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+            self.api_key = runtime_key
+            self.base_url = runtime_base
+            return
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
@@ -4471,6 +4486,13 @@ class AIAgent:
         return pool.has_available()
 
     def _anthropic_messages_create(self, api_kwargs: dict):
+        # Claude Agent SDK runtime: there is no anthropic.Anthropic client —
+        # the SDK spawns the `claude` CLI. Route the turn to the SDK adapter,
+        # which returns an Anthropic-Message-shaped object that the existing
+        # AnthropicTransport.normalize_response consumes unchanged.
+        if getattr(self, "_claude_agent_sdk_mode", None):
+            from agent.claude_agent_sdk_adapter import create_claude_agent_message
+            return create_claude_agent_message(self, api_kwargs)
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         # Defensive: strip Responses-only kwargs that can leak in under an
@@ -4496,6 +4518,11 @@ class AIAgent:
         path when an OAuth subscription rejects the 1M-context beta) so the
         rebuilt client carries the reduced beta set.
         """
+        if getattr(self, "_claude_agent_sdk_mode", None):
+            # SDK runtime owns its own transport (the `claude` CLI). Nothing to
+            # rebuild; keep the client slot empty.
+            self._anthropic_client = None
+            return
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client

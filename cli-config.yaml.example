@@ -86,6 +86,36 @@ model:
   # default_headers:
   #   User-Agent: "curl/8.7.1"
 
+  # ── Claude Agent SDK runtime (optional; provider: anthropic only) ──────────
+  #
+  # Drive inference/agent turns through Anthropic's Claude Agent SDK (the
+  # `claude` CLI) instead of the native anthropic client. Main draw: it can
+  # authenticate with a Claude Code / Pro-Max OAuth subscription token as well
+  # as an API key. Requires `uv pip install 'hermes-agent[claude-agent-sdk]'`
+  # AND the `claude` CLI on PATH. See docs/design/claude-agent-sdk-backend.md.
+  #
+  # NOTE: using a subscription OAuth token to power a third-party agent is
+  # outside Anthropic's intended use for those credentials; an API key
+  # (ANTHROPIC_API_KEY) is the unambiguously compliant option.
+  #
+  # Modes:
+  #   inference - one SDK model call per turn; Hermes keeps its own loop, tools,
+  #               soul, budget and safety. Text-only (the session-based SDK
+  #               can't route Hermes' tools on this path). Safest.
+  #   delegate  - the SDK runs the whole task with its OWN tools (Read/Edit/Bash),
+  #               governed by Hermes' guardrails via a PreToolUse hook.
+  #   hybrid    - the SDK drives the loop but calls Hermes' tools (registry +
+  #               agent-level) through an in-process MCP server, with guardrails
+  #               and <untrusted_tool_result> wrapping.
+  #
+  # claude_agent_sdk:
+  #   mode: inference                      # inference | delegate | hybrid
+  #   permission_mode: bypassPermissions   # delegate/hybrid (default)
+  #   max_turns: 24                        # delegate/hybrid
+  #   max_budget_usd: 5.0                  # delegate/hybrid spend cap (optional)
+  #   disallowed_tools: []                 # deny-list (optional)
+  # Shorthand:  claude_agent_sdk: inference
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

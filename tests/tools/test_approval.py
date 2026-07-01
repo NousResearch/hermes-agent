@@ -673,6 +673,28 @@ class TestSensitiveRedirectPattern:
         assert key is None
         assert desc is None
 
+    def test_redirect_to_dotenv_hash_glued_filename_is_safe(self):
+        # A `#` glued to the path is part of the filename, not a comment: the
+        # shell writes to `.env#backup` (a different file), so it must stay out
+        # of the deny — same reasoning as config.yaml.bak. The boundary must
+        # NOT treat `#` as a word boundary (a real comment is whitespace-preceded).
+        dangerous, key, desc = detect_dangerous_command("echo x > .env#backup")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_redirect_to_config_yaml_hash_glued_filename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > config.yaml#backup")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_tee_to_dotenv_hash_glued_filename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env#backup")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
 
 class TestProjectSensitiveCopyPattern:
     def test_cp_to_local_dotenv_requires_approval(self):

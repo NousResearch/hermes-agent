@@ -266,13 +266,19 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
 # sensitive path is ALWAYS a write target no matter what follows it. We only
 # need the path token to END at a shell word boundary — whitespace, a quote, a
-# command separator, a redirection operator, a `#` comment, or end-of-line.
+# command separator, a redirection operator, or end-of-line.
 # Using _COMMAND_TAIL here was too strict: it required the rest of the line to
 # be empty or a command separator, so `echo x > .env extra` (extra arg to echo)
 # and `echo x > .env # note` (trailing comment) slipped past the deny even
 # though the shell still overwrites `.env`. Mirrors the looser system-path
 # redirection rule, which never had this restriction.
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>#"\']|$)'
+#
+# `#` is deliberately NOT a boundary char: a real trailing comment always has
+# whitespace before the `#` (already covered by `\s`), whereas a `#` glued to
+# the path is part of the filename. `echo x > .env#backup` writes to the
+# distinct file `.env#backup`, not `.env`, so it must stay OUT of the deny —
+# the same reasoning that keeps `config.yaml.bak` safe.
+_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # =========================================================================
 # Hardline (unconditional) blocklist

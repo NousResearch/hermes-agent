@@ -52,6 +52,7 @@ import collections
 import hashlib
 import hmac
 import itertools
+import io
 import json
 import logging
 import mimetypes
@@ -59,6 +60,7 @@ import os
 import re
 import threading
 import time
+from playwright.sync_api import sync_playwright
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -557,6 +559,8 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 _MAX_CARD_HEADER_LEN = 60
+_TABLE_ROW_RE = re.compile(r"^\|.+\|$")
+_TABLE_SEP_RE = re.compile(r"^\|[-: |]+\|$")
 
 
 def _extract_card_header(content: str) -> Optional[str]:
@@ -584,16 +588,21 @@ def _extract_card_header(content: str) -> Optional[str]:
 
 
 def _build_interactive_card_payload(content: str) -> str:
-    """Build an interactive card payload for full markdown rendering.
+    """Build an interactive card payload with native table elements.
 
-    Interactive cards support: tables, lists, code blocks with syntax
-    highlighting, bold, italic, strikethrough, links, images, and
-    @mentions — everything the ``post`` + ``md`` path cannot render.
+    Detects markdown tables in the content and converts them to Feishu's
+    native ``table`` element for pixel-perfect column alignment. All other
+    content (headings, lists, code blocks, inline formatting) is rendered
+    via ``markdown`` elements.
+
+    The card gets a header only when the content contains a ``# heading``;
+    otherwise it is headerless.
     """
     header_title = _extract_card_header(content)
+    elements = _build_card_elements(content)
     card: Dict[str, Any] = {
         "config": {"wide_screen_mode": True},
-        "elements": [{"tag": "markdown", "content": content or "…"}],
+        "elements": elements,
     }
     if header_title:
         card["header"] = {
@@ -601,6 +610,175 @@ def _build_interactive_card_payload(content: str) -> str:
             "template": "blue",
         }
     return json.dumps(card, ensure_ascii=False)
+
+
+def _build_card_elements(content: str) -> List[Dict[str, Any]]:
+    """Split content into segments, converting tables to native elements.
+
+    Returns a list of card elements — either ``markdown`` elements for
+    prose/text blocks or ``table`` elements for detected markdown tables.
+    """
+    if not content:
+        return [{"tag": "markdown", "content": "…"}]
+
+    segments = _split_content_segments(content.splitlines())
+    elements: List[Dict[str, Any]] = []
+
+    for seg_type, seg_lines in segments:
+        if seg_type == "table":
+            table_el = _parse_table_element(seg_lines)
+            if table_el:
+                elements.append(table_el)
+        else:
+            text = "\n".join(seg_lines).strip()
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+
+    if not elements:
+        return [{"tag": "markdown", "content": "…"}]
+    return elements
+
+
+def _split_content_segments(lines: List[str]) -> List[tuple[str, List[str]]]:
+    """Group consecutive lines into table or text segments.
+
+    A table segment consists of: a header row matching ``|...|``, followed
+    immediately by a separator row ``|---|``, then one or more data rows.
+    Everything else is a text segment.
+    """
+    segments: List[tuple[str, List[str]]] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i]
+        # Try to detect a table: we need at least 3 lines (header + sep + 1 data)
+        if (
+            i + 2 < n
+            and _TABLE_ROW_RE.match(line)
+            and _TABLE_SEP_RE.match(lines[i + 1])
+            and _TABLE_ROW_RE.match(lines[i + 2])
+        ):
+            table_lines = [line, lines[i + 1]]
+            i += 2
+            # Consume remaining data rows
+            while i < n and _TABLE_ROW_RE.match(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+            segments.append(("table", table_lines))
+        else:
+            # Text line — accumulate until next table
+            text_start = i
+            while i < n:
+                if (
+                    i + 2 < n
+                    and _TABLE_ROW_RE.match(lines[i])
+                    and _TABLE_SEP_RE.match(lines[i + 1])
+                    and _TABLE_ROW_RE.match(lines[i + 2])
+                ):
+                    break
+                i += 1
+            segments.append(("text", lines[text_start:i]))
+
+    return segments
+
+
+def _parse_table_element(lines: List[str]) -> Optional[Dict[str, Any]]:
+    """Convert a markdown table (list of lines) to a table_img placeholder.
+
+    The placeholder stores headers and cell data for later rendering as a
+    PNG image and upload to the Feishu image store.  Resolution is performed
+    asynchronously in ``FeishuAdapter._resolve_table_images()``.
+    """
+    if len(lines) < 3:
+        return None
+
+    headers = _parse_table_row(lines[0])
+    if not headers:
+        return None
+    headers = [h.strip() for h in headers]
+
+    rows: List[List[str]] = []
+    for line in lines[2:]:
+        cells = _parse_table_row(line)
+        if not cells:
+            continue
+        cells = [c.strip() for c in cells]
+        while len(cells) < len(headers):
+            cells.append("")
+        rows.append(cells[: len(headers)])
+
+    if not rows:
+        return None
+
+    return {
+        "tag": "table_img",
+        "headers": headers,
+        "rows": rows,
+    }
+
+
+def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
+    """Render a table as a PNG image using Playwright.
+
+    Returns the raw PNG bytes suitable for upload to the Feishu image store.
+    """
+    th_cells = "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    tr_rows = "".join(
+        "<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>"
+        for row in rows
+    )
+    html = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<style>"
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "body{font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:13px;background:#fff}"
+        "table{border-collapse:collapse}"
+        "th{background:#f0f4ff;font-weight:600;text-align:left;padding:6px 10px;border-bottom:2px solid #d0d7ff;white-space:nowrap}"
+        "td{padding:6px 10px;border-bottom:1px solid #eee;white-space:nowrap}"
+        "tr:last-child td{border-bottom:none}"
+        "</style></head><body><table>"
+        f"<thead><tr>{th_cells}</tr></thead>"
+        f"<tbody>{tr_rows}</tbody>"
+        "</table></body></html>"
+    )
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 1200, "height": 100})
+            page.set_content(html)
+            bbox = page.locator("table").bounding_box()
+            clip = None
+            if bbox:
+                clip = {
+                    "x": bbox["x"],
+                    "y": bbox["y"],
+                    "width": bbox["width"],
+                    "height": bbox["height"],
+                }
+                page.set_viewport_size({
+                    "width": int(bbox["width"]) + 20,
+                    "height": int(bbox["height"]) + 20,
+                })
+            return page.screenshot(clip=clip, full_page=False)
+        finally:
+            browser.close()
+
+
+def _esc(text: str) -> str:
+    """Minimal HTML escape for table cell content."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _parse_table_row(line: str) -> Optional[List[str]]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    # Remove leading and trailing |
+    inner = stripped[1:-1]
+    # Split on | — cells may contain markdown formatting
+    return [c for c in inner.split("|")]
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1844,6 +2022,8 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             for chunk in chunks:
                 msg_type, payload = self._build_outbound_payload(chunk)
+                if msg_type == "interactive":
+                    payload = await self._resolve_table_images(payload)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1898,6 +2078,8 @@ class FeishuAdapter(BasePlatformAdapter):
         content = self.format_message(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
+            if msg_type == "interactive":
+                payload = await self._resolve_table_images(payload)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -4440,6 +4622,109 @@ class FeishuAdapter(BasePlatformAdapter):
         # Plain text for everything else — no markdown needed.
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    async def _resolve_table_images(self, payload: str) -> str:
+        """Replace ``table_img`` placeholders in the card payload with uploaded images.
+
+        Renders each table as a PNG via Playwright, uploads to the Feishu
+        image store, and replaces the placeholder with an ``img`` element.
+        If rendering or upload fails for any table, the placeholder is
+        replaced with a fallback ``markdown`` element so the card is never
+        broken by image errors.
+        """
+        card = json.loads(payload)
+        elements = card.get("elements")
+        if not isinstance(elements, list):
+            return payload
+
+        for i, el in enumerate(elements):
+            if not isinstance(el, dict) or el.get("tag") != "table_img":
+                continue
+            headers = el.get("headers", [])
+            rows = el.get("rows", [])
+            if not headers or not rows:
+                elements[i] = {"tag": "markdown", "content": "*(empty table)*"}
+                continue
+
+            try:
+                png_bytes = await asyncio.to_thread(
+                    _render_table_to_png, headers, rows
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] Table image render failed: %s; falling back to text",
+                    exc,
+                )
+                text_rows = [
+                    " | ".join(headers),
+                    " | ".join("---" for _ in headers),
+                ] + [" | ".join(row) for row in rows]
+                elements[i] = {
+                    "tag": "markdown",
+                    "content": "\n".join(text_rows),
+                }
+                continue
+
+            try:
+                image_key = await self._upload_image_bytes(
+                    png_bytes, "table", "message"
+                )
+                if image_key:
+                    elements[i] = {
+                        "tag": "img",
+                        "img_key": image_key,
+                        "alt": {"tag": "plain_text", "content": "表格"},
+                    }
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] Table image upload failed: %s; falling back to text",
+                    exc,
+                )
+
+            # Fallback: render as plain markdown table
+            text_rows = (
+                [" | ".join(headers)]
+                + [" | ".join("---" for _ in headers)]
+                + [" | ".join(row) for row in rows]
+            )
+            elements[i] = {
+                "tag": "markdown",
+                "content": "\n".join(text_rows),
+            }
+
+        return json.dumps(card, ensure_ascii=False)
+
+    async def _upload_image_bytes(
+        self, data: bytes, filename: str, image_type: str
+    ) -> Optional[str]:
+        """Upload raw PNG bytes to the Feishu image store.
+
+        Returns the ``image_key`` on success, ``None`` on failure.
+        """
+        try:
+            body = self._build_image_upload_body(
+                image_type=image_type,
+                image=io.BytesIO(data),
+            )
+            request = self._build_image_upload_request(body)
+            response = await self._run_blocking(
+                self._client.im.v1.image.create, request
+            )
+            image_key = self._extract_response_field(response, "image_key")
+            if not image_key:
+                logger.warning(
+                    "[Feishu] Image upload response missing image_key: %s",
+                    response,
+                )
+            return image_key
+        except Exception as exc:
+            logger.warning("[Feishu] Image upload failed: %s", exc)
+            return None
+
+    # =========================================================================
+    # File message helpers
+    # =========================================================================
 
     async def _send_uploaded_file_message(
         self,

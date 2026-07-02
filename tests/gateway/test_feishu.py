@@ -5126,3 +5126,45 @@ class TestFeishuOutboundPayload(unittest.TestCase):
         self.assertTrue(_STRUCTURED_MD_RE.search("1. first\n2. second\n3. third"))
         # 2 items should NOT trigger
         self.assertFalse(_STRUCTURED_MD_RE.search("- a\n- b"))
+
+    # ------------------------------------------------------------------
+    # Table-to-native-element conversion
+    # ------------------------------------------------------------------
+
+    def test_table_element_in_card(self):
+        builders = self._import_builders()
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        content = "Some text before\n\n| col1 | col2 |\n|------|------|\n| a | b |\n| c | d |\n\nSome text after"
+        payload = _build_interactive_card_payload(content)
+        card = json.loads(payload)
+        elements = card["elements"]
+
+        # Should have 3 elements: markdown, table, markdown
+        self.assertEqual(len(elements), 3)
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("Some text before", elements[0]["content"])
+        self.assertEqual(elements[1]["tag"], "table_img")
+        self.assertEqual(elements[2]["tag"], "markdown")
+        self.assertIn("Some text after", elements[2]["content"])
+
+        # Verify table placeholder structure
+        table = elements[1]
+        self.assertEqual(table["headers"], ["col1", "col2"])
+        self.assertEqual(len(table["rows"]), 2)
+        self.assertEqual(table["rows"][0], ["a", "b"])
+        self.assertEqual(table["rows"][1], ["c", "d"])
+
+    def test_table_no_header_in_card(self):
+        builders = self._import_builders()
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        content = "| A | B |\n|---|---|\n| 1 | 2 |"
+        payload = _build_interactive_card_payload(content)
+        card = json.loads(payload)
+
+        # No heading → no header
+        self.assertNotIn("header", card)
+        # Single table_img placeholder
+        self.assertEqual(len(card["elements"]), 1)
+        self.assertEqual(card["elements"][0]["tag"], "table_img")

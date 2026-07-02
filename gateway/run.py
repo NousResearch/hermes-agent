@@ -5272,6 +5272,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
+        # Busy-ack wording surfaces Hermes CLI internals (interrupt/queue/steer
+        # modes, /busy commands) that mean nothing to a public group/forum
+        # audience and read as raw internal-mechanics leakage there. The
+        # interrupt/queue/steer routing above still runs normally; only this
+        # user-facing text is skipped for groups. DMs (single operator who
+        # understands the jargon) are unaffected. Observed on a live
+        # deployment: a random group member saw "⚡ Interrupting current
+        # task... Send /busy queue to queue follow-ups..." with no context
+        # for what any of it meant.
+        if getattr(event.source, "chat_type", "dm") in ("group", "forum"):
+            logger.debug("Busy ack suppressed for group/forum session %s", session_key)
+            return True
+
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
         _BUSY_ACK_COOLDOWN = 30
@@ -10462,12 +10475,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
+                # Session-reset notices (including model/provider/context info
+                # via _format_session_info) are operational detail meant for
+                # the operator, not group/forum members — restrict delivery
+                # to DMs regardless of reset reason. Observed on a live
+                # deployment: this notice fired in whichever chat happened to
+                # get the first post-reset message, including a public group
+                # of 400+ people, exposing the active model/provider/context
+                # size to every member.
+                is_dm = getattr(source, 'chat_type', 'dm') == 'dm'
                 # Suspended sessions always notify (they were explicitly stopped
                 # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
+                should_notify = is_dm and (
+                    reset_reason == "suspended" or (
+                        policy.notify
+                        and had_activity
+                        and platform_name not in policy.notify_exclude_platforms
+                    )
                 )
                 if should_notify:
                     adapter = self.adapters.get(source.platform)

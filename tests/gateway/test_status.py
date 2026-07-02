@@ -736,6 +736,68 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_acquire_scoped_lock_replaces_null_starttime_record_when_live_starttime_resolvable(self, tmp_path, monkeypatch):
+        """macOS regression: legacy record has start_time=None but the live PID now resolves one.
+
+        Builds without the psutil start_time fallback serialized locks with
+        start_time=None.  After that fallback landed, ``_get_process_start_time``
+        returns a real value for the live (reused) PID while the recorded
+        start_time stays None.  The old guard gated the cmdline fallback on
+        ``current_start is None`` too, so this branch was skipped and the stale
+        lock blocked the adapter forever once macOS reused the PID for an
+        unrelated process.  A record without a start_time must still fall back
+        to the cmdline identity check regardless of the live start_time.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 823,
+            "start_time": None,
+            "kind": "hermes-gateway",
+            "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        # The live PID resolves a real start_time now (psutil fallback), but the
+        # recorded start_time is still None so no comparison is possible.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178297543424)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/System/Library/.../iCloudDriveFileProvider")
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
+    def test_acquire_scoped_lock_keeps_null_starttime_lock_when_live_pid_is_gateway(self, tmp_path, monkeypatch):
+        """A null-start_time record whose live PID still looks like a gateway must be honored.
+
+        Guards the fix above: dropping the ``current_start is None`` gate must
+        not delete a valid lock when the reused PID genuinely belongs to a
+        running gateway.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": None,
+            "kind": "hermes-gateway",
+            "argv": ["/Users/user/.hermes/hermes-agent/hermes_cli/main.py", "gateway", "run", "--replace"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178297543424)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing["pid"] == 99999
+
     def test_acquire_scoped_lock_keeps_lock_when_cmdline_unreadable_but_record_is_gateway(self, tmp_path, monkeypatch):
         """Windows regression: ps unavailable so cmdline cannot be read.
 

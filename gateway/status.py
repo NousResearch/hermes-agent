@@ -927,17 +927,22 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
+                # When the *record* has no start_time, a start_time comparison
+                # is impossible regardless of whether the live process exposes
+                # one — so fall back to checking the live process command line.
+                # This covers legacy locks and locks written on a build without
+                # the psutil start_time fallback (start_time serialized as
+                # null); once that fallback lands, current_start becomes a real
+                # value while the recorded start_time stays null, so gating on
+                # `current_start is None` would skip this branch and let the
+                # stale lock block startup forever after PID reuse.  When
+                # cmdline is also unreadable (Windows has no ps), consult the
+                # lock record's own argv — the gateway writes it at startup and
                 # it's the only identity signal on platforms without ps.
                 # Both oracles must indicate "not a gateway" to mark stale.
                 if (
                     not stale
                     and existing.get("start_time") is None
-                    and current_start is None
                     and not _looks_like_gateway_process(existing_pid)
                 ):
                     live_cmdline = _read_process_cmdline(existing_pid)

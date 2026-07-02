@@ -89,3 +89,51 @@ def test_real_validate_toolset_treats_hermes_cli_valid_and_hermes_invalid():
     assert validate_toolset("hermes") is False
     warnings = validate_platform_toolsets({"cli": ["hermes"]}, validate_toolset)
     assert any("did you mean 'hermes-cli'?" in w for w in warnings)
+
+
+# --- known_plugin_toolsets cross-list checks ---------------------------------
+#
+# A name that is_valid_toolset() rejects but that known_plugin_toolsets
+# recorded for the same platform is (almost certainly) a plugin that used to
+# provide that toolset and is now disabled or uninstalled — not a typo, so the
+# `hermes-<platform>` guess is the wrong advice for it.
+
+
+def test_disabled_plugin_toolset_gets_plugin_specific_warning():
+    cfg = {"cli": ["hermes-cli", "weather-tools"]}
+    known = {"cli": ["weather-tools"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, known)
+    assert not any("zero valid toolsets" in w for w in warnings)
+    assert len(warnings) == 1
+    assert "platform 'cli'" in warnings[0]
+    assert "toolset 'weather-tools'" in warnings[0]
+    assert "plugin" in warnings[0]
+    # Must not also carry (or be conflated with) the typo-guess wording.
+    assert "did you mean" not in warnings[0]
+    assert "unknown toolset" not in warnings[0]
+
+
+def test_known_plugin_toolset_scoped_to_its_own_platform():
+    # 'weather-tools' is only recorded as known for 'telegram', not 'cli' — a
+    # bogus 'cli' entry with the same name is still a plain unknown-toolset,
+    # not a disabled-plugin case, since it was never known there.
+    cfg = {"cli": ["weather-tools"]}
+    known = {"telegram": ["weather-tools"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, known)
+    unknown = [w for w in warnings if "unknown toolset 'weather-tools'" in w]
+    assert len(unknown) == 1
+
+
+def test_missing_known_plugin_toolsets_falls_back_to_generic_warning():
+    # known_plugin_toolsets omitted entirely (None) — existing behavior for
+    # callers that don't pass it (e.g. before this field existed in config).
+    cfg = {"cli": ["bogus"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid)
+    assert any("unknown toolset 'bogus'" in w for w in warnings)
+
+
+@pytest.mark.parametrize("value", [None, [], "cli", 42, {"cli": "not-a-list"}])
+def test_malformed_known_plugin_toolsets_is_tolerated(value):
+    cfg = {"cli": ["bogus"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, value)
+    assert any("unknown toolset 'bogus'" in w for w in warnings)

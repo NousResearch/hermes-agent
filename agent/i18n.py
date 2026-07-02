@@ -25,7 +25,8 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+Supported languages: en, ar, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it,
+ga, pt, ru, hu.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "en", "ar", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu",
 )
 DEFAULT_LANGUAGE = "en"
@@ -50,6 +51,9 @@ DEFAULT_LANGUAGE = "en"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "english": "en", "en-us": "en", "en-gb": "en",
+    # Arabic — one Modern Standard Arabic catalog serves regional tags.
+    "arabic": "ar", "العربية": "ar", "ar-eg": "ar", "ar-sa": "ar",
+    "ar-ae": "ar", "ar-jo": "ar", "ar-ma": "ar",
     # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
     # also default to Simplified since that's the larger user base.
     "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",

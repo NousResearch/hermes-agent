@@ -29,6 +29,7 @@ import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-p
 import {
   $visibleModels,
   collapseModelFamilies,
+  compareModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
   effectiveVisibleKeys,
   type ModelFamily,
@@ -419,15 +420,19 @@ function groupModels(
       shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
     }
 
-    // Always include the active model — but keep every row in the provider's
-    // stable curated order (filter `allFamilies`, never reorder), so selecting
-    // a model can't shuffle the list.
+    // Always include the active model. Rows render in family order —
+    // alphabetical so each family clusters (haiku/opus/sonnet…), newest
+    // version first within a cluster — which is deterministic, so selecting
+    // a model can't shuffle the list. (Which models SHOW still follows the
+    // backend's relevance order above.)
     const activeId =
       provider.slug === current.provider && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+    const families = allFamilies
+      .filter(family => shown.has(family.id) || family.id === activeId)
+      .sort(compareModelFamilies)
 
     if (families.length > 0) {
       groups.push({ families, provider })

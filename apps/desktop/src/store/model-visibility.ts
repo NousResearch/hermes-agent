@@ -68,6 +68,42 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
   return families
 }
 
+/** Order families for display: alphabetical by name so each family clusters
+ *  together (haiku… / opus… / sonnet…), with numeric segments compared as
+ *  numbers DESCENDING so the newest version leads its cluster (opus-4-8 above
+ *  opus-4-6, sonnet-5 above sonnet-4-6). Deterministic, so selecting a model
+ *  never reshuffles the list. */
+export function compareModelFamilies(a: ModelFamily, b: ModelFamily): number {
+  const tokenize = (id: string): (number | string)[] =>
+    (id.toLowerCase().match(/\d+|\D+/g) ?? []).map(tok => (/^\d+$/.test(tok) ? Number(tok) : tok))
+
+  const ta = tokenize(a.id)
+  const tb = tokenize(b.id)
+
+  for (let i = 0; i < Math.max(ta.length, tb.length); i++) {
+    const x = ta[i]
+    const y = tb[i]
+
+    if (x === undefined) {
+      return -1
+    }
+
+    if (y === undefined) {
+      return 1
+    }
+
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (x !== y) {
+        return y - x // newest / largest version first
+      }
+    } else if (String(x) !== String(y)) {
+      return String(x).localeCompare(String(y))
+    }
+  }
+
+  return 0
+}
+
 function loadVisible(): Set<string> | null {
   const raw = storedString(STORAGE_KEY)
 

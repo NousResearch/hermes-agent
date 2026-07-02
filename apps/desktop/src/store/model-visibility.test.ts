@@ -4,6 +4,7 @@ import type { ModelOptionProvider } from '@/types/hermes'
 
 import {
   collapseModelFamilies,
+  compareModelFamilies,
   defaultVisibleKeys,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
@@ -222,5 +223,40 @@ describe('resolveVisibleKeys', () => {
 
   it('returns an empty set for an empty (non-null) stored set', () => {
     expect([...resolveVisibleKeys(new Set(), providers)]).toEqual([])
+  })
+})
+
+describe('compareModelFamilies', () => {
+  const fam = (id: string) => ({ fastId: null, id })
+
+  it('clusters families alphabetically with the newest version first', () => {
+    const sorted = [
+      fam('claude-sonnet-4-6'),
+      fam('claude-opus-4-6'),
+      fam('claude-fable-5'),
+      fam('claude-haiku-4-5'),
+      fam('claude-opus-4-8'),
+      fam('claude-sonnet-5')
+    ]
+      .sort(compareModelFamilies)
+      .map(f => f.id)
+
+    expect(sorted).toEqual([
+      'claude-fable-5',
+      'claude-haiku-4-5',
+      'claude-opus-4-8',
+      'claude-opus-4-6',
+      'claude-sonnet-5',
+      'claude-sonnet-4-6'
+    ])
+  })
+
+  it('is deterministic for equal ids and handles non-versioned names', () => {
+    expect(compareModelFamilies(fam('gpt-5.2'), fam('gpt-5.2'))).toBe(0)
+    expect([fam('mistral'), fam('llama'), fam('qwen')].sort(compareModelFamilies).map(f => f.id)).toEqual([
+      'llama',
+      'mistral',
+      'qwen'
+    ])
   })
 })

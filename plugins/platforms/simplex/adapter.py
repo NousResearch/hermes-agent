@@ -823,10 +823,9 @@ class SimplexAdapter(BasePlatformAdapter):
         waiting for one would serialise all outbound traffic behind a
         30-second timeout.
         """
-        _voice_exts = {".ogg", ".mp3", ".wav", ".m4a", ".opus"}
-        media_paths = re.findall(r"MEDIA:(\S+)", content)
-        if media_paths:
-            content = re.sub(r"MEDIA:\S+", "", content).strip()
+        media_files, cleaned_content = self.extract_media(content)
+        media_files = self.filter_media_delivery_paths(media_files)
+        content = cleaned_content.strip()
 
         if content:
             corr_id = self._make_corr_id()
@@ -842,8 +841,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
-        for path in media_paths:
-            is_voice = os.path.splitext(path)[1].lower() in _voice_exts
+        for path, is_voice in media_files:
             if is_voice:
                 media_result = await self.send_voice(chat_id, path)
             else:
@@ -1012,8 +1010,10 @@ class SimplexAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a document/file attachment."""
-        if not Path(file_path).exists():
+        safe_path = self.validate_media_delivery_path(file_path)
+        if not safe_path:
             return SendResult(success=False, error="File not found")
+        file_path = safe_path
 
         composed = json.dumps(
             [
@@ -1051,8 +1051,10 @@ class SimplexAdapter(BasePlatformAdapter):
         a downloadable file; the structured ``/_send`` form with
         ``msgContent.type == "voice"`` produces the voice-note player.
         """
-        if not Path(audio_path).exists():
+        safe_path = self.validate_media_delivery_path(audio_path)
+        if not safe_path:
             return SendResult(success=False, error="Voice file not found")
+        audio_path = safe_path
 
         composed = json.dumps(
             [

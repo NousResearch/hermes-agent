@@ -264,6 +264,46 @@ async def test_send_when_ws_not_connected_does_not_crash():
     assert result.success is True  # send() always returns success — fire-and-forget
 
 
+@pytest.mark.asyncio
+async def test_send_filters_media_tags_through_delivery_guard(monkeypatch):
+    """MEDIA tags must not bypass the shared media-delivery path guard."""
+    from gateway.config import PlatformConfig
+    import gateway.platforms.base as base
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    monkeypatch.setattr(base, "validate_media_delivery_path", lambda _path: None)
+
+    result = await adapter.send("contact-42", "before MEDIA:/home/user/.ssh/id_rsa after")
+
+    mock_ws.send.assert_called_once()
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["cmd"] == "@contact-42 before MEDIA:/home/user/.ssh/id_rsa after"
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_document_refuses_unvalidated_paths(monkeypatch):
+    """Direct document sends should also refuse paths outside the delivery guard."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    send_command = AsyncMock()
+    adapter._send_command = send_command  # type: ignore[method-assign]
+    monkeypatch.setattr(adapter, "validate_media_delivery_path", lambda _path: None)
+
+    result = await adapter.send_document("contact-42", "/home/user/.ssh/id_rsa")
+
+    assert result.success is False
+    assert send_command.await_count == 0
+
+
 # ---------------------------------------------------------------------------
 # 8. Inbound: filter own-echo by corrId prefix
 # ---------------------------------------------------------------------------

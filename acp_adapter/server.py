@@ -182,6 +182,70 @@ def _path_from_file_uri(uri: str) -> Path | None:
     return Path(path_text)
 
 
+def _parse_line_range_from_uri(uri: str) -> tuple[int | None, int | None]:
+    """Parse line range from a URI fragment like ``#L100:200`` or ``#L100-L200``.
+
+    Returns ``(start_line, end_line)`` both 0-based (or ``None`` when absent).
+    Understands these fragment formats:
+    - ``#L100:200`` — range from line 100 to 200
+    - ``#L100-L200`` — range with hyphen separator
+    - ``#100:200`` — without the L prefix
+    - ``#L1872`` — single line
+    """
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return (None, None)
+    fragment = (parsed.fragment or "").strip()
+    if not fragment:
+        return (None, None)
+    # Strip leading 'L' for the whole fragment, then split
+    raw = fragment.lstrip("L")
+    if ":" in raw:
+        parts = raw.split(":", 1)
+    elif "-" in raw:
+        parts = raw.split("-", 1)
+    else:
+        # single line number like L1872
+        try:
+            val = int(raw)
+            return (max(0, val - 1), max(0, val - 1))
+        except ValueError:
+            return (None, None)
+    if len(parts) != 2:
+        return (None, None)
+    try:
+        # Each part may still carry a stray 'L' (e.g. L100-L200)
+        start = int(parts[0].lstrip("L"))
+        end = int(parts[1].lstrip("L"))
+        # ACP line numbers are 1-based; convert to 0-based
+        return (max(0, start - 1), max(0, end - 1))
+    except ValueError:
+        return (None, None)
+
+
+def _apply_line_range(text: str, uri: str) -> tuple[str, list[str]]:
+    """Clip *text* to the line range specified in *uri*'s fragment (e.g. ``#L14:21``).
+
+    Returns ``(clipped_text, notes)`` where *notes* is a list of annotation
+    strings (empty when no range was specified or the range covers the whole
+    content).
+    """
+    notes: list[str] = []
+    start_line, end_line = _parse_line_range_from_uri(uri)
+    if start_line is not None and end_line is not None:
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            return (text, notes)
+        start_line = max(0, min(start_line, len(lines) - 1))
+        end_line = max(start_line, min(end_line, len(lines) - 1))
+        clipped = "".join(lines[start_line:end_line + 1])
+        if clipped != text:
+            notes.append(f"lines {start_line + 1}-{end_line + 1} of {len(lines)}")
+            text = clipped
+    return (text, notes)
+
+
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
     """Decode resource bytes if they are probably text; return None for binary."""
     if b"\x00" in data and not _is_text_resource(mime_type):
@@ -288,9 +352,16 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
                     body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
                 ),
             }]
-        note = None
+        notes = []
         if size > _MAX_ACP_RESOURCE_BYTES:
-            note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
+            notes.append(f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes")
+
+        # Extract line range from URI fragment and clip content
+        clipped_text, range_notes = _apply_line_range(text, uri)
+        notes.extend(range_notes)
+        text = clipped_text
+
+        note = "; ".join(notes) if notes else None
         return [{
             "type": "text",
             "text": _format_resource_text(uri=uri, name=name, title=title, body=text, note=note),
@@ -317,7 +388,10 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
     mime_type = str(getattr(resource, "mime_type", "") or "").strip() or None
 
     if isinstance(resource, TextResourceContents):
-        return [{"type": "text", "text": _format_resource_text(uri=uri, body=resource.text)}]
+        body = resource.text
+        body, range_notes = _apply_line_range(body, uri)
+        note = "; ".join(range_notes) if range_notes else None
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=body, note=note)}]
 
     if isinstance(resource, BlobResourceContents):
         blob = resource.blob or ""
@@ -347,13 +421,22 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
             body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
         else:
             body = text
+            notes = []
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
-                body += f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
+                notes.append(f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes")
+            clipped_body, range_notes = _apply_line_range(body, uri)
+            notes.extend(range_notes)
+            body = clipped_body
+            if notes:
+                body += f"\n\n[{' - '.join(notes)}]"
         return [{"type": "text", "text": _format_resource_text(uri=uri, body=body)}]
 
     text = getattr(resource, "text", None)
     if text:
-        return [{"type": "text", "text": _format_resource_text(uri=uri, body=str(text))}]
+        body = str(text)
+        body, range_notes = _apply_line_range(body, uri)
+        note = "; ".join(range_notes) if range_notes else None
+        return [{"type": "text", "text": _format_resource_text(uri=uri, body=body, note=note)}]
     return []
 
 
@@ -882,7 +965,7 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True),
+                prompt_capabilities=PromptCapabilities(image=True, embedded_context=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
@@ -1310,9 +1393,7 @@ class HermesACPAgent(acp.Agent):
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
-        has_content = bool(user_text) or (
-            isinstance(user_content, list) and bool(user_content)
-        )
+        has_content = bool(user_content) if isinstance(user_content, str) else bool(user_text) or bool(user_content)
         if not has_content:
             return PromptResponse(stop_reason="end_turn")
 
@@ -1506,7 +1587,7 @@ class HermesACPAgent(acp.Agent):
                     user_message=user_content,
                     conversation_history=state.history,
                     task_id=session_id,
-                    persist_user_message=user_text or "[Image attachment]",
+                    persist_user_message=user_text or str(user_content)[:200] if isinstance(user_content, str) else "[File reference]",
                 )
                 return result
             except Exception as e:

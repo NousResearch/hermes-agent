@@ -65,6 +65,9 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_KANBAN_INTERNAL_NOTICE_RE = re.compile(
+    r"^@?\S*\s*カンバン\s+\S+\s+が(?:完了|停止|時間切れになり|再試行後に停止)ました。?$"
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -83,6 +86,48 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _clean_kanban_user_text(
+    value: object,
+    *,
+    task_title: str = "",
+    limit: int = 700,
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    cleaned_lines: list[str] = []
+    title = task_title.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if title and line == title:
+            continue
+        if _KANBAN_INTERNAL_NOTICE_RE.match(line):
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip()
+
+
+def _kanban_completion_handoff(task: object, event: object, task_title: str) -> str:
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict) and payload.get("summary"):
+        handoff = _clean_kanban_user_text(
+            payload.get("summary"),
+            task_title=task_title,
+        )
+        if handoff:
+            return handoff
+
+    result = getattr(task, "result", None)
+    return _clean_kanban_user_text(result, task_title=task_title, limit=500)
 
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
@@ -4801,37 +4846,15 @@ class GatewayRunner:
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
-                        # Identity prefix: attribute terminal pings to the
-                        # worker that did the work. Makes fleets (where one
-                        # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"{tag}カンバン {sub['task_id']} が完了しました。"
-                                f"\n{title}{handoff}"
-                            )
+                            handoff = _kanban_completion_handoff(task, ev, title)
+                            msg = handoff or f"「{title}」が完了しました。"
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f"\n理由: {str(ev.payload['reason'])[:160]}"
                             msg = (
-                                f"{tag}カンバン {sub['task_id']} が停止しました。"
+                                "作業が停止しました。"
                                 f"\n{title}{reason}"
                             )
                         elif kind == "gave_up":
@@ -4839,12 +4862,12 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"{tag}カンバン {sub['task_id']} が再試行後に停止しました。"
+                                "再試行後に停止しました。"
                                 f"\n{title}{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"{tag}カンバン {sub['task_id']} の作業プロセスが停止しました。"
+                                "作業プロセスが停止しました。"
                                 f"再実行します。\n{title}"
                             )
                         elif kind == "timed_out":
@@ -4852,7 +4875,7 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"{tag}カンバン {sub['task_id']} が時間切れになりました。"
+                                "作業が時間切れになりました。"
                                 f"再実行します。上限: {limit}秒\n{title}"
                             )
                         else:

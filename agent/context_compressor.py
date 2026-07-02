@@ -641,6 +641,8 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._last_summary_auth_failure = False
+        self._last_summary_network_failure = False
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -668,7 +670,11 @@ class ContextCompressor(ContextEngine):
         summary generation; ``_last_compress_aborted`` can make callers think
         compression is still aborted; ``_last_aux_model_failure_*`` can surface
         stale error warnings; ``_last_summary_dropped_count`` /
-        ``_last_summary_fallback_used`` can produce misleading user warnings.
+        ``_last_summary_fallback_used`` can produce misleading user warnings;
+        ``_last_summary_auth_failure`` / ``_last_summary_network_failure`` can
+        abort compression in a later, unrelated session with a stale
+        "authentication error" message even though the new failure (if any)
+        has a different cause.
 
         ``compress()`` already guards ``_previous_summary`` leakage at the
         point of use; this is defense-in-depth that resets the full per-session
@@ -676,6 +682,8 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
         self._last_summary_error = None
+        self._last_summary_auth_failure = False
+        self._last_summary_network_failure = False
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -773,6 +781,11 @@ class ContextCompressor(ContextEngine):
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        # Also clear the auth/network failure flags so a manual retry has a
+        # real chance to succeed instead of aborting immediately on whatever
+        # stale reason tripped a previous, unrelated compression attempt.
+        self._last_summary_auth_failure = False
+        self._last_summary_network_failure = False
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")

@@ -32,10 +32,17 @@ try:
     from hermes_constants import get_hermes_home
 except Exception:  # pragma: no cover — plugin may load before constants resolves
     import os
+    import sys
 
     def get_hermes_home() -> Path:  # type: ignore[no-redef]
         val = (os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
+        if val:
+            return Path(val).resolve()
+        if sys.platform == "win32":
+            local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+            base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+            return (base / "hermes").resolve()
+        return (Path.home() / ".hermes").resolve()
 
 
 logger = logging.getLogger(__name__)

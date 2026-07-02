@@ -16,6 +16,7 @@ import enum
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -52,13 +53,24 @@ class AuditEvent(enum.Enum):
 
 
 def _resolve_log_path() -> Path:
-    """``$HERMES_HOME/logs/dashboard-auth.log`` with the standard fallback.
+    """``$HERMES_HOME/logs/dashboard-auth.log`` with the correct platform-aware default.
 
     Mirrors ``hermes_constants.get_hermes_home`` semantics: env var wins,
-    else ``~/.hermes``. A local copy avoids an import cycle with the
+    else platform-native path (``%LOCALAPPDATA%/hermes`` on Windows,
+    ``~/.hermes`` on POSIX). A local copy avoids an import cycle with the
     middleware which lives below ``hermes_cli``.
     """
-    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    hermes_home_env = os.environ.get("HERMES_HOME")
+    if hermes_home_env:
+        home = hermes_home_env
+    elif sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_appdata:
+            home = str(Path(local_appdata) / "hermes")
+        else:
+            home = str(Path.home() / "AppData" / "Local" / "hermes")
+    else:
+        home = str(Path.home() / ".hermes")
     return Path(home) / "logs" / "dashboard-auth.log"
 
 

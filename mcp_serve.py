@@ -65,7 +65,12 @@ def _get_sessions_dir() -> Path:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / "sessions"
     except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
+        try:
+            from hermes_constants import _get_platform_default_hermes_home
+            home = _get_platform_default_hermes_home()
+        except ImportError:
+            home = Path.home() / ".hermes"
+        return Path(os.environ.get("HERMES_HOME", str(home))) / "sessions"
 
 
 def _get_session_db():
@@ -108,8 +113,13 @@ def _load_channel_directory() -> dict:
         from hermes_constants import get_hermes_home
         directory_file = get_hermes_home() / "channel_directory.json"
     except ImportError:
+        try:
+            from hermes_constants import _get_platform_default_hermes_home
+            home = _get_platform_default_hermes_home()
+        except ImportError:
+            home = Path.home() / ".hermes"
         directory_file = Path(
-            os.environ.get("HERMES_HOME", Path.home() / ".hermes")
+            os.environ.get("HERMES_HOME", str(home))
         ) / "channel_directory.json"
 
     if not directory_file.exists():
@@ -375,7 +385,12 @@ class EventBridge:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
         except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+            try:
+                from hermes_constants import _get_platform_default_hermes_home
+                home = _get_platform_default_hermes_home()
+            except ImportError:
+                home = Path.home() / ".hermes"
+            db_file = Path(os.environ.get("HERMES_HOME", str(home))) / "state.db"
 
         try:
             db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0

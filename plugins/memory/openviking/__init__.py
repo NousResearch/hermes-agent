@@ -1144,7 +1144,11 @@ def _openviking_server_log_path() -> Path:
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
     except Exception:
-        home = Path(os.environ.get("HERMES_HOME", "")).expanduser() if os.environ.get("HERMES_HOME") else Path.home() / ".hermes"
+        home = Path(os.environ.get("HERMES_HOME", "")).expanduser() if os.environ.get("HERMES_HOME") else (
+            Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" if sys.platform == "win32" and os.environ.get("LOCALAPPDATA") else
+            Path.home() / "AppData" / "Local" / "hermes" if sys.platform == "win32" else
+            Path.home() / ".hermes"
+        )
     return home / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
 
 

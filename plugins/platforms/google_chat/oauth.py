@@ -60,6 +60,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import re
 import secrets
 import stat
@@ -82,7 +83,13 @@ except (ModuleNotFoundError, ImportError):
     # _hermes_home.py shim).
     def get_hermes_home() -> Path:
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        if val:
+            return Path(val)
+        if sys.platform == "win32":
+            local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+            base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+            return base / "hermes"
+        return Path.home() / ".hermes"
 
     def display_hermes_home() -> str:
         home = get_hermes_home()

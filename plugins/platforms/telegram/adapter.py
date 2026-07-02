@@ -5305,7 +5305,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         script_name, extra_args, success_label, is_state_verb = entry
 
-        script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        # Locate the gmail-triage script under the platform-native hermes home
+        scripts_base = (
+            _Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "scripts"
+            if sys.platform == "win32" and os.environ.get("LOCALAPPDATA")
+            else (
+                _Path.home() / "AppData" / "Local" / "hermes" / "scripts"
+                if sys.platform == "win32"
+                else _Path.home() / ".hermes" / "scripts"
+            )
+        )
+        script_path = scripts_base / "gmail-triage" / script_name
         if not script_path.exists():
             await query.answer(text=f"❌ {script_name} missing")
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)

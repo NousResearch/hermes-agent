@@ -22,7 +22,7 @@ describe("api.getModelOptions", () => {
     await api.getModelOptions({ refresh: true });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/model/options?refresh=1",
+      "/api/model/options?refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
   });
@@ -41,7 +41,7 @@ describe("api.getModelOptions", () => {
     await api.getModelOptions({ profile: "default", refresh: true });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/model/options?profile=default&refresh=1",
+      "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
   });

@@ -138,6 +138,10 @@ export function ModelPickerDialog(props: Props) {
           {
             ...(sessionId ? { session_id: sessionId } : {}),
             ...(refresh ? { refresh: true } : {}),
+            // Dashboard picker mirrors the TUI: full provider universe with
+            // setup warnings. The backend now defaults to the configured
+            // subset (#56974), so opt into unconfigured rows explicitly.
+            include_unconfigured: true,
           },
         );
 

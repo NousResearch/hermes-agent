@@ -60,7 +60,12 @@ export function ModelPicker({
   useEffect(() => {
     gw.request<ModelOptionsResponse>('model.options', {
       ...(sessionId ? { session_id: sessionId } : {}),
-      ...(initialRefresh ? { refresh: true } : {})
+      ...(initialRefresh ? { refresh: true } : {}),
+      // The TUI picker shows the full provider universe with setup
+      // affordances ("paste KEY to activate"), so opt into unconfigured
+      // rows — the backend now defaults to the configured subset for
+      // desktop chat pickers (#56974).
+      include_unconfigured: true
     })
       .then(raw => {
         const r = asRpcResult<ModelOptionsResponse>(raw)

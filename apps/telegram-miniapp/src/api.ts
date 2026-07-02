@@ -35,7 +35,7 @@ export type AuthResponse = {
 };
 
 export type SnapshotMeta = {
-  source: "preview";
+  source: "preview" | "live-safe";
   source_label: string;
   redaction: "safe-preview";
   contains_live_actions: boolean;

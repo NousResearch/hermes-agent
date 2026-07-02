@@ -7,6 +7,7 @@ from urllib.parse import quote
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from hermes_cli.telegram_miniapp.previews import build_logs_snapshot, build_sessions_snapshot
 from hermes_cli.telegram_miniapp.server import MiniAppSettings, create_app
 
 
@@ -49,11 +50,12 @@ def auth_client(client):
 
 def assert_safe_preview_meta(meta):
     assert meta == {
-        "source": "preview",
+        "source": meta["source"],
         "source_label": meta["source_label"],
         "redaction": "safe-preview",
         "contains_live_actions": False,
     }
+    assert meta["source"] in {"preview", "live-safe"}
     assert meta["source_label"]
     serialized = json.dumps(meta)
     assert "/Volumes/Diver Pro/hermes" not in serialized
@@ -253,11 +255,11 @@ def test_sessions_and_logs_require_auth_then_return_safe_read_only_previews():
     sessions_body = sessions.json()
     assert sessions_body["ok"] is True
     assert_safe_preview_meta(sessions_body["meta"])
-    assert len(sessions_body["items"]) == 3
-    first_session = sessions_body["items"][0]
-    assert set(first_session) == {"id", "agent", "state", "meta", "time", "tone"}
-    assert first_session["state"] in {"observing", "waiting", "completed"}
-    assert first_session["tone"] in {"ok", "warn", "muted"}
+    assert isinstance(sessions_body["items"], list)
+    for first_session in sessions_body["items"][:1]:
+        assert set(first_session) == {"id", "agent", "state", "meta", "time", "tone"}
+        assert first_session["state"] in {"observing", "waiting", "completed"}
+        assert first_session["tone"] in {"ok", "warn", "muted"}
 
     assert logs.status_code == 200
     logs_body = logs.json()
@@ -274,6 +276,105 @@ def test_sessions_and_logs_require_auth_then_return_safe_read_only_previews():
         assert "TELEGRAM_BOT_TOKEN" not in serialized
         assert "pid" not in serialized.lower()
         assert "command" not in serialized.lower()
+
+
+def test_sessions_snapshot_uses_safe_read_only_projection_without_raw_row_leaks():
+    raw_session_id = "session-secret-raw-id"
+    leaked_values = [
+        raw_session_id,
+        "/Volumes/Diver Pro/projects/private-app",
+        "anthropic/secret-model",
+        "SYSTEM PROMPT SECRET",
+        "raw user preview with /private/path and token",
+        "TELEGRAM_BOT_TOKEN",
+        "pid",
+        "command",
+    ]
+
+    class FakeSessionSource:
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs == {
+                "limit": 5,
+                "include_children": False,
+                "order_by_last_active": True,
+                "include_archived": False,
+            }
+            return [
+                {
+                    "id": raw_session_id,
+                    "source": "telegram",
+                    "model": "anthropic/secret-model",
+                    "model_config": {"provider": "secret-provider"},
+                    "system_prompt": "SYSTEM PROMPT SECRET",
+                    "cwd": "/Volumes/Diver Pro/projects/private-app",
+                    "git_repo_root": "/Volumes/Diver Pro/projects/private-app",
+                    "git_branch": "private-branch",
+                    "preview": "raw user preview with /private/path and token",
+                    "started_at": 1_700_000_000,
+                    "last_active": 1_700_000_040,
+                    "ended_at": None,
+                    "message_count": 7,
+                }
+            ]
+
+    snapshot = build_sessions_snapshot(session_db_factory=lambda: FakeSessionSource(), now=lambda: 1_700_000_100)
+
+    assert snapshot["ok"] is True
+    assert snapshot["meta"]["source"] == "live-safe"
+    assert len(snapshot["items"]) == 1
+    item = snapshot["items"][0]
+    assert item == {
+        "id": item["id"],
+        "agent": "Telegram",
+        "state": "observing",
+        "meta": "7 сообщений · Telegram",
+        "time": "сейчас",
+        "tone": "warn",
+    }
+    assert item["id"].startswith("session-")
+    assert item["id"] != raw_session_id
+    serialized = json.dumps(snapshot, ensure_ascii=False)
+    for leaked in leaked_values:
+        assert leaked not in serialized
+
+
+def test_sessions_snapshot_returns_safe_empty_when_source_unreadable():
+    def broken_factory():
+        raise RuntimeError("/Volumes/Diver Pro/private/state.db exploded with token")
+
+    snapshot = build_sessions_snapshot(session_db_factory=broken_factory)
+
+    assert snapshot == {
+        "ok": True,
+        "meta": {
+            "source": "live-safe",
+            "source_label": "Safe session index",
+            "redaction": "safe-preview",
+            "contains_live_actions": False,
+        },
+        "items": [],
+    }
+
+
+def test_logs_snapshot_is_derived_from_safe_facts_not_raw_log_lines():
+    sessions_snapshot = {
+        "ok": True,
+        "meta": {"source": "live-safe", "source_label": "Safe session index", "redaction": "safe-preview", "contains_live_actions": False},
+        "items": [{"id": "session-safe", "agent": "Telegram", "state": "observing", "meta": "1 сообщение · Telegram", "time": "сейчас", "tone": "warn"}],
+    }
+
+    snapshot = build_logs_snapshot(sessions_provider=lambda: sessions_snapshot)
+
+    assert snapshot["ok"] is True
+    assert snapshot["meta"]["source"] == "live-safe"
+    assert len(snapshot["items"]) == 4
+    serialized = json.dumps(snapshot, ensure_ascii=False)
+    assert "Есть активные сессии наблюдения" in serialized
+    assert "/Volumes/Diver Pro" not in serialized
+    assert "Traceback" not in serialized
+    assert "TELEGRAM_BOT_TOKEN" not in serialized
+    assert "pid" not in serialized.lower()
+    assert "command" not in serialized.lower()
 
 
 def test_logout_clears_only_miniapp_session():

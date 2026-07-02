@@ -79,9 +79,89 @@ SSE lifecycle events: `tool.started`, `tool.completed`, `reasoning.available`, `
 10. Commit after every verified phase.
 
 ### Next Recommended Phase
-**Phase 1 — Audit existing /v1/runs contract:**
-- Trace the full lifecycle from `POST /v1/runs` through agent execution to `run.completed`/`run.failed`
-- Document the SSE event schema and pollable status schema
-- Identify gaps between current contract and desired runtime API contract
-- Identify what (if anything) needs extraction into a standalone RunManager class
-- Audit secret redaction in event payloads and response bodies
+**Phase 5 — WebUI agent-runs adapter:**
+- WebUI adds `HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs` support
+- Adapter calls Agent runtime API instead of instantiating `AIAgent` directly
+- Integration tests between WebUI adapter and Agent `RunManager`
+
+---
+
+## Phase 4 — Hermes Agent /v1/runs Runtime API Foundation (completed)
+
+### State Before Phase 4
+- **Commit:** `40a255a`
+- **Message:** `docs: Phase 0 preflight — create AGENT_HANDOFF.md with runtime/API architecture summary`
+
+### What Was Built
+
+Created a standalone `gateway/runtime/` package with the runtime API foundation:
+
+#### Models (`gateway/runtime/models.py`)
+- **`RuntimeEvent`** dataclass — structured event in a run's lifecycle
+  - Fields: `event_id`, `seq`, `run_id`, `session_id`, `type`, `created_at`, `terminal`, `payload`
+  - `event_id` format: `{run_id}:{seq}`
+  - `to_dict(*, redact=True)` — serializes with optional secret redaction
+- **`RuntimeStatus`** dataclass — pollable status for a run
+  - Fields: `run_id`, `session_id`, `status`, `last_event_id`, `last_seq`, `terminal`, `controls`, `pending_approval_ids`, `pending_clarify_ids`, `error`, `result`, `created_at`, `updated_at`
+  - `to_dict(*, redact=True)` — serializes with optional secret redaction
+- **`redact_secrets(obj)`** — recursive secret redaction utility
+  - Exact key-name match for: `api_key`, `apikey`, `token`, `access_token`, `refresh_token`, `password`, `secret`, `authorization`, `bearer`, `api-key`
+  - Delegates to `agent.redact.redact_sensitive_text` for string values (prefix patterns, auth headers, JWTs, etc.)
+- Supported statuses: `queued`, `running`, `awaiting_approval`, `awaiting_clarify`, `paused`, `cancelling`, `cancelled`, `failed`, `completed`, `expired`
+- Supported event types: `run.started`, `run.status`, `token.delta`, `reasoning.delta`, `reasoning.done`, `progress`, `tool.started`, `tool.updated`, `tool.done`, `approval.requested`, `approval.resolved`, `clarify.requested`, `clarify.resolved`, `title.updated`, `usage.updated`, `usage.final`, `error`, `done`
+
+#### Run Manager (`gateway/runtime/run_manager.py`)
+- **`RunManager`** class with in-memory storage (thread-safe via `threading.Lock`)
+- Public API:
+  - `create_run(session_id, *, message, workspace, profile, model, toolsets, metadata)` — creates run + `run.started` event, returns `run_id`/`session_id`/`status`/`events_url`/`status_url`/`controls`
+  - `get_status(run_id)` — returns `RuntimeStatus` dict or `None` for unknown
+  - `append_event(run_id, event_type, *, session_id, payload)` — adds event, updates status
+  - `read_events(run_id, *, after_seq, limit)` — returns `{"run_id": ..., "events": [...]}`
+  - `stop_run(run_id)` — transitions to cancelling then cancelled; returns `not_found` for unknown
+  - `transition_status(run_id, new_status)` — explicit status transition with event
+  - `complete_run(run_id, *, result)` — terminal completed with result
+  - `fail_run(run_id, *, error)` — terminal failed with error
+  - `resolve_approval(run_id, choice)` — returns `not_supported` (deferred to integration phase)
+  - `resolve_clarify(run_id, response)` — returns `not_supported` (deferred to integration phase)
+
+### API Server Integration Status: **B** — Route module implemented, server mount deferred
+
+The `RunManager` is a standalone service layer. The existing `/v1/runs` route handlers remain in `gateway/platforms/api_server.py` (aiohttp). Integration options:
+1. Mount new route handlers that delegate to `RunManager` (best for clean separation)
+2. Replace `api_server.py`'s embedded dicts with `RunManager` internally
+3. Add a FastAPI router using `RunManager` for the dashboard/WebUI surface
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `gateway/runtime/__init__.py` | Package init, re-exports all public symbols |
+| `gateway/runtime/models.py` | `RuntimeEvent`, `RuntimeStatus`, `redact_secrets`, status/event constants |
+| `gateway/runtime/run_manager.py` | `RunManager` class — in-memory run lifecycle management |
+| `tests/gateway/test_runtime_models.py` | 20 tests — model serialization, redaction, imports |
+| `tests/gateway/test_runtime_run_manager.py` | 33 tests — lifecycle, events, stop, transitions, thread safety |
+| `tests/gateway/test_runtime_routes.py` | 21 tests — API contract shapes, error handling, redaction |
+
+### Verification
+
+**Test run:**
+```bash
+uv run python -m pytest tests/gateway/test_runtime_models.py tests/gateway/test_runtime_run_manager.py tests/gateway/test_runtime_routes.py -v
+```
+Result: **74 passed, 0 failed** (0.63s)
+
+**Smoke check:**
+```bash
+uv run python - <<'PY'
+from gateway.runtime import RuntimeEvent, RuntimeStatus, RunManager
+mgr = RunManager()
+r = mgr.create_run("sess", message="hi")
+# All operations verified: create, status, events, stop, approval, clarify
+PY
+```
+Result: All operations correct. Redaction confirmed (api_key → <<redacted>>).
+
+### Unsupported Items
+- **Approval resolution** — returned as `not_supported`. The real approval mechanism (`tools.approval.resolve_gateway_approval`) requires a running gateway adapter context that isn't available in the standalone `RunManager`. Integration phase should wire this.
+- **Clarify resolution** — returned as `not_supported`. Same reason: requires gateway adapter context.
+- **True agent interruption** — `stop_run` transitions status directly to `cancelled` with synthetic events. Actual `agent.interrupt()` requires a live `AIAgent` reference.
+- **HTTP route handlers** — not included in this package. The existing `api_server.py` route handlers (aiohttp) still manage their own state. Integration phase should either add new handlers delegating to `RunManager` or refactor the existing ones.

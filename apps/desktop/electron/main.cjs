@@ -119,6 +119,7 @@ const {
   resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { installNodeCaTrust } = require('./ca-certs.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -7519,6 +7520,15 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Teach the main-process `https` stack to trust the same CAs the
+  // keychain-backed renderer does (macOS keychain roots + NODE_EXTRA_CA_CERTS),
+  // so a remote backend behind a private/homelab CA passes the `waitForHermes`
+  // readiness probe instead of failing with `unable to get local issuer
+  // certificate`. Must run before any backend HTTPS request.
+  const caCount = installNodeCaTrust(https)
+  if (caCount) {
+    rememberLog(`[tls] trusting ${caCount} CA certificate(s) for backend connections (keychain + NODE_EXTRA_CA_CERTS)`)
+  }
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {

@@ -1587,6 +1587,47 @@ def test_apply_provider_selection_web_sets_backend():
     assert config["web"]["use_gateway"] is False
 
 
+def test_apply_provider_selection_youdotcom_mcp_writes_server_without_prompt(
+    monkeypatch,
+):
+    """Selecting You.com MCP writes mcp_servers without interactive install."""
+    from hermes_cli import mcp_catalog, tools_config
+
+    saved = {}
+
+    monkeypatch.setattr(mcp_catalog, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        mcp_catalog,
+        "install_entry",
+        lambda *a, **k: pytest.fail("interactive install must not run"),
+    )
+    monkeypatch.setattr(
+        mcp_catalog,
+        "_prompt_env_vars",
+        lambda *a, **k: pytest.fail("env prompting must not run"),
+    )
+    monkeypatch.setattr(
+        mcp_catalog,
+        "_apply_tool_selection",
+        lambda *a, **k: pytest.fail("tool checklist must not run"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.mcp_config._save_mcp_server",
+        lambda name, server_config: saved.setdefault(name, dict(server_config)) or True,
+    )
+
+    config = {}
+    tools_config.apply_provider_selection("web", "You.com MCP", config)
+
+    expected = {
+        "url": "https://api.you.com/mcp?profile=free",
+        "enabled": True,
+    }
+    assert saved["youdotcom"] == expected
+    assert config["mcp_servers"]["youdotcom"] == expected
+    assert "web" not in config
+
+
 def test_apply_provider_selection_tts_sets_provider():
     """Selecting a TTS provider persists tts.provider."""
     from hermes_cli.tools_config import apply_provider_selection

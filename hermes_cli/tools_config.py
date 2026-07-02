@@ -3044,6 +3044,38 @@ def _install_mcp_catalog_provider(provider: dict, config: dict) -> bool:
     return True
 
 
+def _apply_mcp_catalog_provider_selection(provider: dict, config: dict) -> bool:
+    """Non-interactively enable an MCP catalog-backed provider row."""
+    entry_name = provider.get("mcp_catalog_entry")
+    if not entry_name:
+        return False
+
+    try:
+        from hermes_cli.mcp_catalog import CatalogError, _build_server_config, get_entry
+        from hermes_cli.mcp_config import _save_mcp_server
+
+        entry = get_entry(entry_name)
+        if entry is None:
+            raise KeyError(f"MCP catalog entry not found: {entry_name}")
+
+        server_cfg = _build_server_config(entry, None)
+        server_cfg["enabled"] = True
+        if not _save_mcp_server(entry.name, server_cfg):
+            raise CatalogError(
+                f"catalog entry '{entry.name}' rejected: suspicious command/args configuration"
+            )
+    except CatalogError as exc:
+        _print_error(f"  Failed to install MCP catalog entry: {exc}")
+        return False
+
+    servers = config.setdefault("mcp_servers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        config["mcp_servers"] = servers
+    servers[entry.name] = server_cfg
+    return True
+
+
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
     """Non-interactively persist a provider selection for a toolset.
 
@@ -3066,6 +3098,10 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     provider = next((p for p in providers if p.get("name") == provider_name), None)
     if provider is None:
         raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")
+
+    if provider.get("mcp_catalog_entry"):
+        _apply_mcp_catalog_provider_selection(provider, config)
+        return
 
     managed_feature = provider.get("managed_nous_feature")
     _write_provider_config(provider, config, managed_feature=managed_feature)

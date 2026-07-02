@@ -32,6 +32,11 @@ const {
   overlayStampWithPin
 } = require('./apex-runtime-latest.cjs')
 const {
+  fetchClientConfig,
+  normalizeStoredClientConfig,
+  shouldApply: shouldApplyClientConfig
+} = require('./apex-client-config.cjs')
+const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -539,13 +544,36 @@ function rollbackRuntimePinOverride(reason) {
 // Shell UI locale block, appended to every seed. The runtime writes
 // display.language: en by default, which beats the China-first zh fallback (it
 // only triggers when the key is absent); pre-seeding zh makes a fresh install
-// open in Simplified Chinese.
+// open in Simplified Chinese. show_reasoning is a product decision: the runtime
+// defaults it to false (hermes_cli/config.py display.show_reasoning), but a
+// fresh APEX install should show the reasoning blocks (推理过程块) out of the
+// box — it lives here because it shares the display: mapping.
 const SEED_DISPLAY_BLOCK =
   '# Shell UI locale. The runtime writes display.language: en by default, which\n' +
   '# beats the China-first zh fallback (it only triggers when the key is\n' +
   '# absent); pre-seeding zh makes a fresh install open in Simplified Chinese.\n' +
+  '# show_reasoning: APEX product default — reasoning blocks visible on a fresh\n' +
+  '# install (the runtime defaults to false).\n' +
   'display:\n' +
-  '  language: zh\n'
+  '  language: zh\n' +
+  '  show_reasoning: true\n'
+
+// APEX product defaults appended to every seed alongside SEED_DISPLAY_BLOCK.
+// Both keys exist in the runtime schema (hermes_cli/config.py) and both values
+// MATCH today's runtime defaults — seeded explicitly to pin the product
+// behavior against upstream default drift:
+//   agent.image_input_mode: auto — image attachments go native only to
+//     vision-capable models, otherwise text pre-analysis (config.py agent block).
+//   timezone: '' — empty means "server-local time" (config.py top-level
+//     timezone), which on a desktop IS the OS timezone, i.e. follow-the-OS.
+// Top-level keys here (agent:, timezone:) must not collide with the other seed
+// blocks (model:/custom_providers:/display:/skills: — see seedDefaultModelConfig).
+const SEED_PRODUCT_DEFAULTS_BLOCK =
+  '# APEX product defaults: image attachments auto-routed by model vision\n' +
+  "# support; empty timezone = follow the OS (server-local) clock.\n" +
+  'agent:\n' +
+  '  image_input_mode: auto\n' +
+  "timezone: ''\n"
 
 // ── ApexNodes default model preset ─────────────────────────────────────────
 // We pre-seed config.yaml BEFORE the first-launch installer runs: install.sh
@@ -594,6 +622,7 @@ function seedDefaultModelConfig() {
         '# Settings › Providers.\n' +
         block +
         SEED_DISPLAY_BLOCK +
+        SEED_PRODUCT_DEFAULTS_BLOCK +
         skillsBlock
       rememberLog(`[apexnodes] seeded managed relay config at ${configPath}`)
     } else {
@@ -606,6 +635,7 @@ function seedDefaultModelConfig() {
         '  provider: deepseek\n' +
         modelDisabledProvidersYaml() +
         SEED_DISPLAY_BLOCK +
+        SEED_PRODUCT_DEFAULTS_BLOCK +
         skillsBlock
       rememberLog(`[apexnodes] seeded default DeepSeek (BYOK) config at ${configPath}`)
     }
@@ -653,6 +683,13 @@ const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-p
 // own file (not connection.json) because the managed-LLM credential and the
 // remote-gateway session are unrelated concerns.
 const DESKTOP_MANAGED_CONFIG_PATH = path.join(app.getPath('userData'), 'apex-managed.json')
+// apex-client-config.json caches the platform-served versioned client config
+// ({ version, payload, fetchedAt, appliedVersion } — see apex-client-config.cjs).
+// Refreshed fail-soft at boot and after a successful managed sign-in; the
+// renderer reads it over IPC and applies payload.config_yaml through the
+// runtime's global-config API once the gateway is open. No secrets inside, so
+// plain JSON (no safeStorage), unlike apex-managed.json.
+const DESKTOP_CLIENT_CONFIG_PATH = path.join(app.getPath('userData'), 'apex-client-config.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -4657,6 +4694,66 @@ function clearManagedRelayCredential() {
   }
 }
 
+// ── Platform client-config sync (apex-client-config.cjs) ────────────────────
+// The cloud serves a versioned client config (PUBLIC GET
+// /api/v1/desktop/client-config). We refresh the on-disk cache fail-soft at
+// boot and after every successful managed sign-in; the renderer applies
+// payload.config_yaml through the runtime's global-config API when the gateway
+// opens and records the applied version back via IPC. An offline user boots
+// exactly as before — every failure path keeps the cached state.
+
+function readClientConfigState() {
+  try {
+    const raw = fs.readFileSync(DESKTOP_CLIENT_CONFIG_PATH, 'utf8')
+    return normalizeStoredClientConfig(JSON.parse(raw))
+  } catch {
+    return normalizeStoredClientConfig(null)
+  }
+}
+
+function writeClientConfigState(next) {
+  fs.mkdirSync(path.dirname(DESKTOP_CLIENT_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_CLIENT_CONFIG_PATH, JSON.stringify(next, null, 2))
+}
+
+// Fetch the platform config and store it when a NEWER version arrived.
+// Non-blocking by contract (callers `void` it), bounded (~5s), and never
+// throws — any error only logs and leaves the cached state untouched.
+async function refreshClientConfigFromPlatform(reason) {
+  try {
+    const stored = readClientConfigState()
+    const fetched = await fetchClientConfig({
+      apiBase: apexApiBase(),
+      fetchJson: fetchPublicJson,
+      knownVersion: stored.version,
+      timeoutMs: 5_000,
+      log: msg => rememberLog(msg)
+    })
+    if (!fetched) return // offline / 404 no-active-config / garbage → cache stands
+    if (fetched.unchanged) {
+      rememberLog(`[client-config] v${fetched.version} unchanged (${reason})`)
+      return
+    }
+    if (!shouldApplyClientConfig(fetched.version, stored.version)) {
+      rememberLog(
+        `[client-config] fetched v${fetched.version} is not newer than cached v${stored.version}; ignoring (${reason})`
+      )
+      return
+    }
+    writeClientConfigState({
+      version: fetched.version,
+      payload: fetched.payload,
+      fetchedAt: Date.now(),
+      // Preserve what the renderer already applied — the gap between version
+      // and appliedVersion is exactly what triggers the next apply pass.
+      appliedVersion: stored.appliedVersion
+    })
+    rememberLog(`[client-config] stored platform config v${fetched.version} (${reason})`)
+  } catch (error) {
+    rememberLog(`[client-config] refresh failed (ignored): ${error && error.message ? error.message : error}`)
+  }
+}
+
 // POST JSON to an ApexNodes auth endpoint, optionally with a Bearer JWT. Reuses
 // the oauth-net-request helpers (serializeJsonBody / setJsonRequestHeaders) +
 // Electron's net stack, the same transport fetchJsonViaOauthSession uses — but
@@ -4780,8 +4877,15 @@ async function provisionManagedFromAccessToken(accessToken, account = null) {
     // provider entry immediately so the model picker's live listing doesn't
     // run on the dead key until the next app restart.
     syncManagedCustomProviderKey()
+    // A successful sign-in is a sync point for the platform client config
+    // (contract: check at boot AND after every successful sign-in).
+    // Fire-and-forget — provisioning must not wait on it.
+    void refreshClientConfigFromPlatform('sign-in')
     return { ok: true, hasRelayKey: true }
   }
+  // Sign-in itself succeeded (valid token) even though provisioning fell back
+  // to BYOK — still a sync point for the platform client config.
+  void refreshClientConfigFromPlatform('sign-in')
   return { ok: true, hasRelayKey: false }
 }
 
@@ -6379,6 +6483,35 @@ ipcMain.handle('hermes:managed:signOut', async () => {
   return { ok: true }
 })
 
+// ── Platform client-config sync (renderer surface) ──────────────────────────
+// get: the cached state from disk — no network, safe to call on every
+// gateway-open. The renderer applies payload.config_yaml when
+// version > appliedVersion (see src/store/platform-config.ts).
+ipcMain.handle('hermes:clientConfig:get', async () => {
+  const state = readClientConfigState()
+  return { version: state.version, payload: state.payload, appliedVersion: state.appliedVersion }
+})
+
+// markApplied: record the version the renderer finished applying (ALL keys
+// succeeded). Monotonic — an out-of-order call can never move appliedVersion
+// backwards, so a retry pass is only ever skipped once it truly completed.
+ipcMain.handle('hermes:clientConfig:markApplied', async (_event, payload) => {
+  const version = payload && typeof payload === 'object' ? payload.version : null
+  if (!shouldApplyClientConfig(version, 0)) {
+    return { ok: false, error: 'invalid_version' }
+  }
+  try {
+    const state = readClientConfigState()
+    const appliedVersion = Math.max(Number(version), state.appliedVersion)
+    writeClientConfigState({ ...state, appliedVersion })
+    rememberLog(`[client-config] renderer applied v${version} (appliedVersion=${appliedVersion})`)
+    return { ok: true, appliedVersion }
+  } catch (error) {
+    rememberLog(`[client-config] markApplied failed: ${error && error.message ? error.message : error}`)
+    return { ok: false, error: 'write_failed' }
+  }
+})
+
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
@@ -7491,6 +7624,11 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+
+  // Platform client-config sync: non-blocking boot check (contract: every boot
+  // + after every successful sign-in). Bounded at ~5s and strictly fail-soft —
+  // an offline user boots exactly as before, on the cached state.
+  void refreshClientConfigFromPlatform('boot')
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

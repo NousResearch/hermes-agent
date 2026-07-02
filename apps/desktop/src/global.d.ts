@@ -53,6 +53,16 @@ declare global {
         browserSignIn: (payload: { provider: 'apex' | 'google' }) => Promise<DesktopManagedSignInResult>
         signOut: () => Promise<{ ok: boolean }>
       }
+      // Platform client-config sync — the cloud serves a versioned client
+      // config the main process caches at boot / after sign-in. `get` reads
+      // the cached state from disk (no network); `markApplied` records the
+      // version the renderer finished applying to the runtime's global config
+      // (see src/store/platform-config.ts + electron/apex-client-config.cjs).
+      // Optional: an older main process may not expose the bridge yet.
+      clientConfig?: {
+        get: () => Promise<DesktopClientConfigState>
+        markApplied: (version: number) => Promise<{ ok: boolean; appliedVersion?: number; error?: string }>
+      }
       // Continuous auth gate: fires when a backend call returns 401 (login lost)
       // or 403 account_disabled (account abnormal). The renderer clears auth and
       // returns to the login screen. See electron/main.cjs broadcastAuthGate.
@@ -382,6 +392,17 @@ export interface DesktopManagedSignInResult {
   hasRelayKey?: boolean
   message?: string
   ok: boolean
+}
+
+// Cached platform client-config state, as returned by
+// hermesDesktop.clientConfig.get() (a local disk read — no network). version 0
+// / payload null means nothing has been fetched yet. payload carries the
+// server contract's fields (v1: config_yaml — a dotted-key → scalar map);
+// unknown fields ride along for forward compat and are ignored.
+export interface DesktopClientConfigState {
+  version: number
+  payload: Record<string, unknown> | null
+  appliedVersion: number
 }
 
 // One side (installed or admin-latest) of an engine version, as derived by

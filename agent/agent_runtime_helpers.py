@@ -382,15 +382,22 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
          resumed histories. Refs #29148, #49147.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
-      2. Consecutive ``user`` messages — merged with newline separator
+      2. ``assistant`` messages carrying ``tool_calls`` whose ids are not
+         fully answered by the tool messages immediately following them
+         — a synthetic error result is inserted for each unanswered id.
+         Interruption (``/stop``, process kill, resume mid tool-loop) can
+         leave some or all of a turn's calls unanswered; strict
+         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
+         that shape outright — "An assistant message with 'tool_calls'
+         must be followed by tool messages…" — rather than responding
+         with an empty completion. Inserting a stub result (instead of
+         stripping the ``tool_calls``) keeps the model's stated intent
+         visible in the transcript. No-op when every call already has a
+         matching result — the "ongoing dialog" pattern (a complete
+         assistant(tool_calls)+tool pair followed by a user redirect
+         before the model's continuation turn) is left untouched.
+      3. Consecutive ``user`` messages — merged with newline separator
          so no user input is lost.
-
-    Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
-    pairs that precede a user message — that pattern IS valid when the
-    previous turn completed normally and the user jumped in to redirect
-    before the model got a continuation turn (the ongoing dialog
-    pattern). The empty-response scaffolding stripper handles the
-    genuinely-broken variant via its flag-gated rewind.
 
     Returns the number of repairs made (for logging/telemetry).
     """
@@ -492,7 +499,55 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 known_tool_ids = set()
             filtered.append(msg)
 
-    # Pass 2: merge consecutive user messages. Preserves all user input
+    # Pass 2: close assistant(tool_calls) turns whose ids are not fully
+    # answered by the tool messages immediately following them. Runs after
+    # Pass 1 so stray/unmatched tool results have already been dropped and
+    # can't be mistaken for a real answer. A no-op whenever every call
+    # already has a matching result.
+    idx = 0
+    while idx < len(filtered):
+        msg = filtered[idx]
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
+            idx += 1
+            continue
+        call_ids = [
+            tc.get("id") for tc in (msg.get("tool_calls") or [])
+            if isinstance(tc, dict) and tc.get("id")
+        ]
+        if not call_ids:
+            idx += 1
+            continue
+        run_end = idx + 1
+        answered: set = set()
+        while (
+            run_end < len(filtered)
+            and isinstance(filtered[run_end], dict)
+            and filtered[run_end].get("role") == "tool"
+        ):
+            answered.add(filtered[run_end].get("tool_call_id"))
+            run_end += 1
+        missing = [cid for cid in call_ids if cid not in answered]
+        if missing:
+            names = {
+                tc.get("id"): ((tc.get("function") or {}).get("name") or "unknown")
+                for tc in (msg.get("tool_calls") or [])
+                if isinstance(tc, dict)
+            }
+            stubs = [
+                {
+                    "role": "tool",
+                    "tool_call_id": cid,
+                    "name": names.get(cid, "unknown"),
+                    "content": "Tool execution was interrupted before a result was returned.",
+                }
+                for cid in missing
+            ]
+            filtered[run_end:run_end] = stubs
+            repairs += len(stubs)
+            run_end += len(stubs)
+        idx = run_end
+
+    # Pass 3: merge consecutive user messages. Preserves all user input
     # so nothing the user typed is lost.
     merged: List[Dict] = []
     for msg in filtered:

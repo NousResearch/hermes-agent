@@ -12398,7 +12398,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
-                    pass
+                    # If a plugin appended content (shout, trace) after streaming,
+                    # print only the appended portion now.
+                    if result and result.get("response_transformed"):
+                        _pre = result.get("pre_transform_response") or ""
+                        _appended = response[len(_pre):]
+                        if _appended.strip():
+                            _cprint(_appended)
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(

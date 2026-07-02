@@ -2971,6 +2971,12 @@ def _get_usage(agent) -> dict:
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    cache_read = g("session_cache_read_tokens")
+    cache_write = g("session_cache_write_tokens")
+    if cache_read:
+        usage["cache_read"] = cache_read
+    if cache_write:
+        usage["cache_write"] = cache_write
     comp = getattr(agent, "context_compressor", None)
     if comp:
         # context_used is the *current-window* occupancy. Do NOT fall back to

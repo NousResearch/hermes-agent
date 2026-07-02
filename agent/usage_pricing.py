@@ -404,30 +404,43 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.14"),
         output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-03-16",
+        pricing_version="deepseek-pricing-2026-07-02",
     ),
     (
         "deepseek",
         "deepseek-reasoner",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.55"),
-        output_cost_per_million=Decimal("2.19"),
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-03-16",
+        pricing_version="deepseek-pricing-2026-07-02",
+    ),
+    (
+        "deepseek",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-07-02",
     ),
     (
         "deepseek",
         "deepseek-v4-pro",
     ): PricingEntry(
-        input_cost_per_million=Decimal("1.74"),
-        output_cost_per_million=Decimal("3.48"),
-        cache_read_cost_per_million=Decimal("0.0145"),
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.003625"),
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-05-12",
+        pricing_version="deepseek-pricing-2026-07-02",
     ),
     # Google Gemini
     (
@@ -578,6 +591,12 @@ def _to_int(value: Any) -> int:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _usage_value(usage: Any, key: str, default: Any = 0) -> Any:
+    if isinstance(usage, dict):
+        return usage.get(key, default)
+    return getattr(usage, key, default)
 
 
 def resolve_billing_route(
@@ -784,45 +803,51 @@ def normalize_usage(
     mode = (api_mode or "").strip().lower()
 
     if mode == "anthropic_messages" or provider_name == "anthropic":
-        input_tokens = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
-        cache_write_tokens = _to_int(getattr(response_usage, "cache_creation_input_tokens", 0))
+        input_tokens = _to_int(_usage_value(response_usage, "input_tokens", 0))
+        output_tokens = _to_int(_usage_value(response_usage, "output_tokens", 0))
+        cache_read_tokens = _to_int(_usage_value(response_usage, "cache_read_input_tokens", 0))
+        cache_write_tokens = _to_int(_usage_value(response_usage, "cache_creation_input_tokens", 0))
     elif mode == "codex_responses":
-        input_total = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        details = getattr(response_usage, "input_tokens_details", None)
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        input_total = _to_int(_usage_value(response_usage, "input_tokens", 0))
+        output_tokens = _to_int(_usage_value(response_usage, "output_tokens", 0))
+        details = _usage_value(response_usage, "input_tokens_details", None)
+        cache_read_tokens = _to_int(_usage_value(details, "cached_tokens", 0) if details else 0)
         cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
+            _usage_value(details, "cache_creation_tokens", 0) if details else 0
         )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
-        prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
-        details = getattr(response_usage, "prompt_tokens_details", None)
+        prompt_total = _to_int(_usage_value(response_usage, "prompt_tokens", 0))
+        output_tokens = _to_int(_usage_value(response_usage, "completion_tokens", 0))
+        details = _usage_value(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
         # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
         # expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        cache_read_tokens = _to_int(_usage_value(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
-            cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+            cache_read_tokens = _to_int(_usage_value(response_usage, "prompt_cache_hit_tokens", 0))
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(_usage_value(response_usage, "cache_read_input_tokens", 0))
         cache_write_tokens = _to_int(
-            getattr(details, "cache_write_tokens", 0) if details else 0
+            _usage_value(details, "cache_write_tokens", 0) if details else 0
         )
         if not cache_write_tokens:
             cache_write_tokens = _to_int(
-                getattr(response_usage, "cache_creation_input_tokens", 0)
+                _usage_value(response_usage, "cache_creation_input_tokens", 0)
             )
-        input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
+        prompt_cache_miss = _usage_value(response_usage, "prompt_cache_miss_tokens", None)
+        if prompt_cache_miss is not None:
+            input_tokens = _to_int(prompt_cache_miss)
+        else:
+            input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
-    output_details = getattr(response_usage, "output_tokens_details", None)
+    output_details = _usage_value(response_usage, "output_tokens_details", None)
     if output_details:
-        reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+        reasoning_tokens = _to_int(_usage_value(output_details, "reasoning_tokens", 0))
 
     return CanonicalUsage(
         input_tokens=input_tokens,

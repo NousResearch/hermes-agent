@@ -507,7 +507,41 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
+    def test_show_usage_shows_cache_reporting_when_nonzero(self, capsys):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+            cache_read_tokens=800,
+            cache_write_tokens=200,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        # Token counts and session metadata still shown.
+        assert "Model:" in output
+        assert "Input tokens:" in output
+        assert "Output tokens:" in output
+        assert "Total tokens:" in output
+        assert "Session duration:" in output
+        assert "Compressions:" in output
+        assert "Cache read tokens:" in output
+        assert "800" in output
+        assert "Cache write tokens:" in output
+        assert "200" in output
+        # Cost reporting stays omitted.
+        assert "Total cost:" not in output
+        assert "Cost status:" not in output
+        assert "Cost source:" not in output
+
+    def test_show_usage_omits_cache_reporting_when_zero(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -523,17 +557,6 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        # Token counts and session metadata still shown.
-        assert "Model:" in output
-        assert "Input tokens:" in output
-        assert "Output tokens:" in output
-        assert "Total tokens:" in output
-        assert "Session duration:" in output
-        assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
 

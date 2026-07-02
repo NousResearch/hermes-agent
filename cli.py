@@ -9413,6 +9413,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+        if cache_read_tokens:
+            print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+        if cache_write_tokens:
+            print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
             print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")

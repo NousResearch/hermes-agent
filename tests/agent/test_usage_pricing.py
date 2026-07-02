@@ -86,6 +86,39 @@ def test_normalize_usage_openai_reads_top_level_cache_read_when_details_missing(
     assert normalized.input_tokens == 200
 
 
+def test_normalize_usage_deepseek_prompt_cache_hit_miss_fields():
+    """DeepSeek reports cache hit/miss as top-level prompt_cache_* fields."""
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        prompt_cache_hit_tokens=800,
+        prompt_cache_miss_tokens=200,
+        completion_tokens=100,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 200
+    assert normalized.cache_read_tokens == 800
+    assert normalized.cache_write_tokens == 0
+    assert normalized.output_tokens == 100
+    assert normalized.prompt_tokens == 1000
+
+
+def test_normalize_usage_deepseek_prompt_cache_fields_support_dicts():
+    usage = {
+        "prompt_tokens": 1000,
+        "prompt_cache_hit_tokens": 800,
+        "prompt_cache_miss_tokens": 200,
+        "completion_tokens": 100,
+    }
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 200
+    assert normalized.cache_read_tokens == 800
+    assert normalized.output_tokens == 100
+
+
 def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     """When both prompt_tokens_details and top-level Anthropic fields are
     present, we prefer the OpenAI-standard nested fields. Top-level Anthropic
@@ -233,9 +266,22 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.003625
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    entry = get_pricing_entry(
+        "deepseek-v4-flash",
+        provider="deepseek",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+    assert entry.cache_write_cost_per_million is None
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():
@@ -248,8 +294,20 @@ def test_deepseek_v4_pro_estimate_usage_cost():
 
     assert result.status == "estimated"
     assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+    # 1M input × $0.435/M + 500K output × $0.87/M = $0.435 + $0.435 = $0.87
+    assert float(result.amount_usd) == 0.87
+
+
+def test_deepseek_v4_flash_estimate_usage_cost_with_cache_read():
+    result = estimate_usage_cost(
+        "deepseek-v4-flash",
+        CanonicalUsage(input_tokens=200, cache_read_tokens=800, output_tokens=100),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.amount_usd > 0
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():

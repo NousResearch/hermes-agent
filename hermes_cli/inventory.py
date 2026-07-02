@@ -111,6 +111,7 @@ def load_picker_context() -> ConfigContext:
 def build_models_payload(
     ctx: ConfigContext,
     *,
+    explicit_only: bool = False,
     include_unconfigured: bool = False,
     picker_hints: bool = False,
     canonical_order: bool = False,
@@ -126,6 +127,10 @@ def build_models_payload(
     needs from a single substrate call.
 
     Flags:
+    - ``explicit_only``: keep only providers the user explicitly configured
+      (current provider, providers from config, or providers backed by
+      provider-specific env vars). This hides ambient / auto-seeded
+      credentials from desktop chat pickers.
     - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
       ``list_authenticated_providers`` didn't emit (TUI uses this to show
       the full provider universe in the picker).
@@ -179,6 +184,9 @@ def build_models_payload(
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
+    if explicit_only:
+        rows = _filter_explicit_provider_rows(rows, ctx)
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -306,6 +314,37 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
             }
         )
     return extras
+
+
+def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Keep only rows backed by explicit user configuration.
+
+    ``list_authenticated_providers`` intentionally discovers ambient / auto-
+    seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
+    pickers want the narrower subset the user explicitly configured for Hermes.
+    """
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    current_slug = str(ctx.current_provider or "").strip().lower()
+    kept: list[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        if not slug:
+            continue
+        if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if current_slug and slug == current_slug:
+            kept.append(row)
+            continue
+        if slug == "moa":
+            # MoA is a virtual routing mode, not an independently configured
+            # provider. Hide it from explicit-only pickers unless it is the
+            # current provider (handled above).
+            continue
+        if is_provider_explicitly_configured(slug):
+            kept.append(row)
+    return kept
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:

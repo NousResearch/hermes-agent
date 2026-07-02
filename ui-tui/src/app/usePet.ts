@@ -2,6 +2,7 @@ import { useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
+import { asRpcResult } from '../lib/rpc.js'
 
 import { useGateway } from './gatewayContext.js'
 import { $overlayState, getOverlayState } from './overlayStore.js'
@@ -60,7 +61,7 @@ interface KittyView {
   placeholder: string[]
 }
 
-interface PetCellsResult {
+interface PetCellsResult extends Record<string, unknown> {
   color?: string
   enabled?: boolean
   frameMs?: number
@@ -107,7 +108,7 @@ export interface PetRender {
  * live. The frame cache is keyed by `slug:state` so a switch re-pulls cleanly.
  */
 export function usePet(): PetRender {
-  const { rpc } = useGateway()
+  const { gw } = useGateway()
   const { write } = useStdout()
   const [enabled, setEnabled] = useState(false)
   const [grid, setGrid] = useState<PetGrid | null>(null)
@@ -194,7 +195,7 @@ export function usePet(): PetRender {
   const sync = useCallback(
     async (state: PetState) => {
       try {
-        const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
+        const res = asRpcResult<PetCellsResult>(await gw.request<PetCellsResult>('pet.cells', { graphics: IS_TTY, state }))
 
         if (!res) {
           return
@@ -247,7 +248,7 @@ export function usePet(): PetRender {
         // cosmetic — ignore RPC failures
       }
     },
-    [rpc, releaseKitty]
+    [gw, releaseKitty]
   )
 
   // Pull frames whenever the state changes (if not already cached for the

@@ -216,6 +216,41 @@ class TestProviderListFlag:
 
 
 # ---------------------------------------------------------------------------
+# /auth/login with password provider — native-client compatibility shim
+# ---------------------------------------------------------------------------
+
+
+class TestPasswordProviderAuthLoginRedirect:
+    def test_auth_login_redirects_password_provider_to_login_page(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=/sessions",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
+    def test_auth_login_redirect_honours_forwarded_prefix(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=/sessions",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/hermes/login?next=%2Fsessions"
+
+    def test_auth_login_redirect_drops_open_redirect_next(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=https://evil.example/phish",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+
+# ---------------------------------------------------------------------------
 # /auth/password-login — end-to-end through the real middleware
 # ---------------------------------------------------------------------------
 

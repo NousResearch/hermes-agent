@@ -193,6 +193,18 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             detail=f"Provider does not support interactive login: {provider!r}",
         )
 
+    if getattr(p, "supports_password", False):
+        # Password-only providers do not have an OAuth redirect flow. Some
+        # native clients still open /auth/login?provider=basic as their generic
+        # "sign in" entrypoint; send them to the password login page instead of
+        # calling start_login() and returning a 500.
+        from urllib.parse import quote
+
+        safe_next = _validate_post_login_target(next)
+        prefix = _prefix(request)
+        suffix = f"?next={quote(safe_next, safe='')}" if safe_next else ""
+        return RedirectResponse(url=f"{prefix}/login{suffix}", status_code=302)
+
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
     except ProviderError as e:

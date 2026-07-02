@@ -213,3 +213,92 @@ Result: All imports OK. Smoke run: run_id, session_id, status: queued,
 ### Next task
 
 **Mount `gateway/runtime` route module into live Agent API server, then run live WebUI agent-runs smoke.**
+
+---
+
+## Phase 10A — Mount gateway/runtime route module into live Agent API server (completed)
+
+### State Before Phase 10A
+- **Commit:** `035e333`
+- **Message:** `Document Agent runtime API foundation verification`
+
+### What Was Built
+
+#### Route module (`gateway/runtime/routes.py`)
+- Created `register_runtime_routes(app, *, run_manager, error_formatter)` function
+- Registers 6 aiohttp handlers on a `web.Application`:
+  - `POST /v1/runs` — create run (202), delegates to `RunManager.create_run()`
+  - `GET /v1/runs/{run_id}` — poll status, delegates to `RunManager.get_status()`
+  - `GET /v1/runs/{run_id}/events` — event replay (JSON or SSE), delegates to `RunManager.read_events()`
+  - `POST /v1/runs/{run_id}/stop` — interrupt, delegates to `RunManager.stop_run()`
+  - `POST /v1/runs/{run_id}/approval` — returns 501 not_supported, delegates to `RunManager.resolve_approval()`
+  - `POST /v1/runs/{run_id}/clarify` — returns 501 not_supported, delegates to `RunManager.resolve_clarify()`
+- Stores `RunManager` instance on `app["runtime_run_manager"]`
+- Accepts optional `error_formatter` callback for consistent error envelope
+
+#### Live server mount (`gateway/platforms/api_server.py`)
+- Added import of `register_runtime_routes` from `gateway.runtime.routes`
+- In `APIServerAdapter.connect()`, added conditional route registration:
+  - When `HERMES_USE_RUNTIME_RUNS` env var or `platforms.api_server.extra.use_runtime_runs` config is truthy → uses runtime route module
+  - Default: keeps legacy embedded handlers (zero behavior change)
+- Runtime route module uses `_openai_error` as error formatter for API-consistent error responses
+
+#### Package exports (`gateway/runtime/__init__.py`)
+- Added `register_runtime_routes` to `__all__` and top-level imports
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `gateway/runtime/routes.py` | aiohttp route handlers delegating to RunManager |
+| `tests/gateway/test_runtime_server_mount.py` | 31 tests — full HTTP lifecycle verification |
+
+### Files Modified
+| File | Change |
+|------|--------|
+| `gateway/runtime/__init__.py` | Added `register_runtime_routes` export |
+| `gateway/platforms/api_server.py` | Added conditional runtime route mount in `connect()` |
+
+### Verification
+
+**Focused test run:**
+```
+./scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py -v
+Result: 105 passed, 0 failed (4 files, 16 workers, 1.3s) — PASS
+```
+
+**Existing API server tests (regression check):**
+```
+./scripts/run_tests.sh tests/gateway/test_api_server.py -v
+Result: 193 passed, 0 failed — PASS (no regressions)
+
+./scripts/run_tests.sh tests/gateway/test_api_server_runs.py -v
+Result: 23 passed, 0 failed — PASS (no regressions)
+```
+
+**Import/server smoke:**
+```
+python3 — gateway.runtime import, register_runtime_routes export,
+  importable from gateway.platforms.api_server, RunManager functional
+  smoke (create, status, events, stop, approval, clarify)
+Result: All imports and smoke checks PASS
+```
+
+### Server Mount Details
+- **Live server module:** `gateway.platforms.api_server` (APIServerAdapter class)
+- **Route framework:** aiohttp `web.Application`
+- **Mount mechanism:** Conditional — `HERMES_USE_RUNTIME_RUNS=true` env var enables runtime routes
+- **Without flag:** Legacy embedded handlers registered (no behavior change)
+- **With flag:** `register_runtime_routes(app, error_formatter=_openai_error)` replaces legacy handlers
+- **RunManager storage:** `app["runtime_run_manager"]` accessible to middleware and tests
+
+### Unsupported/Deferred
+- **Approval/clarify resolution** — still returned as 501 not_supported (same as Phase 4)
+- **True live agent execution** — `RunManager` manages state only; actual agent spawning deferred
+- **Live server smoke with curl** — requires starting a blocking server; deferred to WebUI integration
+- **HERMES_USE_RUNTIME_RUNS env var** — opt-in flag; production default keeps legacy behavior
+
+### Next task
+**Phase 10B — WebUI live agent-runs smoke**

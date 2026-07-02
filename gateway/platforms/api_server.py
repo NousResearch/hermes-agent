@@ -59,6 +59,7 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 from agent.redact import redact_sensitive_text
+from gateway.runtime.routes import register_runtime_routes
 
 logger = logging.getLogger(__name__)
 
@@ -4776,12 +4777,34 @@ class APIServerAdapter(BasePlatformAdapter):
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
             if _CRON_AVAILABLE:
                 self._app.router.add_post("/api/cron/fire", self._handle_cron_fire)
-            # Structured event streaming
-            self._app.router.add_post("/v1/runs", self._handle_runs)
-            self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
-            self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
-            self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
-            self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # /v1/runs — agent lifecycle endpoint.
+            # When HERMES_USE_RUNTIME_RUNS is truthy the runtime-backed
+            # route module (gateway.runtime.routes) replaces the legacy
+            # embedded handlers.  The runtime module is a standalone
+            # RunManager-backed implementation suitable for WebUI smoke
+            # testing and future gateways.
+            _extra = self.config.extra or {}
+            _use_runtime_raw = os.getenv("HERMES_USE_RUNTIME_RUNS") or _extra.get(
+                "use_runtime_runs"
+            )
+            _use_runtime = (
+                str(_use_runtime_raw).strip().lower() in {"1", "true", "yes", "on"}
+            )
+            if _use_runtime:
+                register_runtime_routes(
+                    self._app,
+                    error_formatter=_openai_error,
+                )
+                logger.info(
+                    "[%s] /v1/runs using runtime-backed RunManager route module",
+                    self.name,
+                )
+            else:
+                self._app.router.add_post("/v1/runs", self._handle_runs)
+                self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
+                self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+                self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+                self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

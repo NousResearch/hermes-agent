@@ -25,6 +25,7 @@ The `gateway/runtime/` package provides:
 - [x] Phase 0 — Preflight
 - [x] Phase 4 — Runtime API foundation
 - [x] Phase 9 — Full verification and final report
+- [x] Phase 10A — Mount runtime routes into live Agent API server
 
 ## Added Runtime/API Components
 
@@ -113,12 +114,11 @@ Result: All imports OK. Smoke run created successfully with run_id,
 
 ## API Server Integration Status
 
-**B** — Route module implemented, server mount deferred.
+**Mounted** — Route module implemented and integrated into live API server (Phase 10A).
 
-The `gateway/runtime/` package is a standalone service layer. The existing `/v1/runs` route handlers remain in `gateway/platforms/api_server.py` (aiohttp). Integration options:
-1. Mount new route handlers that delegate to `RunManager` (best for clean separation)
-2. Replace `api_server.py`'s embedded dicts with `RunManager` internally
-3. Add a FastAPI router using `RunManager` for the dashboard/WebUI surface
+The `gateway/runtime/routes.py` module provides `register_runtime_routes(app)` which registers 6 aiohttp handlers delegating to `RunManager`. The live API server (`gateway/platforms/api_server.py`) conditionally mounts these routes when `HERMES_USE_RUNTIME_RUNS=true` env var or `platforms.api_server.extra.use_runtime_runs` config is set. By default (flag absent), the legacy embedded handlers are used — no behavior change for existing deployments.
+
+**Server mount location:** `gateway/platforms/api_server.py` → `APIServerAdapter.connect()` → `register_runtime_routes(self._app, error_formatter=_openai_error)`
 
 ## Unsupported/Deferred
 

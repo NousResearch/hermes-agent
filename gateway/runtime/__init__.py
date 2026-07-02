@@ -43,6 +43,7 @@ from gateway.runtime.models import (
 )
 
 from gateway.runtime.run_manager import RunManager
+from gateway.runtime.routes import register_runtime_routes
 
 __all__ = [
     "RuntimeEvent",
@@ -79,4 +80,5 @@ __all__ = [
     "EVENT_DONE",
     "TERMINAL_EVENT_TYPES",
     "redact_secrets",
+    "register_runtime_routes",
 ]

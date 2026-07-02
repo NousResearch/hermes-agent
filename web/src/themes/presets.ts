@@ -228,6 +228,223 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Aurora — dark frosted-glass theme. Translucent surfaces with backdrop-blur
+ * over a gold + indigo aurora backdrop, unified Inter typography (mono kept
+ * only for technical tokens), silver display text, and high-contrast, readable
+ * tables and menus. Contributed by Michel Marrazzo (KuramaLab).
+ */
+export const auroraTheme: DashboardTheme = {
+  name: "aurora",
+  label: "Aurora",
+  description:
+    "Dark frosted-glass — translucent surfaces over a gold & indigo aurora, unified Inter type, high-contrast tables and menus",
+  palette: {
+    background: { hex: "#141518", alpha: 1 },
+    midground: { hex: "#ecedef", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(232, 160, 0, 0.12)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", system-ui, -apple-system, "Segoe UI", sans-serif`,
+    fontMono: `"JetBrains Mono", ui-monospace, "SF Mono", monospace`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "1rem",
+  },
+  layoutVariant: "standard",
+  colorOverrides: {
+    card: "#31333a",
+    cardForeground: "#ecedef",
+    popover: "#3a3c43",
+    popoverForeground: "#f4f5f7",
+    primary: "#e8a000",
+    primaryForeground: "#141414",
+    secondary: "#2a2b31",
+    secondaryForeground: "#f0d69a",
+    muted: "#2a2b31",
+    mutedForeground: "#a6a8ae",
+    accent: "#e8a000",
+    accentForeground: "#141414",
+    destructive: "#f0616d",
+    destructiveForeground: "#141414",
+    success: "#34d399",
+    warning: "#f5b301",
+    border: "#33343c",
+    input: "#33343c",
+    ring: "#e8a000",
+  },
+  componentStyles: {
+    card: {
+      background: "rgba(40, 43, 52, 0.55)",
+      border: "1px solid rgba(255,255,255,0.09)",
+      boxShadow:
+        "inset 0 1px 0 rgba(255,255,255,.07), 0 20px 50px rgba(0,0,0,.45)",
+    },
+    header: {
+      background: "rgba(20, 21, 26, 0.55)",
+      boxShadow: "inset 0 -1px 0 rgba(255,255,255,.07)",
+    },
+    sidebar: {
+      background: "rgba(21, 22, 27, 0.72)",
+      boxShadow: "inset -1px 0 0 rgba(255,255,255,.06)",
+    },
+    badge: {
+      background: "rgba(255,255,255,.06)",
+    },
+    page: {
+      background: "transparent",
+    },
+  },
+  swatchColors: ["#141518", "#e8a000", "#31333a"],
+  terminalBackground: "#0f1014",
+  terminalForeground: "#ecedef",
+  customCSS: String.raw`
+  /* === Unified typography: one voice (Inter) + mono only for technical tokens === */
+  /* Hermes' UI mixes 5 families (Mondwest, Rules Compressed/Expanded, system-sans, mono).
+     Remap the 3 display fonts onto the theme sans so the whole UI becomes Inter.
+     font-mono / font-mono-ui stay JetBrains Mono (via typography.fontMono) for model ids, tools, version. */
+  :root {
+    --font-mondwest:         var(--theme-font-sans);
+    --font-rules-compressed: var(--theme-font-sans);
+    --font-rules-expanded:   var(--theme-font-sans);
+  }
+  /* Tracking: display fonts used wide 0.08-0.2em spacing that reads oddly in Inter -> tighten */
+  .tracking-\[0\.2em\],
+  .tracking-\[0\.12em\],
+  .tracking-\[0\.1em\],
+  .tracking-\[0\.08em\] { letter-spacing: .02em !important; }
+  .text-display { letter-spacing: .02em; }
+  /* Size hierarchy: card titles jumped to text-base (bigger than the page title) -> realign */
+  .flex-col.gap-1\.5.p-4.border-b .text-base { font-size: .92rem !important; }
+  /* Tiny footer text (0.65rem) -> more legible */
+  .text-\[0\.65rem\] { font-size: .72rem !important; }
+
+  /* === Glass / frosted === */
+  /* Aurora backdrop: gold (brand) + indigo glows on a near-black base, giving
+     depth for the glass backdrop-blur to diffuse. */
+  body {
+    background:
+      radial-gradient(1100px 620px at 12% -8%, rgba(232,160,0,.12), transparent 60%),
+      radial-gradient(1000px 700px at 100% 0%, rgba(96,124,255,.10), transparent 55%),
+      radial-gradient(900px 900px at 60% 120%, rgba(232,160,0,.06), transparent 60%),
+      #0f1014 !important;
+    background-attachment: fixed !important;
+  }
+
+  /* Card hover: light up the glass */
+  [class*="card"], .card { transition: box-shadow .2s ease, border-color .2s ease, background .2s ease; }
+  [class*="card"]:hover {
+    border-color: rgba(232,160,0,.35) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 26px 64px rgba(0,0,0,.5) !important;
+  }
+
+  /* Readable tables: distinct header + gold rule, separated rows, zebra, gold hover */
+  table { border-collapse: separate; border-spacing: 0; width: 100%; border-radius: .6rem; overflow: hidden; }
+  thead th, [role="columnheader"] {
+    background: #26272e !important;
+    color: #f4f5f7 !important;
+    font-weight: 600;
+    border-bottom: 2px solid rgba(232,160,0,.7) !important;
+    text-align: left;
+  }
+  tbody td, [role="cell"], [role="gridcell"] {
+    border-bottom: 1px solid #2a2b31 !important;
+    color: #dfe1e6 !important;
+  }
+  tbody tr:nth-child(even) td { background: rgba(255,255,255,.022); }
+  tbody tr:hover td { background: rgba(232,160,0,.12) !important; }
+  tbody tr:last-child td { border-bottom: none !important; }
+
+  /* Same-looking lists -> visible divider */
+  [class*="divide-y"] > * + * { border-top: 1px solid #2a2b31 !important; }
+
+  /* Dialogs / popovers / menus: elevated glass */
+  [role="dialog"], [data-radix-popper-content-wrapper] > * {
+    background: rgba(34,37,46,.72) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(1.4) !important;
+    backdrop-filter: blur(22px) saturate(1.4) !important;
+    border-radius: 1rem !important;
+    border: 1px solid rgba(255,255,255,.10) !important;
+    box-shadow: 0 24px 64px rgba(0,0,0,.62) !important;
+  }
+
+  /* Inputs: dark glass with visible border + gold focus */
+  input, textarea, select {
+    background: rgba(255,255,255,.04) !important;
+    border: 1px solid rgba(255,255,255,.12) !important;
+    color: #ecedef !important;
+    border-radius: .6rem !important;
+  }
+  input:focus, textarea:focus, select:focus { border-color: #e8a000 !important; box-shadow: 0 0 0 3px rgba(232,160,0,.28) !important; }
+
+  /* Links / text accents in gold */
+  a { color: #f0b62e; }
+  a:hover { color: #ffc540; }
+
+  /* Lift dim tones for legibility */
+  .text-muted-foreground, [class*="muted-foreground"] { color: #a6a8ae !important; }
+  .opacity-50, .opacity-40 { opacity: .72 !important; }
+
+  /* Badges (tui/cli/telegram, counts): rounded and readable (font/tracking unified above) */
+  .font-compressed {
+    border-radius: .5rem !important;
+    padding: .18rem .55rem !important;
+    font-weight: 600 !important;
+    text-transform: none !important;
+  }
+  /* outline variant: glass pill with luminous border */
+  .font-compressed.bg-transparent {
+    color: #e6e8ed !important;
+    background: rgba(255,255,255,.05) !important;
+    border-color: rgba(255,255,255,.14) !important;
+    -webkit-backdrop-filter: blur(6px) !important;
+    backdrop-filter: blur(6px) !important;
+  }
+
+  /* Card = frosted glass, rounded, clips its content (header included) */
+  .border.bg-background-base\/80 {
+    border-radius: 1rem !important;
+    overflow: hidden !important;
+    background: rgba(40, 43, 52, 0.55) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(1.3) !important;
+    backdrop-filter: blur(18px) saturate(1.3) !important;
+    border: 1px solid rgba(255,255,255,.09) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 20px 50px rgba(0,0,0,.45) !important;
+  }
+
+  /* Panel header (CardHeader): darker glass bar; targets the common denominator of every CardHeader */
+  .flex-col.gap-1\.5.p-4.border-b {
+    background: linear-gradient(180deg, rgba(22,24,30,.55), rgba(12,13,17,.28)) !important;
+    border-bottom: 1px solid rgba(255,255,255,.07) !important;
+  }
+  /* header text -> silver (title = font-expanded, subtitle = font-mondwest) */
+  .flex-col.gap-1\.5.p-4.border-b .font-expanded {
+    color: #d6d9de !important;
+    -webkit-text-fill-color: #d6d9de !important;
+    font-weight: 600;
+  }
+  .flex-col.gap-1\.5.p-4.border-b .font-mondwest {
+    color: #b9bdc4 !important;
+    -webkit-text-fill-color: #b9bdc4 !important;
+  }
+
+  /* Sidebar menu: compact size (tracking already tightened above) */
+  .text-display.uppercase.tracking-\[0\.12em\] { font-size: .8rem !important; }
+
+  /* Scrollbars: dark but visible */
+  * { scrollbar-color: #4a4b54 transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #4a4b54; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: #e8a000; background-clip: content-box; }
+`,
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -237,4 +454,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  aurora: auroraTheme,
 };

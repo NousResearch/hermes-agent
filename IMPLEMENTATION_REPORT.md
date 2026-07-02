@@ -943,3 +943,45 @@ Phase 21 completed deterministic pauseable pending-action smoke coverage for exe
 - Messaging-platform runtime binding remains preserved.
 - Slash-command state sync remains preserved.
 - No production-only pending-action injection endpoint was added.
+
+---
+
+## Phase 22 -- Live-Smoke Gate and Merge Readiness
+
+Date: 2026-07-02
+
+Phase 22 executes a credential-aware live-smoke gate after Phase 21.
+
+Expected gates:
+
+- Phase 21 pending-action smoke.
+- Agent deterministic runtime smoke.
+- Cross-repo deterministic smoke.
+- Focused Agent runtime tests.
+- Focused WebUI default tests.
+- Optional real DeepSeek smokes if DEEPSEEK_API_KEY exists.
+- Optional Telegram smoke if Telegram credentials and safe chat exists.
+
+Final merge-readiness conclusion must be filled from tmux-output-phase22-live-gate.txt.
+
+### Phase 22 Final Result
+
+Phase 22 completed the credential-aware live-smoke gate.
+
+Final evidence:
+
+- Agent final SHA: `1496a3a`
+- WebUI final SHA: `573f40c`
+- Pending-action smoke: PASSED
+- Agent deterministic runtime smoke: PASSED, 7 passed, 0 failed
+- Cross-repo deterministic smoke: PASSED, 11 passed, 0 failed
+- Agent focused runtime tests: PASSED, 150 passed, 0 failed
+- WebUI focused default tests: PASSED, 77 passed
+- WebUI forced `agent-runs` env tests: EXPECTED PARTIAL, 69 passed and 8 known `tests/test_runtime_routes.py` failures
+- Real DeepSeek smokes: SKIPPED because `DEEPSEEK_API_KEY` was missing
+- Telegram live adapter smoke: SKIPPED because Telegram credentials and safe private test chat were absent
+- Final cleanup after Phase 22A: ports `8642` and `8789` free
+
+Merge-readiness conclusion:
+
+Merge-ready after Phase 22A cleanup and documentation commit. Remaining live-provider checks are credential-gated and non-blocking unless release policy requires real DeepSeek or Telegram evidence before merge.

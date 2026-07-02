@@ -213,3 +213,49 @@ Phase 21 completed the previously deferred full approval/clarify e2e lifecycle r
 - Real DeepSeek live Agent-only smoke requires DEEPSEEK_API_KEY.
 - Real DeepSeek cross-repo smoke requires DEEPSEEK_API_KEY.
 - Telegram reference messaging-adapter live smoke requires TELEGRAM_BOT_TOKEN and a safe test chat.
+
+---
+
+## Phase 22 -- Live-Smoke Gate and Merge Readiness
+
+Date: 2026-07-02
+
+### Scope
+
+Phase 22 validates the post-Phase-21 runtime stack for merge readiness.
+
+### Required interpretation
+
+- Deterministic pending-action smoke must pass.
+- Deterministic Agent runtime smoke must pass.
+- Deterministic cross-repo Agent to WebUI smoke must pass.
+- Real DeepSeek smokes run only when DEEPSEEK_API_KEY is present.
+- Telegram live adapter smoke remains credential-gated unless TELEGRAM_BOT_TOKEN and a safe test chat are configured.
+- WebUI agent-runs env focused tests may retain the known expected 8 direct/journal route failures unless the test suite has been adapted.
+
+### Merge-readiness decision
+
+To be filled from tmux-output-phase22-live-gate.txt after execution.
+
+### Phase 22 Result
+
+Phase 22 completed the credential-aware live-smoke gate.
+
+Evidence:
+
+- Agent final SHA: `1496a3a`
+- WebUI final SHA: `573f40c`
+- Deterministic pending-action smoke: PASSED
+- Deterministic Agent runtime smoke: PASSED, 7 passed, 0 failed, 0 skipped
+- Deterministic cross-repo Agent to WebUI smoke: PASSED, 11 passed, 0 failed, 0 skipped
+- Real DeepSeek Agent-only smoke: SKIPPED, `DEEPSEEK_API_KEY` missing
+- Real DeepSeek cross-repo smoke: SKIPPED, `DEEPSEEK_API_KEY` missing
+- Telegram live adapter smoke: SKIPPED, Telegram credentials and safe private test chat absent
+- Focused Agent runtime tests: PASSED, 150 passed, 0 failed
+- Focused WebUI default tests: PASSED, 77 passed
+- Focused WebUI forced `agent-runs` env tests: EXPECTED PARTIAL, 69 passed and 8 expected `tests/test_runtime_routes.py` failures
+- Final cleanup after Phase 22A: ports `8642` and `8789` free
+
+Merge-readiness conclusion:
+
+The runtime-run API contract branch is merge-ready from deterministic runtime, cross-repo adapter, pending-action lifecycle, and focused test-suite evidence. Credential-gated real-provider smokes remain deferred until `DEEPSEEK_API_KEY` and Telegram test credentials are available. The known forced `agent-runs` WebUI partial is not a blocker.

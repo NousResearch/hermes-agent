@@ -3,16 +3,8 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  ConfigFullResponse,
-  ConfigMtimeResponse,
-  ReloadMcpResponse
-} from '../gatewayTypes.js'
-import {
-  DEFAULT_VOICE_RECORD_KEY,
-  type ParsedVoiceRecordKey,
-  parseVoiceRecordKey
-} from '../lib/platform.js'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import {

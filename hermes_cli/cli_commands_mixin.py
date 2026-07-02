@@ -294,6 +294,43 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_journey_command(self, cmd_original: str) -> None:
+        """Handle /journey — the learning timeline (see `hermes journey`).
+
+        The read-only views (default + ``list``) render Rich color, which
+        patch_stdout would swallow as raw escapes; capture with forced ANSI and
+        re-emit through ``_cprint``. ``delete``/``edit`` are interactive
+        (confirm prompt / ``$EDITOR``) so they keep the real stdio.
+        """
+        import argparse
+        import io
+        import shlex
+        from contextlib import redirect_stdout
+
+        from cli import _cprint
+        from hermes_cli.journey import register_cli
+
+        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
+        register_cli(parser)
+        rest = cmd_original.split(None, 1)
+        try:
+            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
+        except SystemExit:
+            return
+
+        interactive = getattr(args, "journey_action", None) in ("delete", "edit")
+        try:
+            if interactive:
+                args.func(args)
+                return
+            args.force_color = True
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                args.func(args)
+            _cprint(buf.getvalue().rstrip("\n"))
+        except Exception as exc:
+            _cprint(f"  /journey failed: {exc}")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -712,6 +749,14 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -850,6 +895,15 @@ class CLICommandsMixin:
 
         # Save the current session's state before branching
         parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history
+                )
+            except Exception:
+                pass
 
         # End the old session
         try:
@@ -1050,6 +1104,74 @@ class CLICommandsMixin:
             return
         _set_active(arg)
         print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
+
+    def _handle_hatch_command(self, cmd: str):
+        """Generate ("hatch") a brand-new petdex pet from a description.
+
+        ``/hatch <description>`` runs the full pet pipeline in-process: a base
+        look, then one grounded animation row per state, sliced + normalized into
+        a spritesheet, then adopted as the active mascot. Progress streams inline
+        (it's ~a minute of image-model calls). In the desktop app this command
+        opens the richer generate overlay instead; here we run it directly.
+        """
+        from agent.pet import store
+        from agent.pet.generate import orchestrate
+        from agent.pet.generate.imagegen import GenerationError
+        from hermes_cli.pets import _set_active
+
+        parts = cmd.split(maxsplit=1)
+        concept = parts[1].strip() if len(parts) > 1 else ""
+
+        if not concept:
+            try:
+                concept = input("(o_o) Describe your pet: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+
+        if not concept:
+            print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
+            return
+
+        # A short, friendly display name from the first few words of the concept.
+        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
+
+        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
+        try:
+            drafts = orchestrate.generate_base_drafts(concept, n=1)
+        except GenerationError as exc:
+            print(f"(x_x) Couldn't generate a base look: {exc}")
+            return
+
+        if not drafts:
+            print("(x_x) No base draft came back — try again.")
+            return
+
+        def _progress(event: str, detail: str) -> None:
+            if event == "row":
+                # detail is "<state>:<done>:<total>"; show the state name.
+                state = detail.split(":", 1)[0]
+                print(f"  ┊ drawing {state}…")
+            elif event == "compose":
+                print("  ┊ composing spritesheet…")
+            elif event == "save":
+                print("  ┊ saving…")
+
+        try:
+            result = orchestrate.hatch_pet(
+                base_image=drafts[0],
+                slug=slug,
+                display_name=display_name,
+                concept=concept,
+                on_progress=_progress,
+            )
+        except GenerationError as exc:
+            print(f"(x_x) Hatch failed: {exc}")
+            return
+
+        _set_active(result.slug)
+        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -2507,12 +2629,30 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
-    def _handle_debug_command(self):
-        """Handle /debug — upload debug report + logs and print paste URLs."""
+    def _handle_debug_command(self, cmd_original: str = ""):
+        """Handle /debug — upload debug report + logs and print share URLs.
+
+        Accepts optional destination words after the command:
+
+        - ``/debug``        → upload to the public paste service (default)
+        - ``/debug nous``   → upload to Nous-internal storage (private, staff-only)
+        - ``/debug local``  → render the report to stdout, no upload
+
+        ``nous`` and ``local`` are mutually exclusive; if both are given,
+        ``local`` wins (it never touches the network).
+        """
         from hermes_cli.debug import run_debug_share
         from types import SimpleNamespace
 
-        args = SimpleNamespace(lines=200, expire=7, local=False)
+        words = {w.lower() for w in cmd_original.split()[1:]}
+        local = "local" in words
+        nous = "nous" in words and not local
+        # Typing the /debug slash command is itself the explicit consent to
+        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
+        # input() would hang inside prompt_toolkit's event loop anyway.
+        args = SimpleNamespace(
+            lines=200, expire=7, local=local, nous=nous, yes=True
+        )
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:

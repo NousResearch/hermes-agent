@@ -19,6 +19,7 @@ from cron.jobs import (
     remove_job,
     mark_job_run,
     advance_next_run,
+    claim_dispatch,
     get_due_jobs,
     save_job_output,
 )
@@ -1242,3 +1243,174 @@ class TestSaveJobOutput:
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
         assert not (tmp_cron_dir / "outside").exists()
+
+
+class TestCronOutputRetention:
+    """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""
+
+    @staticmethod
+    def _seed(d, count):
+        d.mkdir(parents=True, exist_ok=True)
+        names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
+        for n in names:
+            (d / n).write_text("x")
+        return names
+
+    def test_prune_keeps_newest_n(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        names = self._seed(d, 10)
+        assert _prune_job_output(d, keep=3) == 7
+        assert sorted(p.name for p in d.glob("*.md")) == names[-3:]
+
+    def test_prune_noop_when_under_cap(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 3)
+        assert _prune_job_output(d, keep=5) == 0
+        assert len(list(d.glob("*.md"))) == 3
+
+    def test_prune_disabled_when_keep_non_positive(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 5)
+        assert _prune_job_output(d, keep=0) == 0
+        assert _prune_job_output(d, keep=-1) == 0
+        assert len(list(d.glob("*.md"))) == 5
+
+    def test_prune_ignores_non_md_and_temp_files(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 4)
+        (d / ".output_abc.tmp").write_text("partial")
+        (d / "manifest.json").write_text("{}")
+        _prune_job_output(d, keep=2)
+        assert (d / ".output_abc.tmp").exists()
+        assert (d / "manifest.json").exists()
+        assert len(list(d.glob("*.md"))) == 2
+
+    def test_save_job_output_prunes_old_runs(self, tmp_cron_dir, monkeypatch):
+        from cron.jobs import save_job_output, _job_output_dir
+        monkeypatch.setattr("cron.jobs._cron_output_keep", lambda: 3)
+        seq = iter(
+            datetime(2026, 6, 25, 10, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=i)
+            for i in range(8)
+        )
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: next(seq))
+        for _ in range(8):
+            save_job_output("job1", "report")
+        files = sorted(_job_output_dir("job1").glob("*.md"))
+        assert len(files) == 3  # only the 3 most-recent runs survive
+
+    def test_cron_output_keep_reads_config(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": 7}}
+        )
+        assert jobs._cron_output_keep() == 7
+
+    def test_cron_output_keep_defaults_on_bad_config(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": "oops"}}
+        )
+        assert jobs._cron_output_keep() == jobs._CRON_OUTPUT_DEFAULT_KEEP
+
+
+# =========================================================================
+# claim_dispatch — pre-run one-shot crash safety (issue #38758)
+# =========================================================================
+
+class TestClaimDispatch:
+    """One-shot jobs must commit their dispatch BEFORE the side effect runs, so
+    a tick that dies mid-execution (gateway kill, OOM, hard-timeout) can re-fire
+    the job at most ``repeat.times`` times instead of infinitely."""
+
+    def _oneshot(self, times=1, completed=0):
+        return {
+            "id": "os1",
+            "name": "one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
+            "repeat": {"times": times, "completed": completed},
+        }
+
+    def test_claim_increments_and_persists(self, tmp_cron_dir):
+        save_jobs([self._oneshot(times=1, completed=0)])
+        assert claim_dispatch("os1") is True
+        # Persisted BEFORE any side effect — survives a crash.
+        assert load_jobs()[0]["repeat"]["completed"] == 1
+
+    def test_already_dispatched_oneshot_is_removed(self, tmp_cron_dir):
+        # A prior tick claimed (completed==times) then died before mark_job_run
+        # could remove the job.  The next claim must refuse AND clean up.
+        save_jobs([self._oneshot(times=1, completed=1)])
+        assert claim_dispatch("os1") is False
+        assert load_jobs() == []  # removed, will not re-fire
+
+    def test_recurring_job_is_not_claimed(self, tmp_cron_dir):
+        job = {
+            "id": "rec",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": {"times": 3, "completed": 0},
+        }
+        save_jobs([job])
+        assert claim_dispatch("rec") is True
+        # Recurring jobs use advance_next_run(); claim must NOT touch completed.
+        assert load_jobs()[0]["repeat"]["completed"] == 0
+
+    def test_infinite_oneshot_not_claimed(self, tmp_cron_dir):
+        job = self._oneshot(times=0, completed=0)  # times<=0 means infinite
+        save_jobs([job])
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"]["completed"] == 0
+
+    def test_no_repeat_block_not_claimed(self, tmp_cron_dir):
+        job = {"id": "os1", "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"}}
+        save_jobs([job])
+        assert claim_dispatch("os1") is True
+        assert "repeat" not in load_jobs()[0]
+
+    def test_missing_job_proceeds(self, tmp_cron_dir):
+        # A handed-in job dict not persisted in the store (external provider /
+        # direct caller) can't be claimed — proceed rather than suppress it.
+        save_jobs([])
+        assert claim_dispatch("ghost") is True
+
+    def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
+        # Full lifecycle: claim bumps completed to times, then mark_job_run must
+        # NOT increment again — it recognizes the pre-claim and removes the job.
+        save_jobs([self._oneshot(times=1, completed=0)])
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"]["completed"] == 1
+        mark_job_run("os1", success=True)
+        assert load_jobs() == []  # completed once, removed — not fired twice
+
+    def test_mark_job_run_still_increments_recurring(self, tmp_cron_dir):
+        # The double-count guard is one-shot-specific; recurring jobs keep the
+        # legacy post-run increment.
+        job = {
+            "id": "rec",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "repeat": {"times": 3, "completed": 1},
+        }
+        save_jobs([job])
+        mark_job_run("rec", success=True)
+        assert load_jobs()[0]["repeat"]["completed"] == 2
+
+    def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
+        # A claimed one-shot whose tick died leaves completed>=times with
+        # last_run_at still unset, so the recovery helper re-arms it as due.
+        # get_due_jobs must drop it instead of returning it for another fire.
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "os1",
+            "name": "one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": past},
+            "repeat": {"times": 1, "completed": 1},
+            "next_run_at": None,
+        }])
+        due = get_due_jobs()
+        assert due == []
+        assert load_jobs() == []  # cleaned up

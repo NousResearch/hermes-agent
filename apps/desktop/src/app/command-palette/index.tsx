@@ -20,6 +20,8 @@ import {
   Clock,
   Cpu,
   Download,
+  Egg,
+  GitBranch,
   Globe,
   type IconComponent,
   Info,
@@ -34,6 +36,7 @@ import {
   RefreshCw,
   Settings,
   Settings2,
+  Starmap,
   Sun,
   Terminal,
   Users,
@@ -41,8 +44,16 @@ import {
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { $repoWorktrees } from '@/store/coding-status'
+import {
+  $commandPaletteOpen,
+  $commandPalettePage,
+  closeCommandPalette,
+  setCommandPaletteOpen
+} from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { openPetGenerate } from '@/store/pet-generate'
+import { requestStartWorkSession } from '@/store/projects'
 import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
@@ -58,7 +69,8 @@ import {
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SKILLS_ROUTE,
+  STARMAP_ROUTE
 } from '../routes'
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
@@ -201,7 +213,8 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
     return true
   }
 
-  const background = target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
+  const background =
+    target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
 
   return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
 }
@@ -211,6 +224,7 @@ export function CommandPalette() {
   const open = useStore($commandPaletteOpen)
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
+  const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -289,6 +303,30 @@ export function CommandPalette() {
     const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
     const cc = t.commandCenter
 
+    // The active repo's worktrees → "new conversation in <branch>". This is the
+    // ⌘K-typed "I want to work on <branch>" reflex: each entry seeds a fresh
+    // session anchored to that worktree's checkout (requestStartWorkSession),
+    // so git is the source of truth and edits land in the right tree.
+    const branchGroup: PaletteGroup[] =
+      worktrees.length > 0
+        ? [
+            {
+              heading: cc.branches,
+              items: worktrees.map(wt => {
+                const name = wt.branch?.trim() || wt.path.split('/').pop() || wt.path
+
+                return {
+                  icon: GitBranch,
+                  id: `worktree-${wt.path}`,
+                  keywords: ['branch', 'worktree', 'switch', name, wt.path],
+                  label: cc.startInBranch(name),
+                  run: () => requestStartWorkSession(wt.path)
+                }
+              })
+            }
+          ]
+        : []
+
     return [
       {
         heading: cc.goTo,
@@ -347,9 +385,17 @@ export function CommandPalette() {
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
+          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
+          {
+            icon: Starmap,
+            id: 'nav-starmap',
+            keywords: ['star map', 'memory', 'memories', 'skills', 'graph', 'learning', 'constellation'],
+            label: t.starmap.title,
+            run: go(STARMAP_ROUTE)
+          }
         ]
       },
+      ...branchGroup,
       {
         heading: cc.commandCenter,
         items: [
@@ -409,6 +455,13 @@ export function CommandPalette() {
             keywords: ['pet', 'petdex', 'mascot', 'pets', '/pet', 'paw'],
             label: cc.pets.title,
             to: 'pets'
+          },
+          {
+            icon: Egg,
+            id: 'appearance-generate-pet',
+            keywords: ['pet', 'generate', 'create', 'make', 'new pet', 'mascot', 'hatch', 'ai'],
+            label: cc.generatePet.title,
+            run: () => openPetGenerate()
           }
         ]
       },
@@ -432,7 +485,7 @@ export function CommandPalette() {
         ]
       }
     ]
-  }, [go, settingsSectionLabel, t])
+  }, [go, settingsSectionLabel, t, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -653,6 +706,8 @@ export function CommandPalette() {
                   event.preventDefault()
                   event.stopPropagation()
                   goBack()
+
+                  return
                 }
               }}
               onValueChange={setSearch}
@@ -663,7 +718,13 @@ export function CommandPalette() {
             <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
               {/* Server-driven pages render their own list; the rest show groups. */}
               {page === 'pets' ? (
-                <PetPalettePage search={search} />
+                <PetPalettePage
+                  onGenerate={() => {
+                    closeCommandPalette()
+                    openPetGenerate()
+                  }}
+                  search={search}
+                />
               ) : page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (

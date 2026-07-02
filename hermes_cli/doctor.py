@@ -199,6 +199,32 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
+    """Return toolsets enabled for the CLI, or None if config resolution fails."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return {str(toolset) for toolset in _get_platform_tools(load_config() or {}, "cli")}
+    except Exception:
+        return None
+
+
+def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
+    """Filter unavailable API-key toolsets to those enabled for the CLI."""
+    api_key_unavailable = [
+        item for item in unavailable
+        if item.get("missing_vars") or item.get("env_vars")
+    ]
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
+    if enabled_toolsets is None:
+        return api_key_unavailable
+    return [
+        item for item in api_key_unavailable
+        if str(item.get("name") or "") in enabled_toolsets
+    ]
+
+
 def _read_pyproject_version() -> str | None:
     """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
 
@@ -1202,6 +1228,46 @@ def run_doctor(args):
             count = cursor.fetchone()[0]
             conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+
+            # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
+            # even when the FTS index is corrupt and every message write fails
+            # through the triggers. `_db_opens_cleanly` now drives a rolled-back
+            # write so this otherwise-silent corruption class is surfaced (and
+            # repaired in place with --fix).
+            from hermes_state import _db_opens_cleanly, repair_state_db_schema
+
+            _write_reason = _db_opens_cleanly(state_db_path)
+            if _write_reason is not None:
+                check_warn(
+                    f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
+                    f"({_write_reason})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            "Repaired state.db FTS write health",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "state.db FTS write-health repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "state.db FTS write corruption and auto-repair failed — "
+                            "restore from the backup copy beside state.db"
+                        )
+                else:
+                    issues.append(
+                        "state.db FTS write corruption — run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to rebuild the FTS index"
+                    )
         except Exception as e:
             from hermes_state import is_malformed_db_error, repair_state_db_schema
 
@@ -2121,8 +2187,10 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count missing API-key requirements only for toolsets enabled in the
+        # current CLI platform. Default-off or explicitly disabled toolsets may
+        # still show warnings above, but should not pollute the final summary.
+        api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:

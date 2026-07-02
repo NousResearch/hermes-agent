@@ -340,11 +340,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
-    applyDisplay(
-      { config: { display: {}, voice: { record_key: 'ctrl+space' } } },
-      setBell,
-      setVoiceRecordKey
-    )
+    applyDisplay({ config: { display: {}, voice: { record_key: 'ctrl+space' } } }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(
       expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
@@ -357,9 +353,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
 
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' })
-    )
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
   })
 
   it('is a no-op when the voice setter is not passed (back-compat)', () => {
@@ -367,9 +361,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     // applyDisplay is used in the setVoiceEnabled-less init path too;
     // omitting the third arg must not throw.
-    expect(() =>
-      applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)
-    ).not.toThrow()
+    expect(() => applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)).not.toThrow()
   })
 
   it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
@@ -414,9 +406,7 @@ describe('hydrateFullConfig', () => {
     await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
-    )
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
     expect(setBell).toHaveBeenCalledWith(false)
   })
 

@@ -251,10 +251,10 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
-  cost: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
+  cost: boolean
 }
 
 export function statusBarSegments(cols: number): StatusBarSegments {
@@ -398,7 +398,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -526,7 +526,18 @@ export function StatusRule({
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
   const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
-  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
@@ -634,14 +645,19 @@ export function StatusRule({
         ) : null}
         {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            ⛓ {subagentCount}
+            {' │ '}⛓ {subagentCount}
           </Text>
         ) : null}
         {showCostSeg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {costText}
+          </Text>
+        ) : null}
+        {showResumeHint ? (
+          <Text color={t.color.muted} dim wrap="truncate-end">
+            {' │ '}
+            {resumeHintText}
           </Text>
         ) : null}
         {showDevCredits ? (

@@ -301,6 +301,26 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
+    def test_custom_provider_not_overridden_by_static_catalog(self):
+        """When current provider is custom:*, a static-catalog match must NOT
+        override it — otherwise a model served by the user's own endpoint gets
+        misattributed to a native provider, rewriting model.provider (#48305).
+
+        `gpt-5.4` is in the static openai catalog; with current=custom:foo,
+        detection must return None instead of switching to openai.
+        """
+        assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
+
+    def test_bare_custom_provider_not_overridden_by_static_catalog(self):
+        """Same protection for the bare 'custom' provider."""
+        assert detect_provider_for_model("gpt-5.4", "custom") is None
+
+    def test_non_custom_provider_detection_unaffected(self):
+        """The custom-provider guard must NOT change detection for non-custom
+        current providers — a static-catalog model still routes normally."""
+        result = detect_provider_for_model("gpt-5.4", "openrouter")
+        assert result is not None and result[0] == "openai"
+
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""

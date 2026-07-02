@@ -1701,6 +1701,68 @@ def test_build_worker_context_uses_parent_run_summary(kanban_home):
         conn.close()
 
 
+def test_relative_age_renders_coarse_buckets():
+    """Freshness helper turns epoch seconds into coarse human ages, and
+    degrades safely on missing / future timestamps."""
+    now = 1_000_000
+    assert kb._relative_age(now, now) == "just now"
+    assert kb._relative_age(now - 30, now) == "just now"
+    assert kb._relative_age(now - 5 * 60, now) == "5m ago"
+    assert kb._relative_age(now - 18 * 3600, now) == "18h ago"
+    assert kb._relative_age(now - 2 * 86400, now) == "2d ago"
+    # Clock skew across machines/profiles must not claim "in the future".
+    assert kb._relative_age(now + 500, now) == "just now"
+    # Missing / unparseable timestamps render empty so callers can append
+    # unconditionally.
+    assert kb._relative_age(None, now) == ""
+    # Defensive: an unparseable value (e.g. a stray string) renders empty
+    # rather than raising.
+    assert kb._relative_age("garbage", now) == ""  # type: ignore[arg-type]
+
+
+def test_build_worker_context_stamps_parent_freshness(kanban_home):
+    """Parent handoffs carry a relative age + a 'verify against source'
+    frame so a worker doesn't read a day-old result as live state.
+
+    This is the multi-agent staleness gap: an orchestrator + sibling
+    workers leave reports/handoffs that the next worker reads as current
+    truth. The age stamp is the signal that prompts re-verification.
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="research", assignee="researcher")
+        child = kb.create_task(
+            conn, title="write", assignee="writer", parents=[parent],
+        )
+        kb.claim_task(conn, parent)
+        kb.complete_task(
+            conn, parent,
+            result="done",
+            summary="meeting ingest workflow finished; pipeline ready",
+        )
+        # Backdate the parent's completion to 18h ago — both the task row
+        # and its completed run row, which is where build_worker_context
+        # reads the handoff timestamp from.
+        old = int(time.time()) - 18 * 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET completed_at = ? WHERE id = ?", (old, parent),
+            )
+            conn.execute(
+                "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+                (old, parent),
+            )
+
+        ctx = kb.build_worker_context(conn, child)
+        # The handoff still appears...
+        assert "meeting ingest workflow finished" in ctx
+        # ...now stamped with its age and framed as a point-in-time snapshot.
+        assert "completed 18h ago" in ctx
+        assert "point-in-time snapshots, not live state" in ctx
+    finally:
+        conn.close()
+
+
 def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
     """An existing 'running' task from before task_runs existed should
     get a synthesized run row so subsequent operations (complete,

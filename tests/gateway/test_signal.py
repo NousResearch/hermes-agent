@@ -2497,7 +2497,7 @@ class TestSignalSyncMessageHandling:
         a groupInfo block. It must be treated as inbound so the agent can
         respond in groups when the user is the only human participant."""
         adapter = _make_signal_adapter(
-            monkeypatch, account="+155****4567", group_allowed="abc123=="
+            monkeypatch, account="+155****4567", group_allowed="abc123==", require_mention=False
         )
         captured = {}
 

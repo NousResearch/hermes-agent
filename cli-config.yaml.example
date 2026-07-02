@@ -596,6 +596,11 @@ session_reset:
 # top-level key takes precedence over gateway.max_concurrent_sessions. The cap
 # is a best-effort single-host/profile runtime guard; Hermes fails open if the
 # local runtime lease registry cannot be read or locked.
+# Counting is surface-aware: CLI processes count while open, messaging turns
+# count while in flight, and TUI/desktop tabs count from their first message
+# until they go idle (30 min default; HERMES_TUI_LEASE_IDLE_S overrides,
+# 0 = hold until the tab closes) — idle tabs release their slot and re-acquire
+# it on the next message.
 max_concurrent_sessions: null
 
 # When true, group/channel chats use one session per participant when the platform

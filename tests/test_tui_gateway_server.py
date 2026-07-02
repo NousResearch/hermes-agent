@@ -12,12 +12,19 @@ from unittest.mock import patch
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from hermes_cli.active_sessions import active_session_registry_snapshot
+from hermes_cli.active_sessions import (
+    active_session_registry_snapshot,
+    try_acquire_active_session,
+)
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
-def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
+def test_session_create_claims_lazily_and_first_turn_hits_the_cap(monkeypatch, tmp_path):
+    """Opening a tab is free: the active-session slot is claimed lazily on the
+    tab's FIRST TURN (_ensure_turn_lease), not at session.create — so idle
+    tabs can't pin max_concurrent_sessions. The cap is enforced when the tab
+    actually speaks."""
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
@@ -36,23 +43,47 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
         monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
 
+        # Another surface holds the only slot.
+        blocker, message = try_acquire_active_session(
+            session_id="other-surface",
+            surface="cli",
+            config={"max_concurrent_sessions": 1},
+        )
+        assert message is None
+        assert blocker is not None
+
+        # Opening tabs still succeeds and claims nothing.
         first = server._methods["session.create"]("r1", {"cols": 80})
         assert "result" in first
         sid = first["result"]["session_id"]
-
         second = server._methods["session.create"]("r2", {"cols": 80})
-        assert second["error"]["message"] == (
+        assert "result" in second
+        assert [entry["session_id"] for entry in active_session_registry_snapshot()] == [
+            "other-surface"
+        ]
+
+        # The tab's first turn is what hits the cap...
+        session = server._sessions[sid]
+        limit = server._ensure_turn_lease(sid, session)
+        assert limit == (
             "Hermes is at the active session limit (1/1). "
             "Try again when another session finishes."
         )
-        assert list(server._sessions) == [sid]
+        assert session.get("active_session_lease") is None
 
+        # ...and claims (then reuses) the slot once it frees up.
+        blocker.release()
+        assert server._ensure_turn_lease(sid, session) is None
+        lease = session.get("active_session_lease")
+        assert lease is not None
+        assert server._ensure_turn_lease(sid, session) is None
+        assert session.get("active_session_lease") is lease
+        assert len(active_session_registry_snapshot()) == 1
+
+        # Closing the tab returns the slot.
         closed = server._methods["session.close"]("r3", {"session_id": sid})
         assert closed["result"]["closed"] is True
         assert active_session_registry_snapshot() == []
-
-        third = server._methods["session.create"]("r4", {"cols": 80})
-        assert "result" in third
     finally:
         _clear_server_sessions()
         server._cfg_cache = None

@@ -1622,7 +1622,7 @@ The master `streaming.enabled` switch is `false` by default — nothing streams 
 
 ## Group Chat Session Isolation
 
-Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
+Limit how many chat sessions can be active at once across CLI, TUI/dashboard,
 and messaging gateway:
 
 ```yaml
@@ -1631,6 +1631,21 @@ max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active s
 
 When the cap is reached, Hermes returns a direct limit message for new sessions.
 Existing active sessions keep their normal behavior.
+
+What counts as "active" is surface-specific:
+
+- **CLI**: an interactive `hermes` process holds a slot for its lifetime.
+- **Messaging gateway** (Telegram, Discord, …): a slot is held per in-flight
+  turn and released when the turn finishes.
+- **TUI / desktop / dashboard**: a tab claims its slot on its first message
+  (opening tabs or switching sessions is free) and keeps it while the
+  conversation is active. A tab with no activity for 30 minutes hands its
+  slot back automatically and transparently re-acquires it on the next
+  message — so open-but-idle tabs don't pin the cap overnight. If the cap is
+  full at re-acquire time, that message fails with the standard limit
+  message; retry when a slot frees up. Tune the idle window with the
+  `HERMES_TUI_LEASE_IDLE_S` environment variable (seconds; `0` keeps slots
+  held until the tab closes).
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when

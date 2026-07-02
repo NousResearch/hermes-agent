@@ -1015,6 +1015,162 @@ def test_sync_session_key_after_compress_reanchors_active_session_lease(
     lease.release()
 
 
+# ── Lazy turn leases + idle release ──────────────────────────────────
+
+
+def _lease_test_session(key: str = "session-1", **overrides) -> dict:
+    session = {
+        "active_session_lease": None,
+        "agent_ready": None,
+        "created_at": time.time(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "last_active": time.time(),
+        "running": False,
+        "session_key": key,
+    }
+    session.update(overrides)
+    return session
+
+
+def test_ensure_turn_lease_claims_once_and_reuses(server, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 1})
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    session = _lease_test_session()
+    assert server._ensure_turn_lease("ui-1", session) is None
+    lease = session["active_session_lease"]
+    assert lease is not None
+    assert [e["session_id"] for e in active_session_registry_snapshot()] == ["session-1"]
+
+    # A held lease is reused, not re-claimed.
+    assert server._ensure_turn_lease("ui-1", session) is None
+    assert session["active_session_lease"] is lease
+    assert len(active_session_registry_snapshot()) == 1
+    lease.release()
+
+
+def test_ensure_turn_lease_surfaces_limit_message_at_cap(server, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 1})
+    from hermes_cli.active_sessions import try_acquire_active_session
+
+    blocker, message = try_acquire_active_session(
+        session_id="other-surface",
+        surface="gateway:telegram",
+        config={"max_concurrent_sessions": 1},
+    )
+    assert message is None
+
+    session = _lease_test_session()
+    limit = server._ensure_turn_lease("ui-1", session)
+    assert limit == (
+        "Hermes is at the active session limit (1/1). "
+        "Try again when another session finishes."
+    )
+    assert session["active_session_lease"] is None
+
+    blocker.release()
+    assert server._ensure_turn_lease("ui-1", session) is None
+    assert session["active_session_lease"] is not None
+    session["active_session_lease"].release()
+
+
+def test_ensure_turn_lease_does_not_store_into_finalized_session(
+    server, monkeypatch, tmp_path
+):
+    """A tab closed between claim and store must not strand a registry entry:
+    the freshly claimed lease is handed straight back."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 1})
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    session = _lease_test_session(_finalized=True)
+    assert server._ensure_turn_lease("ui-1", session) is None
+    assert session["active_session_lease"] is None
+    assert active_session_registry_snapshot() == []
+
+
+def test_idle_lease_release_frees_slot_and_next_turn_reacquires(
+    server, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 1})
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    now = time.time()
+    stale = now - server._LEASE_IDLE_RELEASE_S - 60
+    session = _lease_test_session(last_active=stale, created_at=stale)
+    assert server._ensure_turn_lease("ui-1", session) is None
+    assert session["active_session_lease"] is not None
+    server._sessions["ui-1"] = session
+
+    # Idle past the window: the LEASE goes back, the session stays live.
+    server._release_idle_session_leases(now)
+    assert session.get("active_session_lease") is None
+    assert active_session_registry_snapshot() == []
+    assert server._sessions["ui-1"] is session
+
+    # The next turn transparently re-acquires.
+    assert server._ensure_turn_lease("ui-1", session) is None
+    assert session["active_session_lease"] is not None
+    assert len(active_session_registry_snapshot()) == 1
+    session["active_session_lease"].release()
+
+
+def test_idle_lease_release_skips_busy_recent_and_pending_sessions(
+    server, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_load_cfg", lambda: None)
+    now = time.time()
+    stale = now - server._LEASE_IDLE_RELEASE_S - 60
+
+    running = _lease_test_session(
+        "session-running", last_active=stale, created_at=stale, running=True
+    )
+    recent = _lease_test_session("session-recent")
+    queued = _lease_test_session(
+        "session-queued",
+        last_active=stale,
+        created_at=stale,
+        queued_prompt={"text": "next turn"},
+    )
+    pending = _lease_test_session("session-pending", last_active=stale, created_at=stale)
+    for sid, session in (
+        ("ui-running", running),
+        ("ui-recent", recent),
+        ("ui-queued", queued),
+        ("ui-pending", pending),
+    ):
+        session["active_session_lease"] = object.__new__(type("_Sentinel", (), {}))
+        server._sessions[sid] = session
+    # An unanswered gateway prompt marks ui-pending as awaiting input.
+    server._pending["rid-pending"] = ("ui-pending", None)
+
+    try:
+        server._release_idle_session_leases(now)
+        assert running["active_session_lease"] is not None
+        assert recent["active_session_lease"] is not None
+        assert queued["active_session_lease"] is not None
+        assert pending["active_session_lease"] is not None
+    finally:
+        server._pending.pop("rid-pending", None)
+
+
+def test_idle_lease_release_disabled_with_zero_window(server, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(server, "_LEASE_IDLE_RELEASE_S", 0.0)
+    now = time.time()
+    session = _lease_test_session(last_active=now - 999999, created_at=now - 999999)
+    session["active_session_lease"] = object.__new__(type("_Sentinel", (), {}))
+    server._sessions["ui-1"] = session
+
+    server._release_idle_session_leases(now)
+    assert session["active_session_lease"] is not None
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 

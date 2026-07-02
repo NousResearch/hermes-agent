@@ -901,3 +901,23 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
         ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
     assert ".hermes-bootstrap-complete" not in status
+
+
+def test_stash_local_changes_if_needed_returns_none_on_timeout(monkeypatch, tmp_path):
+    """When git stash hangs (TimeoutExpired), skip stashing and return None."""
+    import subprocess
+    from types import SimpleNamespace
+
+    def fake_run(cmd, **kwargs):
+        if cmd[-2:] == ["status", "--porcelain"]:
+            return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
+        if cmd[-2:] == ["ls-files", "--unmerged"]:
+            return SimpleNamespace(stdout="", returncode=0)
+        if cmd[1:4] == ["stash", "push", "--include-untracked"]:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    result = hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+    assert result is None

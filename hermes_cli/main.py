@@ -6425,11 +6425,22 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
-    subprocess.run(
-        git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
-        cwd=cwd,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
+            cwd=cwd,
+            check=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "  ⚠ git stash timed out after 120s — skipping auto-stash.\n"
+            "  Your local changes are NOT stashed.  The update will proceed\n"
+            "  without stashing; if git complains, manually stash or reset:\n"
+            "    git stash push --include-untracked\n"
+            "    git reset --hard HEAD"
+        )
+        return None
     stash_ref = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,

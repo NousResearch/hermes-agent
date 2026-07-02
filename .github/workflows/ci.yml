@@ -66,7 +66,7 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      slice_count: 8
+      slice_count: 10
 
   lint:
     name: Python lints

@@ -112,6 +112,11 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          # Subprocess-per-file is import/IO-bound, not CPU-bound: workers spend
+          # most of their wall time in interpreter boot + module import, not
+          # computing. cpu_count*2 (=8 on a 4-vCPU runner) leaves headroom;
+          # bump to 12 — the fork's own CI run on this PR is the measurement.
+          HERMES_TEST_WORKERS: "12"
 
       - name: Upload per-slice durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

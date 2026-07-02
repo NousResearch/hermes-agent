@@ -3087,6 +3087,7 @@ class GatewaySlashCommandsMixin:
                                 False,
                                 None,
                                 None,
+                                basis="stored",
                             )
                             # Honest, store-correct recovery pointer.
                             if _engine_name == "lcm":

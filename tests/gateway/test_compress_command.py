@@ -601,20 +601,26 @@ async def test_compress_command_renders_granular_breakdown_on_real_compression()
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    # Granular block present: Messages/Context axis lines + removed buckets.
+    # Granular block present: Messages/Stored-transcript axis lines + removed buckets.
     assert "Messages:" in result
     # The summary row must be classified as summary, not "kept chat"
     # (built-in SUMMARY_PREFIX marker → kept 2 recent chat + 1 summary).
     assert "kept 2 recent chat + 1 summary" in result
-    assert "Context:" in result
-    assert "Removed from live context" in result
+    # Manual /compress measures the STORED transcript, not the live wire — the
+    # labels must say so (2026-07-02 basis-honesty fix). The live-context
+    # wording belongs only to the auto-compaction announce.
+    assert "Stored transcript:" in result
+    assert "Removed from stored transcript" in result
+    assert "Context:" not in result
+    assert "Removed from live context" not in result
     # Tool sub-split names the tool-result rows explicitly.
     assert "tool-result message" in result
     # Model line carries provider/model.
     assert "Model: test-prov/test-model" in result
     # Recovery pointer for the rotated (non-LCM) store.
     assert "previous transcript preserved: sess-1" in result
-    # Full-request line still appended (complementary scope).
+    # Full-request line (the REAL wire truth) still appended beside the
+    # storage block — this is the number that reflects request-size.
     assert "Full request size: 453,542" in result
     # And it must never claim "No changes".
     assert "No changes" not in result
@@ -663,3 +669,70 @@ async def test_compress_command_granular_failure_degrades_to_two_line():
     assert "Compressed:" in result and "stored messages" in result
     assert "Dropped: 3 stored tool/system messages" in result
     assert "Messages:" not in result  # granular block absent
+
+
+@pytest.mark.asyncio
+async def test_compress_command_lcm_engine_uses_stored_basis_labels():
+    """Ace's live case (2026-07-02): an LCM session whose /compress granular
+    block measured the STORED transcript but labeled it 'Context:' / 'Removed
+    from live context' — overstating wire savings (~689K→~37K, 'freed 651K')
+    against a real 303K request. The block must now read STORED-transcript
+    wording, while the separate Full-request line stays the wire truth.
+    """
+    history = _make_tool_heavy_history()
+    chat = _tool_heavy_chat(history)
+    compressed = [
+        dict(chat[0]),
+        {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] summary of older turns"},
+        dict(chat[-1]),
+    ]
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 303_201  # real provider-measured (the wire truth)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.name = "lcm"  # ← LCM engine (Ace's case)
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.compression_in_place = True
+    agent_instance._last_compaction_in_place = True  # LCM compacts in place
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        return compressed, ""  # in-place: session_id unchanged, rewrite still fires
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k", "provider": "test-prov"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # E2E proof — print the full delivered message.
+    print("\n───── delivered /compress message (LCM) ─────\n" + result + "\n────────────────────────────────────────────")
+
+    # Storage-basis labels — the fix.
+    assert "Stored transcript:" in result
+    assert "Removed from stored transcript" in result
+    # The replacement-cost line is present in this scenario; when present it must
+    # carry the stored-basis 'kept in transcript' wording (not 'kept in context').
+    if "Replacement cost" in result:
+        assert "kept in transcript" in result
+    # The misleading live-wire wording must be gone from the manual path.
+    assert "Context:" not in result
+    assert "Removed from live context" not in result
+    assert "kept in context" not in result
+    # The wire truth is the separate Full-request line, carrying the REAL
+    # provider-measured before (303,201) — NOT the storage estimate.
+    assert "Full request size: 303,201" in result
+    # LCM recovery pointer.
+    assert "lcm.db" in result
+    assert "No changes" not in result

@@ -417,10 +417,32 @@ def _append_subsplit_lines(lines, *, tool_count, tool_tokens, other_count, other
 def _format_granular_announce(
     head: str, stats: "Any", model_part: str,
     after_fallback: bool, window_from: "int | None", window_to: "int | None",
+    *, basis: str = "live",
 ) -> str:
     """Render the multi-line single-unit (messages) breakdown from a validated
     ``CompactionStats``. Every line leads with messages; tokens are the
-    parenthetical secondary. Reconciles by construction (validate() passed)."""
+    parenthetical secondary. Reconciles by construction (validate() passed).
+
+    ``basis`` selects the population the numbers actually describe, so the
+    LABELS never overstate what was measured:
+
+    - ``"live"`` (default, the auto-compaction announce): the stats were built
+      over the LIVE message list the model is actually sent, so the numbers are
+      genuine wire savings → ``Context:`` / ``Removed from live context`` /
+      ``kept in context``. Output is byte-identical to before this arg existed.
+    - ``"stored"`` (manual ``/compress``): the stats were built over the STORED
+      transcript (the gateway session archive), which under LCM has already had
+      its bulk compacted OFF the wire in earlier passes. The reduction is
+      STORAGE reclaimed, not request-size — so it must read ``Stored
+      transcript:`` / ``Removed from stored transcript`` / ``kept in
+      transcript``. The real wire cut is the caller's separate ``Full request
+      size:`` line (provider-measured), appended below this block.
+    """
+    stored = basis == "stored"
+    ctx_label = "Stored transcript:" if stored else "Context:  "
+    freed_verb = "reclaimed" if stored else "freed"
+    removed_hdr = "stored transcript" if stored else "live context"
+    kept_where = "transcript" if stored else "context"
     lines: list[str] = []
     # Headline: messages pre→post + what's kept
     kept_bits = [f"kept {stats.kept_messages} recent chat"]
@@ -431,22 +453,22 @@ def _format_granular_announce(
     lines.append(f"{head}")
     lines.append(f"   Messages:  {stats.pre_messages} → {stats.post_messages}   ({' + '.join(kept_bits)})")
 
-    # Context line — guard freed<=0 (no net reduction)
+    # Context/Stored line — guard freed<=0 (no net reduction)
     if stats.freed_tokens > 0 and stats.freed_pct is not None:
         lines.append(
-            f"   Context:   {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
-            f"   (freed {_abbrev_tokens(stats.freed_tokens)}, {stats.freed_pct}% smaller)"
+            f"   {ctx_label} {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
+            f"   ({freed_verb} {_abbrev_tokens(stats.freed_tokens)}, {stats.freed_pct}% smaller)"
         )
     else:
         lines.append(
-            f"   Context:   {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
+            f"   {ctx_label} {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
             f"   (no net token reduction this pass)"
         )
 
-    # "Removed from live context" block — omit entirely when nothing cleared
+    # "Removed from <basis>" block — omit entirely when nothing cleared
     removed = stats.cleared_count + stats.folded_count
     if removed > 0:
-        lines.append(f"   Removed from live context ({removed} messages):")
+        lines.append(f"   Removed from {removed_hdr} ({removed} messages):")
         # cleared bucket: render the tool/other sub-split when populated, else coarse line
         if stats.cleared_count > 0:
             if stats.cleared_tool_count is not None:
@@ -482,7 +504,7 @@ def _format_granular_announce(
         replacement = stats.summary_tokens + stats.anchor_tokens
         if replacement > 0:
             lines.append(
-                f"   Replacement cost: {_abbrev_tokens(replacement)} kept in context (summary + anchors)"
+                f"   Replacement cost: {_abbrev_tokens(replacement)} kept in {kept_where} (summary + anchors)"
             )
 
     if after_fallback:

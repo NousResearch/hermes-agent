@@ -4881,3 +4881,78 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+def test_orphan_fts_shadow_tables_are_repaired_on_open(tmp_path):
+    """Orphan FTS5 shadow tables (virtual table entry missing from
+    sqlite_master but shadow tables present) must be detected and dropped
+    so CREATE VIRTUAL TABLE can succeed.  Regression test for #56815."""
+    db_path = tmp_path / "state.db"
+
+    # Phase 1: create a healthy DB with FTS and some data.
+    db = SessionDB(db_path=db_path)
+    try:
+        db.create_session("s1", "cli")
+        db.append_message("s1", role="user", content="hello world")
+        assert db.search_messages("hello") != []
+    finally:
+        db.close()
+
+    # Phase 2: simulate orphan shadow tables by removing the virtual table
+    # entry from sqlite_master while keeping the shadow tables.
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute(
+        "DELETE FROM sqlite_master WHERE name = 'messages_fts' AND type = 'table'"
+    )
+    conn.execute("PRAGMA writable_schema = OFF")
+    conn.commit()
+    # Verify orphan state.
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_%'"
+    )
+    orphans = [row[0] for row in cursor.fetchall()]
+    assert len(orphans) > 0, "Shadow tables should remain after writable_schema removal"
+    cursor = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts' AND type = 'table'"
+    )
+    assert cursor.fetchone() is None, "Virtual table entry should be gone"
+    conn.close()
+
+    # Phase 3: open a new SessionDB — it should self-heal by dropping the
+    # orphan shadow tables and recreating the virtual table.
+    db2 = SessionDB(db_path=db_path)
+    try:
+        assert db2._fts_enabled is True
+        # Data should be searchable after FTS rebuild.
+        assert db2.search_messages("hello") != []
+    finally:
+        db2.close()
+
+
+def test_orphan_fts_shadow_tables_proactive_detection(tmp_path):
+    """Proactive orphan detection (before CREATE) works even when the
+    virtual table probe returns False."""
+    from hermes_state import _repair_orphan_fts_shadow_tables
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        db.create_session("s1", "cli")
+    finally:
+        db.close()
+
+    # Manually create orphan state.
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute(
+        "DELETE FROM sqlite_master WHERE name = 'messages_fts' AND type = 'table'"
+    )
+    conn.execute("PRAGMA writable_schema = OFF")
+    conn.commit()
+
+    # Verify the repair helper detects and drops orphans.
+    assert _repair_orphan_fts_shadow_tables(conn, "messages_fts") is True
+    # Second call should be a no-op (orphan tables already gone).
+    assert _repair_orphan_fts_shadow_tables(conn, "messages_fts") is False
+    conn.close()

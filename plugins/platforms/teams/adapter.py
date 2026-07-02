@@ -878,6 +878,11 @@ class TeamsAdapter(BasePlatformAdapter):
             user_name=user_name,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
+        if not self._sender_authorized_before_side_effects(source):
+            logger.info(
+                "[teams] rejecting unauthorized sender before attachment processing"
+            )
+            return
 
         # Handle attachments (images, documents, video, audio)
         media_urls = []
@@ -976,6 +981,28 @@ class TeamsAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
         await self.handle_message(event)
+
+    def _sender_authorized_before_side_effects(self, source: "SessionSource") -> bool:
+        """Ask the gateway auth gate before Teams performs attachment side effects.
+
+        ``handle_message()`` performs the normal authorization check, but Teams
+        downloads and caches attachment bytes before building the final
+        ``MessageEvent``. Reuse the runner's decision here so unauthorized
+        senders cannot trigger those pre-auth downloads.
+        """
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            return True
+        try:
+            return bool(auth_fn(source))
+        except Exception:
+            logger.debug(
+                "[teams] early auth check raised for sender %s; preserving legacy flow",
+                source.user_id or "<unknown>",
+                exc_info=True,
+            )
+            return True
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

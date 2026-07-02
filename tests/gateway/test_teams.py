@@ -830,6 +830,27 @@ class TestTeamsAttachmentClassification:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.anyio
+    async def test_unauthorized_sender_rejected_before_attachment_download(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        class FakeRunner:
+            def _is_user_authorized(self, source):
+                return False
+
+            async def handle(self, event):
+                return "should not run"
+
+        runner = FakeRunner()
+        adapter._message_handler = runner.handle
+
+        activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
     async def test_mixed_image_and_document_prefers_document(self):
         from gateway.platforms.base import MessageType
 

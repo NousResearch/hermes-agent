@@ -294,14 +294,16 @@ class HonchoSessionManager:
         return self._sanitize_id(f"user-{channel}-{chat_id}")
 
     def _explicit_user_peer_ids(self) -> set[str]:
-        """Return sanitized user peer IDs that came from explicit config."""
+        """Return configured peer IDs that generated runtime peers must avoid."""
         if self._config is None:
             return set()
 
         explicit_ids: set[str] = set()
         peer_name = getattr(self._config, "peer_name", None)
         if peer_name:
-            explicit_ids.add(self._sanitize_id(str(peer_name).strip()))
+            configured_peer = str(peer_name).strip()
+            explicit_ids.add(configured_peer)
+            explicit_ids.add(self._sanitize_id(configured_peer))
 
         aliases = getattr(self._config, "user_peer_aliases", {})
         if isinstance(aliases, dict):
@@ -310,6 +312,20 @@ class HonchoSessionManager:
                     explicit_ids.add(self._sanitize_id(alias.strip()))
 
         return explicit_ids
+
+    def _configured_peer_id(self, value: str | None, fallback: str) -> str:
+        """Return a configured Honcho peer display ID without lossy slugging.
+
+        Runtime/platform IDs and session IDs still need strict sanitization.
+        Explicit Honcho identity config (``peerName`` / ``aiPeer``), however,
+        is a human-readable peer display name. Slugging it turns canonical
+        peers such as ``Oleg Hermes`` and ``Prime PMAX`` into ghost peers
+        (``Oleg-Hermes`` / ``Prime-PMAX``) and fragments memory.
+        """
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return fallback
 
     def _generated_runtime_peer_id(self, prefix: str, runtime_id: str) -> str:
         """Return a stable peer ID for an unknown prefixed runtime user."""
@@ -336,7 +352,10 @@ class HonchoSessionManager:
             and getattr(self._config, "pin_peer_name", False) is True
         )
         if pin_peer_name:
-            return self._sanitize_id(self._config.peer_name)
+            return self._configured_peer_id(
+                getattr(self._config, "peer_name", None),
+                "hermes-user",
+            )
 
         runtime_ids = self._runtime_user_ids()
         if runtime_ids:
@@ -356,7 +375,7 @@ class HonchoSessionManager:
             return self._sanitize_id(primary_runtime_id)
 
         if self._config and self._config.peer_name:
-            return self._sanitize_id(self._config.peer_name)
+            return self._configured_peer_id(self._config.peer_name, "hermes-user")
 
         return self._session_key_fallback_peer_id(key)
 
@@ -384,8 +403,9 @@ class HonchoSessionManager:
         # ``peerName`` (see #14984).
         user_peer_id = self._resolve_user_peer_id(key)
 
-        assistant_peer_id = self._sanitize_id(
-            self._config.ai_peer if self._config else "hermes-assistant"
+        assistant_peer_id = self._configured_peer_id(
+            self._config.ai_peer if self._config else None,
+            "hermes-assistant",
         )
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth

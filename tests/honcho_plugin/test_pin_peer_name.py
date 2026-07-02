@@ -203,6 +203,7 @@ class TestPeerResolutionOrder:
         *,
         peer_name: str | None,
         pin_peer_name: bool,
+        ai_peer: str = "hermes",
         user_peer_aliases: dict[str, str] | None = None,
         runtime_peer_prefix: str = "",
         session_peer_prefix: bool = False,
@@ -212,6 +213,7 @@ class TestPeerResolutionOrder:
         return HonchoClientConfig(
             api_key="test-key",
             peer_name=peer_name,
+            ai_peer=ai_peer,
             pin_peer_name=pin_peer_name,
             user_peer_aliases=user_peer_aliases or {},
             runtime_peer_prefix=runtime_peer_prefix,
@@ -254,6 +256,38 @@ class TestPeerResolutionOrder:
 
         session = mgr.get_or_create("telegram:7654321")
         assert session.user_peer_id == "Igor"
+
+    def test_configured_assistant_peer_preserves_spaces(self):
+        """Configured AI peer names are display identities, not runtime slugs."""
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name="Arseny",
+                ai_peer="Oleg Hermes",
+                pin_peer_name=False,
+                user_peer_aliases={"7654321": "Arseny"},
+                runtime_peer_prefix="telegram_",
+            ),
+            runtime_user_peer_name="7654321",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:7654321")
+        assert session.assistant_peer_id == "Oleg Hermes"
+
+    def test_pinned_configured_user_peer_preserves_spaces(self):
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name="Prime PMAX",
+                pin_peer_name=True,
+            ),
+            runtime_user_peer_name="7654321",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:7654321")
+        assert session.user_peer_id == "Prime PMAX"
 
     def test_unknown_runtime_id_uses_prefix(self):
         """Unknown gateway users stay isolated but become platform-scoped."""

@@ -227,6 +227,56 @@ class TestCacheMediaBytes:
         with open(result.path, "rb") as fh:
             assert fh.read() == _JPEG_STUB
 
+    def test_heic_transcoder_prefers_pillow_heif(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(
+            base,
+            "_transcode_heic_to_jpeg_with_pillow",
+            lambda data: _JPEG_STUB if data == _HEIC_STUB else None,
+        )
+
+        def fail_if_command_used(*args, **kwargs):
+            raise AssertionError("command fallback should not run after Pillow succeeds")
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg_with_command", fail_if_command_used)
+
+        assert base._transcode_heic_to_jpeg(_HEIC_STUB) == _JPEG_STUB
+
+    def test_heic_transcoder_falls_back_to_sips_on_macos(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg_with_pillow", lambda data: None)
+        monkeypatch.setattr(base.sys, "platform", "darwin")
+        monkeypatch.setattr(base.shutil, "which", lambda name: "/usr/bin/sips" if name == "sips" else None)
+
+        def fake_command(data, command_builder):
+            command = command_builder("input.heic", "output.jpg")
+            assert command[:4] == ["/usr/bin/sips", "-s", "format", "jpeg"]
+            return _JPEG_STUB
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg_with_command", fake_command)
+
+        assert base._transcode_heic_to_jpeg(_HEIC_STUB) == _JPEG_STUB
+
+    def test_heic_transcoder_does_not_use_ffmpeg_fallback(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg_with_pillow", lambda data: None)
+        monkeypatch.setattr(base.sys, "platform", "linux")
+        monkeypatch.setattr(
+            base.shutil,
+            "which",
+            lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
+        )
+
+        def fail_if_command_used(*args, **kwargs):
+            raise AssertionError("ffmpeg must not be used for HEIC fallback")
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg_with_command", fail_if_command_used)
+
+        assert base._transcode_heic_to_jpeg(_HEIC_STUB) is None
+
     def test_unconverted_heic_falls_back_to_document(self, monkeypatch):
         import gateway.platforms.base as base
 

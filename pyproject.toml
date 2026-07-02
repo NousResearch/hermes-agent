@@ -121,6 +121,11 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # HEIC/HEIF decoder for iPhone photos and other non-standard image inputs.
+  # Pillow's core wheel does not decode HEIF containers by itself; this plugin
+  # bundles libheif-backed wheels so gateway/iMessage attachments can be
+  # converted before reaching providers that only accept JPEG/PNG/GIF/WebP.
+  "pillow-heif==1.4.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

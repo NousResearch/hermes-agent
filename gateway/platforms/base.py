@@ -683,7 +683,11 @@ def _looks_like_image(data: bytes) -> bool:
     return False
 
 
-_HEIC_BRANDS = frozenset({
+# ISO-BMFF file-type brands that identify HEIC/HEIF-family image containers.
+# Some brands (mif1/msf1) are generic HEIF still-image/sequence brands rather
+# than strictly HEIC, but the provider-safe handling is the same: transcode to
+# JPEG when possible, otherwise preserve the original as a document.
+_HEIF_COMPATIBLE_BRANDS = frozenset({
     b"heic", b"heix", b"hevc", b"hevx",
     b"mif1", b"msf1", b"heim", b"heis",
 })
@@ -701,11 +705,34 @@ def _looks_like_heic(data: bytes) -> bool:
         compatible[i:i + 4].lower()
         for i in range(0, max(len(compatible) - 3, 0), 4)
     )
-    return bool(brands & _HEIC_BRANDS)
+    return bool(brands & _HEIF_COMPATIBLE_BRANDS)
 
 
 def _is_jpeg_bytes(data: bytes) -> bool:
     return len(data) >= 3 and data[:3] == b"\xff\xd8\xff"
+
+
+def _transcode_heic_to_jpeg_with_pillow(data: bytes) -> bytes | None:
+    """Convert HEIC/HEIF bytes to JPEG via Pillow's libheif plugin."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageOps
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            image = ImageOps.exif_transpose(image)
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=95)
+            converted = out.getvalue()
+    except Exception as exc:
+        logger.debug("Pillow HEIC/HEIF transcoder failed: %s", exc)
+        return None
+    return converted if _is_jpeg_bytes(converted) else None
 
 
 def _transcode_heic_to_jpeg_with_command(data: bytes, command_builder) -> bytes | None:
@@ -741,10 +768,14 @@ def _transcode_heic_to_jpeg_with_command(data: bytes, command_builder) -> bytes 
 
 
 def _transcode_heic_to_jpeg(data: bytes) -> bytes | None:
-    """Best-effort HEIC/HEIF to JPEG conversion using available local tools."""
+    """Best-effort HEIC/HEIF to JPEG conversion."""
+    converted = _transcode_heic_to_jpeg_with_pillow(data)
+    if converted:
+        return converted
+
     sips = shutil.which("sips")
     if sys.platform == "darwin" and sips:
-        converted = _transcode_heic_to_jpeg_with_command(
+        return _transcode_heic_to_jpeg_with_command(
             data,
             lambda src, dst: [
                 sips,
@@ -753,23 +784,9 @@ def _transcode_heic_to_jpeg(data: bytes) -> bytes | None:
                 "--out", str(dst),
             ],
         )
-        if converted:
-            return converted
-
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        return _transcode_heic_to_jpeg_with_command(
-            data,
-            lambda src, dst: [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel", "error",
-                "-y",
-                "-i", str(src),
-                "-frames:v", "1",
-                str(dst),
-            ],
-        )
+    # Do not fall back to ffmpeg for HEIC/HEIF. Tiled iPhone HEICs can decode
+    # as one valid-looking JPEG tile instead of the full image, which is worse
+    # than preserving the original as a document.
     return None
 
 

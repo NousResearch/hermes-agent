@@ -1292,6 +1292,22 @@ DEFAULT_BUSY_TIMEOUT_MS = 120_000
 # lock (the in-process _INIT_LOCK + idempotent init remain the backstop).
 _INIT_LOCK_TIMEOUT_SECONDS = 10.0
 _INIT_LOCK_POLL_SECONDS = 0.05
+_MALFORMED_IMAGE_RETRY_ATTEMPTS = 3
+_MALFORMED_IMAGE_RETRY_MIN_S = 0.050
+_MALFORMED_IMAGE_RETRY_MAX_S = 0.250
+
+_CURRENT_TASK_COLUMNS = frozenset({
+    "tenant", "result", "branch_name", "project_id", "idempotency_key",
+    "consecutive_failures", "worker_pid", "last_failure_error",
+    "max_runtime_seconds", "last_heartbeat_at", "current_run_id",
+    "workflow_template_id", "current_step_key", "skills", "max_retries",
+    "model_override", "goal_mode", "goal_max_turns", "session_id",
+    "block_kind", "block_recurrences",
+})
+_CURRENT_TASK_RUN_COLUMNS = frozenset({
+    "claim_lock", "claim_expires", "worker_pid", "max_runtime_seconds",
+    "last_heartbeat_at", "ended_at", "outcome", "summary", "metadata", "error",
+})
 
 
 def _resolve_busy_timeout_ms() -> int:
@@ -1325,6 +1341,126 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     # changes. Parameter binding is not supported for PRAGMA assignments.
     conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     return conn
+
+
+def _configure_connection(conn: sqlite3.Connection, path: Path) -> None:
+    """Apply the standard Kanban connection pragmas to an open connection."""
+    from hermes_state import apply_wal_with_fallback
+
+    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA wal_autocheckpoint=100")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")
+    conn.execute("PRAGMA cell_size_check=ON")
+
+
+def _open_configured_connection(path: Path) -> sqlite3.Connection:
+    """Open a Kanban connection and apply standard pragmas."""
+    conn = _sqlite_connect(path)
+    try:
+        conn.row_factory = sqlite3.Row
+        with _INIT_LOCK:
+            _configure_connection(conn, path)
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def _is_malformed_image_error(exc: BaseException) -> bool:
+    """True for SQLite's malformed-image class."""
+    return (
+        isinstance(exc, sqlite3.DatabaseError)
+        and "database disk image is malformed" in str(exc).lower()
+    )
+
+
+def _malformed_retry_sleep() -> None:
+    time.sleep(random.uniform(_MALFORMED_IMAGE_RETRY_MIN_S, _MALFORMED_IMAGE_RETRY_MAX_S))
+
+
+def _schema_needs_init_or_migration(conn: sqlite3.Connection) -> bool:
+    """Return True iff the opened DB needs schema creation or migration.
+
+    This is a cheap schema probe, not a full integrity check. Short-lived CLI
+    commands and dashboard probes can open a busy Kanban board many times per
+    minute while workers append events. Running ``PRAGMA integrity_check`` and
+    the additive migration pass on every new process turned ordinary reads into
+    heavyweight whole-file scans against a live WAL database, which surfaced
+    intermittent ``database disk image is malformed`` failures even though a
+    subsequent integrity check was OK. Existing current-schema DBs therefore
+    take the steady-state path; fresh/legacy DBs still run the guarded migration
+    path before use.
+    """
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    required_tables = {
+        "tasks", "task_links", "task_comments", "task_events", "task_runs",
+        "task_attachments", "kanban_notify_subs",
+    }
+    if not required_tables.issubset(tables):
+        return True
+
+    task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if not _CURRENT_TASK_COLUMNS.issubset(task_cols):
+        return True
+
+    event_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
+    if "run_id" not in event_cols:
+        return True
+
+    run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+    if not _CURRENT_TASK_RUN_COLUMNS.issubset(run_cols):
+        return True
+
+    notify_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+    }
+    if "notifier_profile" not in notify_cols:
+        return True
+
+    for table in ("task_events", "task_comments", "task_runs", "kanban_notify_subs"):
+        if _table_has_drifted(conn, table):  # defined below; resolved at runtime
+            return True
+    return False
+
+
+def _existing_db_needs_init_or_migration(path: Path) -> bool:
+    """Cheaply decide whether an existing DB needs init/migration.
+
+    Missing and zero-byte files are fresh and need init. Existing current DBs
+    skip the expensive integrity/migration path. A malformed-image error is
+    retried on a fresh connection before being treated as real corruption,
+    because live WAL/checkpoint contention can produce transient failures on an
+    otherwise healthy board.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return True
+    except OSError:
+        return True
+
+    for attempt in range(_MALFORMED_IMAGE_RETRY_ATTEMPTS):
+        conn = None
+        try:
+            conn = _sqlite_connect(path)
+            conn.row_factory = sqlite3.Row
+            return _schema_needs_init_or_migration(conn)
+        except sqlite3.DatabaseError as exc:
+            if _is_malformed_image_error(exc) and attempt < _MALFORMED_IMAGE_RETRY_ATTEMPTS - 1:
+                _malformed_retry_sleep()
+                continue
+            raise
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return True
 
 
 @contextlib.contextmanager
@@ -1682,6 +1818,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    _force_init: bool = False,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1707,32 +1844,31 @@ def connect(
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Fast path: once THIS process has initialized this path, the expensive
-    # first-open work (header validation, integrity probe, schema + additive
-    # migrations) is already done and cached in _INITIALIZED_PATHS. Acquiring
-    # the cross-process init lock on every connect is what let a single stalled
-    # holder (e.g. an external `hermes kanban list` mid-integrity-probe) block
-    # the long-lived gateway dispatcher's next-tick connect() forever — an
-    # unbounded flock with no timeout, no LOCK_NB, no recovery (#36644). On the
-    # steady-state path there is nothing for the cross-process lock to protect
-    # (no schema/migration writes run), so skip it entirely and just open the
-    # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
+    # Fast path: once the DB is known current, skip the expensive first-open
+    # work (full integrity probe + additive migrations). Short-lived CLI
+    # processes have an empty _INITIALIZED_PATHS cache, so use a cheap schema
+    # probe as the cross-process steady-state test before taking the init lock.
     resolved = str(path.resolve())
-    if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+    if resolved in _INITIALIZED_PATHS and not _force_init:
+        return _open_configured_connection(path)
+
+    schema_needs_init = True
+    if not _force_init:
         try:
-            conn.row_factory = sqlite3.Row
-            with _INIT_LOCK:
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA secure_delete=ON")
-                conn.execute("PRAGMA cell_size_check=ON")
-        except Exception:
-            conn.close()
-            raise
+            _validate_sqlite_header(path)
+            schema_needs_init = _existing_db_needs_init_or_migration(path)
+        except sqlite3.DatabaseError as exc:
+            if not _is_malformed_image_error(exc):
+                raise
+            # Retry/probe exhausted on the fast path. Fall through to the full
+            # guarded integrity check so persistent corruption still gets preserved
+            # via KanbanDbCorruptError instead of being silently ignored.
+            schema_needs_init = True
+
+    if not schema_needs_init:
+        conn = _open_configured_connection(path)
+        with _INIT_LOCK:
+            _INITIALIZED_PATHS.add(resolved)
         return conn
 
     with _cross_process_init_lock(path):
@@ -1752,23 +1888,8 @@ def connect(
                 # sidecar files for a fresh database. Keep it in the same process-local
                 # critical section as schema initialization so concurrent gateway
                 # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                # FULL (was NORMAL): fsync before each checkpoint to narrow the
-                # crash window that can leave a b-tree page header torn.
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
-                conn.execute("PRAGMA foreign_keys=ON")
-                # Zero freed pages so a later torn write cannot expose stale
-                # cell content; persisted in the DB header for new DBs.
-                conn.execute("PRAGMA secure_delete=ON")
-                # Surface corrupt cells as read errors instead of silent
-                # wrong-data returns.
-                conn.execute("PRAGMA cell_size_check=ON")
-                needs_init = resolved not in _INITIALIZED_PATHS
+                _configure_connection(conn, path)
+                needs_init = _force_init or resolved not in _INITIALIZED_PATHS
                 if needs_init:
                     # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
                     # migrations. Cached so subsequent connect() calls in the same
@@ -1844,7 +1965,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
+    with contextlib.closing(connect(path, _force_init=True)):
         pass
     return path
 
@@ -7066,40 +7187,32 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
-    # Count tasks already running so max_spawn enforces concurrency rather
-    # than a per-tick spawn budget. See the docstring above for the full
-    # rationale; the short version is that a 60-second tick interval with a
-    # per-tick budget of N would grow concurrency by N every tick on a busy
-    # board, since "running" tasks aren't reclaimed by completion alone —
-    # they sit in status='running' until the worker calls
-    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
-    running_count = 0
-    if max_spawn is not None:
-        running_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
-        )
+    # Count tasks already running once, then enforce both global knobs as live
+    # concurrency caps. ``max_spawn`` is the dispatcher's live worker cap;
+    # ``max_in_progress`` is a broader safety cap. When both are set, the
+    # effective cap is the stricter one. Do not rewrite one cap into a
+    # "remaining slots" value: the loop condition also adds running_count, and
+    # double-counting is what made max_spawn=4 + max_in_progress=4 spawn zero
+    # new workers whenever any task was already running.
+    running_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+        ).fetchone()[0]
+    )
+    cap_candidates: list[int] = []
+    if isinstance(max_spawn, int) and max_spawn > 0:
+        cap_candidates.append(max_spawn)
+    if isinstance(max_in_progress, int) and max_in_progress > 0:
+        cap_candidates.append(max_in_progress)
+    live_spawn_cap = min(cap_candidates) if cap_candidates else None
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # Honour kanban.max_in_progress: if the board already has enough running
-    # tasks, skip spawning this tick so slow workers (local LLMs,
-    # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
-            return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+    if live_spawn_cap is not None and ready_rows and running_count >= live_spawn_cap:
+        return result
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -7138,7 +7251,7 @@ def _dispatch_once_locked(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if live_spawn_cap is not None and running_count + spawned >= live_spawn_cap:
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -7243,6 +7356,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -7329,7 +7443,7 @@ def _dispatch_once_locked(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if live_spawn_cap is not None and running_count + spawned >= live_spawn_cap:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
@@ -7343,6 +7457,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:

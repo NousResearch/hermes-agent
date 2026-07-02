@@ -641,7 +641,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
-                        help="Cap number of spawns this pass")
+                        help="Live worker cap for this dispatch pass (overrides kanban.max_spawn)")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -921,20 +921,13 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         board_scope = kb.scoped_current_board(normed)
 
-    # Auto-initialize the DB before dispatching any subcommand. init_db
-    # is idempotent, so running it every invocation is cheap (one
-    # SELECT against sqlite_master when tables already exist) and
-    # prevents "no such table: tasks" on first use from a fresh
-    # HERMES_HOME. Previously only `init` and `daemon` triggered
-    # schema creation; `create` / `list` / every other command would
-    # error out on a fresh install.
+    # Do not force kb.init_db() before every subcommand. connect() already
+    # auto-initializes fresh/legacy boards, while current boards take a cheap
+    # schema-probe fast path. Re-running init_db() here discards that cache and
+    # turns harmless CLI reads into full integrity/migration passes against a
+    # live WAL database, which is exactly the intermittent malformed-image class
+    # this command path used to trigger under worker load.
     with board_scope:
-        try:
-            kb.init_db()
-        except Exception as exc:
-            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-            return 1
-
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
@@ -2116,10 +2109,10 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
-    # tasks (#27145), kanban.max_in_progress as the global concurrency cap
+    # tasks (#27145), kanban.max_in_progress as the global safety cap
     # (#33488), kanban.max_in_progress_per_profile as the per-profile
-    # cap (#21582), and kanban.max_spawn as the per-tick spawn limit
-    # (#28805). Same semantics as the gateway dispatch path so behavior
+    # cap (#21582), and kanban.max_spawn as the dispatcher's live worker
+    # cap (#28805). Same semantics as the gateway dispatch path so behavior
     # matches whether the user runs the CLI directly or relies on the
     # gateway-embedded dispatcher.
     try:

@@ -47,6 +47,86 @@ def test_no_cap_all_tasks_dispatched(isolated_kanban_home_with_profiles):
     assert not res.skipped_per_profile_capped
 
 
+def test_live_caps_fill_remaining_slots_when_equal(isolated_kanban_home_with_profiles):
+    """max_spawn and max_in_progress are both live caps.
+
+    With two workers already running and both caps set to 4, dispatch should
+    spawn two more workers. The regression double-counted running tasks by
+    rewriting max_spawn to the remaining max_in_progress slots and then adding
+    running_count again in the loop, producing zero spawns.
+    """
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running_ids = [
+            kb.create_task(conn, title=f"running {i}", assignee="alpha")
+            for i in range(2)
+        ]
+        with kb.write_txn(conn):
+            for tid in running_ids:
+                conn.execute(
+                    "UPDATE tasks SET status = 'running', claim_lock = 'test:running' WHERE id = ?",
+                    (tid,),
+                )
+        for i in range(4):
+            kb.create_task(conn, title=f"ready {i}", assignee="alpha")
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_spawn=4,
+            max_in_progress=4,
+        )
+
+    assert len(res.spawned) == 2
+
+
+def test_dry_run_counts_simulated_spawns_against_live_cap(isolated_kanban_home_with_profiles):
+    """Dry-run must not over-declare spawns beyond the live cap."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        for i in range(5):
+            kb.create_task(conn, title=f"ready {i}", assignee="alpha")
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_spawn=2,
+            max_in_progress=8,
+        )
+
+    assert len(res.spawned) == 2
+
+
+def test_dry_run_counts_review_spawns_against_live_cap(isolated_kanban_home_with_profiles):
+    """Review-column dry-run uses the same live-cap accounting."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        review_ids = [
+            kb.create_task(conn, title=f"review {i}", assignee="alpha")
+            for i in range(4)
+        ]
+        with kb.write_txn(conn):
+            for tid in review_ids:
+                conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_spawn=2,
+        )
+
+    assert len(res.spawned) == 2
+
+
 def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     """With cap=2: 2 alpha + 2 beta dispatched; remaining 3 alpha + 1 beta
     deferred to skipped_per_profile_capped."""

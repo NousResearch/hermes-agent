@@ -566,3 +566,16 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_run_slash_list_does_not_force_global_init_on_current_db(kanban_home, monkeypatch):
+    """Current boards should not run kb.init_db() before every CLI command."""
+    kc.run_slash("create 'fast path task' --assignee default")
+
+    def _fail_init_db(*_args, **_kwargs):
+        raise AssertionError("run_slash list should use connect() fast path, not init_db()")
+
+    monkeypatch.setattr(kb, "init_db", _fail_init_db)
+    out = kc.run_slash("list")
+
+    assert "fast path task" in out

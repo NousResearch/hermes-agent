@@ -69,6 +69,46 @@ def _table_struct(conn: sqlite3.Connection, table: str):
     return cols, idx
 
 
+def test_current_schema_connect_skips_full_integrity_guard(tmp_path, monkeypatch):
+    """Current DBs should use the cheap schema fast path across processes."""
+    db_path = _setup_home(tmp_path, monkeypatch)
+    with kb.connect(db_path) as conn:
+        kb.create_task(conn, title="persisted")
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    def _fail_full_guard(_path):
+        raise AssertionError("full integrity guard should not run for current schema")
+
+    monkeypatch.setattr(kb, "_guard_existing_db_is_healthy", _fail_full_guard)
+    with kb.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+
+
+def test_schema_fast_path_retries_transient_malformed_image(tmp_path, monkeypatch):
+    """A transient malformed-image read during the schema probe is retried."""
+    db_path = _setup_home(tmp_path, monkeypatch)
+    with kb.connect(db_path) as conn:
+        kb.create_task(conn, title="persisted")
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    real_probe = kb._schema_needs_init_or_migration
+    calls = {"n": 0}
+
+    def _flaky_probe(conn):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real_probe(conn)
+
+    monkeypatch.setattr(kb, "_schema_needs_init_or_migration", _flaky_probe)
+    monkeypatch.setattr(kb, "_malformed_retry_sleep", lambda: None)
+
+    with kb.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    assert calls["n"] == 2
+
+
 def test_connect_initialization_is_thread_safe(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

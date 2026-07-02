@@ -1057,6 +1057,17 @@ def init_agent(
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
+    #
+    # Wait for in-flight MCP discovery on every init path (CLI, TUI, gateway
+    # sub-agents, API server children). Some callers already wait before
+    # AIAgent(), but others don't; without this, slow HTTP MCP servers that
+    # connect after the bounded wait miss the one-time snapshot (#57170).
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        logger.debug("MCP discovery wait before tool snapshot failed", exc_info=True)
     try:
         from tools.registry import registry as _snapshot_registry
         agent._tool_snapshot_generation = _snapshot_registry._generation

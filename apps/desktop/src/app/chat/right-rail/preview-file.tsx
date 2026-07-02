@@ -551,7 +551,13 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   )
 }
 
-type PreviewViewMode = 'diff' | 'rendered' | 'source'
+export type PreviewViewMode = 'diff' | 'rendered' | 'source'
+
+export function defaultPreviewViewMode(isMarkdown: boolean, hasDiff: boolean): PreviewViewMode {
+  // Markdown previews are documents first. A background agent edit should update
+  // the rendered page in place; diff remains available for deliberate review.
+  return isMarkdown ? 'rendered' : hasDiff ? 'diff' : 'source'
+}
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
@@ -913,7 +919,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       modes.push('diff')
     }
 
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const autoMode = defaultPreviewViewMode(isMarkdown, hasDiff)
     const mode = userMode && modes.includes(userMode) ? userMode : autoMode
 
     return (

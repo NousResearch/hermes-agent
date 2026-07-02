@@ -274,6 +274,44 @@ describe('createGatewayEventHandler', () => {
     expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
+  it('does not cross-contaminate context for parallel same-name tool calls', () => {
+    vi.useFakeTimers()
+    try {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      // Two parallel read_file calls with different contexts
+      onEvent({
+        payload: { context: 'Reading .bash_profile', name: 'read_file', tool_id: 'tc-1' },
+        type: 'tool.start'
+      } as any)
+      onEvent({
+        payload: { context: 'Reading .zshrc', name: 'read_file', tool_id: 'tc-2' },
+        type: 'tool.start'
+      } as any)
+
+      // Progress event for read_file — must update the most recent entry (tc-2),
+      // not the first one (tc-1).
+      onEvent({
+        payload: { name: 'read_file', preview: 'Reading .zshrc (progress)' },
+        type: 'tool.progress'
+      } as any)
+
+      // Flush the batched timer so the turn state reflects the progress update
+      vi.advanceTimersByTime(100)
+
+      const tools = getTurnState().tools
+      expect(tools).toHaveLength(2)
+
+      // First tool's context must NOT be overwritten by the progress event
+      expect(tools[0].context).toBe('Reading .bash_profile')
+      // Second tool's context should be updated by the progress event
+      expect(tools[1].context).toBe('Reading .zshrc (progress)')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps tool tokens across handler recreation mid-turn', () => {
     const appended: Msg[] = []
 

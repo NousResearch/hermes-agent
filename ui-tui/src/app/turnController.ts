@@ -839,7 +839,10 @@ class TurnController {
       return
     }
 
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
+    // Use findLastIndex so progress for parallel same-name tool calls
+    // (e.g. two concurrent read_file calls) updates the most recently
+    // started entry instead of always targeting the first one.
+    const index = this.activeTools.findLastIndex(tool => tool.name === toolName)
 
     if (index < 0) {
       return
@@ -878,6 +881,7 @@ class TurnController {
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
+    this.toolProgressTimer = clear(this.toolProgressTimer)
     this.idle()
     this.bufRef = ''
     this.interrupted = false

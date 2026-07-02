@@ -26,6 +26,26 @@ import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
 import { ProviderConfigPanel } from './provider-config-panel'
 
+// On the Voice page, only surface the sub-fields of the *selected* TTS/STT
+// provider — otherwise every provider's options render at once (the "totally
+// crazy" wall of ~30 fields). Top-level keys (tts.provider, stt.enabled,
+// voice.*) always show; STT provider fields hide entirely when STT is off.
+export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
+
+  if (!match) {
+    return true
+  }
+
+  const [, domain, provider] = match
+
+  if (domain === 'stt' && !getNested(config, 'stt.enabled')) {
+    return false
+  }
+
+  return provider === String(getNested(config, `${domain}.provider`) ?? '')
+}
+
 function ConfigField({
   schemaKey,
   schema,
@@ -228,6 +248,7 @@ export function ConfigSettings({
       .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
   }, [])
 
   useEffect(() => {
@@ -276,6 +297,7 @@ export function ConfigSettings({
     }, 550)
 
     return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
   }, [config, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
@@ -356,6 +378,8 @@ export function ConfigSettings({
     return <LoadingState label={c.loading} />
   }
 
+  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+
   return (
     <SettingsContent>
       {activeSectionId === 'model' && (
@@ -363,11 +387,11 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {fields.length === 0 ? (
+      {visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">
-          {fields.map(([key, field]) => (
+          {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 descriptionExtra={

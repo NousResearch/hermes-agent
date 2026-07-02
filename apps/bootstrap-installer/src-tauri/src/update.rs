@@ -12,8 +12,10 @@
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
 //!
 //! We reuse the `BootstrapEvent` channel + the existing progress UI by
-//! emitting a synthetic two-stage manifest ("update", "rebuild"). To the
-//! frontend an update looks like a short bootstrap.
+//! emitting a synthetic multi-stage manifest (handoff → update → rebuild, plus
+//! an install stage on macOS). To the frontend an update looks like a short
+//! bootstrap, broken into the real operations run_update performs so the user
+//! sees discrete steps (with the live log underneath) instead of one bar.
 //!
 //! Cross-platform note: `hermes update` already handles macOS/Linux (git/pip).
 //! The only OS-specific bits here are the venv shim path (resolve_hermes) and
@@ -70,17 +72,10 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
         } else {
             None
         };
-        let mut stages = vec![
-            stage_info("update", "Updating Hermes"),
-            stage_info("rebuild", "Rebuilding the desktop app"),
-        ];
-        if cfg!(target_os = "macos") && target_app.is_some() {
-            stages.push(stage_info("install", "Installing the updated app"));
-        }
         emit(
             &app,
             BootstrapEvent::Manifest {
-                stages,
+                stages: update_stages(target_app.is_some()),
                 protocol_version: None,
             },
         );
@@ -183,32 +178,35 @@ async fn run_update(app: AppHandle) -> Result<()> {
         anyhow!(msg)
     })?;
 
-    // Synthetic manifest so the existing progress UI renders our two stages.
-    let mut stages = vec![
-        stage_info("update", "Updating Hermes"),
-        stage_info("rebuild", "Rebuilding the desktop app"),
-    ];
-    if cfg!(target_os = "macos") && target_app.is_some() {
-        stages.push(stage_info("install", "Installing the updated app"));
-    }
-
+    // Synthetic manifest so the existing progress UI renders our stages.
     emit(
         &app,
         BootstrapEvent::Manifest {
-            stages,
+            stages: update_stages(target_app.is_some()),
             protocol_version: None,
         },
     );
 
-    // ---- pre-step: wait for the old desktop to die -----------------------
+    // ---- stage 1: wait for the old desktop to die ------------------------
     // The desktop exec'd us then called app.exit(), but process teardown is
     // async on Windows. If it still holds the venv shim, `hermes update`
     // aborts with exit 2. If it still holds the packaged app.asar,
     // install.ps1's repair/re-clone path cannot move/remove the install tree.
-    // Give both handles a bounded window to clear.
-    wait_for_install_locks_free(&install_root, &app, "update").await;
+    // Give both handles a bounded window to clear. Surfaced as its own stage
+    // (rather than a silent pre-step) so a slow close / force-kill reads as
+    // real progress instead of a frozen first bar.
+    let started = Instant::now();
+    emit_stage(&app, "handoff", StageState::Running, None, None);
+    wait_for_install_locks_free(&install_root, &app, "handoff").await;
+    emit_stage(
+        &app,
+        "handoff",
+        StageState::Succeeded,
+        Some(started.elapsed().as_millis() as u64),
+        None,
+    );
 
-    // ---- stage 1: hermes update -----------------------------------------
+    // ---- stage 2: hermes update -----------------------------------------
     // Pass --branch so `hermes update` targets the branch this installer was
     // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
     // `main`. The install was a detached-HEAD checkout of a specific commit;
@@ -332,7 +330,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     }
 
-    // ---- stage 2: hermes desktop --build-only ----------------------------
+    // ---- stage 3: hermes desktop --build-only ----------------------------
     // `hermes update` deliberately does NOT build apps/desktop (it installs
     // repo-root deps with --workspaces=false). This is the rebuild it skips.
     emit_stage(&app, "rebuild", StageState::Running, None, None);
@@ -953,6 +951,23 @@ fn stage_info(name: &str, title: &str) -> StageInfo {
     }
 }
 
+/// The synthetic update manifest. Mirrors the real operations `run_update`
+/// performs so the progress UI shows them as discrete steps (with the live log
+/// underneath) instead of one monolithic bar. `include_install` adds the macOS
+/// app-swap stage. Both the happy path and the re-entrancy guard build the
+/// manifest here so the two can never drift apart.
+fn update_stages(include_install: bool) -> Vec<StageInfo> {
+    let mut stages = vec![
+        stage_info("handoff", "Preparing to update"),
+        stage_info("update", "Downloading the latest version"),
+        stage_info("rebuild", "Rebuilding the desktop app"),
+    ];
+    if include_install {
+        stages.push(stage_info("install", "Installing the update"));
+    }
+    stages
+}
+
 // option_env! only accepts string literals, so the build-time pins are read
 // by their literal names here. Mirrors bootstrap.rs's helper of the same name
 // (kept local rather than shared because option_env! can't be parameterized).
@@ -1099,6 +1114,36 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn update_manifest_leads_with_handoff_and_gates_install() {
+        let base = update_stages(false);
+        assert_eq!(
+            base.first().map(|s| s.name.as_str()),
+            Some("handoff"),
+            "the lock-wait must surface as the first visible step"
+        );
+        assert!(
+            base.iter().any(|s| s.name == "update") && base.iter().any(|s| s.name == "rebuild"),
+            "update + rebuild remain distinct stages"
+        );
+        assert!(
+            base.iter().all(|s| s.name != "install"),
+            "no app-swap stage unless an install target was passed"
+        );
+
+        let with_install = update_stages(true);
+        assert_eq!(
+            with_install.last().map(|s| s.name.as_str()),
+            Some("install"),
+            "the macOS app-swap is the final stage when present"
+        );
+        assert_eq!(
+            with_install.len(),
+            base.len() + 1,
+            "include_install adds exactly one stage"
+        );
     }
 
     #[test]

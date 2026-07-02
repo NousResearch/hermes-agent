@@ -26,6 +26,9 @@ from hermes_cli.profiles import (
     get_active_profile_name,
     resolve_profile_env,
     check_alias_collision,
+    create_wrapper_script,
+    remove_wrapper_script,
+    validate_alias_name,
     rename_profile,
     export_profile,
     import_profile,
@@ -769,6 +772,14 @@ class TestAliasCollision:
             result = check_alias_collision("mybot")
         assert result is None  # our own wrapper, safe to overwrite
 
+    def test_traversal_alias_rejected_before_path_lookup(self, profile_env):
+        """A path-traversal alias is rejected without ever shelling out to which/where."""
+        with patch("subprocess.run") as mock_run:
+            result = check_alias_collision("../../.bashrc")
+        assert result is not None
+        assert "invalid alias name" in result.lower()
+        mock_run.assert_not_called()
+
 
 # ===================================================================
 # TestWrapperScript
@@ -848,6 +859,53 @@ class TestWrapperScript:
         assert "hermes -p redqueen" in content
         assert "%*" in content
         assert "#!/bin/sh" not in content
+
+
+# ===================================================================
+# TestWrapperScriptSecurity — path-traversal hardening
+# ===================================================================
+
+class TestWrapperScriptSecurity:
+    """A crafted alias name must not escape the wrapper directory."""
+
+    def test_validate_alias_name_rejects_traversal(self):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name("../../.bashrc")
+
+    def test_validate_alias_name_rejects_absolute_path(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name(str(tmp_path / "evil"))
+
+    def test_validate_alias_name_accepts_safe_identifier(self):
+        validate_alias_name("mybot")  # does not raise
+
+    def test_create_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script("../../.bashrc", target="coder")
+        # The traversal target was not touched.
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_create_wrapper_rejects_absolute_path(self, profile_env, tmp_path):
+        target = tmp_path / "abs-wrapper"
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script(str(target))
+        assert not target.exists()
+
+    def test_remove_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        assert remove_wrapper_script("../../.bashrc") is False
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_legit_alias_stays_inside_wrapper_dir(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir
+        wrapper = create_wrapper_script("mybot", target="coder")
+        assert wrapper is not None
+        assert wrapper.resolve().is_relative_to(_get_wrapper_dir().resolve())
+        assert 'hermes -p coder "$@"' in wrapper.read_text()
 
 
 # ===================================================================
@@ -1483,8 +1541,15 @@ class TestEdgeCases:
 
         # Primary pid-file/lock check returns None (no lock held by this reader),
         # exactly as it does for a separate-process dashboard. The fallback must
-        # then read the state file and confirm the gateway is alive.
-        with patch("gateway.status.get_running_pid", return_value=None):
+        # then read the state file and confirm the gateway is alive by checking
+        # the recorded PID's live command line. In the real separate-process
+        # scenario that PID belongs to the live gateway, so mock its command
+        # line to a bare ``gateway run`` (this is the default/root home, which
+        # runs the gateway with no profile flag).
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
             assert _check_gateway_running(default_home) is True
 
     def test_gateway_running_check_runtime_state_stopped(self, profile_env):
@@ -1510,6 +1575,77 @@ class TestEdgeCases:
 
         with patch("gateway.status.get_running_pid", return_value=None):
             assert _check_gateway_running(default_home) is False
+
+    def test_gateway_running_check_rejects_pid_reused_by_other_profile(self, profile_env):
+        """Regression (user report): the dashboard showed a NAMED profile's
+        gateway green while ``hermes -p <name> gateway status`` showed it
+        stopped.
+
+        Per-profile Docker supervision: a named profile (``coder``) left a
+        ``gateway_state=running`` record whose PID the OS later recycled onto a
+        DIFFERENT live process (here the default profile's gateway).  The
+        ``_check_gateway_running`` fallback must scope the live PID to *this*
+        profile's command line, so a recycled PID hosting another profile's
+        gateway is not reported running for ``coder``.
+        """
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # PID 139 is alive but is the DEFAULT gateway (bare, no -p coder), not
+        # coder's. start_time is absent so the PID-reuse guard cannot catch it;
+        # the profile scope must.
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is False
+
+    def test_gateway_running_check_detects_matching_named_profile(self, profile_env):
+        """A genuinely-live named gateway (``-p coder`` on its command line) is
+        still reported running for that profile."""
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": 1000,
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=1000), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes -p coder gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is True
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

@@ -1,3 +1,5 @@
+const fs = require('node:fs')
+
 const _READY_RE = /^HERMES_DASHBOARD_READY port=(\d+)/m
 
 // The announcement clock starts the instant the backend process is spawned —
@@ -94,9 +96,76 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
   })
 }
 
+function readDashboardReadyFile(readyFile) {
+  if (!readyFile) return null
+  try {
+    const parsed = JSON.parse(fs.readFileSync(readyFile, 'utf8'))
+    const port = Number(parsed?.port)
+    return Number.isInteger(port) && port > 0 ? port : null
+  } catch {
+    return null
+  }
+}
+
+function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnnounceTimeoutMs()) {
+  return new Promise((resolve, reject) => {
+    let done = false
+    let interval = null
+
+    function cleanup() {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (interval) clearInterval(interval)
+      child.off('exit', onExit)
+      child.off('error', onError)
+    }
+
+    function check() {
+      const port = readDashboardReadyFile(readyFile)
+      if (port) {
+        cleanup()
+        resolve(port)
+      }
+    }
+
+    function onExit(code, signal) {
+      cleanup()
+      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})`))
+    }
+
+    function onError(err) {
+      cleanup()
+      reject(err)
+    }
+
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
+    }, timeoutMs)
+
+    child.on('exit', onExit)
+    child.on('error', onError)
+    interval = setInterval(check, 50)
+    if (typeof interval.unref === 'function') interval.unref()
+    check()
+  })
+}
+
+function waitForDashboardPortAnnouncement(child, options = {}) {
+  const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
+  if (options.readyFile) {
+    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs)
+  }
+  return waitForDashboardPort(child, timeoutMs)
+}
+
 module.exports = {
   waitForDashboardPort,
+  waitForDashboardPortAnnouncement,
+  waitForDashboardReadyFile,
+  readDashboardReadyFile,
   resolvePortAnnounceTimeoutMs,
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
-  MIN_PORT_ANNOUNCE_TIMEOUT_MS,
+  MIN_PORT_ANNOUNCE_TIMEOUT_MS
 }

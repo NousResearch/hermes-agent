@@ -26,6 +26,12 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
 CJK_RICH_CONTENT = "## 持仓\n\n| 项目 | 状态 |\n|---|---|\n| 早盘 | 正常 |"
 ASTRAL_CJK_RICH_CONTENT = "## Rare Han\n\n| glyph | status |\n|---|---|\n| \U00030000 | ok |"
+TABLE_ONLY_CONTENT = (
+    "| Team | W | L | GB |\n"
+    "|---|---|---|---|\n"
+    "| Red Sox | 36 | 34 | 6.0 |\n"
+    "| Dodgers | 40 | 30 | 2.0 |"
+)
 DANGEROUS_DETAILS_MATH = (
     "<details><summary>Complex proof</summary>\n\n"
     "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
@@ -528,6 +534,77 @@ async def test_notification_opt_in_drops_disable_flag():
 
 
 @pytest.mark.asyncio
+async def test_table_only_uses_rich_when_rich_messages_opt_out():
+    """Pipe tables auto-route to sendRichMessage even without the full opt-in."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_table_only_uses_rich_with_default_config():
+    """Default config keeps task lists on legacy but upgrades bare tables."""
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
+
+    assert result.success is True
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_resumed_send_uses_rich_for_table_without_reply_anchor():
+    """Resumed/synthetic DM-topic sends route tables via direct_messages_topic_id."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send(
+        "123",
+        TABLE_ONLY_CONTENT,
+        metadata={
+            "thread_id": "20189",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20189",
+        },
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["direct_messages_topic_id"] == 20189
+    assert "reply_parameters" not in api_kwargs
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_includes_forum_topic_routing():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.edit_message(
+        "-100123",
+        "555",
+        TABLE_ONLY_CONTENT,
+        finalize=True,
+        metadata={"thread_id": "5"},
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_thread_id"] == 5
+    assert api_kwargs["rich_message"]["markdown"] == TABLE_ONLY_CONTENT
+
+
+@pytest.mark.asyncio
 async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
     """A bot without an async do_api_request falls through to the legacy path."""
     adapter = _make_adapter()
@@ -547,7 +624,7 @@ async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
 
 @pytest.mark.asyncio
 async def test_details_with_math_skips_rich_draft_to_avoid_tdesktop_crash():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     bot = adapter._bot
     assert bot is not None
     bot.do_api_request = AsyncMock(return_value=True)
@@ -560,8 +637,20 @@ async def test_details_with_math_skips_rich_draft_to_avoid_tdesktop_crash():
 
 
 @pytest.mark.asyncio
-async def test_rich_draft_happy_path_sends_raw_markdown():
+async def test_rich_draft_default_uses_legacy_to_avoid_tdesktop_reflow_glitches():
     adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_opt_in_sends_raw_markdown():
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(return_value=True)
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -579,7 +668,7 @@ async def test_rich_draft_happy_path_sends_raw_markdown():
 
 @pytest.mark.asyncio
 async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(return_value=True)
 
     result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
@@ -591,7 +680,7 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
 
 @pytest.mark.asyncio
 async def test_rich_draft_capability_failure_falls_back_and_latches_off():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("Method not found"))
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -611,7 +700,7 @@ async def test_rich_draft_capability_failure_falls_back_and_latches_off():
 
 @pytest.mark.asyncio
 async def test_rich_draft_transient_failure_does_not_latch_off():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -624,7 +713,7 @@ async def test_rich_draft_transient_failure_does_not_latch_off():
 
 @pytest.mark.asyncio
 async def test_rich_draft_oversized_uses_legacy():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     oversized = "a" * 40000
 
     result = await adapter.send_draft("12345", draft_id=7, content=oversized)

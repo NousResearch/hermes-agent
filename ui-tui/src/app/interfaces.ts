@@ -134,6 +134,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  journey: boolean
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean
@@ -173,7 +174,6 @@ export interface UiState {
 
   sections: SectionVisibility
   sessionTitle: string
-  showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string

@@ -24,12 +24,7 @@ interface SessionPickerDialogProps {
  * sessions only, so `/resume` feels first-class instead of falling through to
  * the headless slash worker (which can't render the picker).
  */
-export function SessionPickerDialog({
-  activeStoredSessionId,
-  onOpenChange,
-  onResume,
-  open
-}: SessionPickerDialogProps) {
+export function SessionPickerDialog({ activeStoredSessionId, onOpenChange, onResume, open }: SessionPickerDialogProps) {
   const { t } = useI18n()
   const [search, setSearch] = useState('')
 
@@ -57,11 +52,7 @@ export function SessionPickerDialog({
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.sections.sessions}</DialogPrimitive.Title>
           <Command className="bg-transparent" loop>
-            <CommandInput
-              onValueChange={setSearch}
-              placeholder={t.commandCenter.searchPlaceholder}
-              value={search}
-            />
+            <CommandInput onValueChange={setSearch} placeholder={t.commandCenter.searchPlaceholder} value={search} />
             <CommandList className="max-h-[min(24rem,60vh)]">
               <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
               <CommandGroup
@@ -85,9 +76,7 @@ export function SessionPickerDialog({
                       <MessageCircle className="size-4 shrink-0 text-muted-foreground" />
                       <span className="flex min-w-0 flex-col leading-snug">
                         <span className="truncate">{title}</span>
-                        {preview ? (
-                          <span className="truncate text-xs text-muted-foreground/70">{preview}</span>
-                        ) : null}
+                        {preview ? <span className="truncate text-xs text-muted-foreground/70">{preview}</span> : null}
                       </span>
                       <Check
                         className={cn(

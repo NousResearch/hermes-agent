@@ -1391,6 +1391,64 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+class TestCuaNonePidWindowIdGuard:
+    """Regression test for #56704 — list_windows returns entries with
+    pid: null and/or window_id: null for non-application X11 windows
+    (panel, dock, taskbar) on Linux/WSL.  These must be silently
+    skipped rather than crashing with TypeError: int(None).
+    """
+
+    def test_capture_skips_windows_with_none_pid(self):
+        """Windows whose pid is None must be filtered out; if all are
+        filtered the capture returns an empty result without crashing."""
+        raw = [
+            {"app_name": "Xwayland", "pid": None, "window_id": 2,
+             "is_on_screen": True, "title": "", "z_index": 0},
+            {"app_name": "Panel", "pid": 50, "window_id": None,
+             "is_on_screen": True, "title": "taskbar", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(raw)
+        # Must not raise TypeError; all windows filtered → empty result.
+        result = backend.capture(mode="vision")
+        assert result.png_b64 is None
+        assert result.width == 0
+
+    def test_capture_mixed_none_and_valid_windows(self):
+        """Valid windows are kept; None-pid/None-window_id entries skipped."""
+        from unittest.mock import MagicMock
+        raw = [
+            {"app_name": "Xwayland", "pid": None, "window_id": 2,
+             "is_on_screen": True, "title": "", "z_index": 0},
+            {"app_name": "Firefox", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "Home", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(raw)
+        # Override call_tool so the screenshot call returns a valid image.
+        _lw_result = backend._session.call_tool.return_value
+        _sc_result = {
+            "data": "", "images": [{"data": "iVBOR", "mimeType": "image/png"}],
+            "structuredContent": None, "isError": False,
+        }
+        backend._session.call_tool.side_effect = [_lw_result, _sc_result]
+        backend._session._has_tool.return_value = True
+        backend._session.capabilities_discovered = True
+        result = backend.capture(mode="vision", app="Firefox")
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 1
+
+    def test_focus_app_skips_windows_with_none_pid(self):
+        """focus_app must also skip windows with None pid."""
+        raw = [
+            {"app_name": "Panel", "pid": None, "window_id": 5,
+             "z_index": 0},
+            {"app_name": "Firefox", "pid": 100, "window_id": 1,
+             "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(raw)
+        result = backend.focus_app("Firefox")
+        assert result.ok is True
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes

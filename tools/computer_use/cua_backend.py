@@ -1038,6 +1038,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 "z_index": w.get("z_index", 0),
             }
             for w in raw_windows
+            if w.get("pid") is not None and w.get("window_id") is not None
         ]
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
@@ -1441,6 +1442,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 "z_index": w.get("z_index", 0),
             }
             for w in raw_windows
+            if w.get("pid") is not None and w.get("window_id") is not None
         ]
         windows.sort(key=lambda w: w["z_index"])
 

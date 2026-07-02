@@ -5655,6 +5655,21 @@ def config_command(args):
         
         print()
     
+    elif subcmd == "seal":
+        from hermes_cli.config_integrity_cli import cmd_seal
+        rc = cmd_seal(args)
+        sys.exit(rc)
+
+    elif subcmd == "verify":
+        from hermes_cli.config_integrity_cli import cmd_verify
+        rc = cmd_verify(args)
+        sys.exit(rc)
+
+    elif subcmd == "restore":
+        from hermes_cli.config_integrity_cli import cmd_restore
+        rc = cmd_restore(args)
+        sys.exit(rc)
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()
@@ -5666,6 +5681,9 @@ def config_command(args):
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
+        print("  hermes config seal      Hash config.yaml into integrity log")
+        print("  hermes config verify    Check config.yaml against sealed baseline")
+        print("  hermes config restore   Revert config.yaml to sealed baseline")
         sys.exit(1)
 
 

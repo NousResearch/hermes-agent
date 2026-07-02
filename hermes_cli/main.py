@@ -12256,6 +12256,10 @@ Examples:
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
+    # config integrity commands (seal / verify / restore)
+    from hermes_cli.config_integrity_cli import register_subcommands as _register_integrity
+    _register_integrity(config_subparsers)
+
     config_parser.set_defaults(func=cmd_config)
 
     # =========================================================================

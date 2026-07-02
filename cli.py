@@ -27,14 +27,17 @@ import logging
 import copy
 import os
 import shutil
+import subprocess
 import sys
 import json
 import re
+import signal
 import concurrent.futures
 import base64
 import atexit
 import errno
 import tempfile
+import threading
 import time
 import uuid
 import textwrap
@@ -46,6 +49,9 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_QUICK_COMMAND_OUTPUT_LIMIT_PER_STREAM = 64 * 1024
+_QUICK_COMMAND_READ_CHUNK = 4096
 
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
@@ -2795,6 +2801,185 @@ def _cprint(text: str):
             _pt_print(_PT_ANSI(text))
         except Exception:
             pass
+
+
+def _read_limited_quick_command_stream(stream, chunks: List[bytes], state: Dict[str, bool]) -> None:
+    try:
+        while True:
+            chunk = stream.read(_QUICK_COMMAND_READ_CHUNK)
+            if not chunk:
+                return
+            size = sum(len(part) for part in chunks)
+            remaining = max(0, _QUICK_COMMAND_OUTPUT_LIMIT_PER_STREAM - size)
+            if remaining:
+                chunks.append(chunk[:remaining])
+            if len(chunk) > remaining:
+                state["truncated"] = True
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def _decode_quick_command_stream(chunks: List[bytes], truncated: bool) -> str:
+    text = b"".join(chunks).decode(errors="replace").strip()
+    if truncated:
+        suffix = (
+            "[output truncated after "
+            f"{_QUICK_COMMAND_OUTPUT_LIMIT_PER_STREAM} bytes from this stream]"
+        )
+        text = f"{text}\n{suffix}" if text else suffix
+    return text
+
+
+def _terminate_quick_command_tree(proc: subprocess.Popen) -> None:
+    try:
+        import psutil
+
+        parent = psutil.Process(proc.pid)
+        processes = parent.children(recursive=True) + [parent]
+        for process in processes:
+            try:
+                process.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(processes, timeout=2)
+        for process in alive:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+        if alive:
+            psutil.wait_procs(alive, timeout=2)
+    except Exception:
+        _terminate_quick_command_tree_fallback(proc)
+
+
+def _terminate_quick_command_tree_fallback(proc: subprocess.Popen) -> None:
+    if sys.platform != "win32" and hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok
+                proc.wait(timeout=2)
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _quick_command_popen_kwargs() -> Dict[str, Any]:
+    if sys.platform == "win32":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        return {"creationflags": windows_hide_flags()}
+    return {"start_new_session": True}
+
+
+def _run_guarded_quick_command(exec_cmd: Any, timeout: int = 30) -> Dict[str, Any]:
+    """Run a user-configured quick command after dangerous-command checks."""
+    if not isinstance(exec_cmd, str):
+        return {"ok": False, "message": "quick command must be a string"}
+    normalized_cmd = exec_cmd.strip()
+    if not normalized_cmd:
+        return {"ok": False, "message": "empty command"}
+
+    try:
+        from tools.approval import detect_dangerous_command, detect_hardline_command
+
+        is_hardline, hardline_desc = detect_hardline_command(normalized_cmd)
+        if is_hardline:
+            return {
+                "ok": False,
+                "message": f"hardline blocked: {hardline_desc}",
+            }
+
+        is_dangerous, _, desc = detect_dangerous_command(normalized_cmd)
+        if is_dangerous:
+            return {
+                "ok": False,
+                "message": f"blocked: {desc}. Use the agent for dangerous commands.",
+            }
+    except ImportError:
+        return {
+            "ok": False,
+            "message": "dangerous-command guard unavailable; refusing to execute",
+        }
+    except Exception as exc:
+        return {"ok": False, "message": f"dangerous-command guard failed: {exc}"}
+
+    proc = None
+    try:
+        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        from tools.environments.local import _sanitize_subprocess_env
+
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+        proc = subprocess.Popen(
+            normalized_cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            env=sanitized_env,
+            **_quick_command_popen_kwargs(),
+        )
+        stdout_chunks: List[bytes] = []
+        stderr_chunks: List[bytes] = []
+        stdout_state = {"truncated": False}
+        stderr_state = {"truncated": False}
+        readers = [
+            threading.Thread(
+                target=_read_limited_quick_command_stream,
+                args=(proc.stdout, stdout_chunks, stdout_state),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_limited_quick_command_stream,
+                args=(proc.stderr, stderr_chunks, stderr_state),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+        try:
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_quick_command_tree(proc)
+            for reader in readers:
+                reader.join(timeout=2)
+            return {"ok": False, "message": f"command timed out ({timeout}s)"}
+        for reader in readers:
+            reader.join(timeout=2)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"command timed out ({timeout}s)"}
+    except Exception as exc:
+        if proc is not None:
+            _terminate_quick_command_tree(proc)
+        return {"ok": False, "message": str(exc)}
+
+    stdout = _decode_quick_command_stream(stdout_chunks, stdout_state["truncated"])
+    stderr = _decode_quick_command_stream(stderr_chunks, stderr_state["truncated"])
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    if output:
+        from agent.redact import redact_sensitive_text
+
+        output = redact_sensitive_text(output)
+    if returncode != 0:
+        return {
+            "ok": False,
+            "message": output or f"command failed with exit code {returncode}",
+            "returncode": returncode,
+        }
+    return {"ok": True, "output": output, "returncode": returncode}
 
 
 def _prepend_note_to_message(message, note: str):
@@ -9341,32 +9526,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
-                    import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
-                        try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
-                            # Sanitize env to prevent credential leakage —
-                            # quick commands run in the CLI process which
-                            # has all API keys in os.environ.
-                            from tools.environments.local import _sanitize_subprocess_env
-                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30, env=sanitized_env
-                            )
-                            output = result.stdout.strip() or result.stderr.strip()
-                            if output:
-                                from agent.redact import redact_sensitive_text
-                                output = redact_sensitive_text(output)
-                                self._console_print(_rich_text_from_ansi(output))
-                            else:
-                                self._console_print("[dim]Command returned no output[/]")
-                        except subprocess.TimeoutExpired:
-                            self._console_print("[bold red]Quick command timed out (30s)[/]")
-                        except Exception as e:
-                            self._console_print(f"[bold red]Quick command error: {e}[/]")
+                        result = _run_guarded_quick_command(exec_cmd)
+                        if not result["ok"]:
+                            self._console_print(f"[bold red]Quick command error: {_escape(str(result['message']))}[/]")
+                        elif result["output"]:
+                            self._console_print(_rich_text_from_ansi(result["output"]))
+                        else:
+                            self._console_print("[dim]Command returned no output[/]")
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":

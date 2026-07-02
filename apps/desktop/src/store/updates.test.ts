@@ -51,7 +51,10 @@ const {
   applyUpdates,
   $updateApply,
   $updateOverlayOpen,
-  resetUpdateApplyState
+  resetUpdateApplyState,
+  startUpdatePoller,
+  stopUpdatePoller,
+  $updateStatus
 } = await import('./updates')
 
 const { setConnection } = await import('./session')
@@ -452,5 +455,74 @@ describe('applyBackendUpdate recovery', () => {
 
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
+  })
+})
+
+describe('startUpdatePoller', () => {
+  const checkMock = vi.fn()
+  const onProgressMock = vi.fn()
+  const listeners: Record<string, Function> = {}
+
+  beforeEach(() => {
+    storage.clear()
+    checkMock.mockReset()
+    onProgressMock.mockReset()
+    Object.keys(listeners).forEach(k => delete listeners[k])
+    checkMock.mockResolvedValue({
+      supported: true,
+      behind: 5,
+      targetSha: 'sha-abc',
+      fetchedAt: 0
+    })
+    $updateStatus.set(null)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock } },
+      addEventListener: vi.fn((event: string, handler: Function) => {
+        listeners[event] = handler
+      }),
+      removeEventListener: vi.fn()
+    }
+    vi.useFakeTimers()
+    stopUpdatePoller()
+  })
+
+  afterEach(() => {
+    stopUpdatePoller()
+    delete (globalThis as unknown as { window?: unknown }).window
+    vi.useRealTimers()
+  })
+
+  it('calls checkUpdates() on startup so the version pill populates immediately', async () => {
+    startUpdatePoller()
+
+    // checkUpdates() is async — flush microtasks without advancing the 30-min interval.
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).toHaveBeenCalled()
+    expect($updateStatus.get()?.behind).toBe(5)
+  })
+
+  it('calls checkUpdates() on each interval tick', async () => {
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkMock.mockClear()
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+
+    expect(checkMock).toHaveBeenCalled()
+  })
+
+  it('calls checkUpdates() when the window regains focus', async () => {
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkMock.mockClear()
+
+    // Invoke the registered focus handler directly (the mock window doesn't
+    // propagate DOM events, so call the stored listener).
+    listeners['focus']?.()
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).toHaveBeenCalled()
   })
 })

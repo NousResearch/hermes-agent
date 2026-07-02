@@ -11,7 +11,7 @@ Active selection
 The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
-1. If exactly one provider is registered, use it.
+1. If exactly one available provider is registered, use it.
 2. Otherwise return ``None`` (the tool surfaces a helpful error pointing
    the user at ``hermes tools``).
 
@@ -78,6 +78,10 @@ def get_active_provider() -> Optional[VideoGenProvider]:
 
     Reads ``video_gen.provider`` from config.yaml; falls back per the
     module docstring.
+
+    Explicit configuration wins even when the provider reports unavailable,
+    so the dispatcher can surface the provider's setup error. Unconfigured
+    fallback only auto-selects providers whose ``is_available()`` returns true.
     """
     configured: Optional[str] = None
     try:
@@ -95,6 +99,13 @@ def get_active_provider() -> Optional[VideoGenProvider]:
     with _lock:
         snapshot = dict(_providers)
 
+    def _is_available_safe(p: VideoGenProvider) -> bool:
+        try:
+            return bool(p.is_available())
+        except Exception as exc:
+            logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
@@ -104,9 +115,10 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             configured,
         )
 
-    # Fallback: single-provider case
-    if len(snapshot) == 1:
-        return next(iter(snapshot.values()))
+    # Fallback: single available provider case
+    available = [p for p in snapshot.values() if _is_available_safe(p)]
+    if len(available) == 1:
+        return available[0]
 
     return None
 

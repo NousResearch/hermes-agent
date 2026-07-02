@@ -9,15 +9,18 @@ from agent.video_gen_provider import VideoGenProvider
 
 
 class _FakeProvider(VideoGenProvider):
-    def __init__(self, name: str, available: bool = True):
+    def __init__(self, name: str, available: bool = True, raises: bool = False):
         self._name = name
         self._available = available
+        self._raises = raises
 
     @property
     def name(self) -> str:
         return self._name
 
     def is_available(self) -> bool:
+        if self._raises:
+            raise RuntimeError("availability probe failed")
         return self._available
 
     def generate(self, prompt, **kw):
@@ -74,6 +77,16 @@ class TestGetActiveProvider:
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "solo"
 
+    def test_single_unavailable_provider_does_not_autoresolve(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("solo", available=False))
+        assert video_gen_registry.get_active_provider() is None
+
+    def test_single_provider_availability_error_does_not_autoresolve(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("solo", raises=True))
+        assert video_gen_registry.get_active_provider() is None
+
     def test_no_provider_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert video_gen_registry.get_active_provider() is None
@@ -97,6 +110,17 @@ class TestGetActiveProvider:
         )
         video_gen_registry.register_provider(_FakeProvider("xai"))
         video_gen_registry.register_provider(_FakeProvider("fal"))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
+
+    def test_config_selects_unavailable_provider(self, tmp_path, monkeypatch):
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"video_gen": {"provider": "fal"}})
+        )
+        video_gen_registry.register_provider(_FakeProvider("fal", available=False))
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "fal"
 

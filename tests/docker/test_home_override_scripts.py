@@ -3,15 +3,44 @@
 Build the real image and verify the actual runtime behavior:
 
   1. main-wrapper preserves the Docker ``-w`` working directory
-  2. dashboard service resets HOME to /opt/data before privilege drop
+  2. dashboard service resets HOME (via HERMES_REAL_HOME) before privilege drop
   3. dashboard does not auto-add ``--insecure`` from a non-loopback bind host
   4. stage2 hook repairs profiles/ and cron/ ownership on every boot
 """
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, restart_container
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+MAIN_WRAPPER = REPO_ROOT / "docker" / "main-wrapper.sh"
+DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
+
+
+def test_main_wrapper_uses_hermes_real_home() -> None:
+    """main-wrapper.sh must use ${HERMES_REAL_HOME:-/opt/data} for HOME
+    instead of hardcoded /opt/data, so custom bind-mount layouts work.
+    """
+    text = MAIN_WRAPPER.read_text(encoding="utf-8")
+    assert 'export HOME=${HERMES_REAL_HOME:-/opt/data}' in text
+    assert 'cd "${HERMES_REAL_HOME:-/opt/data}"' in text
+    # Must NOT contain the old hardcoded pattern
+    assert "export HOME=/opt/data\n" not in text
+    assert "cd /opt/data\n" not in text
+
+
+def test_dashboard_run_uses_hermes_real_home() -> None:
+    """dashboard/run must use ${HERMES_REAL_HOME:-/opt/data} for HOME
+    instead of hardcoded /opt/data.
+    """
+    text = DASHBOARD_RUN.read_text(encoding="utf-8")
+    assert 'export HOME=${HERMES_REAL_HOME:-/opt/data}' in text
+    assert 'cd "${HERMES_REAL_HOME:-/opt/data}"' in text
+    # Must NOT contain the old hardcoded pattern
+    assert "export HOME=/opt/data\n" not in text
+    assert "cd /opt/data\n" not in text
 
 
 def test_main_wrapper_preserves_docker_workdir(
@@ -43,15 +72,18 @@ def test_main_wrapper_preserves_docker_workdir(
 def test_dashboard_service_resets_home(
     built_image: str, container_name: str,
 ) -> None:
-    """The dashboard run script must export HOME=/opt/data before dropping
+    """The dashboard run script must export HOME before dropping
     privileges, so HOME-anchored state (discord lockfile, XDG dirs) doesn't
     try to write to /root (the /init context's HOME).
+
+    When HERMES_REAL_HOME is not set, HOME defaults to /opt/data.
+    When HERMES_REAL_HOME is set, HOME uses that value.
 
     We check this by inspecting the environment of the dashboard service
     process if it's running, or by verifying the run script sets HOME
     before the exec. At runtime, the cleanest check is: start the
     container with HERMES_DASHBOARD=1 and verify the dashboard process
-    (if it starts) has HOME=/opt/data.
+    (if it starts) has HOME=/opt/data (the default).
 
     Since the dashboard requires an auth provider on non-loopback binds,
     we bind to 127.0.0.1 where the auth gate doesn't engage, and check
@@ -64,12 +96,12 @@ def test_dashboard_service_resets_home(
         container_name,
         # Find the dashboard process (hermes dashboard) and read its HOME
         # from /proc/<pid>/environ. If not running, verify the run script
-        # itself exports HOME=/opt/data by grepping the script source.
+        # itself exports HOME via HERMES_REAL_HOME by grepping the script source.
         'pid=$(pgrep -f "hermes dashboard" | head -1); '
         'if [ -n "$pid" ]; then '
         '  tr "\\0" "\\n" < /proc/$pid/environ | grep "^HOME="; '
         'else '
-        '  grep -q "export HOME=/opt/data" '
+        '  grep -q "HERMES_REAL_HOME" '
         '    /opt/hermes/docker/s6-rc.d/dashboard/run && '
         '  echo "HOME=/opt/data"; '
         'fi',

@@ -90,6 +90,7 @@ import {
   DISABLE_MODIFY_OTHER_KEYS,
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
+  RESET_KITTY_KEYBOARD,
   ERASE_SCREEN,
   ERASE_SCROLLBACK
 } from './termio/csi.js'
@@ -2443,7 +2444,11 @@ export default class Ink {
       this.drainStdin()
       // Disable extended key reporting (both kitty and modifyOtherKeys)
       writeSync(1, DISABLE_MODIFY_OTHER_KEYS)
+      // Pop the kitty keyboard stack (handles normal depth-1 case)
       writeSync(1, DISABLE_KITTY_KEYBOARD)
+      // Reset to flags=0 to handle stack depth > 1 from terminal resets
+      // or race conditions — CSI < u only pops one entry at a time
+      writeSync(1, RESET_KITTY_KEYBOARD)
       // Disable focus events (DECSET 1004)
       writeSync(1, DFE)
       // Disable bracketed paste mode

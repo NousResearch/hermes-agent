@@ -965,6 +965,15 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        worker_context = {}
+
+        def run_conversation(_prompt):
+            from gateway.session_context import get_session_env
+            from tools.approval import _is_cron_approval_context
+
+            worker_context["job_id"] = get_session_env("HERMES_CRON_JOB_ID", "")
+            worker_context["is_cron"] = _is_cron_approval_context()
+            return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -982,7 +991,7 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent.run_conversation.side_effect = run_conversation
             mock_agent_cls.return_value = mock_agent
 
             success, output, final_response, error = run_job(job)
@@ -991,6 +1000,7 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "ok"
         assert "ok" in output
+        assert worker_context == {"job_id": "test-job", "is_cron": True}
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db

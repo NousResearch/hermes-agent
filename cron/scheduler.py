@@ -2806,9 +2806,10 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # Legacy process marker plus a per-job ContextVar marker below.  Approval
+    # gates require the per-job marker when a live gateway/session context is
+    # present, so inherited scheduler env cannot make interactive sessions look
+    # like cron jobs.
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -2836,19 +2837,13 @@ def run_job(
     # Cron output delivery itself reads job["origin"] directly via
     # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
-    _ctx_tokens = set_session_vars(
-        platform="",
-        chat_id="",
-        chat_name="",
-    )
+    _ctx_tokens = None
+    _cron_job_token = None
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
         "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
     )
-    for _var_name in _cron_delivery_vars:
-        _VAR_MAP[_var_name].set("")
-
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
     #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
@@ -2893,6 +2888,15 @@ def run_job(
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        _ctx_tokens = set_session_vars(
+            platform="",
+            chat_id="",
+            chat_name="",
+        )
+        _cron_job_token = _VAR_MAP["HERMES_CRON_JOB_ID"].set(str(job_id))
+        for _var_name in _cron_delivery_vars:
+            _VAR_MAP[_var_name].set("")
+
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3454,7 +3458,10 @@ def run_job(
         else:
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
-        clear_session_vars(_ctx_tokens)
+        if _ctx_tokens is not None:
+            clear_session_vars(_ctx_tokens)
+        if _cron_job_token is not None:
+            _VAR_MAP["HERMES_CRON_JOB_ID"].reset(_cron_job_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

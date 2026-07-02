@@ -72,6 +72,32 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_gateway_binding_ignores_legacy_process_cron_marker(monkeypatch):
+    """A live gateway session stays interactive when only legacy cron env leaked."""
+    from tools.approval import (
+        _is_cron_approval_context,
+        _is_gateway_approval_context,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="private",
+        user_id="123456",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.delenv("HERMES_CRON_JOB_ID", raising=False)
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert _is_cron_approval_context() is False
+        assert _is_gateway_approval_context() is True
+    finally:
+        runner._clear_session_env(tokens)
+
+
 def test_session_source_uses_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
 
@@ -393,4 +419,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

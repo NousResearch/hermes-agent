@@ -129,6 +129,44 @@ class TestEndToEnd:
         assert "para 0 " in content
         assert "para 2999 " in content
 
+    def test_web_extract_blocks_private_final_url_before_store(self, monkeypatch):
+        class FakeProvider:
+            name = "fake"
+            display_name = "Fake"
+
+            def supports_extract(self):
+                return True
+
+            async def extract(self, urls, **kwargs):
+                return [{
+                    "url": "http://169.254.169.254/latest/meta-data/",
+                    "title": "metadata",
+                    "content": "instance secret",
+                    "raw_content": "instance secret",
+                    "metadata": {
+                        "sourceURL": "http://169.254.169.254/latest/meta-data/"
+                    },
+                }]
+
+        async def safety_check(url):
+            return "169.254.169.254" not in url
+
+        store_calls = []
+        with patch("tools.web_tools._ensure_web_plugins_loaded"), \
+             patch("tools.web_tools._get_extract_backend", return_value="fake"), \
+             patch("tools.web_tools.async_is_safe_url", new=safety_check), \
+             patch("tools.web_tools._store_full_text", side_effect=store_calls.append), \
+             patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
+            result = json.loads(asyncio.new_event_loop().run_until_complete(
+                wt.web_extract_tool(["https://example.com/redirect"])
+            ))
+
+        item = result["results"][0]
+        assert item["url"] == "http://169.254.169.254/latest/meta-data/"
+        assert item["content"] == ""
+        assert "private or internal" in item["error"]
+        assert store_calls == []
+
 
 def _make_awaitable(value):
     async def _coro(*a, **k):

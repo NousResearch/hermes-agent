@@ -995,6 +995,20 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
 
+    # Custom providers defined in config.yaml are valid targets — skip the
+    # vendor-prefix fallback so the dashboard doesn't rewrite them to
+    # openrouter (#57143).
+    try:
+        _custom_names = {
+            cp.get("name", "").strip().lower()
+            for cp in (load_config().get("custom_providers") or [])
+            if isinstance(cp, dict) and cp.get("name")
+        }
+        if canonical in _custom_names or prov_in.lower() in _custom_names:
+            return prov_in, model_in
+    except Exception:
+        pass
+
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that

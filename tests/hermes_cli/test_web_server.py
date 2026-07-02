@@ -6520,3 +6520,36 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+    def test_normalize_main_model_assignment_preserves_custom_provider(self):
+        """_normalize_main_model_assignment must not rewrite custom providers
+        from config.yaml to openrouter (#57143)."""
+        from hermes_cli.web_server import _normalize_main_model_assignment
+
+        # Patch load_config to return a custom provider.
+        from unittest.mock import patch as _patch
+
+        fake_cfg = {
+            "custom_providers": [
+                {
+                    "name": "siliconflow",
+                    "base_url": "https://api.siliconflow.cn/v1",
+                    "api_key": "sk-xxx",
+                    "api_mode": "chat_completions",
+                }
+            ]
+        }
+        with _patch("hermes_cli.web_server.load_config", return_value=fake_cfg):
+            prov, model = _normalize_main_model_assignment(
+                "siliconflow", "deepseek-ai/DeepSeek-V4-Flash"
+            )
+        # Must keep the custom provider verbatim, not rewrite to openrouter.
+        assert prov == "siliconflow"
+        assert model == "deepseek-ai/DeepSeek-V4-Flash"
+
+        # Non-custom unknown provider with vendor-prefixed model → openrouter.
+        with _patch("hermes_cli.web_server.load_config", return_value=fake_cfg):
+            prov, model = _normalize_main_model_assignment(
+                "someunknown", "anthropic/claude-opus-4.8"
+            )
+        assert prov == "openrouter"

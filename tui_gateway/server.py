@@ -4788,8 +4788,12 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
     slot is kept; a second arrival is merged (lossless, mirroring the
     consecutive-user merge in ``repair_message_sequence``) so nothing the user
-    typed is dropped. ``transport`` is pinned so the drained turn streams back to
-    the client that sent it even if the session transport is rebound meanwhile.
+    typed is dropped. The follow-up is joined as explicit additional guidance
+    (prefixed ``Also, ``) rather than a bare blank-line concatenation, so the
+    drained turn reads the second prompt as a supplementary instruction on top
+    of the first instead of an ambiguous restart. ``transport`` is pinned so the
+    drained turn streams back to the client that sent it even if the session
+    transport is rebound meanwhile.
     """
     existing = session.get("queued_prompt")
     if (
@@ -4798,7 +4802,10 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
         and isinstance(text, str)
     ):
         prev = existing["text"]
-        text = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        if prev and text:
+            text = f"{prev}\n\nAlso, {text}"
+        else:
+            text = prev or text
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 

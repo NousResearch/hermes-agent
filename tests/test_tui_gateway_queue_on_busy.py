@@ -37,13 +37,30 @@ def test_enqueue_pins_text_and_transport():
     assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
 
 
-def test_enqueue_merges_second_arrival_losslessly():
+def test_enqueue_merges_second_arrival_as_followup_guidance():
     session = _session()
     server._enqueue_prompt(session, "first", "ws-1")
     server._enqueue_prompt(session, "second", "ws-2")
-    assert session["queued_prompt"]["text"] == "first\n\nsecond"
+    # The follow-up is joined as explicit additional guidance ("Also, ...")
+    # rather than a bare blank-line concatenation, so the drained turn reads it
+    # as a supplementary instruction on top of the first prompt.
+    assert session["queued_prompt"]["text"] == "first\n\nAlso, second"
     # Latest transport wins so the drain streams to the most recent client.
     assert session["queued_prompt"]["transport"] == "ws-2"
+
+
+def test_enqueue_merge_is_lossless_when_one_side_empty():
+    # An empty second arrival must not append a dangling "Also, " with no text,
+    # and an empty first slot must let the real text through unprefixed.
+    session = _session()
+    server._enqueue_prompt(session, "first", "ws-1")
+    server._enqueue_prompt(session, "", "ws-2")
+    assert session["queued_prompt"]["text"] == "first"
+
+    session = _session()
+    server._enqueue_prompt(session, "", "ws-1")
+    server._enqueue_prompt(session, "second", "ws-2")
+    assert session["queued_prompt"]["text"] == "second"
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────

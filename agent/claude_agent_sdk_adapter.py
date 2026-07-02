@@ -513,6 +513,12 @@ class _StreamBridge:
             or getattr(agent, "tool_gen_callback", None) is not None
         )
         self._wants_reasoning = getattr(agent, "reasoning_callback", None) is not None
+        # Current tool_use block being streamed: (display_name, [json chunks]).
+        # tool.started is fired at content_block_stop, once the input JSON is
+        # complete, so the progress bubble can show WHAT the tool ran (command,
+        # path, query…) — not just the tool name.
+        self._pending_tool: Optional[str] = None
+        self._pending_json: List[str] = []
 
     @property
     def active(self) -> bool:
@@ -548,11 +554,17 @@ class _StreamBridge:
                 fire = getattr(agent, "_fire_reasoning_delta", None)
                 if thinking and self._wants_reasoning and callable(fire):
                     fire(thinking)
+            elif dtype == "input_json_delta" and self._pending_tool is not None:
+                self._pending_json.append(delta.get("partial_json") or "")
+        elif etype == "content_block_stop":
+            self._on_tool_stop()
 
     def _on_tool_start(self, tool_name: str) -> None:
         agent = self._agent
         # Hybrid tools arrive as "mcp__hermes__<name>" — show the bare name.
         display = tool_name.rsplit("__", 1)[-1] if tool_name else "tool"
+        self._pending_tool = display
+        self._pending_json = []
         if self._wants_text:
             # Close the open streaming display segment so tool chrome doesn't
             # wrap into the text bubble. Same contract as the pre-tool flush in
@@ -565,15 +577,38 @@ class _StreamBridge:
                 except Exception:
                     pass
             agent._stream_needs_break = True
+        # Spinner/status while the model generates the tool's arguments.
         gen = getattr(agent, "_fire_tool_gen_started", None)
         if callable(gen):
             gen(display)
-        progress = getattr(agent, "tool_progress_callback", None)
-        if progress is not None:
-            try:
-                progress("tool.started", display, display, None)
-            except Exception:
-                logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
+
+    def _on_tool_stop(self) -> None:
+        """Fire tool.started with the tool's real args once its input is complete."""
+        name, self._pending_tool = self._pending_tool, None
+        raw = "".join(self._pending_json)
+        self._pending_json = []
+        if name is None:
+            return
+        progress = getattr(self._agent, "tool_progress_callback", None)
+        if progress is None:
+            return
+        try:
+            args = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        try:
+            from agent.display import build_tool_preview, redact_tool_args_for_display
+
+            display_args = redact_tool_args_for_display(name, args) or args
+            preview = build_tool_preview(name, display_args)
+        except Exception:
+            display_args, preview = args, None
+        try:
+            progress("tool.started", name, preview, display_args)
+        except Exception:
+            logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
 
 
 async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBridge] = None) -> Dict[str, Any]:
@@ -698,10 +733,37 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     if system_prompt is not None:
         opt_kwargs["system_prompt"] = system_prompt
 
-    cwd = settings.get("cwd") or os.getcwd()
+    # Anchor the SDK session to the agent's logical working directory — the
+    # per-session project dir on multi-session gateways (desktop Projects),
+    # TERMINAL_CWD, or the launch dir — instead of wherever the backend
+    # process happens to run. Applies to ALL modes so the CLI's terminal,
+    # file tools, and session transcripts live in the user's project.
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        cwd = settings.get("cwd") or str(resolve_agent_cwd())
+    except Exception:
+        cwd = settings.get("cwd") or os.getcwd()
+    opt_kwargs["cwd"] = cwd
+
+    # Resume the SDK's own session for cross-turn context — but only within
+    # the same working directory. The CLI keys session transcripts by cwd, so
+    # resuming a session created under a different project dir would fail (or
+    # continue in the wrong project); start fresh instead.
     resume = getattr(agent, "_claude_sdk_session_id", None)
-    if resume:
+    if resume and getattr(agent, "_claude_sdk_session_cwd", None) == cwd:
         opt_kwargs["resume"] = resume
+
+    # Respect Hermes' reasoning settings instead of the CLI's own defaults —
+    # AnthropicTransport.build_kwargs already mapped the user's reasoning
+    # config (off/low/…/max) to `thinking` + `output_config.effort`; without
+    # this passthrough the CLI picks its own thinking depth (users saw "low"
+    # behave like "max").
+    thinking_cfg = api_kwargs.get("thinking")
+    opt_kwargs["thinking"] = thinking_cfg if isinstance(thinking_cfg, dict) else {"type": "disabled"}
+    effort = (api_kwargs.get("output_config") or {}).get("effort")
+    if effort:
+        opt_kwargs["effort"] = effort
 
     mcp_note = ""
     if mode == "inference":
@@ -712,7 +774,6 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     elif mode == "delegate":
         # SDK runs the whole task with its OWN built-in tools, governed by
         # Hermes' guardrails via a PreToolUse hook.
-        opt_kwargs["cwd"] = cwd
         opt_kwargs["permission_mode"] = settings.get("permission_mode", "bypassPermissions")
         opt_kwargs["max_turns"] = settings.get("max_turns", 24)
         extra_allowed = settings.get("allowed_tools") or []
@@ -728,7 +789,6 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         # (Anthropic-format, mcp__-prefixed on the OAuth wire).
         hybrid_tools = getattr(agent, "tools", None) or tools
         server, allowed = _build_hybrid_mcp_server(sdk, agent, hybrid_tools)
-        opt_kwargs["cwd"] = cwd
         opt_kwargs["mcp_servers"] = {_HYBRID_SERVER: server}
         opt_kwargs["allowed_tools"] = allowed
         opt_kwargs["tools"] = []          # Hermes tools only; strip built-ins
@@ -775,6 +835,9 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     new_session = collected.get("session_id")
     if new_session:
         agent._claude_sdk_session_id = new_session
+        # Remember which directory the session lives in — resume is only
+        # valid from the same cwd (see the resume gate above).
+        agent._claude_sdk_session_cwd = cwd
 
     text = collected.get("text") or ""
     if not text and collected.get("is_error"):

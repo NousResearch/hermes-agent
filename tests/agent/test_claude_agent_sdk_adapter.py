@@ -443,13 +443,16 @@ def _streaming_agent(**over):
         else:
             seen["text"].append(text)
 
+    def _tool_progress(ev, name, preview, args):
+        seen["tools"].append((ev, name, preview, args))
+
     agent = _agent(
         stream_delta_callback=_delta_cb,
         _has_stream_consumers=lambda: True,
         _fire_stream_delta=lambda t: seen["text"].append(t),
         _fire_reasoning_delta=lambda t: seen["reasoning"].append(t),
         _fire_tool_gen_started=lambda name: seen["gen"].append(name),
-        tool_progress_callback=lambda ev, name, preview, args: seen["tools"].append((ev, name)),
+        tool_progress_callback=_tool_progress,
         reasoning_callback=lambda t: None,
         **over,
     )
@@ -464,6 +467,11 @@ def _stream_events():
                           "delta": {"type": "text_delta", "text": "lo"}}),
         _FakeStreamEvent({"type": "content_block_start",
                           "content_block": {"type": "tool_use", "name": "mcp__hermes__terminal"}}),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": '{"command": "gh '}}),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "input_json_delta", "partial_json": 'pr list"}'}}),
+        _FakeStreamEvent({"type": "content_block_stop"}),
         _FakeStreamEvent({"type": "content_block_delta",
                           "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
         # Subagent event — must be ignored (would interleave with top-level).
@@ -486,9 +494,15 @@ def test_stream_bridge_fires_live_callbacks(monkeypatch):
     # Live progress reached the callbacks…
     assert seen["text"] == ["Hel", "lo"]
     assert seen["reasoning"] == ["hmm"]
-    # …tool start surfaced with the mcp__ prefix stripped, via BOTH channels.
+    # …tool start surfaced with the mcp__ prefix stripped, via BOTH channels:
+    # the gen spinner at block start, and tool.started at block stop carrying
+    # the ACTUAL command in preview + args (not just the tool name).
     assert seen["gen"] == ["terminal"]
-    assert seen["tools"] == [("tool.started", "terminal")]
+    assert len(seen["tools"]) == 1
+    ev, name, preview, args = seen["tools"][0]
+    assert (ev, name) == ("tool.started", "terminal")
+    assert args == {"command": "gh pr list"}
+    assert "gh pr list" in (preview or "")
     # The open display segment was flushed before tool chrome.
     assert seen["flushes"] == 1
     # Streaming was requested from the SDK.
@@ -509,3 +523,79 @@ def test_stream_events_ignored_without_consumers(monkeypatch):
     # No consumers → partial messages not requested, result still clean.
     assert not hasattr(capture["options"], "include_partial_messages")
     assert msg.content[-1].text == "Hi"
+
+
+# ---------------------------------------------------------------------------
+# Working directory + resume gating + thinking/effort passthrough
+# ---------------------------------------------------------------------------
+def test_cwd_anchors_to_agent_runtime_cwd(monkeypatch, tmp_path):
+    from agent import runtime_cwd
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok", "session_id": "s-1"},
+                          capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    monkeypatch.setattr(runtime_cwd, "resolve_agent_cwd", lambda: tmp_path)
+
+    agent = _agent()
+    adp.create_claude_agent_message(agent, _api_kwargs())
+
+    # The SDK session is anchored to the agent's logical cwd (project dir),
+    # not the backend process cwd — in ALL modes, including inference.
+    assert capture["options"].cwd == str(tmp_path)
+    # …and the session id is remembered together with its directory.
+    assert agent._claude_sdk_session_id == "s-1"
+    assert agent._claude_sdk_session_cwd == str(tmp_path)
+
+
+def test_resume_only_within_same_cwd(monkeypatch, tmp_path):
+    from agent import runtime_cwd
+    monkeypatch.setattr(runtime_cwd, "resolve_agent_cwd", lambda: tmp_path)
+
+    # Same dir → resume passed through.
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(_claude_sdk_session_id="sess-prev", _claude_sdk_session_cwd=str(tmp_path))
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    assert capture["options"].resume == "sess-prev"
+
+    # Different dir → session must NOT resume (transcripts are keyed by cwd).
+    capture2 = {}
+    fake2 = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                           result_kwargs={"result": "ok"}, capture=capture2)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake2)
+    agent2 = _agent(_claude_sdk_session_id="sess-prev", _claude_sdk_session_cwd="/somewhere/else")
+    adp.create_claude_agent_message(agent2, _api_kwargs())
+    assert not hasattr(capture2["options"], "resume")
+
+
+def test_thinking_and_effort_passthrough(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    kw = _api_kwargs()
+    kw["thinking"] = {"type": "adaptive", "display": "summarized"}
+    kw["output_config"] = {"effort": "low"}
+    adp.create_claude_agent_message(_agent(), kw)
+
+    # Hermes' reasoning settings reach the SDK — the CLI must not pick its
+    # own thinking depth ("low" behaving like "max").
+    assert capture["options"].thinking == {"type": "adaptive", "display": "summarized"}
+    assert capture["options"].effort == "low"
+
+
+def test_thinking_disabled_when_reasoning_off(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    adp.create_claude_agent_message(_agent(), _api_kwargs())  # no thinking kwarg
+
+    # Reasoning off in Hermes → explicitly disabled at the SDK, not left to
+    # the CLI default (adaptive).
+    assert capture["options"].thinking == {"type": "disabled"}

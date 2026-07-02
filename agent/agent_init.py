@@ -664,6 +664,7 @@ def init_agent(
             agent._claude_agent_sdk_mode = _claude_sdk_settings["mode"]
             agent._claude_agent_sdk_settings = _claude_sdk_settings
             agent._claude_sdk_session_id = None
+            agent._claude_sdk_session_cwd = None
             # The SDK owns its own transport/streaming; route through Hermes'
             # non-streaming call path so the leaf swap in
             # _anthropic_messages_create is reached.

@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Chatwoot: Build",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "python3 -m venv .venv && .venv/bin/pip install -e \".[dev,messaging]\"",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Chatwoot: Gateway",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": ".venv/bin/python -m hermes_cli.main gateway run -v",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Chatwoot: ngrok",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "ngrok http 8647"
+    },
+    {
+      "name": "Dashboard",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": ".venv/bin/python -m hermes_cli.main dashboard",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

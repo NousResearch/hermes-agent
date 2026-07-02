@@ -158,6 +158,11 @@ def _build_provider_env_blocklist() -> frozenset:
         # OPTIONAL_ENV_VARS marks it password=False and the loop above skips it.
         "VERTEX_CREDENTIALS_PATH",
         "GOOGLE_APPLICATION_CREDENTIALS",
+        # Azure Foundry Entra ID can authenticate through DefaultAzureCredential
+        # using a service-principal secret or workload-identity token file.
+        # Those are model-provider credentials, not terminal/tool credentials.
+        "AZURE_CLIENT_SECRET",
+        "AZURE_FEDERATED_TOKEN_FILE",
         "DEEPSEEK_API_KEY",
         "MISTRAL_API_KEY",
         "GROQ_API_KEY",
@@ -280,6 +285,8 @@ def _is_hermes_internal_secret(key: str) -> bool:
     if upper.startswith("GATEWAY_RELAY_") and (
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
+        return True
+    if upper in {"AZURE_CLIENT_SECRET", "AZURE_FEDERATED_TOKEN_FILE"}:
         return True
     return False
 

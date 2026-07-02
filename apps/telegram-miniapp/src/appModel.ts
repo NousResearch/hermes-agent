@@ -77,10 +77,22 @@ export const endpointDetails: Record<EndpointState, string> = {
 export const STORAGE_KEYS = {
   activeTab: "hermes-miniapp:active-tab",
   selectedApprovalId: "hermes-miniapp:selected-approval-id",
+  theme: "hermes-miniapp:theme",
 } as const;
+
+export type Theme = "light" | "dark";
 
 export function isNavKey(value: string | null): value is NavKey {
   return value === "status" || value === "sessions" || value === "approvals" || value === "logs";
+}
+
+export function readStoredTheme(): Theme {
+  try {
+    // Quiet luxury reads as a warm light theme by default; dark is opt-in.
+    return window.localStorage.getItem(STORAGE_KEYS.theme) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
 }
 
 export function readStoredNavKey(): NavKey {

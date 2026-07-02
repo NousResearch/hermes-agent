@@ -12,7 +12,9 @@ import {
   gatewayValue,
   logLineKey,
   readStoredNavKey,
+  readStoredTheme,
   writeStoredValue,
+  type Theme,
 } from "./appModel";
 import { configureTelegramBackButton, configureTelegramMainButton, getTelegramRuntime, prepareTelegramViewport } from "./telegram";
 import { useMiniAppSnapshots } from "./useMiniAppSnapshots";
@@ -26,9 +28,20 @@ import { CommandPalette } from "./components/CommandPalette";
 export function App() {
   const [activeTab, setActiveTab] = useState<NavKey>(() => readStoredNavKey());
   const [isPaletteOpen, setPaletteOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
 
   useEffect(() => {
     prepareTelegramViewport();
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#20160f" : "#efe9dd");
+    writeStoredValue(STORAGE_KEYS.theme, theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
   }, []);
 
   const telegram = getTelegramRuntime();
@@ -141,12 +154,24 @@ export function App() {
           <span className="mono-label">HERMES / MINI APP</span>
           <strong>Пульт управления</strong>
         </div>
-        <span className="status-pill"><span />Защищённый режим</span>
+        <div className="topbar-actions">
+          <button
+            className="theme-toggle tap"
+            type="button"
+            onClick={toggleTheme}
+            aria-pressed={theme === "dark"}
+            aria-label="Тёмная тема"
+            title={theme === "dark" ? "Переключить на светлую" : "Переключить на тёмную"}
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+          <span className="status-pill"><span />Защищено</span>
+        </div>
       </header>
 
       <section className="hero-card glass-card scan-line">
         <div className="hero-copy-block">
-          <p className="eyebrow">Светлая кибернетическая ОС</p>
+          <p className="eyebrow">Тихая роскошь · кибернетика</p>
           <h1>Hermes готов</h1>
           <p className="hero-copy">
             Персональная диспетчерская для агентов, сессий, логов и будущих ручных одобрений. Сейчас режим только чтение.

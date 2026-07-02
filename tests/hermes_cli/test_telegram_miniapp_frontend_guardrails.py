@@ -180,6 +180,7 @@ def test_local_storage_keys_remain_harmless_ui_state_only():
     assert keys == {
         ("activeTab", "hermes-miniapp:active-tab"),
         ("selectedApprovalId", "hermes-miniapp:selected-approval-id"),
+        ("theme", "hermes-miniapp:theme"),
     }
     for forbidden in ("action", "decision", "payload", "initData", "token", "command", "approvalPayload"):
         assert forbidden.lower() not in storage_block.lower()

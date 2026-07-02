@@ -368,6 +368,38 @@ class NarrationJobStore:
             rows = conn.execute("SELECT * FROM tts_narration_jobs ORDER BY created_at, job_id").fetchall()
             return [dict(r) for r in rows]
 
+    def list_jobs_needing_recovery(self, *, within_hours: int = 48) -> List[Dict[str, Any]]:
+        """Return jobs with unsent chunks that stalled and are worth re-processing.
+
+        A job needs recovery when it is ``queued``/``failed`` (or still has
+        ``queued``/``failed`` chunks) and was created within *within_hours*.
+        Jobs still ``processing`` are left to ``recover_stale_processing`` so
+        the drain watcher does not fight an in-flight worker.  Newest jobs come
+        first so the freshest narration is delivered soonest.
+        """
+        cutoff = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=max(1, int(within_hours)))
+        ).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.* FROM tts_narration_jobs j
+                 WHERE j.created_at >= ?
+                   AND j.status NOT IN ('complete', 'cancelled', 'processing')
+                   AND (
+                        j.status IN ('queued', 'failed')
+                        OR EXISTS (
+                            SELECT 1 FROM tts_narration_chunks c
+                             WHERE c.job_id = j.job_id
+                               AND c.status IN ('queued', 'failed')
+                        )
+                   )
+                 ORDER BY j.created_at DESC, j.job_id DESC
+                """,
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def list_chunks(self, job_id: str) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

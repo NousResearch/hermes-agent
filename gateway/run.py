@@ -1272,6 +1272,16 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+# Long-form narration delivery resilience knobs.  A single transient Telegram
+# error must not abandon the remaining chunks, so each chunk send is retried a
+# few times with flood-control-aware backoff and successful sends are paced.
+_NARRATION_MAX_SEND_ATTEMPTS = 3
+_NARRATION_INTER_CHUNK_DELAY = 0.75
+_NARRATION_FLOOD_RE = re.compile(r"Retry in (\d+) seconds", re.IGNORECASE)
+_NARRATION_DRAIN_INTERVAL = 60
+_NARRATION_DRAIN_WINDOW_HOURS = 48
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -5211,6 +5221,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
+
+        # Start background narration drain watcher — re-submits failed/queued
+        # long-form narration jobs whose chunks stalled (gateway crash, network
+        # outage) so remaining audio eventually delivers.
+        asyncio.create_task(self._narration_job_drain_watcher())
 
         logger.info("Press Ctrl+C to stop")
         
@@ -10150,8 +10165,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata=metadata,
         )
 
+    @staticmethod
+    def _narration_retry_delay(error_text: Any, attempt: int) -> float:
+        """Seconds to wait before retrying a failed chunk send.
+
+        Telegram flood-control errors carry an explicit ``Retry in N seconds``
+        hint; honor it (plus a 1s buffer).  Otherwise fall back to exponential
+        backoff (2s, 4s, 8s, ...).
+        """
+        match = _NARRATION_FLOOD_RE.search(str(error_text or ""))
+        if match:
+            return float(int(match.group(1)) + 1)
+        return float(2 ** max(1, int(attempt)))
+
+    async def _narration_delay(self, seconds: float) -> None:
+        """Sleep between narration attempts/sends (patched to a no-op in tests)."""
+        if seconds and seconds > 0:
+            await asyncio.sleep(seconds)
+
     async def _process_narration_job(self, job_id: str) -> None:
-        """Generate and send queued narration chunks in order, stopping on failure."""
+        """Generate and send queued narration chunks in order.
+
+        Each chunk send is retried up to ``_NARRATION_MAX_SEND_ATTEMPTS`` times
+        with flood-control-aware backoff; only a non-retryable send result or an
+        exhausted retry budget marks the chunk (and job) ``failed`` and stops.
+        Successful sends are paced to avoid tripping Telegram flood control.
+        """
         from gateway.tts_narration import narration_audio_path, sanitize_error, text_to_speech_tool
 
         store = self._get_tts_narration_store()
@@ -10203,16 +10242,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         store.update_chunk(job_id, index, status="skipped", increment_attempts=True)
                         active_chunk_index = None
                         continue
-                    result_json = await asyncio.to_thread(
-                        text_to_speech_tool,
-                        text=tts_text,
-                        output_path=audio_path,
-                        provider=job.get("provider") or None,
-                    )
-                    result = json.loads(result_json) if isinstance(result_json, str) else (result_json or {})
-                    actual_path = result.get("file_path") or audio_path
-                    if not result.get("success") or not os.path.isfile(actual_path):
-                        raise RuntimeError(result.get("error") or "TTS generation failed")
 
                     try:
                         metadata = json.loads(job.get("metadata_json") or "{}")
@@ -10224,20 +10253,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["notify"] = True
                     if job.get("thread_id") and "thread_id" not in metadata:
                         metadata["thread_id"] = job.get("thread_id")
-                    send_result = await adapter.send_voice(
-                        chat_id=job["chat_id"],
-                        audio_path=actual_path,
-                        caption=caption,
-                        reply_to=job.get("reply_to_message_id"),
-                        metadata=metadata,
-                    )
-                    if not getattr(send_result, "success", False):
-                        raise RuntimeError(getattr(send_result, "error", None) or "voice send failed")
-                    store.update_chunk(
-                        job_id, index, status="sent", audio_path=actual_path,
-                        sent_message_id=getattr(send_result, "message_id", None), increment_attempts=True,
-                    )
-                    active_chunk_index = None
+
+                    succeeded = False
+                    last_error: Optional[str] = None
+                    for attempt in range(1, _NARRATION_MAX_SEND_ATTEMPTS + 1):
+                        # Count every send attempt in attempt_count so retries
+                        # (and drain re-processing) are observable.
+                        store.update_chunk(job_id, index, status="processing", increment_attempts=True)
+                        try:
+                            result_json = await asyncio.to_thread(
+                                text_to_speech_tool,
+                                text=tts_text,
+                                output_path=audio_path,
+                                provider=job.get("provider") or None,
+                            )
+                            result = json.loads(result_json) if isinstance(result_json, str) else (result_json or {})
+                            actual_path = result.get("file_path") or audio_path
+                            if not result.get("success") or not os.path.isfile(actual_path):
+                                raise RuntimeError(result.get("error") or "TTS generation failed")
+                            send_result = await adapter.send_voice(
+                                chat_id=job["chat_id"],
+                                audio_path=actual_path,
+                                caption=caption,
+                                reply_to=job.get("reply_to_message_id"),
+                                metadata=metadata,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            # TTS generation or the send call itself blew up —
+                            # both can be transient (timeouts, flood control).
+                            last_error = str(exc)
+                            if attempt >= _NARRATION_MAX_SEND_ATTEMPTS:
+                                break
+                            await self._narration_delay(self._narration_retry_delay(last_error, attempt))
+                            continue
+
+                        if getattr(send_result, "success", False):
+                            store.update_chunk(
+                                job_id, index, status="sent", audio_path=actual_path,
+                                sent_message_id=getattr(send_result, "message_id", None),
+                            )
+                            active_chunk_index = None
+                            succeeded = True
+                            break
+
+                        last_error = getattr(send_result, "error", None) or "voice send failed"
+                        if not getattr(send_result, "retryable", False):
+                            # Adapter says this failure won't clear on retry.
+                            break
+                        if attempt >= _NARRATION_MAX_SEND_ATTEMPTS:
+                            break
+                        await self._narration_delay(self._narration_retry_delay(last_error, attempt))
+
+                    if not succeeded:
+                        safe_error = sanitize_error(last_error or "voice send failed")
+                        store.update_chunk(job_id, index, status="failed", last_error=safe_error)
+                        store.update_job_status(job_id, "failed", last_error=safe_error)
+                        return
+                    # Pace successful sends to reduce flood-control pressure.
+                    await self._narration_delay(_NARRATION_INTER_CHUNK_DELAY)
                 except asyncio.CancelledError:
                     safe_error = sanitize_error("narration processing cancelled")
                     store.update_chunk(job_id, index, status="failed", last_error=safe_error, increment_attempts=True)
@@ -10256,6 +10331,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raise
 
         store.update_job_status(job_id, "complete")
+
+    async def _narration_drain_tick(self) -> bool:
+        """Re-process one stalled narration job (newest first).  Returns True if one ran."""
+        store = self._get_tts_narration_store()
+        try:
+            jobs = store.list_jobs_needing_recovery(within_hours=_NARRATION_DRAIN_WINDOW_HOURS)
+        except Exception:
+            logger.debug("Narration drain watcher query failed", exc_info=True)
+            return False
+        if not jobs:
+            return False
+        job = jobs[0]
+        job_id = job.get("job_id")
+        try:
+            await self._process_narration_job(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Narration drain re-processing failed for %s: %s", job_id, exc, exc_info=True)
+        return True
+
+    async def _narration_job_drain_watcher(self, interval: int = _NARRATION_DRAIN_INTERVAL) -> None:
+        """Periodically re-submit failed/queued narration jobs with unsent chunks.
+
+        Retries and the in-process stale-processing sweep cover the common
+        cases, but a gateway crash or network outage can still strand a job with
+        remaining chunks.  This watcher picks such jobs up newest-first, one per
+        tick to avoid flooding Telegram, and is resilient — a failure in one tick
+        never crashes the loop.
+        """
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._narration_drain_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Narration drain watcher tick failed", exc_info=True)
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""

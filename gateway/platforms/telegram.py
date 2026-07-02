@@ -4248,6 +4248,10 @@ class TelegramAdapter(BasePlatformAdapter):
                             "voice": audio_file,
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
+                            # Narration audio is 1-3 MB; the 20s default is
+                            # marginal on slow links or under Telegram load.
+                            "read_timeout": 120,
+                            "write_timeout": 180,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -4274,6 +4278,10 @@ class TelegramAdapter(BasePlatformAdapter):
                             "audio": audio_file,
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
+                            # Narration audio is 1-3 MB; the 20s default is
+                            # marginal on slow links or under Telegram load.
+                            "read_timeout": 120,
+                            "write_timeout": 180,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },

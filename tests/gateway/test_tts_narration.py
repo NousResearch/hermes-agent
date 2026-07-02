@@ -86,7 +86,7 @@ class TestNarrationProviderMetadata:
                     "narration": {
                         "provider": "openai",
                         "model": "gpt-4o-mini-tts",
-                        "voice": "coral",
+                        "voice": "fable",
                     },
                 }
             },
@@ -95,7 +95,7 @@ class TestNarrationProviderMetadata:
         assert tts_narration.provider_metadata_from_config() == {
             "provider": "openai",
             "model": "gpt-4o-mini-tts",
-            "voice": "coral",
+            "voice": "fable",
         }
 
 
@@ -115,9 +115,9 @@ class TestNarrationStore:
             idempotency_key="turn-1",
             text=text,
             chunks=chunks,
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123:1495",
             policy={"target_chars": 120, "max_chars": 160},
         )
@@ -265,9 +265,9 @@ class TestNarrationStore:
             idempotency_key="same-turn",
             text="Read this once.",
             chunks=["Read this once."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -341,6 +341,14 @@ class TestGatewayNarrationMode:
             "thread_id": source.thread_id,
             "reply_to_message_id": reply_anchor,
         }
+        # Record narration backoff/pacing delays instead of actually sleeping so
+        # tests stay fast while still asserting the computed durations.
+        runner._narration_sleeps = []
+
+        async def _record_delay(seconds):
+            runner._narration_sleeps.append(seconds)
+
+        runner._narration_delay = _record_delay
         return runner
 
     @pytest.mark.asyncio
@@ -520,9 +528,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-1",
             text=text,
             chunks=chunks,
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123:1495",
             policy={"target_chars": 100, "max_chars": 130},
         )
@@ -534,7 +542,7 @@ class TestGatewayNarrationMode:
         assert [c["text_sha256"] for c in stored_chunks] == [__import__("hashlib").sha256(chunk.encode("utf-8")).hexdigest() for chunk in chunks]
         assert [c["status"] for c in stored_chunks] == ["sent"] * len(chunks)
         assert adapter.send_voice.await_count == len(chunks)
-        assert providers == ["openrouter-coral"] * len(chunks)
+        assert providers == ["openrouter-audio"] * len(chunks)
         assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
 
     @pytest.mark.asyncio
@@ -558,9 +566,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-exact",
             text="First. Second.",
             chunks=["First.", "Second."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -589,9 +597,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-media-only",
             text=private_media_text,
             chunks=[private_media_text],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -629,9 +637,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-metadata",
             text="First.",
             chunks=["First."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123:1495",
             policy={"target_chars": 1000, "max_chars": 1200},
             metadata=metadata,
@@ -663,9 +671,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-2",
             text="First. Second.",
             chunks=["First.", "Second."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -704,9 +712,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-retry",
             text="First. Second.",
             chunks=["First.", "Second."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -745,9 +753,9 @@ class TestGatewayNarrationMode:
             idempotency_key="turn-cancelled",
             text="First. Second. Third. Fourth. Fifth.",
             chunks=["First.", "Second.", "Third.", "Fourth.", "Fifth."],
-            provider="openrouter-coral",
+            provider="openrouter-audio",
             model="openai/gpt-audio-mini",
-            voice="coral",
+            voice="fable",
             scope_key="telegram:123:1495",
             policy={"target_chars": 1000, "max_chars": 1200},
         )
@@ -771,3 +779,123 @@ class TestGatewayNarrationMode:
             "sent",
         ]
         assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_process_narration_job_retries_transient_send_failure_then_succeeds(self, runner, tmp_path, monkeypatch):
+        def fake_tts(text, output_path=None, provider=None):
+            path = tmp_path / "chunk.ogg"
+            path.write_bytes(b"OggS fake")
+            return json.dumps({"success": True, "file_path": str(path)})
+
+        monkeypatch.setattr("gateway.tts_narration.text_to_speech_tool", fake_tts)
+        # Fail twice with retryable transient errors, then succeed.
+        send_results = [
+            SendResult(success=False, error="telegram timed out", retryable=True),
+            SendResult(success=False, error="telegram timed out", retryable=True),
+            SendResult(success=True, message_id="sent-1"),
+        ]
+        adapter = SimpleNamespace(send_voice=AsyncMock(side_effect=send_results))
+        runner.adapters[Platform.TELEGRAM] = adapter
+        job = runner._tts_narration_store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id=None,
+            reply_to_message_id="msg42",
+            idempotency_key="turn-transient-retry",
+            text="Only one.",
+            chunks=["Only one."],
+            provider="openrouter-audio",
+            model="openai/gpt-audio-mini",
+            voice="fable",
+            scope_key="telegram:123",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+
+        await runner._process_narration_job(job.job_id)
+
+        assert adapter.send_voice.await_count == 3
+        chunks = runner._tts_narration_store.list_chunks(job.job_id)
+        assert chunks[0]["status"] == "sent"
+        assert chunks[0]["attempt_count"] >= 3
+        assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
+        # Backed off twice before the third (successful) attempt.
+        assert runner._narration_sleeps[:2] == [2.0, 4.0]
+
+    @pytest.mark.asyncio
+    async def test_process_narration_job_parses_flood_control_retry_seconds(self, runner, tmp_path, monkeypatch):
+        def fake_tts(text, output_path=None, provider=None):
+            path = tmp_path / "chunk.ogg"
+            path.write_bytes(b"OggS fake")
+            return json.dumps({"success": True, "file_path": str(path)})
+
+        monkeypatch.setattr("gateway.tts_narration.text_to_speech_tool", fake_tts)
+        adapter = SimpleNamespace(
+            send_voice=AsyncMock(
+                side_effect=[
+                    RuntimeError("Flood control exceeded. Retry in 5 seconds."),
+                    SendResult(success=True, message_id="sent-1"),
+                ]
+            )
+        )
+        runner.adapters[Platform.TELEGRAM] = adapter
+        job = runner._tts_narration_store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id=None,
+            reply_to_message_id="msg42",
+            idempotency_key="turn-flood",
+            text="Only one.",
+            chunks=["Only one."],
+            provider="openrouter-audio",
+            model="openai/gpt-audio-mini",
+            voice="fable",
+            scope_key="telegram:123",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+
+        await runner._process_narration_job(job.job_id)
+
+        chunks = runner._tts_narration_store.list_chunks(job.job_id)
+        assert chunks[0]["status"] == "sent"
+        assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
+        # Slept for the flood-control retry-in value (5s) plus a 1s buffer,
+        # not the exponential backoff default.
+        assert any(5 <= s <= 6 for s in runner._narration_sleeps)
+
+    @pytest.mark.asyncio
+    async def test_drain_tick_reprocesses_failed_job_with_queued_chunks(self, runner, tmp_path, monkeypatch):
+        def fake_tts(text, output_path=None, provider=None):
+            path = tmp_path / "chunk.ogg"
+            path.write_bytes(b"OggS fake")
+            return json.dumps({"success": True, "file_path": str(path)})
+
+        monkeypatch.setattr("gateway.tts_narration.text_to_speech_tool", fake_tts)
+        adapter = SimpleNamespace(send_voice=AsyncMock(return_value=SendResult(success=True, message_id="sent")))
+        runner.adapters[Platform.TELEGRAM] = adapter
+        job = runner._tts_narration_store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id=None,
+            reply_to_message_id="msg42",
+            idempotency_key="turn-drain",
+            text="First. Second.",
+            chunks=["First.", "Second."],
+            provider="openrouter-audio",
+            model="openai/gpt-audio-mini",
+            voice="fable",
+            scope_key="telegram:123",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+        # Simulate a crash that left the job failed with chunks still queued.
+        runner._tts_narration_store.update_job_status(job.job_id, "failed", last_error="crash")
+        assert job.job_id in {
+            j["job_id"] for j in runner._tts_narration_store.list_jobs_needing_recovery(within_hours=48)
+        }
+
+        processed = await runner._narration_drain_tick()
+
+        assert processed is True
+        assert adapter.send_voice.await_count == 2
+        assert [c["status"] for c in runner._tts_narration_store.list_chunks(job.job_id)] == ["sent", "sent"]
+        assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
+        assert runner._tts_narration_store.list_jobs_needing_recovery(within_hours=48) == []

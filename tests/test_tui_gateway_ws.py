@@ -162,3 +162,28 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_safe_json_replaces_lone_surrogates():
+    line = ws_mod._json_dumps_ws_safe({"jsonrpc": "2.0", "result": {"path": "bad\udc90name"}})
+    assert "\udc90" not in line
+    assert "bad�name" in line
+    line.encode("utf-8")
+
+
+def test_ws_write_async_sends_surrogate_payload_without_closing():
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            line.encode("utf-8")
+            sent.append(line)
+
+    async def run():
+        transport = ws_mod.WSTransport(FakeWS(), asyncio.get_running_loop(), peer="surrogate-test")
+        assert await transport.write_async({"result": {"path": "bad\udc90name"}}) is True
+        assert transport._closed is False
+
+    asyncio.run(run())
+    assert len(sent) == 1
+    assert "bad�name" in sent[0]

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import logging
 import socket
@@ -115,7 +116,7 @@ class WSTransport:
         if self._closed:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        line = _json_dumps_ws_safe(obj)
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -217,7 +218,7 @@ class WSTransport:
             self._pending_tokens = []
         if pending:
             await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        await self._safe_send(_json_dumps_ws_safe(obj))
         return not self._closed
 
     async def _safe_send(self, line: str) -> None:
@@ -250,6 +251,28 @@ class WSTransport:
         if handle is not None:
             handle.cancel()
             self._token_flush_handle = None
+
+
+def _json_dumps_ws_safe(obj: dict) -> str:
+    """Serialize a JSON-RPC frame without emitting invalid UTF-8 surrogates.
+
+    Starlette's ``send_text`` encodes the returned string as UTF-8. A payload
+    containing a lone surrogate can be represented by ``json.dumps`` when
+    ``ensure_ascii=False`` is used, but the later websocket send then raises
+    ``UnicodeEncodeError: surrogates not allowed`` and closes the Desktop / TUI
+    websocket. Replace those invalid code points with U+FFFD before the frame
+    reaches the socket while keeping normal non-ASCII text readable on the wire.
+    """
+    payload = copy.deepcopy(obj)
+    try:
+        from agent.message_sanitization import _sanitize_structure_surrogates
+
+        _sanitize_structure_surrogates(payload)
+    except Exception:
+        # Last-ditch fallback: ensure_ascii=True guarantees any remaining
+        # surrogate is escaped into ASCII rather than crashing send_text.
+        return json.dumps(obj, ensure_ascii=True)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _ws_peer_label(ws: Any) -> str:

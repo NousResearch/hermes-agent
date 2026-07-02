@@ -157,11 +157,69 @@ class TestOSSBackend:
         assert memory.calls[0][2]["filters"] == {"user_id": "u1"}
         assert memory.calls[0][2]["top_k"] == 3
 
-    def test_search_ignores_rerank(self):
-        """OSS backend accepts rerank param but does not forward it to Memory."""
+    def test_search_forwards_rerank(self):
+        """OSS backend forwards rerank param to Memory.search()."""
         backend, memory = self._make()
         backend.search("q", filters={}, rerank=True)
-        assert "rerank" not in memory.calls[0][2]
+        assert memory.calls[0][2]["rerank"] is True
+
+    def test_search_forwards_rerank_false(self):
+        backend, memory = self._make()
+        backend.search("q", filters={}, rerank=False)
+        assert memory.calls[0][2]["rerank"] is False
+
+    def test_init_forwards_reranker_config(self):
+        """OSSBackend.__init__ forwards reranker config to Memory.from_config()."""
+        import sys
+        import unittest.mock as mock
+
+        captured_configs = []
+
+        def fake_from_config(config):
+            captured_configs.append(config)
+            return FakeOSSMemory()
+
+        mock_mem0 = mock.MagicMock()
+        mock_mem0.Memory.from_config = fake_from_config
+
+        oss_config = {
+            "vector_store": {"provider": "qdrant", "config": {"path": "/tmp/test"}},
+            "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small", "embedding_dims": 1536}},
+            "reranker": {"provider": "cohere", "config": {"model": "rerank-v3.5"}},
+        }
+
+        with mock.patch.dict(sys.modules, {"mem0": mock_mem0}):
+            backend = OSSBackend(oss_config)
+
+        assert len(captured_configs) == 1
+        assert "reranker" in captured_configs[0]
+        assert captured_configs[0]["reranker"] == {"provider": "cohere", "config": {"model": "rerank-v3.5"}}
+
+    def test_init_omits_reranker_when_absent(self):
+        """OSSBackend.__init__ omits reranker key when not in config."""
+        import sys
+        import unittest.mock as mock
+
+        captured_configs = []
+
+        def fake_from_config(config):
+            captured_configs.append(config)
+            return FakeOSSMemory()
+
+        mock_mem0 = mock.MagicMock()
+        mock_mem0.Memory.from_config = fake_from_config
+
+        oss_config = {
+            "vector_store": {"provider": "qdrant", "config": {"path": "/tmp/test"}},
+            "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small", "embedding_dims": 1536}},
+        }
+
+        with mock.patch.dict(sys.modules, {"mem0": mock_mem0}):
+            backend = OSSBackend(oss_config)
+
+        assert "reranker" not in captured_configs[0]
 
     def test_get_all_ignores_pagination(self):
         """OSSBackend accepts page/page_size but does NOT forward to Memory.get_all()."""

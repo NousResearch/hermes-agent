@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 import httpx
 
 from hermes_cli.auth import (
-    DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
+    _can_open_graphical_browser,
     _is_remote_session,
 )
 
@@ -42,7 +42,16 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
+# Defensive last-resort fallback only. The authoritative Kilo host lives in
+# PROVIDER_REGISTRY["kilocode"].inference_base_url; _kilo_registry_base()
+# derives the API root from it so there is a single source of truth. This
+# constant is only used if the registry lookup itself fails.
 DEFAULT_KILO_API_BASE = "https://api.kilo.ai"
+
+# The Kilo device-auth bearer is long-lived (~1 year, no refresh), so it is
+# pinned to the Kilo origin the same way the xAI OAuth bearer is pinned to
+# *.x.ai (see _xai_validate_inference_base_url).
+_KILO_HOST = "kilo.ai"
 
 # Device-auth endpoints live under the API root, siblings of /api/gateway.
 _DEVICE_AUTH_INITIATE_PATH = "/api/device-auth/codes"
@@ -86,6 +95,100 @@ def _strip_api_segment(base_url: str) -> str:
     return url.rstrip("/")
 
 
+def _kilo_registry_base() -> str:
+    """Derive the Kilo API root from the registered kilocode inference base.
+
+    Single source of truth: the host comes from
+    ``PROVIDER_REGISTRY["kilocode"].inference_base_url`` (e.g.
+    ``https://api.kilo.ai/api/gateway``), stripped of its ``/api/<segment>``
+    suffix. Falls back to ``DEFAULT_KILO_API_BASE`` only if the provider is
+    not registered (should not happen in normal operation).
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        return _strip_api_segment(PROVIDER_REGISTRY["kilocode"].inference_base_url)
+    except Exception as exc:
+        logger.debug(
+            "kilo registry base lookup failed (%s); using hardcoded fallback.", exc
+        )
+        return DEFAULT_KILO_API_BASE
+
+
+def _validate_kilo_base_url(value: str, *, fallback: str, env_name: str) -> str:
+    """Refuse a non-Kilo base URL for bearer-bearing device-auth/profile calls.
+
+    The Kilo device-auth token is long-lived (~1 year) with no refresh_token,
+    so a tampered ``KILO_API_URL`` / ``KILOCODE_BASE_URL`` (or a hostile shell
+    init) pointing at a non-HTTPS or non-Kilo host would ship the bearer to a
+    third party on every profile/defaults request, silently. Mirror
+    ``_xai_validate_inference_base_url``: require HTTPS and pin the origin to
+    ``kilo.ai`` / ``*.kilo.ai``. On rejection, fall back to the default and
+    log a warning rather than raise — a bad env var should not deadlock
+    authentication, but it should also never leak the bearer.
+    """
+    candidate = (value or "").strip().rstrip("/")
+    if not candidate:
+        return fallback
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        logger.warning(
+            "Ignoring malformed Kilo base_url override %r (from %s); using %s instead.",
+            candidate, env_name, fallback,
+        )
+        return fallback
+    if parsed.scheme != "https":
+        logger.warning(
+            "Refusing non-HTTPS Kilo base_url override %r from %s (kilo bearer would "
+            "be sent in cleartext); falling back to %s.",
+            candidate, env_name, fallback,
+        )
+        return fallback
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(
+            "Ignoring Kilo base_url override %r from %s with no hostname; using %s instead.",
+            candidate, env_name, fallback,
+        )
+        return fallback
+    if host != _KILO_HOST and not host.endswith("." + _KILO_HOST):
+        logger.warning(
+            "Refusing Kilo base_url override %r from %s — host %r is not on the Kilo "
+            "origin (expected kilo.ai or a *.kilo.ai subdomain). The kilo bearer is only "
+            "valid against Kilo's API; sending it elsewhere would leak the credential. "
+            "Falling back to %s.",
+            candidate, env_name, host, fallback,
+        )
+        return fallback
+    return candidate
+
+
+def _validate_kilo_verification_url(url: str) -> Optional[str]:
+    """Return the URL only if it is an HTTPS URL on the Kilo origin.
+
+    The ``verificationUrl`` is network-sourced (from the device-auth initiate
+    response). With an attacker-controlled base override it could point at a
+    phishing page that mimics Kilo's approval screen to capture the user's
+    interactive login credentials. Refuse anything that is not HTTPS on the
+    Kilo origin; the caller aborts the login on refusal rather than directing
+    the user's browser at an untrusted URL.
+    """
+    candidate = (url or "").strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        return None
+    host = (parsed.hostname or "").lower()
+    if host != _KILO_HOST and not host.endswith("." + _KILO_HOST):
+        return None
+    return candidate
+
+
 def kilo_api_base() -> str:
     """Resolve the Kilo API root used for device-auth and profile calls.
 
@@ -94,18 +197,24 @@ def kilo_api_base() -> str:
          (kept for fidelity with the TS client's ``ENV_KILO_API_URL``).
       2. Derived from ``KILOCODE_BASE_URL`` (the inference override already
          declared in ``PROVIDER_REGISTRY``) by stripping ``/api/<segment>``.
-      3. ``DEFAULT_KILO_API_BASE``.
+      3. Derived from ``PROVIDER_REGISTRY["kilocode"].inference_base_url``
+         (the single source of truth for the Kilo host).
 
-    No new ``HERMES_*`` behavioral env var is introduced — only Kilo's own
-    conventions are honored.
+    All overrides are validated with ``_validate_kilo_base_url`` (HTTPS +
+    Kilo origin) so the long-lived device-auth bearer is never shipped to a
+    non-Kilo or cleartext endpoint. No new ``HERMES_*`` behavioral env var is
+    introduced — only Kilo's own conventions are honored.
     """
+    fallback = _kilo_registry_base()
     override = (os.getenv("KILO_API_URL") or "").strip()
     if override:
-        return override.rstrip("/")
+        return _validate_kilo_base_url(override, fallback=fallback, env_name="KILO_API_URL")
     gateway_override = (os.getenv("KILOCODE_BASE_URL") or "").strip()
     if gateway_override:
-        return _strip_api_segment(gateway_override)
-    return DEFAULT_KILO_API_BASE
+        return _validate_kilo_base_url(
+            _strip_api_segment(gateway_override), fallback=fallback, env_name="KILOCODE_BASE_URL"
+        )
+    return fallback
 
 
 # ── Device-auth flow ────────────────────────────────────────────────────────
@@ -142,7 +251,10 @@ def _poll_device_auth(
     denial, expiry, or transport errors.
     """
     deadline = time.monotonic() + max(1, expires_in)
-    interval = max(1, min(_KILO_POLL_INTERVAL_SECONDS, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+    # Kilo's cadence is a fixed 3s (mirrors the upstream client's
+    # POLL_INTERVAL_MS = 3000); do NOT clamp it through the Nous cap, which
+    # would poll ~3x faster and risk a 429 aborting the whole login.
+    interval = max(1, _KILO_POLL_INTERVAL_SECONDS)
     url = f"{api_base}{_DEVICE_AUTH_POLL_PATH.format(code=code)}"
 
     while time.monotonic() < deadline:
@@ -154,6 +266,11 @@ def _poll_device_auth(
             raise RuntimeError("Kilo authorization denied by user")
         if response.status_code == 410:
             raise RuntimeError("Kilo authorization code expired")
+        if response.status_code == 429:
+            # Rate-limited mid-poll: back off and keep waiting rather than
+            # aborting the login. A transient 429 is not a terminal state.
+            time.sleep(interval * 2)
+            continue
         if not response.is_success:
             raise RuntimeError(
                 f"Failed to poll Kilo device authorization: {response.status_code}"
@@ -194,12 +311,24 @@ def kilo_device_auth_login(
         verification_url = str(auth_data["verificationUrl"])
         expires_in = int(auth_data["expiresIn"])
 
+        # The verificationUrl is network-sourced; refuse anything not on the
+        # Kilo origin so a tampered base override can't redirect the user's
+        # browser at a phishing page that mimics the Kilo approval screen.
+        trusted_url = _validate_kilo_verification_url(verification_url)
+        if trusted_url is None:
+            raise RuntimeError(
+                "Kilo device-auth returned an untrusted verification URL "
+                f"(expected an HTTPS URL on *.kilo.ai, got {verification_url!r}); "
+                "aborting login to avoid redirecting your browser at an untrusted page."
+            )
+        verification_url = trusted_url
+
         print()
         print("To continue:")
         print(f"  1. Open: {verification_url}")
         print(f"  2. If prompted, enter code: {code}")
 
-        if open_browser:
+        if open_browser and _can_open_graphical_browser():
             opened = webbrowser.open(verification_url)
             if opened:
                 print("  (Opened browser for verification)")
@@ -214,7 +343,7 @@ def kilo_device_auth_login(
             except Exception:
                 pass
 
-        effective_interval = max(1, min(_KILO_POLL_INTERVAL_SECONDS, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+        effective_interval = max(1, _KILO_POLL_INTERVAL_SECONDS)
         print(f"Waiting for approval (polling every {effective_interval}s)...")
 
         result = _poll_device_auth(client, api_base, code, expires_in)

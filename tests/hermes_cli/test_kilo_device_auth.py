@@ -7,6 +7,7 @@ cleanup. No live network calls — httpx is stubbed.
 """
 
 import json
+import logging
 import types
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from hermes_cli.kilo_auth import (
     _initiate_device_auth,
     _poll_device_auth,
     _strip_api_segment,
+    _validate_kilo_base_url,
     fetch_kilo_default_model,
     fetch_kilo_profile,
     kilo_api_base,
@@ -180,6 +182,7 @@ def test_poll_timeout_raises(monkeypatch):
 def test_device_auth_login_returns_token(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr("hermes_cli.kilo_auth._is_remote_session", lambda: False)
+    monkeypatch.setattr("hermes_cli.kilo_auth._can_open_graphical_browser", lambda: True)
     opened = []
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
 
@@ -497,3 +500,94 @@ def test_kilocode_in_oauth_capable_providers():
     from hermes_cli.auth_commands import _OAUTH_CAPABLE_PROVIDERS
 
     assert "kilocode" in _OAUTH_CAPABLE_PROVIDERS
+
+
+# ---------------------------------------------------------------------------
+# base URL / verification URL validation (security)
+# ---------------------------------------------------------------------------
+# The Kilo device-auth bearer is long-lived (~1 year, no refresh), so the
+# resolved API base and the network-sourced verification URL must be pinned
+# to the Kilo origin over HTTPS — mirroring _xai_validate_inference_base_url.
+
+def test_kilo_api_base_rejects_non_kilo_host(monkeypatch, caplog):
+    monkeypatch.setenv("KILO_API_URL", "https://attacker.example/v1")
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kilo_auth"):
+        base = kilo_api_base()
+    # Rejected override → safe fallback, never the attacker host.
+    assert base == DEFAULT_KILO_API_BASE
+    assert "attacker.example" not in base
+    assert any("not on the Kilo origin" in r.message for r in caplog.records)
+
+
+def test_kilo_api_base_rejects_non_https(monkeypatch, caplog):
+    monkeypatch.setenv("KILO_API_URL", "http://api.kilo.ai")
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kilo_auth"):
+        base = kilo_api_base()
+    assert base == DEFAULT_KILO_API_BASE
+    assert any("non-HTTPS" in r.message for r in caplog.records)
+
+
+def test_kilo_api_base_accepts_kilo_subdomain_override(monkeypatch):
+    monkeypatch.setenv("KILO_API_URL", "https://staging.kilo.ai")
+    assert kilo_api_base() == "https://staging.kilo.ai"
+
+
+def test_validate_kilo_base_url_contract():
+    # Accepted: kilo.ai and *.kilo.ai over HTTPS.
+    assert _validate_kilo_base_url("https://api.kilo.ai", fallback="f", env_name="t") == "https://api.kilo.ai"
+    assert _validate_kilo_base_url("https://staging.kilo.ai/api/gateway", fallback="f", env_name="t") == "https://staging.kilo.ai/api/gateway"
+    # Empty / missing → fallback.
+    assert _validate_kilo_base_url("", fallback="https://api.kilo.ai", env_name="t") == "https://api.kilo.ai"
+    # Rejected → fallback (never leaks the bearer elsewhere).
+    assert _validate_kilo_base_url("http://api.kilo.ai", fallback="https://api.kilo.ai", env_name="t") == "https://api.kilo.ai"
+    assert _validate_kilo_base_url("https://attacker.example", fallback="https://api.kilo.ai", env_name="t") == "https://api.kilo.ai"
+
+
+def test_device_auth_login_aborts_on_untrusted_verification_url(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("hermes_cli.kilo_auth._is_remote_session", lambda: False)
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+
+    client = _FakeClient(
+        post_responses=[_FakeResp(200, {"code": "C9", "verificationUrl": "https://attacker.example/approve?code=C9", "expiresIn": 60})],
+        get_responses=[],
+    )
+    _patch_httpx_client(monkeypatch, client)
+
+    with pytest.raises(RuntimeError, match="untrusted verification URL"):
+        kilo_device_auth_login()
+    # The phishing URL must never reach the browser.
+    assert opened == []
+
+
+def test_device_auth_login_skips_browser_when_console_only(monkeypatch):
+    """No graphical browser (headless/CLI-only) → don't auto-open; still succeed."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("hermes_cli.kilo_auth._is_remote_session", lambda: False)
+    monkeypatch.setattr("hermes_cli.kilo_auth._can_open_graphical_browser", lambda: False)
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+
+    client = _FakeClient(
+        post_responses=[_FakeResp(200, {"code": "C1", "verificationUrl": "https://app.kilo.ai/device-auth?code=C1", "expiresIn": 60})],
+        get_responses=[_FakeResp(200, {"status": "approved", "token": "tok", "userEmail": "a@b.c"})],
+    )
+    _patch_httpx_client(monkeypatch, client)
+
+    creds = kilo_device_auth_login()
+    assert creds["token"] == "tok"
+    # Console-browser guard prevented auto-open; user uses the printed URL.
+    assert opened == []
+
+
+def test_poll_backs_off_on_429(monkeypatch):
+    """A transient 429 during polling must back off and keep waiting, not abort."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    client = _FakeClient(get_responses=[
+        _FakeResp(429),
+        _FakeResp(202),
+        _FakeResp(200, {"status": "approved", "token": "tok-429", "userEmail": "u@x.io"}),
+    ])
+    result = _poll_device_auth(client, DEFAULT_KILO_API_BASE, "CODE", expires_in=60)
+    assert result["token"] == "tok-429"

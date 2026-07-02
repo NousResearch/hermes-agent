@@ -41,6 +41,8 @@ def build_cfg(args):
         cfg[k] = args.gen_model
     cfg["max_rounds"] = args.max_rounds
     cfg["answers_per_question"] = args.answers_per_question
+    if args.families:
+        cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
     return cfg
 
 
@@ -101,6 +103,10 @@ def build_parser():
     p.add_argument("--max-rounds", type=int, default=2)
     p.add_argument("--answers-per-question", type=int, default=4)
     p.add_argument("--judge-timeout", type=int, default=180)
+    p.add_argument("--families", action="store_true",
+                   help="run with the families layer on (lens-tagged questions; default: flat generator).")
+    p.add_argument("--premortem", choices=["auto", "on", "off"], default="auto",
+                   help="premortem lens setting when --families is on.")
     p.add_argument("--json", action="store_true")
     return p
 

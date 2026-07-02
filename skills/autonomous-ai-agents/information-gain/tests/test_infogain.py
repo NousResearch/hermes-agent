@@ -310,6 +310,18 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertTrue(pipeline._vantage_relevant({"goal": "deploy a service to a server", "decision": ""}))
         self.assertFalse(pipeline._vantage_relevant({"goal": "should I buy or rent a home", "decision": "advice"}))
 
+    def test_hint_matching_is_word_boundary(self):
+        # prefix-at-token-start keeps inflections ("deployment") but mid-word substrings no longer
+        # trip the gates ("report"⊅"repo", "rapid"⊅"api", "product"⊅"prod", "dropdown"⊅"drop")
+        self.assertTrue(pipeline._vantage_relevant({"goal": "the deployment environment", "decision": ""}))
+        self.assertTrue(pipeline._vantage_relevant({"goal": "clone the repo", "decision": ""}))
+        self.assertTrue(pipeline._vantage_relevant({"goal": "connect to the db", "decision": ""}))  # old "db " missed this
+        self.assertFalse(pipeline._vantage_relevant({"goal": "summarize the quarterly report", "decision": "rapid draft"}))
+        self.assertTrue(pipeline._premortem_relevant({"goal": "push to prod", "decision": ""}))
+        self.assertTrue(pipeline._premortem_relevant({"goal": "drop the orders table", "decision": ""}))
+        self.assertFalse(pipeline._premortem_relevant({"goal": "improve the product page", "decision": ""}))
+        self.assertFalse(pipeline._premortem_relevant({"goal": "add a dropdown to the form", "decision": ""}))
+
     def test_questions_prompt_family_lens_directive(self):
         contra = pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3,
                                            family={"name": "F", "scope": "s", "lens": "contrarian"})
@@ -330,6 +342,16 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertTrue(pipeline._premortem_relevant({"goal": "send the payment", "decision": "charge card"}))
         self.assertFalse(pipeline._premortem_relevant({"goal": "summarize this research paper",
                                                        "decision": "explain the findings"}))
+        # retrieval tasks over high-stakes ARTIFACTS must not trip the gate (#25 tier-1 eval:
+        # gmail-triage fired on the bare noun "email"; acting tasks all carry a verb hint)
+        self.assertFalse(pipeline._premortem_relevant(
+            {"goal": "summarize important unread email from this week", "decision": "which to flag"}))
+        self.assertFalse(pipeline._premortem_relevant(
+            {"goal": "get the top customers from the database", "decision": "which query to run"}))
+        self.assertTrue(pipeline._premortem_relevant(
+            {"goal": "send an email to the whole customer list", "decision": "what to say"}))
+        self.assertTrue(pipeline._premortem_relevant(
+            {"goal": "migrate the orders table", "decision": "how to run the migration"}))
 
     def test_families_prompt_premortem_block_is_gated(self):
         on = pipeline.families_prompt("p", {"goal": "g", "decision": "d"}, 3, True, True, premortem=True)
@@ -717,6 +739,24 @@ class TestModeConfig(unittest.TestCase):
         self.assertIn("premortem", cfg["families"])
         self.assertNotIn("premortem", infogain.DEFAULTS)
 
+    def test_families_model_default_and_cli_override(self):
+        # default: the FAMILIES constant; --question-gen-model must NOT leak into it
+        cfg = self._cfg(["--question-gen-model", "fast", "a problem"])
+        self.assertEqual(cfg["families"]["families_model"], infogain.FAMILIES["families_model"])
+        cfg = self._cfg(["--families-model", "fast", "a problem"])
+        self.assertEqual(cfg["families"]["families_model"], "fast")
+
+    def test_families_model_env_and_cli_precedence(self):
+        old = os.environ.get("INFOGAIN_FAMILIES_MODEL")
+        try:
+            os.environ["INFOGAIN_FAMILIES_MODEL"] = "qwen"
+            self.assertEqual(self._cfg(["p"])["families"]["families_model"], "qwen")
+            self.assertEqual(self._cfg(["--families-model", "fast", "p"])["families"]["families_model"],
+                             "fast")
+        finally:
+            os.environ.pop("INFOGAIN_FAMILIES_MODEL", None) if old is None else os.environ.update(
+                {"INFOGAIN_FAMILIES_MODEL": old})
+
     # ── value_judge_mode selector (#24, off by default) ──
     def test_value_judge_mode_defaults_absolute(self):
         self.assertEqual(self._cfg(["a problem"])["value_judge_mode"], "absolute")
@@ -778,6 +818,8 @@ class TestModeConfig(unittest.TestCase):
         self.assertIn("[weight 0.60]", md)
 
 
+@unittest.skipUnless(os.environ.get("INFOGAIN_TEST_LIVE"),
+                     "live suite: set INFOGAIN_TEST_LIVE=1 or run tests/run.py live")
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
 class TestLive(unittest.TestCase):
     @classmethod

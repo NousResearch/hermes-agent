@@ -364,6 +364,83 @@ not just between-regime.**
 a realized-pairwise measurement would be pointless. The between-question validity is intact (per-answer
 projected_delta vs realized_change Pearson +0.39; per-question projected-EVSI vs realized-EVSI healthy).
 
+## Pre-mortem lens tier-2 (#25) + selection policies (#23) — realized two-arm (2026-07-01)
+
+**Setup:** `validate_evsi --families --premortem off|on --source all_scored --keep-responses`,
+6 prompts (security-audit, deploy-app, add-auth, query-db + read-only controls gmail-triage,
+research-ratelimit) × 2 arms, all-fast pinned models (gen + elicit + judge), max_answers 2.
+off = 152 answer-rows / 76 questions; on = 184 / 92. Analyzed with `analyze_evsi` (`per_lens` +
+`selection_policies`, added for this study).
+
+**#25 realized verdict — the lens EARNS its bucket slots (tier-1's projected win is real):**
+- On-arm per-lens realized_regret (P′-weighted): **premortem 0.416** — the TOP lens (scoped 0.297,
+  contrarian 0.240, vantage 0.253), despite the lowest-but-one projected value (0.316). Its
+  realized_change (0.612) and realized_stakes (0.508) also lead.
+- **Failure-surface vs read-only differential** (the pre-registered do-no-harm evidence): on
+  failure-surface prompts pm questions realize regret **0.602 vs 0.386** for all other lenses
+  (~1.6×); on read-only prompts (lens FORCED on) pm regret is **0.045** — below even the other
+  questions' 0.072 — and scoring prices them at 0.064, i.e. correctly pruned. Auto-on is now
+  confirmed at both ladder tiers; the rollback trigger stays untripped.
+- Note the asymmetry: on failure surfaces the risk-neutral score (0.443) *under*-prices realized
+  pm value (0.602). The deferred risk-averse tilt remains the known lever — still scoring-side,
+  still FROZEN.
+
+**#23 selection-policy verdict — do NOT flip `rel_keep_frac`:** realized_regret capture per policy
+(on-arm; ~15.3 scored questions/prompt) — abs≥0.30: 0.57 @ 8.2 kept · rel≥0.6·top: 0.46 @ 6.7 ·
+top-5: 0.34 · top-3: 0.19. Every policy sits within ~0.03 of its **size-matched random baseline**
+(keeping k of n captures ≈ k/n under weak ranking): 0.54, 0.44, 0.33, 0.20 respectively. So no
+q_value-based selection rule adds within-task lift over its size on this data — the calibrated
+absolute floor works by *size adaptation*, not within-task discrimination, and rank-relative has
+no edge to justify flipping. The **within-task ranking weakness stays the binding constraint**
+(here P1c: value-vs-regret mean within-prompt ρ = +0.13).
+
+**Instrument notes:**
+- Between-task calibration is healthy on this all-fast dataset: per-answer projected-Δ vs
+  realized_change ρ ≈ 0.50–0.54; per-question value vs realized_change ρ ≈ 0.60; projected-EVSI
+  vs realized-EVSI ρ ≈ 0.78–0.83.
+- **P1c is instrument-sensitive:** on all-fast rows U-only ranks best within-task (+0.23) with
+  √(U·EVSI) at +0.13 — the reverse of the deepseek-elicited #24 ablation (√ best, +0.360). A
+  within-task ablation verdict evidently does not transfer across elicit/judge models; formula
+  FROZEN regardless.
+- Saturation confirmed live: 33–36% of realized_change rows sit exactly at 0/1 (mostly 1.0).
+- **Graded change judge: REJECTED (negative result).** `rejudge.py` A/B on 60 stored pairs
+  (identical texts, same fast judge): endpoint mass drops 36.7% → 13.3% as intended, but the
+  instrument **collapses onto its own anchors** (4 distinct values vs the original's 7) and the
+  q_value↔realized link degrades 0.60 → 0.38 (agreement ρ between instruments 0.76). Same
+  central-tendency-onto-anchors failure as the earlier graded realized-stakes attempt (12/18 at
+  0.6). The original 0/1-anchored judge stays the default; `--graded-change-judge` + `rejudge.py`
+  remain as the harness for testing future variants (finer anchors, stronger judge model) cheaply
+  on stored responses.
+
+### Independent replication (#25, same day, different instruments) — verdict CONFIRMED ×2
+
+A second, independently designed run of the ladder (different session; deepseek realized judge
+instead of all-fast, `--source bucket` instead of `all_scored`, different prompt subset:
+deploy-app, setup-ci, whatsapp-send, fix-test + read-only gmail-reply, slack-catchup) reproduced
+both verdicts, plus two pieces the primary study didn't cover:
+
+- **Bank-wide two-arm scan (34 prompts × off/auto + forced-on LIFE probe, pre-gate-fix):** lens
+  fired on 14/34; on failure-surface prompts its questions survive on merit (deploy-app 3/3 kept
+  at 0.42–0.59, setup-ci 0.74/0.57, whatsapp-send 3/3, fix-test 0.51/0.58); on read-only misfire
+  prompts scoring pruned 17/18 (single borderline 0.30 keeper). LIFE controls: frac-below-thr
+  33.9%→32.7% (no inflation), buckets byte-identical sizes. This scan ran with the OLD noun-tripping
+  gate — i.e. even pre-fix, self-pruning alone already held the do-no-harm line; the gate fix
+  removes the wasted generation calls (~+1.1 candidates/prompt bank-wide).
+- **Realized (deepseek judge):** premortem again TOP lens — per-question realized_change 0.984,
+  realized_regret 0.765 vs scoped 0.476 / contrarian 0.346 (n_q=6, all on the 3 failure-surface
+  prompts; zero premortem questions entered read-only buckets). Its keepers are the archetypes
+  (rollback strategy, pending schema migrations, failed-build security validation).
+- **Rollback trigger #2 (adjudicator `diversity`) explicitly cleared:** `run_evals.py --families`
+  two-arm over the CI cases — mean diversity 0.65 (off) → 0.70 (auto); one case −0.2 within
+  single-rep judge noise; reverse-string degenerate (empty bucket both arms). Acceptability
+  identical across arms (2/4; both failures arm-independent — usaw known-bad, and reverse-string
+  now fails `framing_accuracy`=0.2 in BOTH arms: pre-existing, not premortem, worth a look).
+
+Same-day convergence from two differently-confounded instruments (all-fast vs fast-gen/deepseek-judge;
+all_scored vs bucket; 14-cell vs 34-prompt scan) is the strongest form of this evidence: **auto-on
+stands; rollback trigger untripped on both criteria.** Raw runs: `~/.hermes/tmp/infogain_premortem/`
+(scan_off/scan_auto/scan_life_forced_on, ve_off/ve_auto, evals_off/evals_auto).
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

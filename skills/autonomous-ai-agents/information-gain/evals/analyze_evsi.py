@@ -94,6 +94,7 @@ def by_question(rows):
         mean_stakes = sum(x["_pn"] * x.get("stakes", 0.0) for x in rs)  # projected stakes (for ablation)
         out.append({
             "prompt": prompt, "question": q, "n_ans": len(rs),
+            "lens": rs[0].get("lens") or "", "family": rs[0].get("family") or "",
             "q_u": rs[0]["q_u"], "q_evsi": rs[0]["q_evsi"], "q_value": rs[0]["q_value"],
             "max_delta": max_delta, "mean_delta": mean_delta, "mean_stakes": mean_stakes,
             "realized_change": realized_change, "realized_evsi": realized_evsi,
@@ -138,6 +139,99 @@ def p1a(rows, questions):
     print(f"  projected EVSI  vs realized_change : Spearman ρ = {spearman(qe, qr)}")
     print(f"  projected value vs realized_change : Spearman ρ = {spearman(qv, qr)}")
     print(f"  projected EVSI  vs realized_EVSI   : Spearman ρ = {spearman(qe, qre)}")
+
+
+def per_lens(questions):
+    """Per-lens attribution (#25 premortem eval): question-level realized value grouped by the
+    generation lens carried on validate_evsi rows. Empty lens = flat generator (or pre-lens run).
+    Prints n, mean projected value, and the realized targets so a two-arm off/on comparison can
+    see whether a lens's questions earn their bucket slots."""
+    by = defaultdict(list)
+    for q in questions:
+        by[q.get("lens") or "(none)"].append(q)
+    if set(by) <= {"(none)"}:
+        return  # flat run — nothing to attribute
+    print("\n" + "=" * 70)
+    print("PER-LENS ATTRIBUTION (question-level, P'-weighted realized targets)")
+    print("=" * 70)
+    print(f"  {'lens':<12}{'n_q':>4}{'value':>8}{'r_change':>10}{'r_stakes':>10}{'r_regret':>10}")
+    for lens, qs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {lens:<12}{len(qs):>4}"
+              f"{sum(q['q_value'] for q in qs)/len(qs):>8.3f}"
+              f"{sum(q['realized_change'] for q in qs)/len(qs):>10.3f}"
+              f"{sum(q['realized_stakes'] for q in qs)/len(qs):>10.3f}"
+              f"{sum(q['realized_regret'] for q in qs)/len(qs):>10.3f}")
+
+
+def _pick_abs(qs, floor):
+    return [q for q in qs if q["q_value"] >= floor]
+
+
+def _pick_topk(qs, k):
+    return sorted(qs, key=lambda q: -q["q_value"])[:k]
+
+
+def _pick_rel(qs, frac, abs_floor=0.0):
+    top = max(q["q_value"] for q in qs)
+    keep = max(abs_floor, frac * top)
+    return [q for q in qs if q["q_value"] >= keep]
+
+
+# Selection policies under comparison (#23 evidence): the calibrated absolute floor (live default),
+# top-K by rank (what the investigator wrapper uses — absolute thresholds mis-fire across regimes),
+# and the built-but-off rank-relative keep (`rel_keep_frac`, keep >= max(floor, frac·top)).
+SELECTION_POLICIES = {
+    "abs>=0.30": lambda qs: _pick_abs(qs, 0.30),
+    "top3-rank": lambda qs: _pick_topk(qs, 3),
+    "top5-rank": lambda qs: _pick_topk(qs, 5),
+    "rel>=0.6*top": lambda qs: _pick_rel(qs, 0.6),
+    "max(0.30,0.6*top)": lambda qs: _pick_rel(qs, 0.6, abs_floor=0.30),
+}
+
+
+def selection_policies(questions, min_q=4):
+    """Which SELECTION rule best captures realized value? For each prompt with enough scored
+    questions, apply each policy to the projected ranking and measure the fraction of the prompt's
+    total positive realized_regret the kept set captures, and at what size. Post-hoc only — the
+    scoring formula is untouched; this is the evidence for/against flipping `rel_keep_frac`."""
+    by_prompt = defaultdict(list)
+    for q in questions:
+        if q.get("realized_regret") is not None:
+            by_prompt[q["prompt"]].append(q)
+    by_prompt = {p: qs for p, qs in by_prompt.items() if len(qs) >= min_q}
+    if not by_prompt:
+        return None
+    print("\n" + "=" * 70)
+    print(f"SELECTION POLICIES — realized_regret capture (n={len(by_prompt)} prompts, "
+          f">= {min_q} questions each)")
+    print("=" * 70)
+    print(f"  {'policy':<20}{'capture':>9}{'kept/prompt':>13}{'kept_regret':>13}{'drop_regret':>13}")
+    out = {}
+    for name, pick in SELECTION_POLICIES.items():
+        caps, sizes, kept_r, drop_r = [], [], [], []
+        for p, qs in by_prompt.items():
+            kept = pick(qs)
+            kept_ids = {id(q) for q in kept}
+            total = sum(max(q["realized_regret"], 0.0) for q in qs)
+            if total > 0:
+                caps.append(sum(max(q["realized_regret"], 0.0) for q in kept) / total)
+            sizes.append(len(kept))
+            kept_r += [q["realized_regret"] for q in kept]
+            drop_r += [q["realized_regret"] for q in qs if id(q) not in kept_ids]
+        out[name] = {
+            "capture": round(sum(caps) / len(caps), 3) if caps else None,
+            "mean_kept": round(sum(sizes) / len(sizes), 2),
+            "kept_regret_mean": round(sum(kept_r) / len(kept_r), 3) if kept_r else None,
+            "dropped_regret_mean": round(sum(drop_r) / len(drop_r), 3) if drop_r else None,
+        }
+        o = out[name]
+        print(f"  {name:<20}{(o['capture'] if o['capture'] is not None else 0):>9.2f}"
+              f"{o['mean_kept']:>13.1f}"
+              f"{(o['kept_regret_mean'] if o['kept_regret_mean'] is not None else 0):>13.3f}"
+              f"{(o['dropped_regret_mean'] if o['dropped_regret_mean'] is not None else 0):>13.3f}")
+    print("  (capture = share of the prompt's positive realized_regret the kept set retains; a good"
+          "\n   policy keeps capture high at a small kept/prompt and leaves dropped_regret low)")
+    return out
 
 
 # ---- P1c ---------------------------------------------------------------------
@@ -283,6 +377,8 @@ def main(argv):
     print(f"\nloaded {len(rows)} answer-rows / {len(questions)} questions / "
           f"{len({q['prompt'] for q in questions})} prompts from {path}\n")
     p1a(rows, questions)
+    per_lens(questions)
+    selection_policies(questions)
     # realized_regret (realized EVSI) is the principled WITHIN-TASK target — what q_value predicts.
     # The ablation shows whether `stakes-only`/`U-only` match `value √(U·EVSI)` within-task (Phase 3
     # structural diagnosis; formula stays FROZEN regardless).

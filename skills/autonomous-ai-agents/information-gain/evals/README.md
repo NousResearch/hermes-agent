@@ -10,11 +10,11 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
 | `testbank.py` | 34-prompt / 17-category bank (LIFE control + agentic BANK) + `REALIZED_SUBSET`. Imported by the others. | — |
 | `benchmark.py` | prompt × config × rep matrix; usage + adjudicated scores per run. | `benchmark-findings.md` |
 | `adjudicator.py` | LLM judge for a single run (framing/relevance/value/diversity/calibration). | — |
-| `score_scan.py` | cheap value-structure scan across the bank (U/EVSI/value/stakes/Δ/derivable, per category). No realized_change. | `evsi-validation-findings.md` §Domain sensitivity |
+| `score_scan.py` | cheap value-structure scan across the bank (U/EVSI/value/stakes/Δ/derivable, per category). No realized_change. Default pool = agentic BANK; `--include-life` adds the LIFE control. `--families [--premortem on\|off\|auto]` runs the families layer (lens-tagged rows) for the #25 two-arm scan. | `evsi-validation-findings.md` §Domain sensitivity |
 | `saturation_scan.py` | breadth sweep. Default: distinct-target **coverage** (generation-only). `--scored`: full-pipeline **value** saturation (max_value + #≥floor per breadth). | §Stop + breadth calibration |
 | `compare_domains.py` | life vs agentic side-by-side of the value distributions. | §Domain sensitivity |
-| `validate_evsi.py` | inject projected answer → re-derive → judge **realized change** (+ realized **stakes**). `--source bucket\|all_scored`. `--ab` A/Bs absolute-vs-pairwise elicitation on one shared realized set (`--elicit-model` to set a host-local judge). | §P1a, §Agentic realized calibration, §Comparative elicitation |
-| `analyze_evsi.py` | post-hoc calibration + formula ablations. On an `--ab` run, prints the **#24 gate**: per-method within-task ρ + adopt/keep verdict. | §P1a / §P1c / §Comparative elicitation |
+| `validate_evsi.py` | inject projected answer → re-derive → judge **realized change** (+ realized **stakes**). `--source bucket\|all_scored`. `--ab` A/Bs absolute-vs-pairwise elicitation on one shared realized set (`--elicit-model` to set a host-local judge). `--families [--premortem …]` runs the families layer; rows carry `lens`/`family`. | §P1a, §Agentic realized calibration, §Comparative elicitation |
+| `analyze_evsi.py` | post-hoc calibration + formula ablations. On an `--ab` run, prints the **#24 gate**: per-method within-task ρ + adopt/keep verdict. On a `--families` run, prints **per-lens attribution** (#25). | §P1a / §P1c / §Comparative elicitation |
 | `analyze_validity.py` | de-confounded per-regime analysis (stakes-judge calibration, regret). | §realized-stakes instrument |
 
 *(End-to-end wrapper A/B — `validate_wrapper.py` — now lives in the `investigator` skill's `evals/`.)*
@@ -41,6 +41,18 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
 - **Wrapper end-to-end is task-dependent** (de-confounded 1-1 at k=1): helps where a clarification
   shapes the work, redundant where a capable agent self-investigates. Distinctive value = user-only
   constraints. The grounded answerer's **cwd** must be the user's project.
+
+## Running the tests
+
+```bash
+python3 tests/run.py            # basic suite (DEFAULT): all mocked classes — offline, ~seconds
+OLLAMA_URL=http://localhost:11434/api/chat HERMES_HOME=~/.hermes python3 tests/run.py live   # model-calling classes only
+OLLAMA_URL=http://localhost:11434/api/chat HERMES_HOME=~/.hermes python3 tests/run.py all
+```
+
+Direct runs (`python3 tests/test_infogain.py` etc.) are basic-by-default too — the live classes
+(`TestLive`, `TestEvalLive`) skip unless `INFOGAIN_TEST_LIVE=1` is set (run.py sets it for
+`live`/`all`).
 
 ## Run examples
 

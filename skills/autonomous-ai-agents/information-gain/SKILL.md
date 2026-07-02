@@ -117,7 +117,7 @@ bar, it says so — the prompt is already specified well enough for a good respo
 
 ## How it works (4 stages, looped)
 
-1. **Frame + baseline plan** (`question_gen_model`) — restate goal/decision and the plan you'd give
+1. **Frame + baseline plan** (`plan_model`) — restate goal/decision and the plan you'd give
    *right now* (folding in any `--evidence`); everything is scored as change from this baseline.
 2. **Project answers** (`answer_model`, parallel) — plausible answers + probabilities, plus how
    *derivable* each question is (already inferable from the prompt?).
@@ -155,7 +155,10 @@ self-prune because their questions score low individually. The `family` tag adds
 diversity kernel (`family > target > question`) so selection **spreads across families**, and the
 report is **grouped by family** (non-scoped lenses labelled). Turn off with `--no-families` (or
 `INFOGAIN_FAMILIES=off`) for the flat generator; force the pre-mortem lens with `--premortem on|off|auto`
-(or `INFOGAIN_PREMORTEM`). Cost ≈ `questions_per_family × (n_scoped + contrarian + vantage + premortem)`
+(or `INFOGAIN_PREMORTEM`). The families layer runs on its **own model** (`families_model`, default `glm`
+— **not** covered by `--question-gen-model`); pin it with `--families-model <alias>` (or
+`INFOGAIN_FAMILIES_MODEL`) for offline/reproducible runs. Cost ≈
+`questions_per_family × (n_scoped + contrarian + vantage + premortem)`
 candidates (~12–18 at defaults), with a one-call fallback to the flat generator if family generation
 yields nothing.
 
@@ -184,6 +187,9 @@ flag/env still wins (e.g. `--gen-samples 5 --gen-temperature 1.0`).
 Defaults live as module constants in `scripts/infogain.py`, overridable by `INFOGAIN_*` env vars
 or CLI flags (e.g. `--min-bucket-size 5`, `--discard-threshold 0.5`, `--answer-model qwen`). Model
 names are `ask`-style aliases (`glm`, `deepseek`, `fast`, `qwen`, …) resolved via `model_utils`.
+`--value-judge-mode absolute|pairwise` selects the Δplan/stakes elicitation (`pairwise` =
+forced-choice → Bradley-Terry, the #24 experiment — its powered A/B closed **keep `absolute`**, so
+the flag exists for re-testing, not for live use).
 
 ## Dependency
 

@@ -47,6 +47,7 @@ def scan_prompt(pr, cfg):
         "candidates": len(sa), "bucket": len(r["bucket"]),
         "frac_below_thr": round(sum(1 for v in vals if v < thr) / len(vals), 3) if vals else None,
         "U": [q.get("u") for q in sa], "evsi": [q.get("evsi") for q in sa],
+        "lens": [q.get("lens") or "" for q in sa],
         "value": vals, "derivable": [q.get("derivable_prob") for q in sa],
         "stakes": [a.get("stakes") for a in ans], "delta": [a.get("delta_plan") for a in ans],
     }
@@ -90,6 +91,10 @@ def main(argv=None):
     p.add_argument("--ids", nargs="*", help="subset of prompt ids (default: whole bank).")
     p.add_argument("--gen-model", default="fast")
     p.add_argument("--include-life", action="store_true", help="also scan the LIFE control pool.")
+    p.add_argument("--families", action="store_true",
+                   help="run with the families layer on (lens-tagged questions; default: flat generator).")
+    p.add_argument("--premortem", choices=["auto", "on", "off"], default="auto",
+                   help="premortem lens setting when --families is on.")
     args = p.parse_args(argv)
 
     cfg = dict(infogain.DEFAULTS)
@@ -97,8 +102,10 @@ def main(argv=None):
         cfg[k] = args.gen_model
     cfg["max_rounds"] = 1
     cfg["mode"] = "focus"  # value_judge stays at the shipped deepseek default
+    if args.families:
+        cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
 
-    pool = testbank.ALL if args.include_life else testbank.LIFE + testbank.BANK
+    pool = testbank.ALL if args.include_life else testbank.BANK
     prompts = [x for x in pool if not args.ids or x["id"] in args.ids]
     rows, t0 = [], time.time()
     for pr in prompts:

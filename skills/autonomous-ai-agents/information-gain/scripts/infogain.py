@@ -111,7 +111,9 @@ def _truthy(s):
 def _resolve_families(args):
     """families config with `enabled` resolved: CLI --families/--no-families > INFOGAIN_FAMILIES env
     > FAMILIES['enabled']. (Kept out of the scalar DEFAULTS auto-loop on purpose.)
-    `premortem` lens: CLI --premortem on|off|auto > INFOGAIN_PREMORTEM env > FAMILIES['premortem']."""
+    `premortem` lens: CLI --premortem on|off|auto > INFOGAIN_PREMORTEM env > FAMILIES['premortem'].
+    `families_model`: CLI --families-model > INFOGAIN_FAMILIES_MODEL env > FAMILIES['families_model']
+    (NOT covered by --question-gen-model — the families layer keeps its own model)."""
     fam = dict(FAMILIES)
     cli = getattr(args, "families", None)
     env = os.environ.get("INFOGAIN_FAMILIES")
@@ -122,6 +124,21 @@ def _resolve_families(args):
     pm = getattr(args, "premortem", None) or os.environ.get("INFOGAIN_PREMORTEM")
     if pm not in (None, ""):
         fam["premortem"] = str(pm).strip().lower()
+    fm = getattr(args, "families_model", None) or os.environ.get("INFOGAIN_FAMILIES_MODEL")
+    if fm not in (None, ""):
+        fam["families_model"] = str(fm).strip()
+    return fam
+
+
+def families_cfg(premortem="auto", families_model=None):
+    """Families block for a harness-built cfg. The eval harnesses call run() directly with
+    cfg = dict(DEFAULTS), which has NO 'families' key — so they silently ran the flat generator
+    and never exercised the families/lens layer. Harnesses opt in via this helper (and can pin
+    families_model to their --gen-model for cost parity with the other stages)."""
+    fam = dict(FAMILIES)
+    fam["premortem"] = str(premortem).strip().lower()
+    if families_model:
+        fam["families_model"] = families_model
     return fam
 
 
@@ -672,6 +689,10 @@ def build_parser():
                         "failed — what unknown would have prevented it?). 'auto' (default — gate on "
                         "failure-surface tasks) | 'on' | 'off'. Only applies when families are on. "
                         "(Special-cased outside the auto-flags.)")
+    p.add_argument("--families-model", default=None,
+                   help="Model alias for the families layer (family + per-family question "
+                        "generation). Defaults to the FAMILIES constant ('glm'); NOT covered by "
+                        "--question-gen-model. (Special-cased outside the auto-flags.)")
     # tunable overrides
     for key in DEFAULTS:
         flag = "--" + key.replace("_", "-")

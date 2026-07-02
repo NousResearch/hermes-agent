@@ -12,21 +12,36 @@ that makes per-factor (stakes) validation unnecessary. Cut back to what changes 
 
 **Cut / defer (YAGNI):**
 - **Pairwise stakes instrument + realized-stakes decomposition** — drop; the end-to-end test covers it.
+  *(Comparative elicitation was later built anyway as off-by-default #24 and **CLOSED: powered null,
+  keep absolute** — see the #24 STATUS block below. The realized-pairwise judge stays unbuilt.)*
 - **Formula changes** (drop-U, switch to max-Δ, simplify √) — don't; keep the frozen formula, no churn
   without a decision-forcing reason (U is needed in-domain — settled).
 - **NOT_FOUND revival + `ctx_version` state machine** — defer; start with answered-facts + a plain gap
   record, add revival only if a real run shows it's needed.
 - **Rank-relative change in `voi.py` (#23)** — defer; the wrapper takes **top-K by rank** from the
   ranked list, sidestepping the absolute threshold without touching the skill.
-- **More eval harnesses** — stop; we have enough.
+  *(STATUS: a rank-relative keep IS built — `rel_keep_frac`, **off by default**; the "now REQUIRED"
+  in §Revised-plan-4 below refers to the wrapper's top-K selection, which is live. VERDICT
+  (2026-07-01, `analyze_evsi.selection_policies` on the #25 tier-2 realized data): **stays off** —
+  every q_value-based policy captured realized_regret within ~0.03 of its size-matched random
+  baseline, so rank-relative has no within-task edge over the calibrated absolute floor. See
+  `evsi-validation-findings.md` §"Pre-mortem lens tier-2 (#25) + selection policies (#23)".)*
+- **More eval harnesses** — stop; we have enough. *(One instrument exception since: `evals/rejudge.py`
+  re-judges STORED responses so judge variants can be A/B'd without re-paying a realized pass.)*
 
 **Keep / do (simple, evidence-backed):**
-1. **Minimal iterate-context wrapper** (`scripts/iterate.py`): rank → top-K by rank → grounded `ask`
-   answers → append tombstone facts → re-rank → stop on a relative floor or `max_rounds` → final
-   response. Configurable `K`/`max_rounds` + `stop_reason`. No revival machinery.
-2. **Validate end-to-end — falls out of (1):** run the wrapper answering **top-K vs bottom-K**,
-   blind-judge the two final responses; top should win (and the curve shows the floor). One artifact.
+1. **Minimal iterate-context wrapper** — **DONE**; lives in the sibling `investigator` skill
+   (`../investigator/scripts/iterate.py`, see §Phase-2 "Where it lives"). Rank → top-K by rank →
+   grounded `ask` answers → append tombstone facts → re-rank → stop on a relative floor or
+   `max_rounds` → final response. No revival machinery.
+2. **Validate end-to-end** — **DONE** (de-confounded k=1): task-dependent win — helps where a
+   clarification shapes the work, redundant where a capable agent self-investigates; distinctive
+   value = user-only constraints. See `evsi-validation-findings.md` §wrapper.
 3. **Only if (2) says the ranking is the weak link** → revisit elicitation/thresholds. Evidence-gated.
+   *(The within-task weakness (ρ≈0.34) was probed by #24 — pairwise elicitation did NOT fix it — and
+   by the graded change judge — REJECTED, it anchor-clusters and blurs the q_value link (see
+   `evsi-validation-findings.md` §tier-2). Within-task ranking remains open; selection policies show
+   no q_value rule beats size-matched random within-task, so the floor's value is size adaptation.)*
 
 Keeps the original "validate before you wrap" intent — the simplest valid test *is* running the
 minimal wrapper two ways. Sections below are retained as history/rationale.
@@ -44,7 +59,9 @@ calibration) changed the plan in five concrete ways:
 3. **`U` stays.** It's alive in agentic (sd 0.26) and is the ask-vs-find-out discriminator. The life-only
    "drop U" is dead. Freeze vindicated.
 4. **Rank-relative selection is now REQUIRED** (#23), not conditional — the absolute threshold mis-fires
-   across regimes (61% discarded).
+   across regimes (61% discarded). *(STATUS: satisfied at the WRAPPER layer — the investigator selects
+   top-K by rank. Inside the skill, `rel_keep_frac` is built but off; flipping it is gated on
+   `analyze_evsi.selection_policies` evidence, not assumed.)*
 5. **Phase 2 seam is visible now.** The *go-find-out* regime (high `derivable_prob` → U-gate fires) is
    exactly the grounded-research trigger the wrapper consumes — the skill already routes ask-vs-research.
 
@@ -131,6 +148,11 @@ limitation, not by a negative result**; the Δ-half stands (agentic per-answer �
 > absolute (no regression). This targets the within-task ranking weakness (ρ≈0.34) directly; the
 > projected-Δ/stakes elicitation is the first application, realized-pairwise stakes (the clean #21
 > floor) the follow-up. See `design-decisions.md` §"Comparative elicitation (#24)".
+>
+> **OUTCOME: #24 CLOSED (powered 12-prompt A/B) — keep `absolute`.** Pairwise is slightly worse on
+> every realized target (regret abs +0.360 vs pw +0.204, loses 9/12); the realized-pairwise judge is
+> NOT built (pointless). Positive side-finding: the p1c ablation ranks `√(U·EVSI)` best within-task,
+> so the frozen formula is validated there too. See `evals/README.md` §Headline results.
 
 **Exit:** an EVSI we've shown predicts realized improvement (or a recalibrated one that does).
 

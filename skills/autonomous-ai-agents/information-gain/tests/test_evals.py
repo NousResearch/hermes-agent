@@ -22,6 +22,7 @@ try:
     import infogain  # noqa: E402
     import adjudicator  # noqa: E402
     import analyze_evsi  # noqa: E402
+    import rejudge  # noqa: E402
     import validate_evsi  # noqa: E402
     _OK = True
 except SystemExit:
@@ -179,6 +180,38 @@ class TestAnalyzeEvsi(unittest.TestCase):
 
 
 @unittest.skipUnless(_OK, "skill scripts not importable")
+class TestSelectionPolicies(unittest.TestCase):
+    """#23 evidence machinery: policy pickers + realized_regret capture accounting."""
+
+    def _q(self, prompt, qv, regret):
+        return {"prompt": prompt, "question": f"q{qv}", "q_value": qv, "realized_regret": regret}
+
+    def test_pickers(self):
+        qs = [self._q("P", v, v) for v in (0.9, 0.6, 0.5, 0.2, 0.1)]
+        self.assertEqual({q["q_value"] for q in analyze_evsi._pick_abs(qs, 0.30)}, {0.9, 0.6, 0.5})
+        self.assertEqual(len(analyze_evsi._pick_topk(qs, 3)), 3)
+        # rel 0.6*top = 0.54 -> keeps 0.9, 0.6; hybrid floor cannot go below the abs floor
+        self.assertEqual({q["q_value"] for q in analyze_evsi._pick_rel(qs, 0.6)}, {0.9, 0.6})
+        self.assertEqual({q["q_value"] for q in analyze_evsi._pick_rel(qs, 0.1, abs_floor=0.30)},
+                         {0.9, 0.6, 0.5})
+
+    def test_capture_accounting(self):
+        # one prompt, 4 questions; all positive regret lives in the top two by q_value
+        qs = [self._q("P", 0.9, 0.8), self._q("P", 0.7, 0.4),
+              self._q("P", 0.2, 0.0), self._q("P", 0.1, 0.0)]
+        out = analyze_evsi.selection_policies(qs, min_q=4)
+        self.assertIsNotNone(out)
+        self.assertAlmostEqual(out["top3-rank"]["capture"], 1.0, places=6)
+        self.assertAlmostEqual(out["rel>=0.6*top"]["capture"], 1.0, places=6)
+        self.assertEqual(out["top3-rank"]["mean_kept"], 3.0)
+        self.assertEqual(out["rel>=0.6*top"]["mean_kept"], 2.0)  # tighter set, same capture
+
+    def test_returns_none_when_too_few_questions(self):
+        qs = [self._q("P", 0.9, 0.8)]
+        self.assertIsNone(analyze_evsi.selection_policies(qs, min_q=4))
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
 class TestValidateEvsiRows(unittest.TestCase):
     """The realized rows must carry lens/family so analyze_evsi can attribute value per lens."""
 
@@ -220,6 +253,70 @@ class TestValidateEvsiRows(unittest.TestCase):
         self.assertEqual(rows[0]["family"], "")
 
 
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestGradedJudgeAndRejudge(unittest.TestCase):
+    """De-saturated realized-change instrument (opt-in) + the offline instrument A/B."""
+
+    def test_graded_judge_prompt_has_midscale_anchors(self):
+        sent = {}
+
+        def fake_call(model, prompt, timeout, **kw):
+            sent["prompt"] = prompt
+            return {"reason": "r", "change": 1.7}, None  # out-of-range -> must clamp
+
+        with mock.patch.object(validate_evsi.pipeline, "_call_json", side_effect=fake_call):
+            v = validate_evsi.change_judge_graded("p", "A", "B", "fast", 10)
+        self.assertEqual(v, 1.0)  # clamped
+        for anchor in ("0.2", "0.4", "0.7", "FULL scale"):
+            self.assertIn(anchor, sent["prompt"])
+
+    def test_run_prompt_uses_change_fn_and_keeps_responses(self):
+        record = {"question": "Q", "target": "t",
+                  "answers": [{"answer": "a", "prob": 0.5, "delta_plan": 0.4, "stakes": 0.3}]}
+        fake_result = {"framing": {"baseline_plan": "B"}, "all_scored": [record]}
+        with mock.patch.object(validate_evsi.infogain, "run", return_value=fake_result), \
+             mock.patch.object(validate_evsi.pipeline, "resolve_alias", side_effect=lambda m: m), \
+             mock.patch.object(validate_evsi.pipeline, "frame_and_plan",
+                               return_value=({"baseline_plan": "B2"}, None)), \
+             mock.patch.object(validate_evsi, "change_judge", return_value=0.2) as orig, \
+             mock.patch.object(validate_evsi, "change_judge_graded", return_value=0.4) as graded, \
+             mock.patch.object(validate_evsi, "stakes_judge", return_value=0.5):
+            cfg = {"plan_model": "fast", "value_judge_model": "fast", "judge_timeout": 10}
+            rows, _ = validate_evsi.run_prompt(
+                {"id": "x", "problem": "p"}, cfg, judge_model="fast", max_answers=3, timeout=10,
+                source="all_scored", keep_responses=True,
+                change_fn=validate_evsi.change_judge_graded)
+        graded.assert_called_once()
+        orig.assert_not_called()
+        self.assertEqual(rows[0]["realized_change"], 0.4)
+        self.assertEqual(rows[0]["baseline_resp"], "B")
+        self.assertEqual(rows[0]["new_resp"], "B2")
+
+    def test_rejudge_compare_stats(self):
+        pairs = [{"prompt": "P", "question": "q1", "q_value": 0.9, "orig": 1.0, "graded": 0.7},
+                 {"prompt": "P", "question": "q2", "q_value": 0.5, "orig": 1.0, "graded": 0.4},
+                 {"prompt": "P", "question": "q3", "q_value": 0.1, "orig": 0.0, "graded": 0.2}]
+        stats = rejudge.compare(pairs)
+        self.assertEqual(stats["n"], 3)
+        # original: all three at the endpoints; graded: none
+        self.assertEqual(stats["orig"]["frac_endpoints"], 1.0)
+        self.assertEqual(stats["graded"]["frac_endpoints"], 0.0)
+        self.assertIsNotNone(stats["agreement_rho"])
+        self.assertIsNotNone(stats["qvalue_vs_graded_rho"])
+
+    def test_rejudge_rows_calls_graded_judge_on_stored_texts(self):
+        rows = [{"prompt": "P", "question": "q", "answer": "a", "q_value": 0.5,
+                 "realized_change": 1.0, "baseline_resp": "base", "new_resp": "new"}]
+        with mock.patch.object(rejudge.validate_evsi, "change_judge_graded",
+                               return_value=0.6) as gj:
+            pairs = rejudge.rejudge_rows(rows, "fast", 10, progress=False)
+        gj.assert_called_once_with("P", "base", "new", "fast", 10)
+        self.assertEqual(pairs[0]["orig"], 1.0)
+        self.assertEqual(pairs[0]["graded"], 0.6)
+
+
+@unittest.skipUnless(os.environ.get("INFOGAIN_TEST_LIVE"),
+                     "live suite: set INFOGAIN_TEST_LIVE=1 or run tests/run.py live")
 @unittest.skipUnless(_OK, "skill scripts not importable")
 class TestEvalLive(unittest.TestCase):
     @classmethod

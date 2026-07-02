@@ -54,6 +54,27 @@ def change_judge(prompt, baseline, new, model, timeout):
     return voi.clamp01(obj.get("change", 0.0)) if isinstance(obj, dict) else None
 
 
+def change_judge_graded(prompt, baseline, new, model, timeout):
+    """Anchored variant of change_judge. The original names only the 0/1 endpoints and SATURATES
+    (71% of realized_change lands exactly on 0 or 1 — coarse ground truth that caps every
+    correlation). Mid-scale anchors force partial revisions to be graded. Same JSON contract;
+    opt-in via --graded-change-judge. NOTE: a different instrument — its scores are NOT comparable
+    with prior runs' realized_change; A/B it against the original on stored responses via
+    evals/rejudge.py before adopting."""
+    p = ("Rate how much RESPONSE B differs from RESPONSE A — in substance, recommendation, and "
+         "emphasis — as answers to the same prompt. Use the FULL scale, not just the endpoints:\n"
+         "  0.0 = effectively identical\n"
+         "  0.2 = same plan; wording or emphasis shifts only\n"
+         "  0.4 = same approach; one substantive detail changed (a step added, removed, or "
+         "re-parameterized)\n"
+         "  0.7 = approach kept, but the recommendation or priorities shift materially\n"
+         "  1.0 = a different approach or conclusion\n\n"
+         f"PROMPT:\n{prompt}\n\nRESPONSE A (baseline):\n{baseline}\n\nRESPONSE B:\n{new}\n\n"
+         'First think in one short sentence, then return JSON: {"reason": "...", "change": 0.0}.')
+    obj, _ = pipeline._call_json(model, p, timeout, num_predict=200)
+    return voi.clamp01(obj.get("change", 0.0)) if isinstance(obj, dict) else None
+
+
 def stakes_judge(prompt, baseline, new, model, timeout):
     """0..1: realized STAKES — how CONSEQUENTIAL the difference is, independent of its size.
 
@@ -87,7 +108,8 @@ def _snapshot(records):
     return {"q": q_scores, "a": a_scores}
 
 
-def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=False):
+def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=False,
+               keep_responses=False, change_fn=None):
     """One prompt → realized-vs-projected rows. With ab=True, BOTH elicitation methods (absolute +
     pairwise) are scored on the SAME question/answer set and the realized measurement (re-derive +
     judges) is shared across them — so the per-method within-task ranking is a clean A/B and the
@@ -119,7 +141,8 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
             fact = f"{q['question']} -> {a.get('answer', '')}"
             new, _ = pipeline.frame_and_plan(pr["problem"], plan_model, timeout, evidence=[fact])
             new_resp = (new or {}).get("baseline_plan", "")
-            realized = change_judge(pr["problem"], baseline, new_resp, judge_model, timeout)
+            realized = (change_fn or change_judge)(pr["problem"], baseline, new_resp,
+                                                   judge_model, timeout)
             r_stakes = stakes_judge(pr["problem"], baseline, new_resp, judge_model, timeout)
             regret = None if (realized is None or r_stakes is None) else realized * r_stakes
             shared = {
@@ -133,6 +156,11 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
                 "realized_stakes": None if r_stakes is None else round(r_stakes, 3),
                 "realized_regret": None if regret is None else round(regret, 3),  # method-independent
             }
+            if keep_responses:
+                # full texts so judge experiments can RE-JUDGE offline (evals/rejudge.py) without
+                # re-paying the frame_and_plan re-derivation — the expensive half of a realized pass
+                shared["baseline_resp"] = baseline
+                shared["new_resp"] = new_resp
             for method, snap in methods.items():
                 qd, ad = snap["q"][id(q)], snap["a"][id(q)].get(id(a), (0.0, 0.0))
                 rows.append({**shared, "method": method,
@@ -162,6 +190,18 @@ def main(argv=None):
                    help="A/B both elicitation methods (absolute + pairwise) on the SAME question/answer "
                         "set, sharing the realized measurement. Emits two rows per pair tagged with "
                         "`method`; analyze_evsi reports per-method within-task ρ. (#24 gate.)")
+    p.add_argument("--families", action="store_true",
+                   help="run with the families layer on — rows carry lens/family for per-lens "
+                        "attribution (default: flat generator, empty lens).")
+    p.add_argument("--premortem", choices=["auto", "on", "off"], default="auto",
+                   help="premortem lens setting when --families is on.")
+    p.add_argument("--keep-responses", action="store_true",
+                   help="store baseline + re-derived response TEXTS on each row so judge variants "
+                        "can be A/B'd offline (evals/rejudge.py) without a second realized pass.")
+    p.add_argument("--graded-change-judge", action="store_true",
+                   help="use the anchored mid-scale change judge (de-saturated instrument). NOT "
+                        "comparable with prior runs' realized_change — A/B via evals/rejudge.py "
+                        "before adopting.")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args(argv)
 
@@ -175,6 +215,8 @@ def main(argv=None):
         cfg["value_judge_model"] = args.elicit_model
     cfg["max_rounds"] = 1
     cfg["mode"] = "focus"
+    if args.families:
+        cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
     judge_model = pipeline.resolve_alias(args.judge_model)  # alias -> real model name
 
     prompts = [x for x in PROMPTS if not args.prompt_ids or x["id"] in args.prompt_ids]
@@ -183,7 +225,8 @@ def main(argv=None):
         print(f"… {pr['id']}: info-gain + realized-change per (question, answer)", file=sys.stderr, flush=True)
         try:
             prows, _ = run_prompt(pr, cfg, judge_model, args.max_answers, args.timeout,
-                                  args.source, ab=args.ab)
+                                  args.source, ab=args.ab, keep_responses=args.keep_responses,
+                                  change_fn=change_judge_graded if args.graded_change_judge else None)
         except Exception as e:
             prows = [{"prompt": pr["id"], "error": str(e)}]
         rows.extend(prows)
@@ -191,10 +234,12 @@ def main(argv=None):
             with open(args.out, "w") as f:
                 json.dump({"rows": rows, "n": len(rows), "partial": True,
                            "gen_model": args.gen_model, "judge_model": args.judge_model,
+                           "change_judge": "graded" if args.graded_change_judge else "original",
                            "elapsed_s": round(time.time() - t0, 1)}, f, indent=2, default=str)
 
     out = {"rows": rows, "n": len(rows), "partial": False,
            "gen_model": args.gen_model, "judge_model": args.judge_model,
+           "change_judge": "graded" if args.graded_change_judge else "original",
            "elapsed_s": round(time.time() - t0, 1)}
     payload = json.dumps(out, indent=2, default=str)
     if args.out:

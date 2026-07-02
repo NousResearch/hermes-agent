@@ -425,30 +425,51 @@ def consolidate_questions(problem, candidates, model, timeout=150, sink=None):
 
 # ── families layer (a tier above questions) ──────────────────────────────────
 
-_VANTAGE_HINT = ("system", "server", "api", "database", "db ", "deploy", "auth", "token", "credential",
+_VANTAGE_HINT = ("system", "server", "api", "database", "db", "deploy", "auth", "token", "credential",
                  "environment", "config", "network", "integration", "service", "infrastructure",
-                 "pipeline", "access", "permission", "endpoint", "cloud", "container", "repo", "code")
+                 "pipeline", "access", "permission", "endpoint", "cloud", "container", "repo",
+                 "repository", "code")
+
+# Hint matching is WORD-BOUNDARY-PREFIX ("deploy" → deploys/deployment, but "api" ⊄ "rapid",
+# "code" ⊄ "encode"). Short hints that are prefixes of unrelated common words are matched as
+# EXACT tokens instead ("prod" ⊄ "product", "drop" ⊄ "dropdown", "repo" ⊄ "report", "db" gets a
+# real boundary — the old "db " substring missed "…the db" at end of text). Residual accepted:
+# "auth" still prefix-matches "author" (the authentication/authorization coverage matters more).
+_EXACT_HINTS = frozenset({"prod", "drop", "db", "repo"})
+
+
+def _hint_pattern(hints):
+    return re.compile("|".join(
+        rf"\b{re.escape(h)}\b" if h in _EXACT_HINTS else rf"\b{re.escape(h)}" for h in hints))
+
+
+_VANTAGE_RE = _hint_pattern(_VANTAGE_HINT)
 
 
 def _vantage_relevant(framing):
     """Cheap gate: does the task involve systems/access/environments (so vantage matters)?"""
     blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
-    return any(h in blob for h in _VANTAGE_HINT)
+    return bool(_VANTAGE_RE.search(blob))
 
 
 # Failure-surface hints: the task can cause a costly/irreversible failure (so a pre-mortem matters).
 # Deliberately CONSERVATIVE — the lens is auto-on, so read-only/summarize/research tasks must not trip
-# it. Side-effecting verbs + high-stakes nouns only; no generic "code"/"config" (too broad).
+# it. Side-effecting verbs + high-stakes nouns only; no generic "code"/"config" (too broad), and no
+# bare artifact nouns ("email"/"message"/"database") — those fire on RETRIEVAL tasks too (the #25
+# tier-1 eval caught gmail-triage tripping on "email"); every genuine act-on-it task in the bank
+# carries a verb hint (send/delete/write/migrate/drop).
 _PREMORTEM_HINT = ("write", "send", "delete", "remove", "deploy", "release", "migrate", "drop",
                    "overwrite", "payment", "charge", "refund", "production", "prod", "credential",
                    "secret", "irreversible", "destructive", "publish", "broadcast", "mutate",
-                   "database", "transaction", "purchase", "email", "message", "commit", "merge")
+                   "transaction", "purchase", "commit", "merge")
+
+_PREMORTEM_RE = _hint_pattern(_PREMORTEM_HINT)
 
 
 def _premortem_relevant(framing):
     """Cheap gate: could acting on the baseline plan cause a costly/irreversible failure?"""
     blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
-    return any(h in blob for h in _PREMORTEM_HINT)
+    return bool(_PREMORTEM_RE.search(blob))
 
 
 def families_prompt(problem, framing, n_scoped, contrarian, vantage, premortem=False):

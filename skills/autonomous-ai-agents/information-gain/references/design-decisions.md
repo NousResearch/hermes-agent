@@ -166,6 +166,30 @@ output, runaway cost).
   `diversity`, downgrade `FAMILIES["premortem"]` to `"off"` (one-line change). The measurability caveat
   (absolute realized-stakes collapses, §Comparative elicitation) means the primary evidence is the
   **failure-surface-vs-read-only differential**, not absolute stakes.
+- **Tier-1 verdict (2026-07-01, 14-cell two-arm at shipped defaults, `max_rounds=1`): auto-on
+  CONFIRMED; rollback trigger NOT tripped.** Failure-surface arms: on true act-and-break tasks
+  (security-audit, deploy-app) the lens's 3 questions all cleared the 0.30 floor (0.42–0.70) and 3
+  displaced weaker questions into the capped bucket (rollback strategy, pending schema migrations,
+  lockout thresholds) — content with **zero** equivalents in any off arm; on lower-hazard tasks
+  (add-auth, query-db) its questions scored 0.03–0.22 and self-pruned. Read-only controls: **no
+  pre-mortem question entered any bucket even forced `--premortem on`** (values 0.0–0.12) — the
+  risk-neutral scoring is a sufficient second net. Cost of the lens on gated runs: ~+6 calls / +30 s.
+  One fix fell out: the gate had bare artifact nouns (`email`/`message`/`database`) that tripped on
+  *retrieval* tasks (gmail-triage fired, wasting ~6 calls, though scoring still pruned everything) —
+  nouns removed, verbs kept; pinned in `test_premortem_lens_directive_and_gate`. Raw runs:
+  `premortem_ab.json` (14 cells; job tmp — regenerate via `score_scan.py --families --premortem on|off`
+  or `validate_evsi.py --families` for the realized tier-2 arm.)
+- **Tier-2 verdict (2026-07-01, realized two-arm, 6 prompts × off/on, all-fast pinned): the lens
+  EARNS its slots at the realized level.** Premortem is the TOP lens by realized_regret in the on
+  arm (0.416 vs scoped 0.297 / contrarian 0.240 / vantage 0.253); on failure-surface prompts its
+  questions realize **0.602 vs 0.386** for everything else (~1.6×), while forced-on read-only pm
+  questions realize ~0.045 and are correctly priced at ~0.06 (pruned). Both ladder tiers now
+  confirm auto-on; rollback untripped. Full numbers:
+  `evsi-validation-findings.md` §"Pre-mortem lens tier-2 (#25) + selection policies (#23)".
+- **Independently replicated same day** (deepseek judge, bucket source, different 6-prompt subset,
+  34-prompt bank-wide scan): premortem again TOP lens (realized_change 0.984, regret 0.765); zero
+  read-only bucket entries; adjudicator-`diversity` trigger explicitly cleared (0.65→0.70). See
+  findings §"Independent replication (#25)".
 
 ## Decided / deferred
 

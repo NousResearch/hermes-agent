@@ -70,6 +70,32 @@ def test_runs_offline_without_credentials(isolated_home, monkeypatch):
     assert data["system_prompt"]["bytes"] > 0
 
 
+def test_tool_schema_count_honors_platform_tool_config(isolated_home):
+    """``prompt-size`` must measure the same lean toolset a fresh session uses."""
+    config = isolated_home / "config.yaml"
+    config.write_text(
+        "platform_toolsets:\n"
+        "  cli:\n"
+        "    - file\n",
+        encoding="utf-8",
+    )
+    data = compute_prompt_breakdown("cli")
+    assert data["tools"]["count"] == 4
+
+
+def test_desktop_prompt_size_uses_cli_tool_config_plus_project_tools(isolated_home):
+    """Desktop/TUI sessions resolve via CLI tool config plus project controls."""
+    config = isolated_home / "config.yaml"
+    config.write_text(
+        "platform_toolsets:\n"
+        "  cli:\n"
+        "    - file\n",
+        encoding="utf-8",
+    )
+    data = compute_prompt_breakdown("desktop")
+    assert data["tools"]["count"] == 7
+
+
 def test_skills_index_reflects_installed_skills(isolated_home):
     """Installing a skill makes the skills-index block non-empty.
 

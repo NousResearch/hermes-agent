@@ -1232,6 +1232,63 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_picks_up_new_conversation_when_only_sessions_json_changed(
+        self, tmp_path, monkeypatch
+    ):
+        """A conversation registered in sessions.json *after* its first message
+        already landed in state.db must still be picked up, even when state.db's
+        mtime did not move on this tick.
+
+        Regression guard: the skip-when-unchanged check must compare against the
+        sessions.json mtime seen on the *previous* poll. If it instead compares
+        against the just-refreshed value, the sessions.json term is always true,
+        the guard collapses to a db-only check, and a sessions.json-only change
+        is silently dropped — the new chat's messages never reach MCP clients.
+        """
+        import mcp_serve
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        # _poll_once reads <HERMES_HOME>/state.db for its mtime gate; the autouse
+        # fixture points HERMES_HOME at tmp_path.
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+
+        session_id = "20260329_150000_late_register"
+        sessions_json = sessions_dir / "sessions.json"
+        sessions_json.write_text(json.dumps({
+            "agent:main:telegram:dm:late": {
+                "session_id": session_id,
+                "platform": "telegram",
+                "origin": {"platform": "telegram", "chat_id": "late"},
+            }
+        }))
+
+        class DB:
+            def get_messages(self, sid):
+                return [{
+                    "id": 1, "role": "user",
+                    "content": "Hello from a freshly-registered conversation",
+                    "timestamp": "2026-03-29T15:00:00",
+                }]
+
+        bridge = mcp_serve.EventBridge()
+        # Simulate the boundary state: state.db has NOT changed since the last
+        # poll (its message landed on an earlier tick), but sessions.json was
+        # only updated with this conversation now — the bridge has not yet seen
+        # the current sessions.json content.
+        bridge._state_db_mtime = db_path.stat().st_mtime
+        bridge._sessions_json_mtime = 0.0
+
+        bridge._poll_once(DB())
+
+        result = bridge.poll_events(after_cursor=0)
+        assert len(result["events"]) == 1
+        assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
+        assert result["events"][0]["content"].startswith("Hello from a freshly")
+
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL

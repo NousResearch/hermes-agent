@@ -1513,6 +1513,7 @@ def anthropic_prompt_cache_policy(
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
     # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
@@ -1522,6 +1523,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
+    ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
+    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -1545,7 +1549,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
             if "http_client" not in safe_kwargs:
-                keepalive_http = agent._build_keepalive_http_client(base_url)
+                keepalive_http = agent._build_keepalive_http_client(
+                    base_url, verify=httpx_verify,
+                )
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
             client = GeminiNativeClient(**safe_kwargs)
@@ -1574,7 +1580,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=httpx_verify,
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
@@ -1778,6 +1786,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            try:
+                from hermes_cli.config import (
+                    apply_custom_provider_tls_to_client_kwargs,
+                    get_compatible_custom_providers,
+                    load_config_readonly,
+                )
+
+                # Read custom_providers from live config (not the init-time
+                # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
+                # ssl_verify edits are honored when switching mid-session,
+                # matching the context-length reload below (#15779).
+                apply_custom_provider_tls_to_client_kwargs(
+                    agent._client_kwargs,
+                    str(effective_base or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
+            except Exception:
+                logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
@@ -2256,6 +2282,54 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # --- Repair tool_calls whose function.name is empty/missing ---
+    # Some providers (and partially-streamed responses) emit a tool_call with
+    # id="call_xxx" but function.name="". Downstream Responses-API adapters
+    # silently DROP such function_call items while still emitting the matching
+    # function_call_output, producing the gateway's HTTP 400
+    # "No tool call found for function call output with call_id ...".
+    #
+    # We do NOT drop the call: hermes' own dispatch loop intentionally keeps an
+    # empty-name call paired with a synthesized anti-priming tool result
+    # ("tool name was empty", see #47967) so weak models self-correct instead of
+    # being fed the full tool catalog. Dropping the call here would (a) orphan
+    # that result and strip the anti-priming signal, and (b) still leave any
+    # provider-side orphan. Instead, rename the blank name to a non-empty
+    # sentinel so the call and its result stay PAIRED — the adapter no longer
+    # drops the function_call, so there is no orphaned output and no 400, while
+    # the result content the model needs is preserved.
+    _EMPTY_NAME_SENTINEL = "invalid_tool_call"
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls") or []
+        if not tcs:
+            continue
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn else None
+            if isinstance(name, str) and name.strip():
+                continue
+            _ra().logger.warning(
+                "Pre-call sanitizer: repairing tool_call with empty "
+                "function.name -> %r (id=%s)",
+                _EMPTY_NAME_SENTINEL,
+                _ra().AIAgent._get_tool_call_id_static(tc),
+            )
+            if isinstance(fn, dict):
+                fn["name"] = _EMPTY_NAME_SENTINEL
+            elif fn is not None and hasattr(fn, "name"):
+                try:
+                    fn.name = _EMPTY_NAME_SENTINEL
+                except Exception:
+                    pass
+            elif isinstance(tc, dict):
+                tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
     surviving_call_ids: set = set()
     for msg in messages:

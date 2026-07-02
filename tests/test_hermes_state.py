@@ -861,6 +861,48 @@ class TestMessageStorage:
         assert conv[1]["content"] == "Hi!"
         assert isinstance(conv[1]["timestamp"], float)
 
+    def test_get_messages_as_conversation_orders_by_id_not_timestamp(self, db):
+        """Replay must follow AUTOINCREMENT id (insertion order), never the
+        wall-clock timestamp.
+
+        ``append_message`` stamps each row with ``time.time()``, which is not
+        monotonic — on WSL2, after an NTP step, or when a VM/laptop resumes
+        from sleep the clock can jump backwards mid-conversation. A later
+        row then carries an *earlier* timestamp than the row before it. If
+        ``get_messages_as_conversation`` ordered by ``timestamp`` it would
+        sort an assistant ``tool_calls`` row after its ``tool`` response,
+        orphaning the tool call and triggering an HTTP 400 on the next
+        completion. Ordering by ``id`` keeps the real insertion order
+        regardless of clock skew. See c03acca50.
+        """
+        db.create_session(session_id="s1", source="cli")
+
+        # Simulate a clock regression across a single tool round-trip: the
+        # assistant tool_calls row is inserted first but stamped LATER than
+        # the tool response that follows it.
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+        ]
+        db.append_message(
+            "s1", role="assistant", content="", tool_calls=tool_calls,
+            timestamp=1000.0,
+        )
+        db.append_message(
+            "s1", role="tool", content="result", tool_name="web_search",
+            tool_call_id="call_1", timestamp=999.0,
+        )
+        db.append_message("s1", role="user", content="thanks", timestamp=998.0)
+
+        conv = db.get_messages_as_conversation("s1")
+
+        # Insertion order is preserved even though timestamps decrease.
+        assert [m["role"] for m in conv] == ["assistant", "tool", "user"]
+        # The tool response stays immediately after the assistant tool_calls
+        # row — the adjacency invariant the model API enforces.
+        assert conv[0]["tool_calls"][0]["id"] == "call_1"
+        assert conv[1]["role"] == "tool"
+        assert conv[1]["tool_call_id"] == "call_1"
+
     def test_platform_message_id_round_trips(self, db):
         """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
         survive append → get_messages_as_conversation under the
@@ -1402,6 +1444,33 @@ class TestFTS5Search:
         result = s('sp_new and 血管瘤')
         assert '"sp_new"' in result
         assert '血管瘤' in result
+
+    def test_sanitize_fts5_query_runtime_is_bounded(self):
+        """Adversarial quote/special-char runs should sanitize quickly."""
+        from hermes_state import MAX_FTS5_QUERY_CHARS, SessionDB
+
+        s = SessionDB._sanitize_fts5_query
+        query = ('"' * 100_000) + ("a." * 100_000) + ("*" * 100_000)
+
+        start = time.perf_counter()
+        result = s(query)
+        elapsed = time.perf_counter() - start
+
+        assert isinstance(result, str)
+        assert len(result) <= MAX_FTS5_QUERY_CHARS * 2
+        assert elapsed < 0.5
+
+    def test_long_search_query_is_capped_and_does_not_crash(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="bounded sanitizer target")
+
+        query = ('"' * 50_000) + (" bounded" * 10_000)
+        start = time.perf_counter()
+        results = db.search_messages(query)
+        elapsed = time.perf_counter() - start
+
+        assert isinstance(results, list)
+        assert elapsed < 1.0
 
 
 # =========================================================================
@@ -3810,6 +3879,40 @@ class TestOptimizeFts:
         assert db.optimize_fts() == 2
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
+
+    def test_write_path_optimizes_fts_on_cadence(self, db, monkeypatch):
+        """Writes periodically merge FTS segments so they never accumulate
+        into the tens-of-thousands that lengthen the write-lock hold and
+        starve competing writers ("database is locked")."""
+        db._OPTIMIZE_EVERY_N_WRITES = 5
+        calls = {"n": 0}
+        real_optimize = db.optimize_fts
+
+        def _counting_optimize():
+            calls["n"] += 1
+            return real_optimize()
+
+        monkeypatch.setattr(db, "optimize_fts", _counting_optimize)
+        # create_session is write #1; appends are #2.. -> #5 and #10 trigger.
+        db.create_session(session_id="s1", source="cli")
+        for i in range(9):
+            db.append_message(session_id="s1", role="user", content=f"needle {i}")
+        assert calls["n"] == 2
+        # The auto-merge is layout-only: search is unaffected.
+        assert len(db.search_messages("needle")) == 9
+
+    def test_write_path_optimize_failure_never_breaks_write(self, db, monkeypatch):
+        """A failing periodic optimize must not fail the surrounding write."""
+        db._OPTIMIZE_EVERY_N_WRITES = 2
+
+        def _boom():
+            raise sqlite3.OperationalError("simulated optimize failure")
+
+        monkeypatch.setattr(db, "optimize_fts", _boom)
+        db.create_session(session_id="s1", source="cli")  # write #1
+        # write #2 trips the cadence; the swallowed failure must not propagate.
+        db.append_message(session_id="s1", role="user", content="still persists")
+        assert len(db.get_messages("s1")) == 1
 
 
 class TestAutoMaintenance:

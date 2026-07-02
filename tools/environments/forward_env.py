@@ -7,6 +7,7 @@ import os
 import re
 
 from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local import _is_hermes_internal_secret
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,15 @@ def collect_forwarded_env_values(
     except Exception:
         pass
 
-    forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+    # Explicit docker_forward_env entries are an intentional opt-in and must
+    # win over the generic Hermes secret blocklist. Only implicit passthrough
+    # keys are filtered. Also strip Hermes-internal dynamic secrets
+    # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) that the
+    # name-based blocklist doesn't cover — see _is_hermes_internal_secret.
+    _implicit_forward = {
+        k for k in passthrough_keys if not _is_hermes_internal_secret(k)
+    }
+    forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
     hermes_env = dotenv_loader() if forward_keys else {}
 
     resolved: dict[str, str] = {}

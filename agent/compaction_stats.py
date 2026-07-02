@@ -836,6 +836,8 @@ def build_inturn_stats(
     on_tag_missing=None,
     sanitize=None,
     fresh_tail_count=None,
+    provenance_trust: str = "single-pass",
+    on_shadow_compare=None,
 ) -> "CompactionStats":
     """Build a reconciling ``CompactionStats`` for the in-turn (LCM) done-site.
 
@@ -863,6 +865,15 @@ def build_inturn_stats(
     over a disjoint exhaustive pre-side partition. The split is approximate when
     sanitized comp rows no longer signature-match raw rows, but totals still
     reconcile and the caller labels/degrades via ``approx_attribution``.
+
+    ``provenance_trust`` (spec 2026-07-02, D-3): ``"single-pass"`` (default) —
+    a provenance stamp is TRUSTED as the exact partition (today's PR #110
+    behavior; the engine only used to stamp single-pass compactions).
+    ``"shadow"`` — the caller detected a MULTI-PASS compaction: the stamp is
+    harvested but NOT used for any displayed/validated field; the replay/A-floor
+    path runs exactly as if unstamped, and ``on_shadow_compare(b_kept_ids,
+    cur_kept_ids)`` is invoked with the two pre-side kept row-id sets so the
+    caller can log agree/diverge. Shadow soak evidence gates the PR-C trust-flip.
 
     Caller validates + degrades on failure.
     """
@@ -900,10 +911,17 @@ def build_inturn_stats(
     cut = None
 
     # (B) Option B — provenance partition (exact, no inference). The kept rows carry
-    # ``_src_idx`` (origin index into ``pre_msgs``) when the engine stamped a
-    # single-pass compaction; synthetic stubs lack it. kept_pre = the stamped
+    # ``_src_idx`` (origin index into ``pre_msgs``) when the engine stamped the
+    # compaction; synthetic stubs lack it. kept_pre = the stamped
     # origins; fold = pre rows whose index is NOT a kept origin. Exact attribution.
+    # In "shadow" trust (multi-pass, spec 2026-07-02 D-3) the harvest is computed
+    # for COMPARISON ONLY: displayed/validated fields come from the replay/A-floor
+    # path exactly as if the rows were unstamped.
     _b = harvest_provenance_partition(pre_msgs, kept_rows)
+    _shadow_b_kept_idx = None
+    if _b is not None and provenance_trust == "shadow":
+        _shadow_b_kept_idx = sorted(_b[0])
+        _b = None  # do not engage B for real; fall through to replay/A-floor
     if _b is not None:
         _kept_idx, _stub_count = _b
         _kept_idx_set = set(_kept_idx)
@@ -948,6 +966,23 @@ def build_inturn_stats(
         _tail_n = int(fresh_tail_count) if fresh_tail_count else kept_messages
         if _tail_n > 0:
             raw_tail_tokens = int(estimator(pre_msgs[-_tail_n:])) if pre_msgs else 0
+
+        # Shadow compare (spec 2026-07-02, D-3): with a harvested-but-untrusted
+        # multi-pass stamp, report B's kept-origin set vs the set the current
+        # (replay/A-floor) path just produced. kept_pre_rows are pre_msgs elements
+        # (replay slices them; the A-floor partitions them), so identity-mapping
+        # to indices is exact. Best-effort: a compare failure must never break
+        # the stats build.
+        if _shadow_b_kept_idx is not None and on_shadow_compare is not None:
+            try:
+                _row_idx_by_id = {id(m): i for i, m in enumerate(pre_msgs)}
+                _cur_kept_idx = sorted(
+                    _row_idx_by_id[id(r)] for r in kept_pre_rows
+                    if id(r) in _row_idx_by_id
+                )
+                on_shadow_compare(_shadow_b_kept_idx, _cur_kept_idx)
+            except Exception:
+                pass
 
     folded_tokens = int(estimator(fold_rows)) if fold_rows else 0
     # Optional tool/other sub-split of the folded population (derive-by-subtraction,

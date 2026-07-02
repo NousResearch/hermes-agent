@@ -1614,6 +1614,33 @@ def compress_context(
                     from agent.compaction_stats import build_inturn_stats
                     from agent.model_metadata import estimate_messages_tokens_rough as _est
                     _why2 = "build raised"  # bound before build so the warning %s can't be unbound
+                    # Multi-pass provenance is SHADOW-ONLY until the PR-C trust-flip
+                    # (spec 2026-07-02, D-3): the engine now stamps every pass, but
+                    # only single-pass stamps are trusted as the exact partition.
+                    _leaf_passes = getattr(_cc, "last_leaf_passes", 0) or 0
+                    _trust = "single-pass" if _leaf_passes <= 1 else "shadow"
+
+                    def _on_shadow_compare(_b_idx, _cur_idx):
+                        _sid = getattr(agent, "session_id", None) or "-"
+                        _src = " src=test" if os.environ.get("PYTEST_CURRENT_TEST") else ""
+                        if _b_idx == _cur_idx:
+                            logger.info(
+                                "COMPACTION_STATS_B_MULTIPASS_SHADOW agree "
+                                "(kept_pre B=%d cur=%d) session=%s%s",
+                                len(_b_idx), len(_cur_idx), _sid, _src,
+                            )
+                        else:
+                            # Direct (UN-throttled) warning: the soak gate needs EVERY
+                            # diverge event independently observable to measure within-
+                            # session frequency — _warn_compaction_stats_once would drop
+                            # all but the first per session (Greptile #178). Carries the
+                            # same session/src fields so the watcher attributes it.
+                            logger.warning(
+                                "COMPACTION_STATS_B_MULTIPASS_SHADOW diverge "
+                                "(kept_pre B=%d cur=%d) session=%s%s",
+                                len(_b_idx), len(_cur_idx), _sid, _src,
+                            )
+
                     _cand = build_inturn_stats(
                         messages=messages,
                         compressed=compressed,
@@ -1621,6 +1648,8 @@ def compress_context(
                         engine_is_lcm=(_engine_name == "lcm"),
                         sanitize=getattr(_cc, "_sanitize_active_context_messages", None),
                         fresh_tail_count=getattr(_cc, "protect_last_n", None),
+                        provenance_trust=_trust,
+                        on_shadow_compare=_on_shadow_compare,
                         on_tag_missing=lambda: _warn_compaction_stats_once(
                             agent, "COMPACTION_STATS_TAG_MISSING in-turn"
                         ),

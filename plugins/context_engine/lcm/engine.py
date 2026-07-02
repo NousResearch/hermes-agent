@@ -368,6 +368,10 @@ class LCMEngine(ContextEngine):
         self.last_reasoning_tokens = 0
         self.cache_metrics_available = False
         self.compression_count = 0
+        # Leaf-pass count of the most recent compress() that reached assembly;
+        # the in-turn stats consumer reads this to decide provenance trust
+        # (single-pass = trusted; multi-pass = shadow until PR-C).
+        self.last_leaf_passes = 0
         # run_agent.py reads these for preflight checks
         self.protect_first_n = 3
         self.protect_last_n = self._config.fresh_tail_count
@@ -1255,41 +1259,54 @@ class LCMEngine(ContextEngine):
         leading_anchor_count = self._leading_anchor_count(working_messages)
         anchor_leading_count = self._leading_anchor_count(anchor_source_messages)
         self._pending_context_anchor_messages = anchor_source_messages[anchor_leading_count:]
-        # ── Option B provenance stamp (single-pass only) ──────────────────────────
+        # ── Option B provenance stamp (all leaf passes) ───────────────────────────
         # Stamp each fresh-tail row handed to _assemble_context with `_src_idx` = its
         # index into the ORIGINAL `messages`, so the in-turn compaction-stats consumer
         # can read the EXACT pre-side kept partition off the returned `compressed` (the
         # rows' shallow-copies carry the key through every sanitize/trim/rewrite stage
         # by construction; synthetic stubs lack it). The fresh tail is a SUFFIX of the
-        # original `messages` — single-pass leaf-fold only removes a chunk from the
-        # FRONT (between anchor and tail), never the trailing rows — so a tail row at
-        # offset `off` maps to `messages[len(messages) - (len(tail) - off)]` regardless
-        # of how much the front shrank (this is why we index from the END, not by the
-        # working_messages position, which Greptile #110 correctly flagged would never
-        # engage post-fold). Guarded to single-pass + a per-row identity check so a
-        # mis-mapped index is never stamped. The consumer harvests then STRIPS
-        # `_src_idx` before `compressed` flows onward; `_`-prefixed = transport-stripped
-        # as a backstop.
+        # original `messages` for ANY number of leaf passes (spec 2026-07-02 §0.6,
+        # five-step proof): (1) ingest is a 1:1 order-preserving rewrite; (2) every
+        # in-loop mutation removes rows ONLY from the front region — scaffold drop and
+        # compacted-chunk removal both slice strictly before fresh_tail_start, and
+        # _select_oldest_leaf_chunk picks a contiguous FRONT prefix; (3) summary rows
+        # go to the DAG (_dag.add_node), NEVER into working_messages — summaries are
+        # prepended inside _assemble_context, after this stamp; (4) frozen-K: the tail
+        # count is computed once per compress(), so "the last K rows" names the same
+        # physical rows after every pass; (4b) the stub-inserting sanitize runs ONLY
+        # inside/after _assemble_context — i.e. strictly after this stamp — so a stub
+        # can never shift the end-anchored index. Hence a tail row at offset `off`
+        # maps to `messages[len(messages) - (len(tail) - off)]` regardless of how much
+        # the front shrank or how many passes removed it (end-anchored indexing —
+        # Greptile #110 flagged working-position indexing would never engage
+        # post-fold). Guarded per-row on role + tool_call_id + tool_calls arity
+        # (structural fields that survive content rewrites); the consumer is the real
+        # gate — harvest validates indices in-range + no-dup and the reconcile check
+        # falls to the A-floor if anything is off, so a wrong stamp can never ship a
+        # confidently-wrong split. Multi-pass consumption is SHADOW-ONLY until PR-C
+        # (the consumer displays current behavior and logs agree/diverge). The
+        # consumer harvests then STRIPS `_src_idx` before `compressed` flows onward;
+        # `_`-prefixed = transport-stripped as a backstop.
+        self.last_leaf_passes = leaf_passes
         tail_rows = working_messages[leading_anchor_count:]
-        if leaf_passes == 1 and tail_rows and len(tail_rows) <= len(messages):
+        if leaf_passes >= 1 and tail_rows and len(tail_rows) <= len(messages):
             n_msgs = len(messages)
             n_tail = len(tail_rows)
             stamped_tail = []
             for off, row in enumerate(tail_rows):
                 src_idx = n_msgs - (n_tail - off)
-                # The fresh tail is a suffix of `messages` (1:1 order-preserving
-                # ingest + front-only fold), so the suffix index is structurally
-                # correct. ingest SHALLOW-COPIES rows, so an `is` identity check would
-                # never match (Greptile #110): guard instead on a cheap role match
-                # (content may be quarantine-rewritten). The consumer is the real
-                # gate — harvest validates indices in-range + the reconcile check
-                # falls to the A-floor if anything is off, so a wrong stamp can never
-                # ship a confidently-wrong split.
+                # ingest SHALLOW-COPIES rows, so an `is` identity check would never
+                # match (Greptile #110): guard on structural fields instead. Content
+                # may be quarantine/redact-rewritten; role, tool_call_id, and
+                # tool_calls arity survive those 1:1 rewrites.
                 if (
                     isinstance(row, dict)
                     and 0 <= src_idx < n_msgs
                     and isinstance(messages[src_idx], dict)
                     and messages[src_idx].get("role") == row.get("role")
+                    and messages[src_idx].get("tool_call_id") == row.get("tool_call_id")
+                    and len(messages[src_idx].get("tool_calls") or [])
+                    == len(row.get("tool_calls") or [])
                 ):
                     row = dict(row)
                     row["_src_idx"] = src_idx

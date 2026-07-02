@@ -41,7 +41,7 @@ def _stamp_and_assemble(e, messages, *, leaf_passes, working_messages=None):
     wm = working_messages if working_messages is not None else list(messages)
     lac = e._leading_anchor_count(wm)
     tail_rows = wm[lac:]
-    if leaf_passes == 1 and tail_rows and len(tail_rows) <= len(messages):
+    if leaf_passes >= 1 and tail_rows and len(tail_rows) <= len(messages):
         n_msgs = len(messages)
         n_tail = len(tail_rows)
         stamped = []
@@ -49,7 +49,10 @@ def _stamp_and_assemble(e, messages, *, leaf_passes, working_messages=None):
             src_idx = n_msgs - (n_tail - off)
             if (isinstance(row, dict) and 0 <= src_idx < n_msgs
                     and isinstance(messages[src_idx], dict)
-                    and messages[src_idx].get("role") == row.get("role")):
+                    and messages[src_idx].get("role") == row.get("role")
+                    and messages[src_idx].get("tool_call_id") == row.get("tool_call_id")
+                    and len(messages[src_idx].get("tool_calls") or [])
+                    == len(row.get("tool_calls") or [])):
                 row = dict(row, **{"_src_idx": src_idx})
             stamped.append(row)
         tail_rows = stamped
@@ -98,12 +101,16 @@ def test_stamp_engages_after_front_fold():
     assert max(m["_src_idx"] for m in with_key) == len(messages) - 1
 
 
-def test_multipass_does_not_stamp():
-    """Multi-pass (leaf_passes>1) → no stamp (the suffix assumption isn't guaranteed
-    across multiple folds; fall back to A-floor)."""
+def test_multipass_now_stamps():
+    """Multi-pass (leaf_passes>1) → STAMPS (spec 2026-07-02 §0.6: the fresh tail is a
+    suffix of the original messages for ANY pass count — front-only removal, summaries
+    to the DAG, frozen-K, stubs post-stamp). Consumption is shadow-only until PR-C;
+    see test_lcm_provenance_stamp_multipass.py for the full multi-pass suite."""
     e = _engine()
     messages = _msgs(60)
     working = messages[:1] + messages[20:]
     compressed = _stamp_and_assemble(e, messages, leaf_passes=2, working_messages=working)
     kept = [m for m in compressed if m.get("role") != "system" and not m.get("_lcm_summary")]
-    assert all("_src_idx" not in m for m in kept), "multi-pass must NOT stamp"
+    with_key = [m for m in kept if "_src_idx" in m]
+    assert with_key, "multi-pass must now stamp"
+    assert all(messages[m["_src_idx"]].get("role") == m.get("role") for m in with_key)

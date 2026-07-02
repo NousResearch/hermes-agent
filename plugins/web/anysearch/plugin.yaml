@@ -1,0 +1,7 @@
+name: web-anysearch
+version: 1.0.0
+description: "AnySearch — unified real-time search engine supporting general web, vertical domain search, and batch search. Requires ANYSEARCH_API_KEY."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - anysearch

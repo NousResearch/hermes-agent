@@ -451,6 +451,9 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     """Look up full capability metadata from models.dev cache.
 
     Uses the existing fetch_models_dev() and PROVIDER_TO_MODELS_DEV mapping.
+    If not found in models.dev, falls back to reading supports_vision from
+    the user config (config.yaml) for providers/models not in the registry.
+
     Returns None if model not found.
 
     Extracts from model entry fields:
@@ -462,50 +465,75 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - family     (str)   → model_family
     """
     models = _get_provider_models(provider)
-    if models is None:
-        return None
+    entry = None
+    if models is not None:
+        entry = _find_model_entry(models, model)
 
-    entry = _find_model_entry(models, model)
-    if entry is None:
-        return None
+    # If models.dev has the entry, use it
+    if entry is not None:
+        # Extract capability flags (default to False if missing)
+        supports_tools = bool(entry.get("tool_call", False))
+        # Vision: prefer explicit `modalities.input` when models.dev provides it.
+        # The older `attachment` flag can be stale or too broad for image routing;
+        # fall back to it only when the input modalities are absent/invalid.
+        input_mods = entry.get("modalities", {})
+        if isinstance(input_mods, dict):
+            input_mods = input_mods.get("input")
+        else:
+            input_mods = None
+        if isinstance(input_mods, list):
+            supports_vision = "image" in input_mods
+        else:
+            supports_vision = bool(entry.get("attachment", False))
+        supports_reasoning = bool(entry.get("reasoning", False))
 
-    # Extract capability flags (default to False if missing)
-    supports_tools = bool(entry.get("tool_call", False))
-    # Vision: prefer explicit `modalities.input` when models.dev provides it.
-    # The older `attachment` flag can be stale or too broad for image routing;
-    # fall back to it only when the input modalities are absent/invalid.
-    input_mods = entry.get("modalities", {})
-    if isinstance(input_mods, dict):
-        input_mods = input_mods.get("input")
-    else:
-        input_mods = None
-    if isinstance(input_mods, list):
-        supports_vision = "image" in input_mods
-    else:
-        supports_vision = bool(entry.get("attachment", False))
-    supports_reasoning = bool(entry.get("reasoning", False))
+        # Extract limits
+        limit = entry.get("limit", {})
+        if not isinstance(limit, dict):
+            limit = {}
 
-    # Extract limits
-    limit = entry.get("limit", {})
-    if not isinstance(limit, dict):
-        limit = {}
+        ctx = limit.get("context")
+        context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
 
-    ctx = limit.get("context")
-    context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
+        out = limit.get("output")
+        max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
 
-    out = limit.get("output")
-    max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
+        model_family = entry.get("family", "") or ""
 
-    model_family = entry.get("family", "") or ""
+        return ModelCapabilities(
+            supports_tools=supports_tools,
+            supports_vision=supports_vision,
+            supports_reasoning=supports_reasoning,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            model_family=model_family,
+        )
 
-    return ModelCapabilities(
-        supports_tools=supports_tools,
-        supports_vision=supports_vision,
-        supports_reasoning=supports_reasoning,
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        model_family=model_family,
-    )
+    # Fallback: check user config.yaml for supports_vision flag
+    # This handles providers/models not in models.dev registry (e.g. sensenova)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        providers = cfg.get("providers", {})
+        provider_cfg = providers.get(provider, {})
+        provider_models = provider_cfg.get("models", [])
+        for m in provider_models:
+            if m.get("id") == model or m.get("name") == model:
+                if m.get("supports_vision"):
+                    # Use defaults for other fields when only vision is specified
+                    return ModelCapabilities(
+                        supports_tools=True,
+                        supports_vision=True,
+                        supports_reasoning=False,
+                        context_window=m.get("context_window", 200000),
+                        max_output_tokens=m.get("max_tokens", 8192),
+                        model_family="",
+                    )
+                break
+    except Exception as e:
+        logger.debug("Config fallback for %s/%s failed: %s", provider, model, e)
+
+    return None
 
 
 def list_provider_models(provider: str) -> List[str]:

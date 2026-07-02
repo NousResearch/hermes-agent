@@ -437,8 +437,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 # differs from their main chat model, map it here.  The vision auto-detect
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
-    "xiaomi": "mimo-v2.5",
-    "zai": "glm-5v-turbo",
+    "sensenova": "sensenova-6.7-flash-lite",
 }
 
 # Providers whose endpoint does not accept image input, even though the
@@ -1656,6 +1655,44 @@ def _read_codex_access_token() -> Optional[str]:
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
+
+
+def _resolve_key_from_matching_named_provider(base_url: str) -> str:
+    """Resolve an API key by matching the given base_url against named providers in config.yaml.
+
+    When an auxiliary task sets a ``base_url`` that coincides with a named
+    provider (e.g. ``longcat``), the custom endpoint route previously had no
+    way to discover the provider's ``key_env``.  This function bridges that
+    gap by scanning ``providers`` config for a matching ``base_url`` and
+    returning the value of its ``key_env`` environment variable.
+
+    Returns the resolved key string, or empty string if no match found.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except Exception:
+        return ""
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    if not isinstance(providers, dict):
+        return ""
+
+    normalized_target = base_url.rstrip("/")
+    for _name, entry in providers.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_base = str(entry.get("base_url", "") or "").strip().rstrip("/")
+        if entry_base and entry_base == normalized_target:
+            key_env = str(entry.get("key_env", "") or "").strip()
+            if key_env:
+                resolved = os.getenv(key_env, "").strip()
+                if resolved:
+                    logger.debug(
+                        "Custom route: resolved key from named provider %r via %s",
+                        _name, key_env,
+                    )
+                    return resolved
+    return ""
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -4222,6 +4259,7 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
+                or _resolve_key_from_matching_named_provider(custom_base)
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

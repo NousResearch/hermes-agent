@@ -594,7 +594,8 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     # Extract fields
     display_name = entry.get("name", "") or name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
-    key_env = entry.get("key_env", "") or ""
+    # Support both "key_env" and "api_key_env" field names for consistency
+    key_env = entry.get("key_env", "") or entry.get("api_key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
 
     env_vars: List[str] = []

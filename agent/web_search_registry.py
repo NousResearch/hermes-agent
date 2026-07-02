@@ -120,6 +120,7 @@ def _read_config_key(*path: str) -> Optional[str]:
 # a free tier on upgrade). Filtered by ``is_available()`` at walk time so
 # we don't surface a provider the user has no credentials for.
 _LEGACY_PREFERENCE = (
+    "anysearch",
     "firecrawl",
     "parallel",
     "tavily",

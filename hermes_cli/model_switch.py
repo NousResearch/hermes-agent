@@ -1958,8 +1958,13 @@ def list_authenticated_providers(
                         models_list.append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    if isinstance(m, dict):
+                        # Extract model ID string from dict object
+                        model_id = m.get("id", "") or m.get("name", "")
+                    else:
+                        model_id = str(m) if m else ""
+                    if model_id and model_id not in models_list:
+                        models_list.append(model_id)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -2011,6 +2016,10 @@ def list_authenticated_providers(
             })
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
+            # Also register the `custom:` slug variant to prevent
+            # duplicate entries in Section 4 (get_compatible_custom_providers
+            # converts the same `providers:` dict into custom_providers format
+            # with `custom:<name>` slugs — #10629)
             _pair = (
                 str(display_name).strip().lower(),
                 str(api_url).strip().rstrip("/").lower(),

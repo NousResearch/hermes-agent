@@ -1917,7 +1917,6 @@ export const zh: Translations = {
     flowSubtitles: {
       pkce: '打开浏览器登录，然后回到这里继续',
       device_code: '在浏览器中打开验证页面 — Hermes 会自动连接',
-      loopback: '打开浏览器登录 — Hermes 会自动连接',
       external: '先在终端登录一次，然后回来继续对话'
     },
     startingSignIn: provider => `正在为 ${provider} 启动登录...`,

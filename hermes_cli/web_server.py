@@ -6427,7 +6427,7 @@ def _copilot_acp_status() -> Dict[str, Any]:
 # ``flow`` describes the OAuth shape so the modal can pick the right UI:
 # ``pkce`` = open URL + paste callback code, ``device_code`` = show code +
 # verification URL + poll, ``external`` = read-only (delegated to a third-party
-# CLI like Claude Code or Qwen), ``loopback`` = 127.0.0.1 callback listener.
+# CLI like Claude Code or Qwen).
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "nous",
@@ -6469,10 +6469,10 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "xai-oauth",
         "name": "xAI Grok OAuth (SuperGrok / Premium+)",
-        # Loopback PKCE: the desktop's local backend binds a 127.0.0.1
-        # callback server, the client opens the browser, and the redirect
-        # lands back on the loopback listener — no code to copy/paste.
-        "flow": "loopback",
+        # Device code is the default because it works in remote shells,
+        # containers, and desktop installs without requiring a reachable
+        # 127.0.0.1 callback.
+        "flow": "device_code",
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
@@ -6696,7 +6696,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
     Response shape (per provider):
         id              stable identifier (used in DELETE path)
         name            human label
-        flow            "pkce" | "device_code" | "external" | "loopback"
+        flow            "pkce" | "device_code" | "external"
         cli_command     fallback CLI command for users to run manually
         disconnect_command  shell command that clears an external provider's
                             creds (run in the embedded terminal), else null
@@ -6830,19 +6830,6 @@ async def disconnect_oauth_provider(
 #          every 2s until status != "pending".
 #     4. On "approved" the background thread has already saved creds; UI
 #        refreshes the providers list.
-#
-#   Loopback PKCE (xAI Grok):
-#     1. POST /api/providers/oauth/xai-oauth/start
-#          → server binds a 127.0.0.1 callback listener, builds the xAI
-#            authorize URL, spawns a background worker waiting on the redirect
-#          → returns { session_id, flow: "loopback", auth_url, expires_in }
-#     2. UI opens auth_url in the browser. There is NO user_code/code to
-#        paste — the redirect lands back on the loopback listener.
-#     3. UI polls GET /api/providers/oauth/{provider}/poll/{session_id}
-#          (same endpoint as device_code) until status != "pending".
-#     4. The worker exchanges the code, persists creds, sets "approved".
-#        DELETE /sessions/{id} cancels: the worker bails before persisting
-#        and the callback server is shut down to free the port immediately.
 #
 # Sessions are kept in-memory only (single-process FastAPI) and time out
 # after 15 minutes. A periodic cleanup runs on each /start call to GC
@@ -7103,7 +7090,7 @@ async def _start_device_code_flow(
     provider_id: str,
     profile: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
+    """Initiate a device-code flow (Nous, OpenAI Codex, MiniMax, or xAI).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
@@ -7272,222 +7259,43 @@ async def _start_device_code_flow(
             "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
         }
 
-    raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+    if provider_id == "xai-oauth":
+        from hermes_cli.auth import _xai_oauth_request_device_code
+        import httpx
 
+        def _do_xai_device_request():
+            with httpx.Client(
+                timeout=httpx.Timeout(20.0),
+                headers={"Accept": "application/json"},
+            ) as client:
+                return _xai_oauth_request_device_code(client)
 
-# xAI Grok OAuth uses a loopback-redirect PKCE flow (RFC 8252). Unlike the
-# device-code providers there is no user_code to display: the local backend
-# binds a 127.0.0.1 callback server, the client opens the authorize URL in
-# the browser, and the redirect lands back on the loopback listener. The
-# background worker waits for that callback, exchanges the code, and persists
-# the tokens exactly like `hermes auth add xai-oauth`.
-_XAI_LOOPBACK_TIMEOUT_SECONDS = 300.0
-
-
-def _start_xai_loopback_flow(profile: Optional[str] = None) -> Dict[str, Any]:
-    """Begin the xAI loopback PKCE flow.
-
-    Binds the local callback server, builds the authorize URL, and spawns a
-    background worker that waits for the redirect and finishes the exchange.
-    Returns the authorize URL for the client to open in the browser.
-    """
-    from hermes_cli import auth as hauth
-
-    discovery = hauth._xai_oauth_discovery()
-    server, thread, callback_result, redirect_uri = hauth._xai_start_callback_server()
-    try:
-        hauth._xai_validate_loopback_redirect_uri(redirect_uri)
-        verifier = hauth._oauth_pkce_code_verifier()
-        challenge = hauth._oauth_pkce_code_challenge(verifier)
-        state = secrets.token_hex(16)
-        nonce = secrets.token_hex(16)
-        authorize_url = hauth._xai_oauth_build_authorize_url(
-            authorization_endpoint=discovery["authorization_endpoint"],
-            redirect_uri=redirect_uri,
-            code_challenge=challenge,
-            state=state,
-            nonce=nonce,
+        device_data = await asyncio.get_running_loop().run_in_executor(
+            None, _do_xai_device_request
         )
-    except Exception:
-        # Binding succeeded but URL construction failed — release the socket
-        # and join the serving thread so we don't leak a listener (or a
-        # lingering daemon thread) on the loopback port.
-        try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
-        try:
-            thread.join(timeout=1.0)
-        except Exception:
-            pass
-        raise
-
-    sid, sess = _new_oauth_session("xai-oauth", "loopback", profile=profile)
-    sess["server"] = server
-    sess["thread"] = thread
-    sess["callback_result"] = callback_result
-    sess["redirect_uri"] = redirect_uri
-    sess["verifier"] = verifier
-    sess["challenge"] = challenge
-    sess["state"] = state
-    sess["token_endpoint"] = discovery["token_endpoint"]
-    sess["discovery"] = discovery
-    sess["expires_at"] = time.time() + _XAI_LOOPBACK_TIMEOUT_SECONDS
-    threading.Thread(
-        target=_xai_loopback_worker, args=(sid,), daemon=True,
-        name=f"oauth-xai-{sid[:6]}",
-    ).start()
-    return {
-        "session_id": sid,
-        "flow": "loopback",
-        "auth_url": authorize_url,
-        "expires_in": int(_XAI_LOOPBACK_TIMEOUT_SECONDS),
-    }
-
-
-def _xai_loopback_worker(session_id: str) -> None:
-    """Wait for the xAI loopback callback, exchange the code, persist tokens."""
-    from datetime import datetime, timezone
-
-    from hermes_cli import auth as hauth
-
-    with _oauth_sessions_lock:
-        sess = _oauth_sessions.get(session_id)
-    if not sess:
-        return
-
-    def _fail(message: str) -> None:
-        with _oauth_sessions_lock:
-            s = _oauth_sessions.get(session_id)
-            if s is not None:
-                s["status"] = "error"
-                s["error_message"] = message
-
-    def _cancelled() -> bool:
-        # The session is removed from the registry when the user cancels
-        # (DELETE /sessions/{id}). If that happened while we were blocked on
-        # the callback or token exchange, abort instead of persisting tokens
-        # the user no longer wants.
-        with _oauth_sessions_lock:
-            return session_id not in _oauth_sessions
-
-    try:
-        callback = hauth._xai_wait_for_callback(
-            sess["server"],
-            sess["thread"],
-            sess["callback_result"],
-            timeout_seconds=_XAI_LOOPBACK_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        _fail(f"xAI authorization timed out: {exc}")
-        return
-
-    if _cancelled():
-        return
-
-    if callback.get("error"):
-        detail = callback.get("error_description") or callback["error"]
-        _fail(f"xAI authorization failed: {detail}")
-        return
-    if callback.get("state") != sess["state"]:
-        _fail("xAI authorization failed: state mismatch.")
-        return
-    code = str(callback.get("code") or "").strip()
-    if not code:
-        _fail("xAI authorization failed: missing authorization code.")
-        return
-
-    try:
-        payload = hauth._xai_oauth_exchange_code_for_tokens(
-            token_endpoint=sess["token_endpoint"],
-            code=code,
-            redirect_uri=sess["redirect_uri"],
-            code_verifier=sess["verifier"],
-            code_challenge=sess["challenge"],
-        )
-        access_token = str(payload.get("access_token", "") or "").strip()
-        refresh_token = str(payload.get("refresh_token", "") or "").strip()
-        if not access_token or not refresh_token:
-            _fail("xAI token exchange did not return the expected tokens.")
-            return
-        base_url = hauth._xai_validate_inference_base_url(
-            os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-            or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
-            fallback=hauth.DEFAULT_XAI_OAUTH_BASE_URL,
-        )
-        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        tokens = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": str(payload.get("id_token", "") or "").strip(),
-            "expires_in": payload.get("expires_in"),
-            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        sid, sess = _new_oauth_session("xai-oauth", "device_code", profile=profile)
+        sess["device_code"] = str(device_data["device_code"])
+        sess["interval"] = int(device_data["interval"])
+        sess["expires_at"] = time.time() + int(device_data["expires_in"])
+        threading.Thread(
+            target=_xai_device_poller,
+            args=(sid,),
+            daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(device_data["user_code"]),
+            "verification_url": str(
+                device_data.get("verification_uri_complete")
+                or device_data["verification_uri"]
+            ),
+            "expires_in": int(device_data["expires_in"]),
+            "poll_interval": int(device_data["interval"]),
         }
-        if _cancelled():
-            return
-        with _profile_scope(_oauth_session_profile(session_id)):
-            hauth._save_xai_oauth_tokens(
-                tokens,
-                discovery=sess.get("discovery"),
-                redirect_uri=sess["redirect_uri"],
-                last_refresh=last_refresh,
-            )
-            _add_xai_oauth_pool_entry(access_token, refresh_token, base_url, last_refresh)
-    except Exception as exc:
-        _fail(f"xAI token exchange failed: {exc}")
-        return
 
-    with _oauth_sessions_lock:
-        s = _oauth_sessions.get(session_id)
-        if s is not None:
-            s["status"] = "approved"
-    _log.info("oauth/loopback: xai-oauth login completed (session=%s)", session_id)
-
-
-def _add_xai_oauth_pool_entry(
-    access_token: str, refresh_token: str, base_url: str, last_refresh: str
-) -> None:
-    """Mirror `hermes auth add xai-oauth`'s credential-pool insert.
-
-    Best-effort: the auth-store write in _save_xai_oauth_tokens is the source
-    of truth for runtime resolution; the pool entry only matters for the
-    rotation strategy.
-    """
-    try:
-        import uuid
-
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        pool = load_pool("xai-oauth")
-        existing = [
-            e for e in pool.entries()
-            if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_xai_pkce")
-        ]
-        for e in existing:
-            try:
-                pool.remove_entry(getattr(e, "id", ""))
-            except Exception:
-                pass
-        entry = PooledCredential(
-            provider="xai-oauth",
-            id=uuid.uuid4().hex[:6],
-            label="dashboard PKCE",
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:dashboard_xai_pkce",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            base_url=base_url,
-            last_refresh=last_refresh,
-        )
-        pool.add_entry(entry)
-    except Exception as e:
-        _log.warning("xai-oauth pool add (dashboard) failed: %s", e)
+    raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
 def _nous_poller(session_id: str) -> None:
@@ -7633,6 +7441,70 @@ def _minimax_poller(session_id: str) -> None:
         _log.info("oauth/device: minimax login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _xai_device_poller(session_id: str) -> None:
+    """Background poller for xAI's OAuth device-code flow."""
+    import httpx
+    from hermes_cli.auth import (
+        _save_xai_oauth_tokens,
+        _xai_oauth_discovery,
+        _xai_oauth_poll_device_token,
+        unsuppress_credential_source,
+    )
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    device_code = sess["device_code"]
+    interval = int(sess["interval"])
+    expires_in = max(60, int(sess["expires_at"] - time.time()))
+    try:
+        discovery = _xai_oauth_discovery(20.0)
+        with httpx.Client(
+            timeout=httpx.Timeout(20.0),
+            headers={"Accept": "application/json"},
+        ) as client:
+            token_data = _xai_oauth_poll_device_token(
+                client,
+                token_endpoint=discovery["token_endpoint"],
+                device_code=device_code,
+                expires_in=expires_in,
+                poll_interval=interval,
+            )
+        tokens = {
+            "access_token": str(token_data.get("access_token", "") or "").strip(),
+            "refresh_token": str(token_data.get("refresh_token", "") or "").strip(),
+            "id_token": str(token_data.get("id_token", "") or "").strip(),
+            "expires_in": token_data.get("expires_in"),
+            "token_type": str(token_data.get("token_type") or "Bearer").strip() or "Bearer",
+        }
+        with _profile_scope(_oauth_session_profile(session_id)):
+            _save_xai_oauth_tokens(
+                tokens,
+                discovery=discovery,
+                last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                auth_mode="oauth_device_code",
+            )
+            # The singleton write above is the single source of truth: the
+            # credential-pool load seeds it as the canonical ``device_code``
+            # entry. Do NOT also insert a parallel ``manual:dashboard_*`` pool
+            # entry — that duplicates the single-use refresh token across two
+            # entries and triggers rotation churn / ``refresh_token_reused``.
+            # An interactive dashboard login is also an explicit re-enable
+            # signal, so clear any ``device_code`` suppression left by a
+            # prior ``hermes auth remove xai-oauth`` (mirrors auth_add_command
+            # and the ``hermes model`` re-login path in _login_xai_oauth).
+            unsuppress_credential_source("xai-oauth", "device_code")
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: xai login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("xai device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)
@@ -7787,10 +7659,6 @@ async def start_oauth_login(
             return _start_anthropic_pkce(profile=profile)
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id, profile=profile)
-        if catalog_entry["flow"] == "loopback" and provider_id == "xai-oauth":
-            return await asyncio.get_running_loop().run_in_executor(
-                None, _start_xai_loopback_flow, profile,
-            )
     except HTTPException:
         raise
     except Exception as e:
@@ -7828,10 +7696,9 @@ async def poll_oauth_session(
 ):
     """Poll a session's status (no auth — read-only state).
 
-    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax) and the
-    loopback flow (xAI Grok). Both surface progress through the same
-    background-worker-updated ``status`` field, so a single poll endpoint
-    serves them all.
+    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax, xAI).
+    Each surfaces progress through the same background-worker-updated
+    ``status`` field, so a single poll endpoint serves them all.
     """
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -7859,33 +7726,6 @@ async def cancel_oauth_session(
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
-    # Loopback sessions own a bound 127.0.0.1 callback server. Without an
-    # explicit shutdown the worker would keep that port held until
-    # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
-    # an orphaned listener can't block a subsequent sign-in attempt.
-    if sess.get("flow") == "loopback":
-        # The worker is blocked in _xai_wait_for_callback, which polls
-        # callback_result rather than the server state. Flag the result as
-        # cancelled so that loop returns on its next tick instead of spinning
-        # until the timeout — otherwise repeated cancel/retry piles up daemon
-        # threads. (_cancelled() in the worker then short-circuits before any
-        # persist.)
-        result = sess.get("callback_result")
-        if isinstance(result, dict):
-            result["error"] = result.get("error") or "cancelled"
-        server = sess.get("server")
-        thread = sess.get("thread")
-        try:
-            if server is not None:
-                server.shutdown()
-                server.server_close()
-        except Exception:
-            pass
-        try:
-            if thread is not None:
-                thread.join(timeout=1.0)
-        except Exception:
-            pass
     return {"ok": True, "session_id": session_id}
 
 
@@ -14279,13 +14119,24 @@ def start_server(
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
     # Loopback binds are the Desktop case: a single local client, no reverse
-    # proxy in front. A GIL-heavy agent turn can stall the event loop past 20s,
-    # and uvicorn's ws keepalive ping runs on that same starved loop — so a
-    # 20s ping timeout kills an otherwise-healthy local connection over a
-    # recoverable stall (QW-1). Give loopback a longer 60s timeout / 30s
-    # interval to ride out those stalls. Non-loopback binds sit behind a
-    # Cloudflare Tunnel (idle timeout ~100s), so keep them at 20/20 to detect
-    # half-open connections promptly and stay under the tunnel's idle window.
+    # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
+    # as agent turns, and a single synchronous GIL-holding call on a worker
+    # thread (e.g. a regex/scrub over a large model output, or a long
+    # delegate_task subagent turn) can starve that loop for *minutes* — the
+    # loop cannot process the incoming pong, so uvicorn declares the socket
+    # dead and closes it, dropping an otherwise-healthy local connection
+    # (#53773: "event loop stalled 226.3s"; #48445/#50005). A longer timeout
+    # only raises the threshold — a multi-minute stall sails past any finite
+    # window. The keepalive ping exists to detect *half-open* connections
+    # (reverse-proxy 524, dropped tunnels), which cannot happen on loopback:
+    # there is no network or proxy in the path, and a dead local client tears
+    # the socket down with a real FIN/RST that starlette surfaces as
+    # WebSocketDisconnect regardless of the ping. So on loopback the ping
+    # provides ~no liveness value while actively killing recoverable stalls —
+    # disable it entirely. Non-loopback binds sit behind a Cloudflare Tunnel
+    # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
+    # ping at 20/20 to detect it promptly and stay under the tunnel's idle
+    # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
@@ -14297,12 +14148,12 @@ def start_server(
         # decide cookie Secure flags, so we flip proxy_headers on for that
         # mode.
         proxy_headers=bool(app.state.auth_required),
-        # Detect half-open WS connections (reverse-proxy 524, dropped
-        # tunnels) within ~20-40s so WebSocketDisconnect fires the
-        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.  Loopback gets a longer window (see above).
-        ws_ping_interval=30.0 if _is_loopback else 20.0,
-        ws_ping_timeout=60.0 if _is_loopback else 20.0,
+        # Half-open detection for public binds only (see above). Loopback
+        # disables the protocol ping (None) so an event-loop stall can never
+        # trigger a false disconnect; a genuinely dead local client is still
+        # reaped via the WebSocketDisconnect → disconnect/reap path.
+        ws_ping_interval=None if _is_loopback else 20.0,
+        ws_ping_timeout=None if _is_loopback else 20.0,
     )
     server = uvicorn.Server(config)
 

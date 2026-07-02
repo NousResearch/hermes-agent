@@ -14,35 +14,22 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const getMoaModels = vi.fn()
 const getGlobalModelOptions = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
-  getMoaModels: (...args: unknown[]) => getMoaModels(...args)
+  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args)
 }))
 
-function moaPreset() {
-  return {
-    aggregator: { provider: 'deepseek', model: 'deepseek-v4-pro' },
-    aggregator_temperature: 0.7,
-    enabled: true,
-    max_tokens: 4096,
-    reference_models: [{ provider: 'zai', model: 'glm-5.2' }],
-    reference_temperature: 0.7
-  }
-}
+// MoA presets now arrive as the catalog's virtual `moa` provider row (the same
+// payload a remote gateway's model.options returns), not the /api/model/moa
+// REST config.
+const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
-  getGlobalModelOptions.mockResolvedValue({ providers: [] })
-  getMoaModels.mockResolvedValue({
-    default_preset: 'default',
-    active_preset: 'default',
-    presets: { default: moaPreset(), BeastMode: moaPreset() }
-  })
+  getGlobalModelOptions.mockResolvedValue({ providers: [MOA_PROVIDER] })
 })
 
 afterEach(() => {
@@ -88,5 +75,28 @@ describe('ModelMenuPanel MoA presets', () => {
     // The check codicon renders as a sibling within the same row item.
     const item = row.closest('[role="menuitem"]') ?? row.parentElement
     expect(item?.querySelector('.codicon-check')).not.toBeNull()
+  })
+
+  it('keeps the virtual moa provider out of the main model groups (presets section only)', async () => {
+    renderPanel()
+
+    await findByText(document.body, 'MoA: BeastMode')
+
+    // The provider group header would read "Mixture of Agents"; the presets
+    // section header reads "MoA presets". Only the latter should exist.
+    expect(document.body.textContent).toContain('MoA presets')
+    expect(document.body.textContent).not.toContain('Mixture of Agents')
+  })
+
+  it('renders presets from the catalog even before a session exists', async () => {
+    $activeSessionId.set('')
+    const onSelectModel = renderPanel()
+
+    const row = await findByText(document.body, 'MoA: BeastMode')
+    fireEvent.click(row)
+
+    // Pre-session picks are UI state shipped on the next session.create — the
+    // row must not be disabled and must still route through onSelectModel.
+    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa' })
   })
 })

@@ -55,6 +55,11 @@ _QUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$")
 
 
+def _is_list_line(line: str) -> bool:
+    """True if ``line`` is a markdown list item (bullet or ordered)."""
+    return bool(_BULLET_RE.match(line) or _ORDERED_RE.match(line))
+
+
 def _indent_level(spaces: str) -> int:
     """Map leading whitespace to a nesting level (2 spaces or 1 tab per level)."""
     width = 0
@@ -434,7 +439,7 @@ def render_blocks(
                 continue
 
             # List group (bullets + ordered, with nesting)
-            if _BULLET_RE.match(line) or _ORDERED_RE.match(line):
+            if _is_list_line(line):
                 flush_para()
                 items: List[Tuple[int, bool, str]] = []
                 while i < n:
@@ -451,6 +456,22 @@ def render_blocks(
                         indent, ordered, txt = items[-1]
                         items[-1] = (indent, ordered, txt + " " + lines[i].strip())
                         i += 1
+                    elif not lines[i].strip() and items:
+                        # Blank line inside a list run. LLM-authored ordered
+                        # lists commonly separate items with a blank line; if
+                        # the next non-blank line is another list item, treat
+                        # the blank(s) as a soft separator and keep the run
+                        # going so the items stay in one rich_text_list (Slack
+                        # numbers each list independently, so splitting would
+                        # restart every item at "1."). Otherwise the blank
+                        # ends the list.
+                        j = i + 1
+                        while j < n and not lines[j].strip():
+                            j += 1
+                        if j < n and _is_list_line(lines[j]):
+                            i = j
+                        else:
+                            break
                     else:
                         break
                 blocks.append(_list_block(items))

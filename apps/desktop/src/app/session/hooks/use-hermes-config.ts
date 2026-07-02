@@ -21,6 +21,23 @@ function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
 }
 
+/** config.yaml hands back whatever the user wrote — `reasoning_effort: false`
+ *  (or `off`/`no`, which YAML also parses to boolean false) means thinking
+ *  disabled, and a bare boolean must not throw on `.trim()`. */
+function normalizeConfigEffort(value: unknown): string {
+  if (value === false) {
+    return 'none'
+  }
+
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const effort = value.trim().toLowerCase()
+
+  return effort === 'false' || effort === 'disabled' ? 'none' : effort
+}
+
 interface HermesConfigOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   refreshProjectBranch: (cwd: string) => Promise<void>
@@ -60,7 +77,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
         void refreshProjectBranch($currentCwd.get() || cwd)
       }
 
-      const reasoning = (config.agent?.reasoning_effort ?? '').trim()
+      const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
       const tier = (config.agent?.service_tier ?? '').trim()
 
       setCurrentReasoningEffort(prev => (activeSessionIdRef.current ? prev : reasoning))

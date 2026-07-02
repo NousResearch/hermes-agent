@@ -307,10 +307,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const reasoningSupported = mainCaps?.reasoning ?? true
   const fastSupported = mainCaps?.fast ?? false
 
-  const effortValue =
-    String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
-      .trim()
-      .toLowerCase() || 'medium'
+  // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
+  // ("false" once stringified) — show it as Off, not an empty select.
+  const rawEffort = String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
+    .trim()
+    .toLowerCase()
+  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || 'medium'
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 

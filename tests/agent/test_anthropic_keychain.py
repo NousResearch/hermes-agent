@@ -49,6 +49,13 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             mock_run.return_value = MagicMock(returncode=0, stdout="not valid json", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
+    def test_returns_none_for_unexpected_stdout_payload_type(self):
+        """Malformed mocked Keychain stdout must not crash credential fallback."""
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=MagicMock(), stderr="")
+            assert _read_claude_code_credentials_from_keychain() is None
+
     def test_returns_none_when_password_field_is_missing_claude_ai_oauth(self):
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
              patch("agent.anthropic_adapter.subprocess.run") as mock_run:

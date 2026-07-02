@@ -4190,36 +4190,38 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
 
 @app.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str):
-    provider = get_provider_config_schema(name)
+    provider = await asyncio.to_thread(get_provider_config_schema, name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
         # empty schema so the generic panel simply renders nothing.
         return {"name": name, "label": name, "docs_url": "", "fields": []}
-    return _memory_provider_payload(provider)
+    return await asyncio.to_thread(_memory_provider_payload, provider)
+
+
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
+        _write_provider_honcho(provider, values)
+    else:
+        _write_provider_flat(provider, values)
+
+    config = load_config()
+    memory_config = config.get("memory")
+    if not isinstance(memory_config, dict):
+        memory_config = {}
+        config["memory"] = memory_config
+    if memory_config.get("provider") != provider.name:
+        memory_config["provider"] = provider.name
+        save_config(config)
 
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
-    provider = get_provider_config_schema(name)
+    provider = await asyncio.to_thread(get_provider_config_schema, name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
-    values = body.values or {}
-
     try:
-        if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
-            _write_provider_honcho(provider, values)
-        else:
-            _write_provider_flat(provider, values)
-
-        config = load_config()
-        memory_config = config.get("memory")
-        if not isinstance(memory_config, dict):
-            memory_config = {}
-            config["memory"] = memory_config
-        memory_config["provider"] = provider.name
-        save_config(config)
-
+        await asyncio.to_thread(_update_memory_provider_config, provider, body.values or {})
         return {"ok": True}
     except HTTPException:
         raise

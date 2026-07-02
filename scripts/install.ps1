@@ -344,12 +344,12 @@ function Write-BrowserEnv {
     }
     $envFile = Join-Path $HermesHome ".env"
     if (-not (Test-Path $envFile)) {
-        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=`"$BrowserPath`"" -Encoding UTF8
         return
     }
     $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
     if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
-    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=`"$BrowserPath`"" -Encoding UTF8
 }
 
 function Install-AgentBrowser {

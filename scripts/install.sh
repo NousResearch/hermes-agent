@@ -1877,11 +1877,11 @@ strip_snap_browser_override() {
     local env_file="$HERMES_HOME/.env"
 
     [ -f "$env_file" ] || return 0
-    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/' "$env_file" 2>/dev/null || return 0
+    grep -Eq '^AGENT_BROWSER_EXECUTABLE_PATH="?/snap/' "$env_file" 2>/dev/null || return 0
 
     local tmp
     tmp="$(mktemp)" || return 0
-    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH=/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
+    if grep -Ev '^AGENT_BROWSER_EXECUTABLE_PATH="?/snap/|^# Hermes Agent browser tools' "$env_file" > "$tmp"; then
         mv "$tmp" "$env_file"
         log_warn "Removed stale Snap browser override (AGENT_BROWSER_EXECUTABLE_PATH=/snap/...) from $env_file"
         log_info "Hermes will use the bundled Chromium instead."
@@ -2106,7 +2106,7 @@ configure_browser_env_from_system_browser() {
     {
         echo ""
         echo "# Hermes Agent browser tools — explicit browser override."
-        echo "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path"
+        echo "AGENT_BROWSER_EXECUTABLE_PATH=\"$browser_path\""
     } >> "$env_file"
     log_success "Configured browser tools to use $browser_path"
 }

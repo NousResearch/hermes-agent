@@ -397,6 +397,7 @@ def build_turn_context(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
+            _preflight_original_tokens = _preflight_tokens
             for _pass in range(3):
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
@@ -428,7 +429,28 @@ def build_turn_context(
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
-    # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
+            # Guard against an infinite compression loop when the aux
+            # model is too small to compress the current session
+            # effectively (issue #53008).  Token reduction below 10 %
+            # means every turn will re-trigger compression without
+            # making progress — raise the threshold to break the cycle.
+            _reduction = 1.0 - (_preflight_tokens / _preflight_original_tokens)
+            if _reduction < 0.10 and _compressor.should_compress(_preflight_tokens):
+                _old_threshold = _compressor.threshold_tokens
+                _compressor.threshold_tokens = max(
+                    _preflight_tokens + 1,
+                    int(_old_threshold * 1.5),
+                )
+                logger.warning(
+                    "Preflight compression ineffective "
+                    "(%.1f%% token reduction — aux model may be too "
+                    "small for current session). "
+                    "Raising threshold %s → %s to prevent "
+                    "compression loop.",
+                    _reduction * 100,
+                    f"{_old_threshold:,}",
+                    f"{_compressor.threshold_tokens:,}",
+                )
     plugin_user_context = ""
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook

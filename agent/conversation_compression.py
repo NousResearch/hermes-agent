@@ -270,12 +270,15 @@ def check_compression_model_feasibility(agent: Any) -> None:
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
             # so the new threshold is always >= 64K.
             #
-            # The compression summariser sends a single user-role
-            # prompt (no system prompt, no tools) to the aux model, so
-            # new_threshold == aux_context is safe: the request is
-            # the raw messages plus a small summarisation instruction.
+            # Apply an 80 % safety margin on the aux model's context
+            # window: the summarisation prompt template, system
+            # instructions, and tool schemas consume part of the
+            # context, so reserving 20 % headroom avoids passing a
+            # request that exceeds the aux model's actual capacity
+            # (see issue #53008 — a too-high threshold combined with
+            # no headroom can produce an infinite compression loop).
             old_threshold = threshold
-            new_threshold = aux_context
+            new_threshold = max(int(aux_context * 0.8), MINIMUM_CONTEXT_LENGTH)
             agent.context_compressor.threshold_tokens = new_threshold
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
@@ -285,7 +288,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent.context_compressor.threshold_percent = (
                     new_threshold / main_ctx
                 )
-            safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            safe_pct = int((new_threshold / main_ctx) * 100) if main_ctx else 50
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually

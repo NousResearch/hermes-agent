@@ -477,6 +477,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `XMPP_HOME_CHANNEL_NAME` | Display name for the XMPP home channel |
 | `XMPP_ALLOWED_USERS` | Comma-separated **bare JIDs** allowed to DM the bot (e.g. `you@example.org`). MUC (group chat) access is gated by room membership in `XMPP_MUC_ROOMS`, not this list — joining the room *is* the access decision. |
 | `XMPP_ALLOW_ALL_USERS` | Bypass DM allow-list and MUC checks (`true`/`false`, default: `false`). Dev only. |
+| `XMPP_OMEMO_ENABLED` | OMEMO end-to-end encryption for 1:1 chats (default: `true`; `slixmpp-omemo` ships with the `xmpp` extra and auto-installs. Set `false` to force TLS-only) |
+| `XMPP_OMEMO_STORAGE_PATH` | OMEMO key store path (default: `~/.hermes/xmpp_omemo.json`). Holds the bot's OMEMO identity — must persist across restarts. |
+| `XMPP_MAX_MESSAGE_LENGTH` | Per-stanza body cap (default: `10000`). Longer replies split on word/code-fence boundaries instead of being clipped. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

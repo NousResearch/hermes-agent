@@ -20,7 +20,14 @@ pip install 'hermes-agent[xmpp]'
 
 ## Security model
 
-The v1 adapter encrypts in transit (TLS to your server is mandatory — STARTTLS is forced) but **does not** implement end-to-end OMEMO encryption yet. Messages are visible to your server operator. If that's not acceptable, run your own server (Prosody on a trusted host is a 5-minute setup) or wait for the OMEMO follow-up.
+TLS to your server is mandatory (STARTTLS is forced, plaintext refused). On top of that, the adapter does **OMEMO end-to-end encryption (XEP-0384)** for 1:1 chats, **on by default**. Like Matrix's E2EE, the OMEMO dependency (`slixmpp-omemo`) ships with the platform — it's included in `pip install 'hermes-agent[xmpp]'` and the gateway lazy-installs it on first use, so there's no separate step. (It's pure Python — no native build — so it installs cleanly on every OS.) To run TLS-only instead, set `XMPP_OMEMO_ENABLED=false`.
+
+With OMEMO active, 1:1 message bodies are encrypted to the recipient's published device keys and inbound OMEMO messages are decrypted automatically. Your server operator sees only ciphertext. Details that matter:
+
+- **Trust policy is BTBV** (blind trust before verification): a headless bot can't verify fingerprints interactively, so new devices are trusted on first sight. Your client will ask *you* to trust the bot's fingerprint once.
+- **The key store** lives at `~/.hermes/xmpp_omemo.json` (override with `XMPP_OMEMO_STORAGE_PATH`). It holds the bot's OMEMO identity — keep it across restarts and back it up; losing it makes every contact's client warn about a new device.
+- **Not covered by OMEMO**: file uploads (XEP-0363 attachments are TLS-only — no XEP-0454 yet), MUC group messages (plaintext; reliable group OMEMO needs non-anonymous rooms and is deferred), and the bot's own side (Hermes decrypts in memory and its session logs are plaintext on the host).
+- If a recipient has no OMEMO devices, or encryption fails, the adapter **falls back to plaintext with a warning** rather than dropping the reply. Set `XMPP_OMEMO_ENABLED=false` to disable OMEMO entirely.
 
 ---
 
@@ -68,6 +75,9 @@ Pick **XMPP (Jabber)** from the platform list. You'll be prompted for:
 | `XMPP_HOME_CHANNEL` | no | JID where cron jobs deliver results by default |
 | `XMPP_ALLOWED_USERS` | yes (effectively) | Comma-separated **bare JIDs** allowed to DM the bot |
 | `XMPP_ALLOW_ALL_USERS` | no | Set to `1` for dev only — bypasses both the DM allow-list and MUC checks |
+| `XMPP_OMEMO_ENABLED` | no | Default `true` when `slixmpp-omemo` is installed; `false` forces TLS-only |
+| `XMPP_OMEMO_STORAGE_PATH` | no | OMEMO key store path (default `~/.hermes/xmpp_omemo.json`) |
+| `XMPP_MAX_MESSAGE_LENGTH` | no | Per-stanza cap (default 10000); longer replies split on word/code-fence boundaries |
 
 :::info DM allow-list vs. MUC access
 `XMPP_ALLOWED_USERS` only filters **direct messages**. MUC (group chat)
@@ -138,7 +148,7 @@ All standard gateway slash commands work over XMPP:
 | Aspect | XMPP | Signal | Telegram |
 |--------|------|--------|----------|
 | Server you can self-host | Yes (Prosody, ejabberd) | No | No |
-| End-to-end encryption (v1) | No | Yes | No (cloud chats) |
+| End-to-end encryption | Yes — OMEMO, 1:1 chats (on by default) | Yes | No (cloud chats) |
 | Federation | Yes | No | No |
 | Native file rendering in clients | Yes (XEP-0363) | Yes | Yes |
 | Group chat | Yes (MUC) | Yes | Yes |

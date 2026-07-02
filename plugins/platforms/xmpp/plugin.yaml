@@ -8,7 +8,8 @@ description: >
   and relays messages between XMPP chats and the Hermes agent. Supports 1:1
   chats, MUC group chats, XEP-0363 HTTP File Upload for media, XEP-0085 chat
   states (typing indicators), and bare-JID allowlists. TLS-to-server enforced;
-  OMEMO end-to-end encryption is a planned follow-up.
+  optional OMEMO end-to-end encryption for 1:1 chats when slixmpp-omemo is
+  installed (hermes-agent[xmpp-omemo]).
 author: ericlarslee
 requires_env:
   - name: XMPP_JID
@@ -52,4 +53,16 @@ optional_env:
   - name: XMPP_ALLOW_ALL_USERS
     description: "Allow any XMPP user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
+    password: false
+  - name: XMPP_OMEMO_ENABLED
+    description: "OMEMO end-to-end encryption for 1:1 chats (default true; slixmpp-omemo ships with the xmpp extra and auto-installs)"
+    prompt: "Enable OMEMO? (true/false)"
+    password: false
+  - name: XMPP_OMEMO_STORAGE_PATH
+    description: "Path for the OMEMO key store JSON (default ~/.hermes/xmpp_omemo.json — must persist across restarts)"
+    prompt: "OMEMO key store path"
+    password: false
+  - name: XMPP_MAX_MESSAGE_LENGTH
+    description: "Per-stanza body length cap; longer replies split on word/code-fence boundaries (default 10000)"
+    prompt: "Max message length"
     password: false

@@ -714,3 +714,598 @@ class TestXmppFatalErrorHandling:
         await adapter.send_document(chat_id="a@example.org", file_path=str(f), caption="d")
         await adapter.send_image_file(chat_id="a@example.org", image_path=str(f))
         assert adapter._upload_and_send.await_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Message chunking / MAX_MESSAGE_LENGTH (delivery pipeline)
+# ---------------------------------------------------------------------------
+
+class TestXmppChunking:
+    """The gateway's stream consumer clips at 4096 chars for adapters that
+    don't define MAX_MESSAGE_LENGTH; the adapter must define it and its own
+    send paths must split (never truncate) longer bodies.
+    """
+
+    def test_max_message_length_default(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter.MAX_MESSAGE_LENGTH == 10000
+
+    def test_max_message_length_override_via_extra(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, max_message_length="2000")
+        assert adapter.MAX_MESSAGE_LENGTH == 2000
+
+    def test_max_message_length_override_via_env(self, monkeypatch):
+        monkeypatch.setenv("XMPP_MAX_MESSAGE_LENGTH", "3000")
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter.MAX_MESSAGE_LENGTH == 3000
+
+    def test_max_message_length_invalid_falls_back(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, max_message_length="not-a-number")
+        assert adapter.MAX_MESSAGE_LENGTH == 10000
+
+    def test_chunk_body_short_is_single_chunk(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter._chunk_body("hello") == ["hello"]
+        assert adapter._chunk_body("") == [""]
+
+    def test_chunk_body_splits_long_content(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, max_message_length="100")
+        content = "word " * 100  # 500 chars
+        chunks = adapter._chunk_body(content)
+        assert len(chunks) > 1
+        assert all(len(c) <= 100 for c in chunks)
+        # No content lost (chunk indicators like "(1/5)" may be added).
+        joined = "".join(chunks)
+        assert "word" in joined
+
+    def test_fallback_split_prefers_boundaries(self, monkeypatch):
+        chunks = XmppAdapter._fallback_split("aaa bbb\nccc ddd eee fff", 10)
+        assert all(len(c) <= 10 for c in chunks)
+        assert "".join(c.replace(" ", "").replace("\n", "") for c in chunks) == \
+            "aaabbbcccdddeeefff"
+
+    def test_fallback_split_handles_unbreakable_run(self, monkeypatch):
+        chunks = XmppAdapter._fallback_split("x" * 25, 10)
+        assert chunks == ["x" * 10, "x" * 10, "x" * 5]
+
+    @pytest.mark.asyncio
+    async def test_send_splits_long_plaintext_into_stanzas(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, max_message_length="100")
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+
+        result = await adapter.send("alice@example.org", "word " * 100)
+        assert result.success is True
+        assert len(sent) > 1
+        assert all(len(kw["mbody"]) <= 100 for kw in sent)
+
+
+# ---------------------------------------------------------------------------
+# MUC correctness (reflection filter, history replay, _known_dms)
+# ---------------------------------------------------------------------------
+
+class TestXmppMucCorrectness:
+    @pytest.mark.asyncio
+    async def test_muc_reflection_of_own_nick_filtered(self, monkeypatch):
+        # In a MUC the from-JID is room@host/nick, so the bare-JID self-check
+        # never matches; the bot's own reflected messages must be dropped by
+        # nick or it replies to itself in an endless loop.
+        adapter = _make_xmpp_adapter(
+            monkeypatch, muc_rooms="room@conference.example.org"
+        )
+        adapter.handle_message = AsyncMock()
+        stanza = _StanzaStub(
+            stanza_type="groupchat",
+            from_jid="room@conference.example.org/hermes",  # default nick
+            body="echo of our own message",
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_muc_reflection_respects_per_room_nick(self, monkeypatch):
+        adapter = _make_xmpp_adapter(
+            monkeypatch, muc_rooms="room@conference.example.org/butler"
+        )
+        adapter.handle_message = AsyncMock()
+        stanza = _StanzaStub(
+            stanza_type="groupchat",
+            from_jid="room@conference.example.org/butler",
+            body="echo",
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_muc_history_replay_dropped(self, monkeypatch):
+        adapter = _make_xmpp_adapter(
+            monkeypatch, muc_rooms="room@conference.example.org"
+        )
+        adapter.handle_message = AsyncMock()
+        stanza = _StanzaStub(
+            stanza_type="groupchat",
+            from_jid="room@conference.example.org/alice",
+            body="old message from history",
+        )
+        stanza.get_plugin = MagicMock(return_value=MagicMock())  # delay stamp present
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_registers_message_handler_once(self, monkeypatch):
+        # slixmpp dispatches MUC stanzas to both "message" and
+        # "groupchat_message"; registering both would dispatch every group
+        # message to the agent twice.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        events = []
+        fake_client.add_event_handler = MagicMock(
+            side_effect=lambda ev, handler: events.append(ev)
+        )
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            await adapter.connect()
+        assert events.count("message") == 1
+        assert "groupchat_message" not in events
+
+    @pytest.mark.asyncio
+    async def test_known_dm_beats_muc_domain_heuristic(self, monkeypatch):
+        # Snikket-style servers put users on chat.example.com, which matches
+        # the MUC subdomain heuristic. A JID we've seen DM us must never be
+        # replied to with mtype=groupchat.
+        adapter = _make_xmpp_adapter(
+            monkeypatch, allowed_users="alice@chat.example.com"
+        )
+        adapter.handle_message = AsyncMock()
+        assert adapter._is_muc("alice@chat.example.com") is True  # heuristic alone
+        stanza = _StanzaStub(
+            stanza_type="chat", from_jid="alice@chat.example.com/phone", body="hi"
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_awaited_once()
+        assert adapter._is_muc("alice@chat.example.com") is False  # learned DM
+
+
+# ---------------------------------------------------------------------------
+# Presence subscription (enables OMEMO device-list PEP push to peers)
+# ---------------------------------------------------------------------------
+
+class _PresenceStub:
+    def __init__(self, from_jid):
+        self._from = _Jid(from_jid)
+
+    def get_from(self):
+        return self._from
+
+
+class TestXmppPresenceSubscription:
+    @pytest.mark.asyncio
+    async def test_subscribe_from_allowed_user_is_approved_mutually(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_presence = lambda **kw: sent.append(kw)
+        await adapter._on_subscribe(_PresenceStub("alice@example.org/phone"))
+        types = [kw.get("ptype") for kw in sent]
+        assert "subscribed" in types  # approve their request
+        assert "subscribe" in types   # subscribe back → mutual
+        assert all(kw["pto"] == "alice@example.org" for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_from_unauthorized_is_ignored(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_presence = lambda **kw: sent.append(kw)
+        await adapter._on_subscribe(_PresenceStub("mallory@evil.example/x"))
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_subscribe_allow_all_approves_anyone(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, allow_all="1")
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_presence = lambda **kw: sent.append(kw)
+        await adapter._on_subscribe(_PresenceStub("anyone@elsewhere.example/x"))
+        assert any(kw.get("ptype") == "subscribed" for kw in sent)
+
+    @pytest.mark.asyncio
+    async def test_session_start_requests_subscription_to_allowed_users(self, monkeypatch):
+        adapter = _make_xmpp_adapter(
+            monkeypatch, allowed_users="alice@example.org,bob@example.org"
+        )
+        adapter.client = MagicMock()
+        adapter.client.get_roster = AsyncMock()
+        adapter._session_ready = asyncio.Event()
+        sent = []
+        adapter.client.send_presence = lambda **kw: sent.append(kw)
+        await adapter._on_session_start(None)
+        subs = {kw["pto"] for kw in sent if kw.get("ptype") == "subscribe"}
+        assert subs == {"alice@example.org", "bob@example.org"}
+
+    @pytest.mark.asyncio
+    async def test_connect_gates_auto_authorize_and_registers_handler(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, allowed_users="alice@example.org")
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        events = []
+        fake_client.add_event_handler = MagicMock(
+            side_effect=lambda ev, h: events.append(ev)
+        )
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            await adapter.connect()
+        assert "presence_subscribe" in events
+        # Blanket auto-authorize would approve anyone; it must be off so only
+        # allow-listed peers get into the roster.
+        assert fake_client.roster.auto_authorize is False
+        assert fake_client.roster.auto_subscribe is False
+
+
+# ---------------------------------------------------------------------------
+# OMEMO (XEP-0384)
+# ---------------------------------------------------------------------------
+
+omemo_required = pytest.mark.skipif(
+    not _xmpp.SLIXMPP_OMEMO_AVAILABLE,
+    reason="slixmpp-omemo not installed (ships with hermes-agent[xmpp])",
+)
+
+
+class TestXmppOmemoConfig:
+    def test_omemo_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("XMPP_OMEMO_ENABLED", raising=False)
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter._omemo_enabled is True
+
+    def test_omemo_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("XMPP_OMEMO_ENABLED", "false")
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter._omemo_enabled is False
+
+    def test_omemo_disabled_via_extra(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, omemo_enabled="off")
+        assert adapter._omemo_enabled is False
+
+    def test_omemo_storage_path_default_and_override(self, monkeypatch):
+        monkeypatch.delenv("XMPP_OMEMO_STORAGE_PATH", raising=False)
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter._omemo_storage_path.endswith("xmpp_omemo.json")
+        adapter2 = _make_xmpp_adapter(monkeypatch, omemo_storage_path="/tmp/keys.json")
+        assert adapter2._omemo_storage_path == "/tmp/keys.json"
+
+
+@omemo_required
+class TestXmppOmemoLazyLoad:
+    """OMEMO ships with the platform and auto-installs (Matrix-style): the
+    base types are None at import if the package isn't present yet, then
+    ``_ensure_omemo_loaded`` rebinds them and rebuilds the plugin classes
+    after the lazy install — the ``ensure_and_bind`` idiom.
+    """
+
+    def test_ensure_omemo_loaded_rebuilds_after_reset(self, monkeypatch):
+        # Simulate the state right after import on a box where the package
+        # wasn't installed yet, then a successful lazy install rebinds.
+        monkeypatch.setattr(_xmpp, "SLIXMPP_OMEMO_AVAILABLE", False)
+        monkeypatch.setattr(_xmpp, "_XEP_0384Impl", None)
+        monkeypatch.setattr(_xmpp, "_StorageImpl", None)
+
+        import tools.lazy_deps as ld
+
+        def fake_ensure_and_bind(feature, importer, target_globals, *, prompt=False):
+            assert feature == "platform.xmpp"  # OMEMO folded into the platform group
+            target_globals.update(importer())   # emulate real post-install rebind
+            return True
+
+        monkeypatch.setattr(ld, "ensure_and_bind", fake_ensure_and_bind)
+
+        assert _xmpp._ensure_omemo_loaded() is True
+        assert _xmpp.SLIXMPP_OMEMO_AVAILABLE is True
+        assert _xmpp._XEP_0384Impl is not None
+        assert _xmpp._StorageImpl is not None
+        assert issubclass(_xmpp._XEP_0384Impl, _xmpp.XEP_0384)
+
+    def test_ensure_omemo_loaded_failure_stays_tls_only(self, monkeypatch):
+        monkeypatch.setattr(_xmpp, "SLIXMPP_OMEMO_AVAILABLE", False)
+        monkeypatch.setattr(_xmpp, "_XEP_0384Impl", None)
+        import tools.lazy_deps as ld
+        monkeypatch.setattr(ld, "ensure_and_bind", lambda *a, **k: False)
+        assert _xmpp._ensure_omemo_loaded() is False
+
+    def test_ensure_omemo_loaded_idempotent_when_present(self, monkeypatch):
+        # When already loaded it must short-circuit without touching lazy_deps.
+        import tools.lazy_deps as ld
+
+        def _boom(*a, **k):
+            raise AssertionError("ensure_and_bind should not be called when loaded")
+
+        monkeypatch.setattr(ld, "ensure_and_bind", _boom)
+        assert _xmpp._ensure_omemo_loaded() is True
+
+    def test_check_requirements_loads_omemo(self):
+        # check_fn runs before adapter construction; it must leave OMEMO ready
+        # so connect() sees SLIXMPP_OMEMO_AVAILABLE=True.
+        assert _xmpp.check_xmpp_requirements() is True
+        assert _xmpp.SLIXMPP_OMEMO_AVAILABLE is True
+        assert _xmpp._XEP_0384Impl is not None
+
+
+@omemo_required
+class TestXmppOmemoStorage:
+    @pytest.mark.asyncio
+    async def test_storage_roundtrip_and_permissions(self, tmp_path):
+        path = tmp_path / "omemo" / "keys.json"
+        store = _xmpp._StorageImpl(path)
+        await store._store("k", {"nested": [1, 2]})
+        assert (await store._load("k")).from_just() == {"nested": [1, 2]}
+        assert (path.stat().st_mode & 0o777) == 0o600  # holds private keys
+        # Atomic write leaves no temp file behind.
+        assert not path.with_name("keys.json.tmp").exists()
+
+    @pytest.mark.asyncio
+    async def test_corrupt_store_starts_fresh_loudly(self, tmp_path, caplog):
+        # A corrupt key store means a new OMEMO identity — that must be
+        # logged loudly, never silently swallowed.
+        import logging as _logging
+        path = tmp_path / "keys.json"
+        path.write_text("{not valid json")
+        with caplog.at_level(_logging.WARNING):
+            store = _xmpp._StorageImpl(path)
+        assert any("fresh identity" in r.message for r in caplog.records)
+        loaded = await store._load("k")
+        assert type(loaded).__name__ == "Nothing"
+        # The store recovers: a subsequent write persists and reloads cleanly.
+        await store._store("k", {"ok": True})
+        store2 = _xmpp._StorageImpl(path)
+        assert (await store2._load("k")).from_just() == {"ok": True}
+
+
+@omemo_required
+class TestXmppOmemoTransport:
+    def _omemo_adapter(self, monkeypatch, **extra):
+        adapter = _make_xmpp_adapter(monkeypatch, **extra)
+        adapter.client = MagicMock()
+        adapter._registered_plugins.update({"xep_0384", "xep_0085"})
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_routes_dm_through_encryption(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch)
+        adapter._send_encrypted = AsyncMock(
+            return_value=_xmpp.SendResult(success=True, message_id="enc-1")
+        )
+        result = await adapter.send("alice@example.org", "secret")
+        adapter._send_encrypted.assert_awaited_once_with("alice@example.org", "secret")
+        assert result.message_id == "enc-1"
+
+    @pytest.mark.asyncio
+    async def test_send_muc_stays_plaintext(self, monkeypatch):
+        adapter = self._omemo_adapter(
+            monkeypatch, muc_rooms="room@conference.example.org"
+        )
+        adapter._send_encrypted = AsyncMock()
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+        await adapter.send("room@conference.example.org", "group message")
+        adapter._send_encrypted.assert_not_awaited()
+        assert sent and sent[0]["mtype"] == "groupchat"
+
+    @pytest.mark.asyncio
+    async def test_encryption_failure_falls_back_to_plaintext(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch)
+        adapter._send_encrypted = AsyncMock(side_effect=RuntimeError("no session"))
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+        result = await adapter.send("alice@example.org", "hello")
+        assert result.success is True
+        assert sent and sent[0]["mbody"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_one_sends_encrypted_stanza(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch)
+        encrypted_msg = MagicMock()
+        encrypted_msg.__getitem__ = MagicMock(return_value="enc-id")
+        xep_0384 = MagicMock()
+        xep_0384.encrypt_message = AsyncMock(return_value=(encrypted_msg, {}))
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+        adapter.client.make_message = MagicMock(return_value=MagicMock())
+
+        result = await adapter._send_encrypted_one("alice@example.org", "secret")
+        assert result.success is True
+        xep_0384.encrypt_message.assert_awaited_once()
+        encrypted_msg.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_one_plaintext_when_no_devices(self, monkeypatch):
+        # encrypt_message returns None when the recipient has no usable OMEMO
+        # devices; the reply must still be delivered (TLS-only).
+        adapter = self._omemo_adapter(monkeypatch)
+        xep_0384 = MagicMock()
+        xep_0384.encrypt_message = AsyncMock(return_value=(None, {}))
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+        adapter.client.make_message = MagicMock(return_value=MagicMock())
+        plain = MagicMock()
+        plain.__getitem__ = MagicMock(return_value="plain-id")
+        adapter.client.send_message = MagicMock(return_value=plain)
+
+        result = await adapter._send_encrypted_one("alice@example.org", "hello")
+        assert result.success is True
+        adapter.client.send_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_chunks_long_bodies(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch, max_message_length="100")
+        adapter._send_encrypted_one = AsyncMock(
+            return_value=_xmpp.SendResult(success=True)
+        )
+        await adapter._send_encrypted("alice@example.org", "word " * 100)
+        assert adapter._send_encrypted_one.await_count > 1
+
+    @pytest.mark.asyncio
+    async def test_inbound_encrypted_message_is_decrypted(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.handle_message = AsyncMock()
+
+        decrypted = MagicMock()
+        decrypted.get = MagicMock(
+            side_effect=lambda k, d=None: "decrypted text" if k == "body" else d
+        )
+        device_info = MagicMock(device_id=42)
+        xep_0384 = MagicMock()
+        xep_0384.is_encrypted = MagicMock(return_value=True)
+        xep_0384.decrypt_message = AsyncMock(return_value=(decrypted, device_info))
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+
+        stanza = _StanzaStub(
+            stanza_type="chat",
+            from_jid="alice@example.org/phone",
+            body="This message is OMEMO encrypted.",
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "decrypted text"
+        assert event.raw_message is decrypted
+
+    @pytest.mark.asyncio
+    async def test_inbound_decrypt_failure_drops_message(self, monkeypatch):
+        # A failed decrypt must NOT dispatch the ciphertext fallback body
+        # ("This message is OMEMO encrypted.") to the agent as user text.
+        adapter = self._omemo_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.handle_message = AsyncMock()
+        xep_0384 = MagicMock()
+        xep_0384.is_encrypted = MagicMock(return_value=True)
+        xep_0384.decrypt_message = AsyncMock(side_effect=RuntimeError("no session"))
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+
+        stanza = _StanzaStub(
+            stanza_type="chat",
+            from_jid="alice@example.org/phone",
+            body="This message is OMEMO encrypted.",
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inbound_plaintext_passes_through_untouched(self, monkeypatch):
+        adapter = self._omemo_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.handle_message = AsyncMock()
+        xep_0384 = MagicMock()
+        xep_0384.is_encrypted = MagicMock(return_value=False)
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+
+        stanza = _StanzaStub(
+            stanza_type="chat", from_jid="alice@example.org/phone", body="plain hi"
+        )
+        await adapter._on_message(stanza)
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].text == "plain hi"
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_encrypted_dm_never_reaches_decryption(self, monkeypatch):
+        # Authorization gates BEFORE decryption. Decrypting first would let
+        # unauthorized senders force X3DH session builds, blind-trust key
+        # store writes, and automatic key-exchange replies (adversarial
+        # review finding).
+        adapter = self._omemo_adapter(monkeypatch, allowed_users="alice@example.org")
+        adapter.handle_message = AsyncMock()
+        xep_0384 = MagicMock()
+        xep_0384.is_encrypted = MagicMock(return_value=True)
+        xep_0384.decrypt_message = AsyncMock()
+        adapter.client.__getitem__ = MagicMock(return_value=xep_0384)
+
+        stanza = _StanzaStub(
+            stanza_type="chat", from_jid="mallory@evil.example/x", body="ciphertext"
+        )
+        await adapter._on_message(stanza)
+        xep_0384.decrypt_message.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
+        assert "mallory@evil.example" not in adapter._known_dms
+
+    @pytest.mark.asyncio
+    async def test_partial_encrypted_failure_does_not_downgrade(self, monkeypatch):
+        # Once any encrypted chunk was delivered, a later chunk failure must
+        # NOT resend the whole message as plaintext (duplication + silent
+        # retroactive E2E downgrade).
+        adapter = self._omemo_adapter(monkeypatch, max_message_length="100")
+        calls = {"n": 0}
+
+        async def _one(chat_id, chunk):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise RuntimeError("session died")
+            return _xmpp.SendResult(success=True)
+
+        adapter._send_encrypted_one = _one
+        sent_plain = []
+        adapter.client.send_message = lambda **kw: sent_plain.append(kw) or MagicMock()
+
+        result = await adapter.send("alice@example.org", "word " * 100)
+        assert result.success is False
+        assert sent_plain == []
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_failure_still_falls_back_to_plaintext(self, monkeypatch):
+        # Nothing delivered yet → plaintext fallback is safe and preferred
+        # over dropping the reply.
+        adapter = self._omemo_adapter(monkeypatch)
+        adapter._send_encrypted_one = AsyncMock(side_effect=RuntimeError("no devices"))
+        sent_plain = []
+        adapter.client.send_message = lambda **kw: sent_plain.append(kw) or MagicMock()
+
+        result = await adapter.send("alice@example.org", "hello")
+        assert result.success is True
+        assert sent_plain and sent_plain[0]["mbody"] == "hello"
+
+
+@omemo_required
+class TestXmppOmemoConnect:
+    @pytest.mark.asyncio
+    async def test_connect_registers_omemo_plugin(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("XMPP_OMEMO_ENABLED", raising=False)
+        adapter = _make_xmpp_adapter(
+            monkeypatch, omemo_storage_path=str(tmp_path / "keys.json")
+        )
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        registered = []
+        fake_client.register_plugin = MagicMock(
+            side_effect=lambda name, *a, **k: registered.append(name)
+        )
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ), patch("plugin_adapter_xmpp._register_slixmpp_plugin") as reg:
+            ok = await adapter.connect()
+        assert ok is True
+        assert "xep_0384" in registered
+        assert reg.called
+        assert "xep_0384" in adapter._registered_plugins
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_omemo_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("XMPP_OMEMO_ENABLED", "false")
+        adapter = _make_xmpp_adapter(monkeypatch)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        registered = []
+        fake_client.register_plugin = MagicMock(
+            side_effect=lambda name, *a, **k: registered.append(name)
+        )
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            ok = await adapter.connect()
+        assert ok is True
+        assert "xep_0384" not in registered

@@ -123,6 +123,56 @@ class TestBusySessionAck:
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_handle_message_frontdesk_mode_captures_without_queue_or_interrupt(self):
+        """Runner frontdesk mode starts separate background work for busy input."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="idée neuve pendant run long")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        runner._busy_input_mode = "frontdesk"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+        runner._schedule_frontdesk_background_task = MagicMock(return_value="fd_test")
+        queued = []
+        runner._queue_or_replace_pending_event = lambda _session_key, _event: queued.append(_event)
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert "Captured as background task fd_test" in result
+        runner._schedule_frontdesk_background_task.assert_called_once()
+        assert queued == []
+        assert sk not in adapter._pending_messages
+        running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_message_frontdesk_mode_dispatches_new_turn_without_claiming_session(self):
+        """In frontdesk mode, even a fresh normal message becomes background work."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="traite cette demande et reviens quand c'est fait")
+        sk = build_session_key(event.source)
+
+        runner._busy_input_mode = "frontdesk"
+        runner.adapters[event.source.platform] = adapter
+        runner._schedule_frontdesk_background_task = MagicMock(return_value="fd_new")
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert "Captured as background task fd_new" in result
+        assert "I stay available" in result
+        runner._schedule_frontdesk_background_task.assert_called_once()
+        assert sk not in runner._running_agents
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
         """Rapid Telegram text follow-ups in queue mode must not merge."""
         from gateway.run import GatewayRunner
@@ -298,8 +348,8 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
-        """If agent.steer() returns False, fall back to queue behavior."""
+    async def test_steer_mode_falls_back_to_frontdesk_when_agent_rejects(self):
+        """If agent.steer() returns False, capture as frontdesk background."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -311,25 +361,25 @@ class TestBusySessionAck:
         agent = MagicMock()
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
+        runner._schedule_frontdesk_background_task = MagicMock(return_value="fd_reject")
 
         await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was stored for the next turn
-        # via the FIFO path (each follow-up its own turn — no newline-merge
-        # that would mash separate messages together, #43066).
-        assert adapter._pending_messages.get(sk) is event
+        runner._schedule_frontdesk_background_task.assert_called_once()
+        assert sk not in adapter._pending_messages
 
-        # Ack uses queue-mode wording (not steer, not interrupt)
+        # Ack uses frontdesk wording (not steer, not queue, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "background task" in content
+        assert "Queued for the next turn" not in content
         assert "Steered" not in content
 
     @pytest.mark.asyncio
-    async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
-        """If agent is still starting (sentinel), steer mode falls back to queue."""
+    async def test_steer_mode_falls_back_to_frontdesk_when_agent_pending(self):
+        """If agent is still starting, capture as frontdesk background."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -340,15 +390,17 @@ class TestBusySessionAck:
 
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
+        runner._schedule_frontdesk_background_task = MagicMock(return_value="fd_pending")
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        # Event was queued instead of steered (FIFO path, #43066)
-        assert adapter._pending_messages.get(sk) is event
+        runner._schedule_frontdesk_background_task.assert_called_once()
+        assert sk not in adapter._pending_messages
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "background task" in content
+        assert "Queued for the next turn" not in content
 
     @pytest.mark.asyncio
     async def test_interrupt_mode_text_followups_fifo_not_merged(self):
@@ -512,8 +564,15 @@ class TestBusySessionAck:
         assert "10 min" in content  # elapsed
 
     @pytest.mark.asyncio
-    async def test_telegram_omits_status_detail_by_default(self):
+    async def test_telegram_omits_status_detail_when_opted_out(self, monkeypatch):
         """Telegram busy acks stay concise unless busy_ack_detail is enabled."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": False}}}},
+        )
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()

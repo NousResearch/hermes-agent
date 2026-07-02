@@ -4203,10 +4203,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "restarting" if self._restart_requested else "shutting down"
 
     def _queue_during_drain_enabled(self) -> bool:
-        # Both "queue" and "steer" modes imply the user doesn't want messages
-        # to be lost during restart — queue them for the newly-spawned gateway
+        # Queue/steer/frontdesk modes imply the user doesn't want messages to
+        # be lost during restart — queue them for the newly-spawned gateway
         # process to pick up.  "interrupt" mode drops them (current behaviour).
-        return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
+        return self._restart_requested and self._busy_input_mode in {"queue", "steer", "frontdesk"}
 
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
@@ -4751,6 +4751,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "frontdesk":
+            return "frontdesk"
         return "interrupt"
 
     @staticmethod
@@ -4761,8 +4763,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``interrupt``). The legacy ``busy_text_mode`` knob is honored only
         when a user explicitly set it, so existing queue setups keep
         working; new installs follow ``busy_input_mode``. Returns one of
-        ``interrupt`` | ``queue`` (``steer`` is handled upstream by
-        ``busy_input_mode`` and maps to non-queue text handling here).
+        ``interrupt`` | ``queue`` (``steer`` and ``frontdesk`` are handled
+        upstream by ``busy_input_mode`` and map to non-queue text handling
+        here).
         """
         # Legacy explicit override wins for backward compat.
         legacy = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
@@ -5034,6 +5037,223 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _frontdesk_background_prompt(self, text: str, *, reason: str) -> str:
+        """Build the isolated prompt for a front-desk background capture."""
+        captured = str(text or "").strip()
+        if not captured:
+            captured = "[User sent media while another gateway run was busy; inspect attached media if relevant.]"
+        return (
+            "Frontdesk capture: the user sent this while another gateway run "
+            "was already active. Treat it as a separate background request so "
+            "the active run can continue. Do not wait for, recurse into, or "
+            "mutate the previous run unless the captured text explicitly asks "
+            "for a control/status action.\n\n"
+            f"Capture reason: {reason}\n\n"
+            "Captured user message:\n"
+            f"{captured}"
+        )
+
+    def _persist_frontdesk_capture(
+        self,
+        *,
+        task_id: str,
+        source: SessionSource,
+        reason: str,
+        text: str,
+        event_message_id: Optional[str] = None,
+    ) -> None:
+        """Persist secret-safe metadata for front-desk captures.
+
+        The background session stores the full prompt/content. This metadata file
+        is intentionally content-free: SHA256 + length only, and never raw audio
+        paths or transcript previews, so operational state can prove capture
+        without turning voice/audio content into durable raw logs.
+        """
+        try:
+            import hashlib
+
+            state_dir = _hermes_home / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            path = state_dir / "frontdesk-captures.jsonl"
+            text_s = str(text or "")
+            record = {
+                "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "task_id": task_id,
+                "reason": reason,
+                "platform": source.platform.value if source and source.platform else "",
+                "chat_id": str(getattr(source, "chat_id", "") or ""),
+                "thread_id": str(getattr(source, "thread_id", "") or ""),
+                "event_message_id": str(event_message_id or ""),
+                "text_len": len(text_s),
+                "text_sha256": hashlib.sha256(text_s.encode("utf-8")).hexdigest() if text_s else "",
+            }
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            finally:
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            logger.debug("Failed to persist frontdesk capture metadata", exc_info=True)
+
+    def _schedule_frontdesk_background_task(
+        self,
+        *,
+        source: SessionSource,
+        text: str,
+        reason: str,
+        event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """Launch a separate background task for busy front-desk input."""
+        prompt = self._frontdesk_background_prompt(text, reason=reason)
+        task_id = f"fd_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        _media_urls = list(media_urls or [])
+        _media_types = list(media_types or [])
+        if str(text or "").strip() and _media_urls:
+            # If the audio/voice was already transcribed into text, do not carry
+            # the raw audio path into the background prompt/session. Keep images
+            # and other documents so non-audio attachments remain visible.
+            _kept_urls = []
+            _kept_types = []
+            for _i, _url in enumerate(_media_urls):
+                _mtype = _media_types[_i] if _i < len(_media_types) else ""
+                if _mtype.startswith("audio/"):
+                    continue
+                _kept_urls.append(_url)
+                _kept_types.append(_mtype)
+            _media_urls, _media_types = _kept_urls, _kept_types
+        self._persist_frontdesk_capture(
+            task_id=task_id,
+            source=source,
+            reason=reason,
+            text=text,
+            event_message_id=event_message_id,
+        )
+        try:
+            task = asyncio.create_task(
+                self._run_background_task(
+                    prompt,
+                    source,
+                    task_id,
+                    event_message_id=event_message_id,
+                    media_urls=_media_urls,
+                    media_types=_media_types,
+                )
+            )
+        except RuntimeError:
+            logger.warning("Frontdesk capture failed to schedule background task for %s", task_id)
+            return None
+        if not hasattr(self, "_background_tasks") or self._background_tasks is None:
+            self._background_tasks = set()
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        logger.info(
+            "Frontdesk captured busy input as background task %s (reason=%s)",
+            task_id,
+            reason,
+        )
+        return task_id
+
+    async def _capture_leftover_steer_as_frontdesk_background(
+        self,
+        *,
+        source: SessionSource,
+        steer_text: str,
+        session_key: str,
+        adapter: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Route a final-call leftover steer to front-desk background work."""
+        text = str(steer_text or "").strip()
+        if not text:
+            return False
+        task_id = self._schedule_frontdesk_background_task(
+            source=source,
+            text=text,
+            reason="leftover_steer_after_last_tool_call",
+            event_message_id=None,
+        )
+        if not task_id:
+            return False
+        logger.info(
+            "Leftover steer for session %s captured as frontdesk background task %s",
+            session_key or "?",
+            task_id,
+        )
+        if adapter is not None:
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    f"↪️ Your steer arrived after the last tool call; captured as background task {task_id}. The current run stays intact.",
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.debug("Leftover-steer frontdesk ack failed", exc_info=True)
+        return True
+
+    async def _build_busy_steer_text_from_event(
+        self,
+        event: MessageEvent,
+        *,
+        session_key: str,
+        initial_text: Optional[str] = None,
+    ) -> str:
+        """Build text that can safely be injected via busy ``steer`` mode.
+
+        ``AIAgent.steer()`` accepts text only.  Busy media messages therefore
+        need the same pre-analysis used by normal inbound turns before the busy
+        handler decides between steer, frontdesk capture, or queue fallback.
+        """
+        steer_text = str(initial_text if initial_text is not None else (event.text or "")).strip()
+        media_urls = list(getattr(event, "media_urls", None) or [])
+        if not media_urls:
+            return steer_text
+
+        image_paths: List[str] = []
+        audio_paths: List[str] = []
+        for _i, _path in enumerate(media_urls):
+            if _event_media_is_image(event, _i):
+                image_paths.append(_path)
+            elif _event_media_is_audio(event, _i):
+                audio_paths.append(_path)
+
+        if image_paths:
+            try:
+                steer_text = await self._enrich_message_with_vision(
+                    steer_text,
+                    image_paths,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Gateway image steer enrichment failed for session %s: %s",
+                    session_key,
+                    exc,
+                )
+                if not steer_text:
+                    steer_text = _build_media_placeholder(event)
+
+        if audio_paths:
+            try:
+                _enriched_text, _transcripts = await self._enrich_message_with_transcription(
+                    steer_text,
+                    audio_paths,
+                )
+                if _transcripts or str(_enriched_text or "").strip():
+                    steer_text = str(_enriched_text or "").strip()
+            except Exception as exc:
+                logger.warning(
+                    "Gateway voice steer transcription failed for session %s: %s",
+                    session_key,
+                    exc,
+                )
+
+        return steer_text
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5180,7 +5400,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
-            and effective_mode != "steer"
+            and effective_mode not in {"steer", "frontdesk"}
         ):
             return False
 
@@ -5219,8 +5439,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             effective_mode = "queue"
         steered = False
-        if effective_mode == "steer":
-            steer_text = (event.text or "").strip()
+        frontdesk_task_id = None
+        if effective_mode == "frontdesk":
+            frontdesk_task_id = self._schedule_frontdesk_background_task(
+                source=event.source,
+                text=(event.text or "").strip(),
+                reason="busy_frontdesk_mode",
+                event_message_id=self._reply_anchor_for_event(event),
+                media_urls=getattr(event, "media_urls", None),
+                media_types=getattr(event, "media_types", None),
+            )
+            if not frontdesk_task_id:
+                effective_mode = "queue"
+        elif effective_mode == "steer":
+            steer_text = await self._build_busy_steer_text_from_event(
+                event,
+                session_key=session_key,
+            )
             can_steer = (
                 steer_text
                 and running_agent is not None
@@ -5234,13 +5469,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
             if not steered:
-                # Fall back to queue (merge into pending messages, no interrupt)
-                effective_mode = "queue"
+                # Front-desk fallback: if the message cannot be *actually*
+                # steered into a live agent, do not hide it in the same-session
+                # pending queue behind a long run. Capture it as a separate
+                # background session and ACK immediately; if scheduling fails,
+                # fall back to the old queue path so the content is not lost.
+                _frontdesk_text = steer_text or (event.text or "")
+                if _frontdesk_text and not (event.text or "").strip():
+                    try:
+                        event.text = _frontdesk_text
+                    except Exception:
+                        pass
+                frontdesk_task_id = self._schedule_frontdesk_background_task(
+                    source=event.source,
+                    text=_frontdesk_text,
+                    reason="busy_steer_fallback",
+                    event_message_id=self._reply_anchor_for_event(event),
+                    media_urls=getattr(event, "media_urls", None),
+                    media_types=getattr(event, "media_types", None),
+                )
+                if frontdesk_task_id:
+                    effective_mode = "frontdesk"
+                else:
+                    # Fall back to queue (merge into pending messages, no interrupt)
+                    effective_mode = "queue"
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
         # successful steer — the text already landed inside the run and
-        # must NOT also be replayed as a next-turn user message.
+        # must NOT also be replayed as a next-turn user message. Also skip
+        # front-desk background captures — they have their own isolated session.
         #
         # Route through _queue_or_replace_pending_event (the same FIFO
         # infrastructure used by busy queue-mode and /queue) rather than a
@@ -5252,11 +5510,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
-        if not steered:
+        if not steered and not frontdesk_task_id:
             self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
+        is_frontdesk_mode = frontdesk_task_id is not None
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
@@ -5318,10 +5577,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if is_frontdesk_mode:
+            message = (
+                f"📥 Captured as background task {frontdesk_task_id}{status_detail}. "
+                f"The current run keeps going; I'll handle this separately."
+            )
+        elif is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"Your message arrives after the next tool call; if the run is already finalizing, it will continue separately."
             )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
@@ -5360,7 +5624,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _user_cfg = _load_gateway_config()
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
-                if is_steer_mode:
+                if is_frontdesk_mode:
+                    _hint_mode = "steer"
+                elif is_steer_mode:
                     _hint_mode = "steer"
                 elif is_queue_mode:
                     _hint_mode = "queue"
@@ -8768,6 +9034,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            # Telegram voice notes sent after tapping "Other" arrive here as
+            # MessageType.VOICE with no text.  The adapter already bypasses the
+            # active-session busy guard for pending clarifies, but the normal STT
+            # enrichment happens later in _prepare_inbound_message_text.  Without
+            # a local transcription step, captionless voice replies fall through
+            # as empty busy follow-ups and the clarify wait never resolves.
+            if (
+                not _raw_clarify_reply
+                and getattr(event, "media_urls", None)
+                and getattr(event, "message_type", None) == MessageType.VOICE
+            ):
+                try:
+                    _voice_text, _voice_transcripts = await self._enrich_message_with_transcription(
+                        "",
+                        list(event.media_urls or []),
+                    )
+                    if _voice_transcripts:
+                        _raw_clarify_reply = "\n".join(
+                            str(_tx).strip() for _tx in _voice_transcripts if str(_tx).strip()
+                        ).strip()
+                    elif _voice_text:
+                        _raw_clarify_reply = str(_voice_text).strip()
+                except Exception as _clarify_voice_exc:
+                    logger.warning(
+                        "Gateway clarify voice-response transcription failed (session=%s, id=%s): %s",
+                        _quick_key,
+                        getattr(_pending_clarify, "clarify_id", "unknown"),
+                        _clarify_voice_exc,
+                    )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -8778,8 +9073,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _resolved:
                     logger.info(
-                        "Gateway intercepted clarify text response (session=%s, id=%s)",
-                        _quick_key, _pending_clarify.clarify_id,
+                        "Gateway intercepted clarify response (session=%s, id=%s, source=%s)",
+                        _quick_key,
+                        _pending_clarify.clarify_id,
+                        "voice" if getattr(event, "message_type", None) == MessageType.VOICE else "text",
                     )
                     # Acknowledge with empty string so adapters that emit
                     # the agent's response don't double-post.  The agent
@@ -9159,7 +9456,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 
-            if event.message_type == MessageType.PHOTO:
+            if self._busy_input_mode == "frontdesk":
+                task_id = self._schedule_frontdesk_background_task(
+                    source=event.source,
+                    text=(event.text or "").strip(),
+                    reason="busy_frontdesk_mode_priority_path",
+                    event_message_id=self._reply_anchor_for_event(event),
+                    media_urls=getattr(event, "media_urls", None),
+                    media_types=getattr(event, "media_types", None),
+                )
+                if task_id:
+                    return (
+                        f"Captured as background task {task_id}. "
+                        "Current run continues; I handle this separately."
+                    )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return "Queued for the next turn because frontdesk background capture failed."
+
+            if event.message_type == MessageType.PHOTO and self._busy_input_mode != "steer":
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -9230,7 +9544,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
+                steer_text = await self._build_busy_steer_text_from_event(
+                    event,
+                    session_key=_quick_key,
+                )
                 steered = False
                 if steer_text and hasattr(running_agent, "steer"):
                     try:
@@ -9242,6 +9559,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+                if steer_text and not (event.text or "").strip():
+                    try:
+                        event.text = steer_text
+                    except Exception:
+                        pass
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
@@ -9857,6 +10179,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "⏳ This agent is draining for a maintenance action and isn't "
                 "accepting new turns right now. It'll be back in a moment — "
                 "please resend shortly."
+            )
+
+        # ── Front-desk dispatcher mode ────────────────────────────────
+        # In this mode the gateway-facing session remains an orchestrator/desk,
+        # not a worker. Regular inbound user work is dispatched immediately to
+        # an isolated background task and the chat is freed for the next input.
+        # Slash/control/internal events keep their direct handlers above.
+        if self._busy_input_mode == "frontdesk" and not is_internal and not command:
+            task_id = self._schedule_frontdesk_background_task(
+                source=event.source,
+                text=(event.text or "").strip(),
+                reason="frontdesk_default_dispatch",
+                event_message_id=self._reply_anchor_for_event(event),
+                media_urls=getattr(event, "media_urls", None),
+                media_types=getattr(event, "media_types", None),
+            )
+            if task_id:
+                return (
+                    f"Captured as background task {task_id}. "
+                    "I stay available; the worker will report back when done."
+                )
+            logger.warning(
+                "Frontdesk default dispatch failed; falling back to normal turn for %s",
+                _quick_key,
             )
 
         # ── Claim this session before any await ───────────────────────
@@ -12788,22 +13134,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
-            # Enrich the prompt with image descriptions so the background
-            # agent can see user-attached images (same as the main flow).
+            # Enrich the prompt with image/audio descriptions so the background
+            # agent can see user-attached media (same as the main flow where safe).
             enriched_prompt = prompt
             if media_urls:
                 image_paths = []
+                audio_paths = []
                 for i, path in enumerate(media_urls):
                     mtype = media_types[i] if i < len(media_types) else ""
                     if mtype.startswith("image/"):
                         image_paths.append(path)
+                    elif mtype.startswith("audio/"):
+                        audio_paths.append(path)
                 if image_paths:
                     try:
                         enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                            enriched_prompt, image_paths,
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
+                if audio_paths:
+                    try:
+                        enriched_prompt, _background_transcripts = await self._enrich_message_with_transcription(
+                            enriched_prompt, audio_paths,
+                        )
+                        # Frontdesk captures run outside the normal inbound path,
+                        # so the usual immediate Telegram voice-transcript echo
+                        # would be skipped. Echo it here before the background
+                        # worker result so Pierre can verify exactly what STT saw.
+                        if _background_transcripts:
+                            for _tx in _background_transcripts:
+                                try:
+                                    await adapter.send(
+                                        chat_id=source.chat_id,
+                                        content=f'🎙️ "{_tx}"',
+                                        metadata=_thread_metadata,
+                                    )
+                                except Exception as _echo_exc:
+                                    logger.debug(
+                                        "Background task transcript echo failed (non-fatal): %s",
+                                        _echo_exc,
+                                    )
+                    except Exception as e:
+                        logger.warning("Background task audio transcription failed: %s", e)
 
             def run_sync():
                 agent = AIAgent(
@@ -18810,14 +19183,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
             # Leftover /steer: if a steer arrived after the last tool batch
-            # (e.g. during the final API call), the agent couldn't inject it
-            # and returned it in result["pending_steer"]. Deliver it as the
-            # next user turn so it isn't silently dropped.
+            # (e.g. during the final API call), the agent couldn't inject it.
+            # Do NOT recurse it as another same-session turn: that makes the
+            # chat feel queued behind the just-finished run and can hit the
+            # interrupt recursion cap. Capture it as isolated front-desk
+            # background work instead; only fall back to recursion if scheduling
+            # fails, so content is never dropped.
             if result and not pending and not pending_event:
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
-                    pending = _leftover_steer
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+                    _captured_leftover = await self._capture_leftover_steer_as_frontdesk_background(
+                        source=source,
+                        steer_text=_leftover_steer,
+                        session_key=session_key,
+                        adapter=adapter,
+                        metadata=_status_thread_metadata,
+                    )
+                    if not _captured_leftover:
+                        pending = _leftover_steer
+                        logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent

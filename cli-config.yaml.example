@@ -1133,10 +1133,12 @@ display:
   #   queue:     Queue your message for the next turn
   #   steer:     Inject your message mid-run via /steer, arriving at the agent
   #              after the next tool call — no interrupt, no role violation.
-  #              Falls back to 'queue' if the agent isn't running yet or if
-  #              images are attached (steer only carries text).
+  #              Falls back to 'frontdesk' (or queue if scheduling fails) if the
+  #              agent cannot accept steer input.
+  #   frontdesk: Capture busy follow-ups as isolated background tasks with an
+  #              immediate ACK, leaving the active run untouched.
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
-  # Toggle at runtime with /busy <interrupt|queue|steer>.
+  # Toggle at runtime with /busy <interrupt|queue|steer|frontdesk>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).

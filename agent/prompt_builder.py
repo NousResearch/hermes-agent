@@ -43,6 +43,14 @@ logger = logging.getLogger(__name__)
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
+def _blocked_context_placeholder(filename: str, findings: list[str]) -> str:
+    """Return the safe placeholder used when a context file is blocked."""
+    return (
+        f"[BLOCKED: {filename} contained potential prompt injection "
+        f"({', '.join(findings)}). Content not loaded.]"
+    )
+
+
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content.
 
@@ -57,7 +65,7 @@ def _scan_context_content(content: str, filename: str) -> str:
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
+        return _blocked_context_placeholder(filename, findings)
 
     return content
 
@@ -1219,7 +1227,8 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
         logger.debug("Could not read context_file_max_chars from config: %s", e)
     return _dynamic_context_file_max_chars(context_length)
 
-# Collect truncation warnings so the caller (run_agent) can surface them.
+# Collect context-file warnings (truncation, blocked SOUL fallback) so the
+# caller (run_agent) can surface them.
 # A ContextVar (not a module-global list) isolates accumulation per thread /
 # per async task, so concurrent gateway-session prompt builds can't drain or
 # clear each other's pending warnings (cross-session leak). Each build runs in
@@ -1230,7 +1239,11 @@ _truncation_warnings: "contextvars.ContextVar[Optional[list]]" = contextvars.Con
 
 
 def _record_truncation_warning(msg: str) -> None:
-    """Append a truncation warning to the current context's accumulator."""
+    """Append a context-file warning to the current context's accumulator.
+
+    Kept under the historical truncation name for compatibility with tests and
+    callers; the accumulator now also carries blocked-SOUL fallback warnings.
+    """
     warnings = _truncation_warnings.get()
     if warnings is None:
         warnings = []
@@ -1813,7 +1826,24 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
-        content = _scan_context_content(content, "SOUL.md")
+        findings = _scan_for_threats(content, scope="context")
+        if findings:
+            findings_text = ", ".join(findings)
+            logger.warning("SOUL.md blocked: %s", findings_text)
+            warning = (
+                f"⚠️  SOUL.md blocked by context security scan ({findings_text}). "
+                "Default Hermes identity loaded instead; profile SOUL identity "
+                f"is not active. Fix {soul_path} and rebuild/start a new session "
+                "to restore the profile identity."
+            )
+            _record_truncation_warning(warning)
+            return (
+                DEFAULT_AGENT_IDENTITY
+                + "\n\n"
+                + f"[WARNING: {warning}]"
+                + "\n\n"
+                + _blocked_context_placeholder("SOUL.md", findings)
+            )
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,
             read_path=str(soul_path),

@@ -394,7 +394,7 @@ def _load_busy_input_mode() -> str:
     if not isinstance(display, dict):
         display = {}
     raw = str(display.get("busy_input_mode", "") or "").strip().lower()
-    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+    return raw if raw in {"queue", "steer", "frontdesk", "interrupt"} else "interrupt"
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
@@ -4824,6 +4824,72 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
+def _frontdesk_background_prompt(text: Any, *, reason: str) -> str:
+    captured = str(text or "").strip()
+    if not captured:
+        captured = "[User sent an empty prompt while another TUI run was busy.]"
+    return (
+        "Frontdesk capture: the user sent this while another Hermes run was "
+        "already active in the parent TUI session. Treat it as a separate "
+        "background request so the active run can continue. Do not wait for, "
+        "recurse into, or mutate the parent run unless the captured text "
+        "explicitly asks for a control/status action.\n\n"
+        f"Capture reason: {reason}\n\n"
+        "Captured user message:\n"
+        f"{captured}"
+    )
+
+
+def _start_frontdesk_background_task(
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    reason: str,
+) -> str | None:
+    """Run a busy TUI prompt in an isolated background agent session."""
+    agent = session.get("agent")
+    if agent is None:
+        return None
+
+    task_id = f"fd_{uuid.uuid4().hex[:6]}"
+    prompt = _frontdesk_background_prompt(text, reason=reason)
+    parent = sid
+
+    def run() -> None:
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        try:
+            from run_agent import AIAgent
+
+            result = AIAgent(**_background_agent_kwargs(agent, task_id)).run_conversation(
+                user_message=prompt,
+                task_id=task_id,
+            )
+            _emit(
+                "background.complete",
+                parent,
+                {
+                    "task_id": task_id,
+                    "text": (
+                        result.get("final_response", str(result))
+                        if isinstance(result, dict)
+                        else str(result)
+                    ),
+                },
+            )
+        except Exception as e:
+            _emit(
+                "background.complete",
+                parent,
+                {"task_id": task_id, "text": f"error: {e}"},
+            )
+        finally:
+            _clear_session_context(session_tokens)
+
+    threading.Thread(target=run, daemon=True).start()
+    return task_id
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -4837,10 +4903,22 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
 
     Modes: ``interrupt`` (default) → interrupt + queue; ``queue`` → queue
     without interrupting; ``steer`` → inject into the live turn if accepted,
-    else queue.
+    else queue; ``frontdesk`` → run in an isolated background session without
+    touching the active turn.
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
+    if mode == "frontdesk":
+        task_id = _start_frontdesk_background_task(
+            sid,
+            session,
+            text,
+            reason="busy_frontdesk_mode",
+        )
+        if task_id:
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "background", "task_id": task_id})
+        mode = "queue"
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
@@ -9924,7 +10002,7 @@ def _(rid, params: dict) -> dict:
         raw = str(value or "").strip().lower()
         if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
-        if raw not in {"queue", "steer", "interrupt"}:
+        if raw not in {"queue", "steer", "frontdesk", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
         _write_config_key("display.busy_input_mode", raw)
         return _ok(rid, {"key": key, "value": raw})

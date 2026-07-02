@@ -2729,7 +2729,7 @@ def test_config_busy_get_and_set(monkeypatch):
     monkeypatch.setattr(
         server,
         "_load_cfg",
-        lambda: {"display": {"busy_input_mode": "steer"}},
+        lambda: {"display": {"busy_input_mode": "frontdesk"}},
     )
     monkeypatch.setattr(
         server, "_write_config_key", lambda path, value: writes.append((path, value))
@@ -2738,17 +2738,17 @@ def test_config_busy_get_and_set(monkeypatch):
     get_resp = server.handle_request(
         {"id": "1", "method": "config.get", "params": {"key": "busy"}}
     )
-    assert get_resp["result"]["value"] == "steer"
+    assert get_resp["result"]["value"] == "frontdesk"
 
     set_resp = server.handle_request(
         {
             "id": "2",
             "method": "config.set",
-            "params": {"key": "busy", "value": "interrupt"},
+            "params": {"key": "busy", "value": "frontdesk"},
         }
     )
-    assert set_resp["result"]["value"] == "interrupt"
-    assert ("display.busy_input_mode", "interrupt") in writes
+    assert set_resp["result"]["value"] == "frontdesk"
+    assert ("display.busy_input_mode", "frontdesk") in writes
 
 
 def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):

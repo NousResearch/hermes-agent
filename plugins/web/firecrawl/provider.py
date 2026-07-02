@@ -74,6 +74,52 @@ if TYPE_CHECKING:
 _FIRECRAWL_CLS_CACHE: Optional[type] = None
 
 
+class _KeylessFirecrawlClient:
+    """Firecrawl client that works without an API key (Keyless mode).
+
+    Uses raw HTTP requests instead of the Firecrawl SDK, which requires
+    an API key to be set. Calls the same cloud endpoints.
+    """
+
+    def __init__(self, api_url: str = "https://api.firecrawl.dev") -> None:
+        self.api_url = api_url.rstrip("/")
+        self._httpx_client: Optional[Any] = None
+
+    def _client(self) -> Any:
+        if self._httpx_client is None:
+            import httpx
+            self._httpx_client = httpx.Client(timeout=30.0)
+        return self._httpx_client
+
+    def search(self, query: str, limit: int = 5) -> dict:
+        """Search via Firecrawl Keyless API."""
+        resp = self._client().post(
+            f"{self.api_url}/v1/search",
+            json={"query": query, "limit": limit},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def scrape(self, url: str, formats: Optional[list[str]] = None, **kwargs: Any) -> dict:
+        """Scrape a single URL via Firecrawl Keyless API.
+
+        Signature matches the Firecrawl SDK's ``scrape()`` method so the
+        existing extract code works without modification.
+        """
+        payload: dict = {"url": url}
+        if formats:
+            payload["formats"] = formats
+        resp = self._client().post(
+            f"{self.api_url}/v1/scrape",
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def __repr__(self) -> str:
+        return f"<_KeylessFirecrawlClient api_url={self.api_url}>"
+
+
 def _load_firecrawl_cls() -> type:
     """Import and cache ``firecrawl.Firecrawl``."""
     global _FIRECRAWL_CLS_CACHE
@@ -255,6 +301,16 @@ def _get_firecrawl_client() -> Any:
     cached_config = getattr(_wt, "_firecrawl_client_config", None)
     if cached is not None and cached_config == client_config:
         return cached
+
+    # Keyless mode: when no api_key is provided, use raw HTTP instead of SDK
+    # (the Firecrawl SDK requires an api_key, but the cloud API supports
+    # unauthenticated requests since Firecrawl Keyless launch, June 2026).
+    if "api_key" not in kwargs:
+        _wt._firecrawl_client = _KeylessFirecrawlClient(
+            api_url=kwargs.get("api_url", "https://api.firecrawl.dev")
+        )
+        _wt._firecrawl_client_config = client_config
+        return _wt._firecrawl_client
 
     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.

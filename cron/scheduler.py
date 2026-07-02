@@ -430,6 +430,75 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _tick_heartbeat_path() -> Path:
+    """Cross-process heartbeat file written beside the tick lock.
+
+    Distinct from ``.tick.lock`` (which holds a platform-specific byte-range
+    lock; on Windows that does NOT reliably serialize across different Python
+    executable names such as ``pythonw.exe`` vs ``python.exe`` — both processes
+    can grab the lock and run the same tick, producing duplicate cron delivery
+    #57191). The heartbeat is a plain file whose mtime survives across
+    processes and platforms: whichever process lands a real tick first writes
+    it; the desktop dashboard backend reads it back and skips its own ticker
+    while a heartbeat is still fresh.
+    """
+    hermes_home = _get_hermes_home()
+    return hermes_home / "cron" / ".tick.heartbeat"
+
+
+def _write_tick_heartbeat(lock_dir: Path, *, ts: Optional[float] = None) -> None:
+    """Record that a real tick just ran under ``lock_dir``.
+
+    Fire-and-forget: a transient FS error here MUST NOT abort the tick — the
+    heartbeat is informational, not a correctness primitive (the lock above is
+    that). Per-tick writes keep the mtime vacuously fresh for the staleness
+    reader and naturally self-heal across process restarts.
+    """
+    hb = lock_dir / ".tick.heartbeat"
+    try:
+        hb.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+        _ts = ts if ts is not None else _os.getpid() and _time_module_now()
+        with open(hb, "w", encoding="utf-8") as f:
+            f.write(f"{_ts}\n")
+    except OSError:
+        logger.debug("Could not write cron tick heartbeat at %s", hb, exc_info=True)
+
+
+def _time_module_now() -> float:
+    import time as _time
+    return _time.time()
+
+
+def gateway_cron_alive(max_age_seconds: int = 180, lock_dir: Optional[Path] = None) -> bool:
+    """True when another process's crontick ran within ``max_age_seconds``.
+
+    Lets the desktop dashboard backend skip its own ticker while a real
+    ``hermes gateway run`` (or any shared cron tick — manual ``hermes cron
+    tick``, another desktop instance on the same ``$HERMES_HOME``, etc.) is
+    still firing on the same profile. Issue #57191 — on Windows the file lock
+    is not enough; the heartbeat-based detection is.
+
+    Args:
+        max_age_seconds: Maximum age of the heartbeat to still consider the
+            peer alive. Default 180s (three ticks at the default 60s interval,
+            tolerating one missed tick without flapping).
+        lock_dir: Optional override for tests; defaults to ``$HERMES_HOME/cron``.
+
+    Returns False on any read/parse error so a corrupted/missing heartbeat
+    falls through gracefully — the desktop ticker then starts (matching the
+    pre-fix behavior on Linux where the file lock was already enough).
+    """
+    try:
+        from time import time as _now
+        hb_dir = lock_dir if lock_dir is not None else _get_hermes_home() / "cron"
+        hb = hb_dir / ".tick.heartbeat"
+        mtime = hb.stat().st_mtime
+        return (_now() - mtime) <= max_age_seconds
+    except OSError:
+        return False
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -3389,6 +3458,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             except (OSError, IOError):
                 pass
         lock_fd.close()
+        # Record the heartbeat on every successful tick acquisition — even
+        # when no due jobs fired (0-job ticks are still a clear sign of an
+        # active scheduler). Lets the desktop dashboard process detect a
+        # live gateway cron and skip its own duplicate ticker (#57191).
+        _write_tick_heartbeat(lock_dir)
 
 
 if __name__ == "__main__":

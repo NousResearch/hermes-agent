@@ -150,6 +150,33 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider.start(stop_event, interval=interval)
 
 
+def _is_peer_cron_alive(max_age_seconds: int = 180) -> "bool | None":
+    """True if a peer cron tick recently fired on the shared ``$HERMES_HOME``.
+
+    Wraps ``cron.scheduler.gateway_cron_alive`` for the desktop lifespan
+    startup check. Tri-state:
+
+    - ``True``  -> a peer is firing; the desktop ticker should skip and let
+      the gateway cron own the tick.
+    - ``False`` -> no fresh heartbeat; the desktop ticker should start.
+    - ``None``  -> the probe could not run (usually a transient FS error);
+      the caller decides whether to fall back to the pre-fix behavior.
+
+    Defined near ``_start_desktop_cron_ticker`` so the desktop-only ticker
+    code is self-contained.
+    """
+    try:
+        from cron.scheduler import gateway_cron_alive
+        return bool(gateway_cron_alive(max_age_seconds=max_age_seconds))
+    except Exception:
+        # Detection unavailable — let caller choose fallback. Returning None
+        # rather than a guess keeps the pre-fix tick-start path opt-in:
+        # failing open (peer-alive=False) is safer than failing closed
+        # (premature deduplication) on a corrupt heartbeat or
+        # NAS/NFS-stalled stat call.
+        return None
+
+
 def _warm_gateway_module() -> None:
     try:
         import hermes_cli.gateway  # noqa: F401
@@ -188,17 +215,49 @@ async def _lifespan(app: "FastAPI"):
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.
+    #
+    # Bypass when a real ``hermes gateway run`` (or any other shared crontick
+    # path) is already firing on the same $HERMES_HOME (#57191). Plain file
+    # locks do not reliably serialize across ``pythonw.exe`` vs ``python.exe``
+    # on Windows, so a separate ticker here would read the same heartbeat of
+    # "lock acquired" and double-deliver every cron message. The heartbeat
+    # detection in ``cron.scheduler.gateway_cron_alive`` is what gates this,
+    # and is also why a stale gateway (heartbeat older than the staleness
+    # window) wakes up the desktop ticker again — no manual recovery needed
+    # after a gateway restart.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
+        peer_alive = _is_peer_cron_alive()
+        if peer_alive is None:
+            # Detection itself failed (corrupt HERMES_HOME / missing db
+            # directory). Behave like the pre-fix code path — start the
+            # ticker. Failing closed here would silently kill cron delivery
+            # on a transient FS read error; the file lock is still the
+            # last-line defense against duplicates.
+            _log.debug("Cron peer-alive probe unavailable; starting desktop ticker as before")
+            peer_alive = False
+        if not peer_alive:
+            cron_stop = threading.Event()
+            cron_thread = threading.Thread(
+                target=_start_desktop_cron_ticker,
+                args=(cron_stop,),
+                daemon=True,
+                name="desktop-cron-ticker",
+            )
+            cron_thread.start()
+            _log.info(
+                "Desktop cron ticker started (no live peer detected; "
+                "heartbeat staleness fallback will reclaim the slot when a "
+                "gateway comes online, see #57191)"
+            )
+        else:
+            _log.info(
+                "Skipping desktop cron ticker: a live peer cron tick is "
+                "still firing on the same $HERMES_HOME (issue #57191). "
+                "Desktop ticker re-enables itself automatically if the peer "
+                "goes stale."
+            )
 
     try:
         yield

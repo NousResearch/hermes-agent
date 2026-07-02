@@ -3338,6 +3338,10 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    # Plain /model persists globally by default; without this patch the real
+    # save_config_value() writes a cli-config.yaml into the repo root (the
+    # per-test HERMES_HOME is empty, so it falls through to project config).
+    monkeypatch.setattr("cli.save_config_value", lambda _key, _value: True)
 
     resp = server.handle_request(
         {
@@ -3436,6 +3440,9 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
     monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    # Plain /model persists globally by default; keep the real
+    # save_config_value() from writing a repo-root cli-config.yaml.
+    monkeypatch.setattr("cli.save_config_value", lambda _key, _value: True)
 
     def fake_runtime_provider(*, requested=None, target_model=None, **_kwargs):
         seen["requested"].append((requested, target_model))
@@ -3552,6 +3559,9 @@ def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    # Plain /model persists globally by default; keep the real
+    # save_config_value() from writing a repo-root cli-config.yaml.
+    monkeypatch.setattr("cli.save_config_value", lambda _key, _value: True)
 
     try:
         server.handle_request(
@@ -3613,6 +3623,9 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    # Plain /model persists globally by default; keep the real
+    # save_config_value() from writing a repo-root cli-config.yaml.
+    monkeypatch.setattr("cli.save_config_value", lambda _key, _value: True)
 
     try:
         server.handle_request(
@@ -3695,6 +3708,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    # Plain /model persists globally by default; keep the real
+    # save_config_value() from writing a repo-root cli-config.yaml.
+    monkeypatch.setattr("cli.save_config_value", lambda _key, _value: True)
 
     def fake_switch_model(**kwargs):
         return types.SimpleNamespace(

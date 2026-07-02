@@ -402,6 +402,57 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
+_REPO_ROOT_CLI_CONFIG = Path(__file__).resolve().parent.parent / "cli-config.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _guard_repo_root_cli_config():
+    """Fail any test that creates or mutates ``<repo>/cli-config.yaml``.
+
+    ``cli.save_config_value()`` falls back to writing the PROJECT config —
+    ``cli-config.yaml`` next to ``cli.py``, i.e. the repo root — whenever
+    the user config (``cli._hermes_home / 'config.yaml'``) does not exist.
+    Under ``_hermetic_environment`` the per-test HERMES_HOME tempdir is
+    always empty, so any test that reaches the real ``save_config_value``
+    silently drops a ``cli-config.yaml`` into the developer's checkout.
+    The file is gitignored (invisible in ``git status``) and is then read
+    back as the project-config fallback by every later run, breaking e.g.
+    ``tests/hermes_cli/test_ignore_user_config_flags.py`` and
+    ``tests/test_hermes_state.py``.
+
+    This tripwire pins the blame on the offending test instead of letting
+    the pollution surface as unrelated failures three runs later. It also
+    restores the pre-test state so one offender can't cascade.
+    """
+    before = (
+        _REPO_ROOT_CLI_CONFIG.read_bytes()
+        if _REPO_ROOT_CLI_CONFIG.exists()
+        else None
+    )
+    yield
+    after = (
+        _REPO_ROOT_CLI_CONFIG.read_bytes()
+        if _REPO_ROOT_CLI_CONFIG.exists()
+        else None
+    )
+    if after == before:
+        return
+    # Restore first so the pollution doesn't outlive the failing test.
+    if before is None:
+        _REPO_ROOT_CLI_CONFIG.unlink()
+    else:
+        _REPO_ROOT_CLI_CONFIG.write_bytes(before)
+    pytest.fail(
+        "this test wrote to the repo-root cli-config.yaml "
+        f"({_REPO_ROOT_CLI_CONFIG}). It reached the real "
+        "cli.save_config_value() with an empty HERMES_HOME, so the write "
+        "fell through to the project-config fallback in the developer's "
+        "checkout. Point cli._hermes_home at a tmp_path containing a "
+        "config.yaml (or monkeypatch cli.save_config_value) instead. "
+        f"Written content was:\n{(after or b'').decode('utf-8', 'replace')}"
+    )
+
+
 # ── Module-level state reset — replaced by per-file process isolation ──────
 #
 # Each test FILE runs in a freshly-spawned ``python -m pytest <file>``

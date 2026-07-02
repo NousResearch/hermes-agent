@@ -256,6 +256,32 @@ scripts/run_tests.sh
 
 ---
 
+
+## YallaPlay Claudio Pilot
+
+This fork is used for Claudio, YallaPlay's internal Hermes-based agent pilot. The overlay keeps YallaPlay-specific project context, skills, safe tooling wrappers, and wiki integration while tracking upstream Hermes Agent.
+
+Local pilot layout:
+
+- `.hermes.md` - project context, routing, and safety rules loaded by Hermes in this repo.
+- `SOUL.md` - Claudio identity and default interaction style for a Hermes profile.
+- `skills/` - YallaPlay Hermes skills for domain workflows and safety policy.
+- `tools/` - thin executable wrappers around YallaPlay APIs/CLIs.
+- `config/` - non-secret examples only.
+- `docs/` - pilot notes and migration plans.
+- `yallaplay-wiki/` - git submodule; central knowledge bin for findings, definitions, methodology, queries, and schema notes.
+
+Pilot setup sketch:
+
+```bash
+git submodule update --init --recursive
+bash scripts/bootstrap_profile.sh claudio-lab
+claudio-lab setup
+claudio-lab chat
+```
+
+Use this as a lab profile first. Do not point production Slack or scheduled jobs at it until the interactive workflows have been tested.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

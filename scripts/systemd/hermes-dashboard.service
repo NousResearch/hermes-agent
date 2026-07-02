@@ -1,0 +1,20 @@
+[Unit]
+Description=YallaPlay Hermes Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/git/yallaplay-hermes-agent
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HERMES_YOLO_MODE=1
+Environment=HERMES_ACCEPT_HOOKS=1
+ExecStart=/home/ubuntu/.local/bin/claudio-lab --yolo dashboard --host 127.0.0.1 --port 9119 --no-open --isolated --skip-build
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

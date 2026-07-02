@@ -1,0 +1,15 @@
+[Unit]
+Description=YallaPlay Hermes Cloudflare Tunnel
+After=network-online.target hermes-nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/git/yallaplay-hermes-agent
+ExecStart=/usr/bin/cloudflared tunnel --config /home/ubuntu/git/yallaplay-hermes-agent/.local/cloudflared/config.yml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

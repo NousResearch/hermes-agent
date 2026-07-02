@@ -1,0 +1,24 @@
+[Unit]
+Description=YallaPlay Hermes WebUI (nesquena/hermes-webui)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/git/yallaplay-hermes-agent/.local/hermes-webui
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HERMES_HOME=/home/ubuntu/.hermes/profiles/claudio-lab
+Environment=HERMES_WEBUI_STATE_DIR=/home/ubuntu/.hermes/profiles/claudio-lab/webui-nesquena
+Environment=HERMES_WEBUI_AGENT_DIR=/home/ubuntu/.hermes/hermes-agent
+Environment=HERMES_WEBUI_HOST=127.0.0.1
+Environment=HERMES_WEBUI_PORT=9121
+Environment=HERMES_WEBUI_SKIP_ONBOARDING=1
+Environment=HERMES_WEBUI_FOREGROUND=1
+ExecStart=/usr/bin/python3 /home/ubuntu/git/yallaplay-hermes-agent/.local/hermes-webui/bootstrap.py --no-browser --foreground --host 127.0.0.1 9121
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=YallaPlay Hermes Local nginx Proxy
+After=network-online.target hermes-dashboard.service
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=ubuntu
+WorkingDirectory=/home/ubuntu/git/yallaplay-hermes-agent
+PIDFile=/home/ubuntu/git/yallaplay-hermes-agent/.local/nginx/nginx.pid
+ExecStartPre=/home/ubuntu/git/yallaplay-hermes-agent/.local/nginx/sbin/nginx -p /home/ubuntu/git/yallaplay-hermes-agent/.local/nginx -c hermes.conf -t
+ExecStart=/home/ubuntu/git/yallaplay-hermes-agent/.local/nginx/sbin/nginx -p /home/ubuntu/git/yallaplay-hermes-agent/.local/nginx -c hermes.conf
+ExecReload=/home/ubuntu/git/yallaplay-hermes-agent/.local/nginx/sbin/nginx -p /home/ubuntu/git/yallaplay-hermes-agent/.local/nginx -c hermes.conf -s reload
+ExecStop=/home/ubuntu/git/yallaplay-hermes-agent/.local/nginx/sbin/nginx -p /home/ubuntu/git/yallaplay-hermes-agent/.local/nginx -c hermes.conf -s quit
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

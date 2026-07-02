@@ -1,0 +1,3 @@
+[submodule "yallaplay-wiki"]
+	path = yallaplay-wiki
+	url = https://github.com/YallaPlay/yallaplay-wiki.git

@@ -6768,6 +6768,13 @@ def _provider_sse_error_text(status=503, code="ServiceUnavailable", message="Bus
     )
 
 
+def _provider_bare_sse_error_text(
+    code="rate_limit_exceeded",
+    message="Rate limit exceeded.",
+):
+    return f'data: {{"error":{{"code":"{code}","message":"{message}"}}}}\n'
+
+
 class TestStreamingApiCall:
     """Tests for _streaming_api_call — voice TTS streaming pipeline."""
 
@@ -6827,6 +6834,23 @@ class TestStreamingApiCall:
         assert "Busy" in str(exc)
         agent.stream_delta_callback.assert_not_called()
 
+    def test_error_finish_bare_sse_error_payload_raises_provider_error(self, agent):
+        chunks = [
+            _make_chunk(content=_provider_bare_sse_error_text()),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert getattr(exc, "status_code", None) is None
+        assert getattr(exc, "body", {})["error"]["code"] == "rate_limit_exceeded"
+        assert "Rate limit exceeded" in str(exc)
+        agent.stream_delta_callback.assert_not_called()
+
     def test_provider_error_prefix_like_normal_text_flushes_to_callback(self, agent):
         chunks = [
             _make_chunk(content="id: product-42\n"),
@@ -6857,6 +6881,36 @@ class TestStreamingApiCall:
         assert [
             call.args[0] for call in agent.stream_delta_callback.call_args_list
         ] == ['event: error\ndata: {"example": true}\n']
+
+    def test_bare_sse_error_payload_with_stop_is_literal_text(self, agent):
+        error_text = _provider_bare_sse_error_text(message="Example error payload.")
+        chunks = [
+            _make_chunk(content=error_text),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == error_text
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == [error_text]
+
+    def test_bare_sse_error_payload_without_finish_reason_is_literal_text(self, agent):
+        error_text = _provider_bare_sse_error_text(message="Example error payload.")
+        chunks = [_make_chunk(content=error_text)]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == error_text
+        assert resp.choices[0].finish_reason == "stop"
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == [error_text]
 
     def test_run_conversation_retries_stream_error_finish_rate_limit(self, agent):
         first_attempt = iter([

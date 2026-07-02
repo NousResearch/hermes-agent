@@ -317,8 +317,15 @@ def _provider_stream_error_from_text(
         is_structured_error_event = is_error_event and (
             has_error_finish or is_http_error or is_error_payload
         )
+        is_bare_error_finish_payload = (
+            not is_error_event and has_error_finish and is_error_payload
+        )
 
-        if not (is_http_error or is_structured_error_event):
+        if not (
+            is_http_error
+            or is_structured_error_event
+            or is_bare_error_finish_payload
+        ):
             continue
 
         headers = getattr(response, "headers", None) if response is not None else None

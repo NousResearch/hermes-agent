@@ -584,6 +584,33 @@ session_reset:
 # local runtime lease registry cannot be read or locked.
 max_concurrent_sessions: null
 
+# User-defined per-model pricing overrides, used by usage cost tracking
+# (``estimate_usage_cost``) and cost dashboards / observability plugins such as
+# Langfuse. Each key is a model identifier — either a bare model name
+# (``gpt-5.4``) or a qualified ``provider/model`` (``openai-codex/gpt-5.4``);
+# qualified keys take precedence over bare names. Each value is a dict with any
+# of these optional keys, whose values are **per-token USD costs** (the same
+# unit the OpenRouter models API uses — divide the vendor's per-million rate by
+# 1,000,000):
+#   input:        per-token input cost
+#   output:       per-token output cost
+#   cache_read:   per-token cached-prompt-read cost
+#   cache_write:  per-token prompt-cache-write cost
+#   request:      flat per-request cost (rarely used)
+# Example (vendor rates shown in per-million USD in the comments):
+# pricing_overrides:
+#   gpt-5.4:            # $2.50/M in, $15.00/M out, $0.25/M cache read
+#     input: 0.0000025
+#     output: 0.000015
+#     cache_read: 0.00000025
+# Overrides take the absolute highest priority — above the bundled pricing
+# snapshot, provider models-API metadata, AND subscription-included routes — so
+# usage routed through a flat-rate subscription endpoint (e.g. openai-codex /
+# the ChatGPT Codex backend) can be tracked at real per-token rates for budgeting
+# and comparison. A subscription model with no override entry keeps its default
+# behaviour (reported as $0 / included). Leave empty (default) to change nothing.
+pricing_overrides: {}
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

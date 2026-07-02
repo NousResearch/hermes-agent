@@ -322,3 +322,115 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+# ── pricing_overrides (user-defined per-model costs) ─────────────────────────
+#
+# These tests monkeypatch ``hermes_cli.config.load_config_readonly`` (the
+# function the override helper imports at call time) so they never depend on
+# the developer's real ``~/.hermes/config.yaml``.
+
+
+def _override_config(monkeypatch, overrides):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"pricing_overrides": overrides},
+    )
+
+
+def test_pricing_override_takes_priority_over_snapshot(monkeypatch):
+    """A user override wins over the bundled official-docs snapshot."""
+    _override_config(monkeypatch, {"gpt-5.4": {"input": 0.0000025, "output": 0.000015}})
+
+    entry = get_pricing_entry("gpt-5.4")
+
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 2.5
+    assert float(entry.output_cost_per_million) == 15.0
+
+
+def test_pricing_override_supports_provider_slash_model_key(monkeypatch):
+    """Qualified ``provider/model`` keys are matched before bare model names."""
+    _override_config(
+        monkeypatch,
+        {
+            "openai-codex/gpt-5.4": {"input": 0.0000025, "output": 0.000015},
+            "gpt-5.4": {"input": 0.0000099, "output": 0.0000099},
+        },
+    )
+
+    entry = get_pricing_entry("gpt-5.4", provider="openai-codex")
+
+    assert float(entry.input_cost_per_million) == 2.5  # qualified key wins
+
+
+def test_pricing_override_wins_over_subscription_included_route(monkeypatch):
+    """An explicit override costs a subscription endpoint (e.g. openai-codex)
+    at real per-token rates instead of reporting it as $0 included.
+
+    This is the core motivation for the feature: users on flat-rate subscription
+    endpoints who want to track what usage *would* cost at real per-token rates.
+    """
+    _override_config(
+        monkeypatch,
+        {"gpt-5.4": {"input": 0.0000025, "output": 0.000015, "cache_read": 0.00000025}},
+    )
+
+    entry = get_pricing_entry(
+        "gpt-5.4",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    assert entry.source == "user_override"
+    assert float(entry.input_cost_per_million) == 2.5
+
+
+def test_subscription_route_without_override_still_included(monkeypatch):
+    """Regression guard: with no override defined, subscription routes keep
+    their default $0 / ``included`` behaviour — the feature is opt-in per model."""
+    _override_config(monkeypatch, {})
+
+    entry = get_pricing_entry(
+        "gpt-5.4",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    assert entry.source == "none"
+    assert entry.pricing_version == "included-route"
+    assert float(entry.input_cost_per_million) == 0.0
+
+
+def test_estimate_usage_cost_uses_override_for_subscription_route(monkeypatch):
+    """``estimate_usage_cost`` (the function cost dashboards/Langfuse consume)
+    must surface the override amount for a subscription route, not short-circuit
+    to $0 before consulting ``get_pricing_entry``.
+    """
+    _override_config(
+        monkeypatch,
+        {"gpt-5.4": {"input": 0.0000025, "output": 0.000015, "cache_read": 0.00000025}},
+    )
+
+    result = estimate_usage_cost(
+        "gpt-5.4",
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=200),
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    # 1000*2.5/M + 500*15/M + 200*0.25/M = 0.0025 + 0.0075 + 0.00005
+    assert result.status == "estimated"
+    assert result.source == "user_override"
+    assert abs(float(result.amount_usd) - 0.01005) < 1e-9
+
+
+def test_empty_or_malformed_overrides_are_ignored(monkeypatch):
+    """Non-dict / empty override values never raise and never shadow real pricing."""
+    _override_config(monkeypatch, {"deepseek-v4-pro": {}, "deepseek-chat": "not-a-dict"})
+
+    entry = get_pricing_entry("deepseek-v4-pro", provider="deepseek")  # snapshot fallback
+
+    assert entry is not None
+    assert entry.source != "user_override"
+    assert float(entry.input_cost_per_million) == 1.74  # snapshot value intact

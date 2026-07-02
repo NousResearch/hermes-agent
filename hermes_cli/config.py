@@ -910,6 +910,14 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # User-defined per-model pricing overrides. Each key is a model
+    # identifier (bare name like "moonshotai.kimi-k2.5" or qualified
+    # "provider/model" like "bedrock/anthropic.claude-opus-4-6"); each
+    # value is a dict with optional ``input``, ``output``, ``cache_read``,
+    # ``cache_write`` keys whose values are per-token USD costs (same
+    # unit as the OpenRouter models API). Overrides take priority over
+    # provider API metadata and the bundled pricing snapshot.
+    "pricing_overrides": {},
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
     # this many are live, the gateway evicts the least-recently-active DETACHED
     # sessions (no live client) so accumulated agents don't pile up under memory

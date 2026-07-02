@@ -673,6 +673,96 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_completed_response_empty_choices_returned_not_iterated(
+        self, mock_close, mock_create
+    ):
+        """A completed response whose ``choices`` is an EMPTY list is still a
+        whole (non-iterable) response, not a token stream.
+
+        The pre-existing guard only recognized a *non-empty* choices list, so an
+        empty/terminal frame fell through to ``for chunk in stream`` and crashed
+        with ``'types.SimpleNamespace' object is not iterable`` (#55933, hit by
+        the MoA openai-codex aggregator). It must now disable streaming and
+        return the object for the outer loop's invalid-response retry path
+        instead of iterating it.
+        """
+        from run_agent import AIAgent
+
+        final_response = SimpleNamespace(
+            model="gpt-5.5",
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = final_response
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="default",
+            provider="moa",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        deltas = []
+        agent._stream_callback = lambda text: deltas.append(text)
+
+        # Must NOT raise "'types.SimpleNamespace' object is not iterable".
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_response
+        assert agent._disable_streaming is True
+        assert deltas == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_completed_response_none_choices_returned_not_iterated(
+        self, mock_close, mock_create
+    ):
+        """A completed response whose ``choices`` is ``None`` (error /
+        content-filter frame) is recognized as a whole response and returned,
+        not handed to ``for chunk in stream``."""
+        from run_agent import AIAgent
+
+        final_response = SimpleNamespace(
+            model="gpt-5.5",
+            choices=None,
+            usage=None,
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = final_response
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="default",
+            provider="moa",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        deltas = []
+        agent._stream_callback = lambda text: deltas.append(text)
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_response
+        assert agent._disable_streaming is True
+        assert deltas == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_stream_error_propagates_original(self, mock_close, mock_create):
         """The original streaming error propagates (not a fallback error)."""
         from run_agent import AIAgent

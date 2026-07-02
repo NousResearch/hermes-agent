@@ -562,6 +562,7 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
+    assert thread._hermes_auto_thread_initial_name == "Hello world, how are you?"
 
 
 @pytest.mark.asyncio
@@ -659,6 +660,47 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_edits_only_when_current_name_matches(adapter):
+    thread = SimpleNamespace(
+        id=999,
+        name="raw user prompt",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+    )
+
+    assert result is True
+    thread.edit.assert_awaited_once_with(
+        name="Semantic Session Title",
+        reason="Hermes semantic session title",
+    )
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_skips_when_human_renamed(adapter):
+    thread = SimpleNamespace(
+        id=999,
+        name="human fixed this already",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+    )
+
+    assert result is False
+    thread.edit.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # Auto-thread integration in _handle_message
 # ------------------------------------------------------------------
@@ -742,6 +784,35 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     assert event.source.chat_id == "999"  # redirected to thread
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
+    assert event.source.auto_thread_created is True
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_source_carries_initial_name_for_semantic_rename(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    thread = SimpleNamespace(
+        id=999,
+        name="raw user prompt",
+        _hermes_auto_thread_initial_name="raw user prompt",
+    )
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(), content="raw user prompt")
+
+    await adapter._handle_message(msg)
+
+    source = captured_events[0].source
+    assert source.auto_thread_created is True
+    assert source.auto_thread_initial_name == "raw user prompt"
 
 
 @pytest.mark.asyncio

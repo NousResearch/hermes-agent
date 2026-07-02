@@ -953,11 +953,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         "finish_reason": finish_reason,
     }
 
-    raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
+    raw_reasoning_content = getattr(assistant_message, "reasoning_content", None) or getattr(assistant_message, "reasoning", None)
     if raw_reasoning_content is None and hasattr(assistant_message, "model_extra"):
         model_extra = getattr(assistant_message, "model_extra", None) or {}
-        if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-            raw_reasoning_content = model_extra["reasoning_content"]
+        if isinstance(model_extra, dict):
+            # vLLM 0.23+ renamed reasoning_content -> reasoning
+            raw_reasoning_content = model_extra.get("reasoning_content") or model_extra.get("reasoning")
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():

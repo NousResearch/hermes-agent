@@ -2312,6 +2312,55 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
     assert pool.entries() == []
 
 
+def test_copilot_pool_prioritizes_env_token_over_gh_cli():
+    """Copilot pool must rank env-var tokens ahead of the gh CLI fallback,
+    mirroring the precedence in ``hermes_cli/copilot_auth.py:resolve_copilot_token``
+    (COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN > gh auth token).
+
+    Without this, a ``gh_cli`` entry seeded from a pre-existing
+    ``gh auth login`` (often a different GitHub account) silently
+    outranks the env-var token the user just persisted via
+    ``hermes model`` device-code login, producing wrong-account auth
+    and 400 ``model_not_supported`` at runtime when the gh account
+    lacks Copilot access for the requested model.
+    """
+    from agent.credential_pool import (
+        AUTH_TYPE_API_KEY,
+        PooledCredential,
+        _normalize_pool_priorities,
+    )
+
+    # Realistic ordering: gh_cli was upserted first (priority 0) — the
+    # gh CLI predates the device login.  Normalization must demote it.
+    entries = [
+        PooledCredential(
+            id="gh-cli-entry",
+            provider="copilot",
+            label="account-A",
+            auth_type=AUTH_TYPE_API_KEY,
+            access_token="copilot_api_token_account_A",
+            priority=0,
+            source="gh_cli",
+            base_url="https://api.githubcopilot.com",
+        ),
+        PooledCredential(
+            id="env-entry",
+            provider="copilot",
+            label="COPILOT_GITHUB_TOKEN",
+            auth_type=AUTH_TYPE_API_KEY,
+            access_token="copilot_api_token_account_B",
+            priority=1,
+            source="env:COPILOT_GITHUB_TOKEN",
+            base_url="https://api.githubcopilot.com",
+        ),
+    ]
+
+    _normalize_pool_priorities("copilot", entries)
+
+    by_source = {e.source: e for e in entries}
+    assert by_source["env:COPILOT_GITHUB_TOKEN"].priority < by_source["gh_cli"].priority
+
+
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
     """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

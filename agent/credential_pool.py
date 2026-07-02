@@ -1734,16 +1734,27 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
 
 
 def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -> bool:
-    if provider != "anthropic":
+    if provider == "anthropic":
+        source_rank = {
+            "env:ANTHROPIC_TOKEN": 0,
+            "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
+            "hermes_pkce": 2,
+            "claude_code": 3,
+            "env:ANTHROPIC_API_KEY": 4,
+        }
+    elif provider == "copilot":
+        # Mirror the precedence in hermes_cli/copilot_auth.py:resolve_copilot_token
+        # so a freshly-added COPILOT_GITHUB_TOKEN (e.g. from `hermes model` device
+        # login) outranks an older `gh auth token` for a different account.
+        source_rank = {
+            "env:COPILOT_GITHUB_TOKEN": 0,
+            "env:GH_TOKEN": 1,
+            "env:GITHUB_TOKEN": 2,
+            "gh_cli": 3,
+        }
+    else:
         return False
 
-    source_rank = {
-        "env:ANTHROPIC_TOKEN": 0,
-        "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-        "hermes_pkce": 2,
-        "claude_code": 3,
-        "env:ANTHROPIC_API_KEY": 4,
-    }
     manual_entries = sorted(
         (entry for entry in entries if _is_manual_source(entry.source)),
         key=lambda entry: entry.priority,

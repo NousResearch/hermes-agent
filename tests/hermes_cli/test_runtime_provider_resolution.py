@@ -1683,6 +1683,88 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_copilot_api_mode_recomputed_for_non_codex_default_model(monkeypatch):
+    """Copilot must re-derive api_mode from the actual model on every
+    resolve, ignoring a stale persisted ``api_mode`` from an earlier
+    setup run.  Mirrors the opencode fix in PR #15106 / #16888 and the
+    cron-side fix in PR #9033.
+
+    Repro: user ran setup while ``model.default = gpt-5.4`` so config
+    has ``api_mode: codex_responses``.  They later switch ``model.default``
+    to ``claude-sonnet-4.6`` (chat_completions).  The persisted api_mode
+    must NOT win — claude-* on Copilot does not speak the Responses API
+    and would return 400 ``model_not_supported``.
+    """
+    cfg = {
+        "provider": "copilot",
+        "default": "claude-sonnet-4.6",
+        "api_mode": "codex_responses",
+        "base_url": "https://api.githubcopilot.com",
+    }
+
+    def _fake_copilot_mode(model_id, *, catalog=None, api_key=None):
+        m = (model_id or "").lower()
+        if m.startswith("gpt-5") and not m.startswith("gpt-5-mini"):
+            return "codex_responses"
+        return "chat_completions"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode", _fake_copilot_mode
+    )
+
+    mode = rp._copilot_runtime_api_mode(cfg, api_key="gho_fake_token")
+
+    assert mode == "chat_completions"
+
+
+def test_copilot_api_mode_follows_target_model_on_runtime_switch(monkeypatch):
+    """``/model gemini-3.1-pro-preview`` mid-session must resolve to
+    chat_completions even when the persisted config default is gpt-5.4
+    (codex_responses).  The pool-entry resolver threads ``target_model``
+    via ``_model_cfg["target_model"]`` so ``_copilot_runtime_api_mode``
+    sees the model the agent is actually about to dispatch.
+    """
+    from agent.credential_pool import AUTH_TYPE_API_KEY, PooledCredential
+
+    cfg = {
+        "provider": "copilot",
+        "default": "gpt-5.4",
+        "api_mode": "codex_responses",
+        "base_url": "https://api.githubcopilot.com",
+    }
+
+    def _fake_copilot_mode(model_id, *, catalog=None, api_key=None):
+        m = (model_id or "").lower()
+        if m.startswith("gpt-5") and not m.startswith("gpt-5-mini"):
+            return "codex_responses"
+        return "chat_completions"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode", _fake_copilot_mode
+    )
+
+    entry = PooledCredential(
+        id="env-entry",
+        provider="copilot",
+        label="COPILOT_GITHUB_TOKEN",
+        auth_type=AUTH_TYPE_API_KEY,
+        access_token="copilot_api_token_xyz",
+        priority=0,
+        source="env:COPILOT_GITHUB_TOKEN",
+        base_url="https://api.githubcopilot.com",
+    )
+
+    resolved = rp._resolve_runtime_from_pool_entry(
+        provider="copilot",
+        entry=entry,
+        requested_provider="copilot",
+        model_cfg=cfg,
+        target_model="gemini-3.1-pro-preview",
+    )
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     """Custom providers should accept api_mode: anthropic_messages."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")

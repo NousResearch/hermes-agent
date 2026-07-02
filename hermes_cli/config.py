@@ -4489,7 +4489,8 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body", "ssl_ca_cert", "ssl_verify",
+        "discover_models", "extra_body", "extra_headers",
+        "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4596,6 +4597,15 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
+    # Per-provider extra HTTP headers (proxies, gateways, custom auth).
+    # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
+    # log them anywhere downstream.
+    extra_headers = entry.get("extra_headers")
+    if isinstance(extra_headers, dict) and extra_headers:
+        normalized["extra_headers"] = {
+            str(k): str(v) for k, v in extra_headers.items() if v is not None
+        }
+
     ssl_ca_cert = entry.get("ssl_ca_cert")
     if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
         normalized["ssl_ca_cert"] = ssl_ca_cert.strip()
@@ -4633,6 +4643,7 @@ def _custom_provider_entry_to_provider_config(
         "rate_limit_delay",
         "discover_models",
         "extra_body",
+        "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
     ):
@@ -4774,6 +4785,69 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_ca_cert"] = tls["ssl_ca_cert"]
     if "ssl_verify" in tls:
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
+
+
+def get_custom_provider_extra_headers(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
+
+    Matches the entry whose ``base_url`` equals *base_url* (trailing-slash and
+    case insensitive, mirroring :func:`get_custom_provider_tls_settings`) and
+    returns its ``extra_headers`` dict, or ``{}`` when no entry matches or the
+    entry declares none.
+
+    SECURITY: header values routinely carry credentials (Cloudflare Access
+    service tokens, proxy auth, custom bearer schemes). Callers must never
+    log the returned values.
+    """
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return {}
+
+    target_url = (base_url or "").rstrip("/").lower()
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        if not entry_url or entry_url != target_url:
+            continue
+        extra_headers = entry.get("extra_headers")
+        if isinstance(extra_headers, dict) and extra_headers:
+            return {
+                str(k): str(v) for k, v in extra_headers.items() if v is not None
+            }
+        return {}
+    return {}
+
+
+def apply_custom_provider_extra_headers_to_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Merge per-provider ``extra_headers`` onto OpenAI client ``default_headers``.
+
+    Provider-specific headers win over provider/SDK defaults already present in
+    ``client_kwargs`` — they are the most specific configuration level. No-op
+    when the base_url matches no ``providers`` / ``custom_providers`` entry or
+    the entry declares no headers.
+
+    SECURITY: values may carry credentials — never log them.
+    """
+    extra_headers = get_custom_provider_extra_headers(base_url, custom_providers, config)
+    if not extra_headers:
+        return
+    merged = dict(client_kwargs.get("default_headers") or {})
+    merged.update(extra_headers)
+    client_kwargs["default_headers"] = merged
 
 
 def get_custom_provider_context_length(

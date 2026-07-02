@@ -85,6 +85,25 @@ model:
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,

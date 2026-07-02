@@ -210,6 +210,17 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Budget-enforcement verdict hook. A budget plugin returns a verdict on
+    # ACCUMULATED spend for a scope (retrospective — the plugin sums recorded
+    # cost, there is no pre-call projection). Return shape:
+    #   {"status": "ok"|"soft"|"hard", "message": "<notice>", ...metadata}
+    # Only "status" is required; "message" is the plugin-authored notice the
+    # core surfaces; all other keys (scope/scope_id/window/spent/limit/pct/
+    # based_on_estimates/degraded) are metadata the core does not act on.
+    # In PR1 the core dispatches this once per turn and injects a soft/hard
+    # notice into the user message (never the system prompt). The real
+    # pre-LLM hard-abort is a later change. See get_budget_check_verdict.
+    "on_budget_check",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

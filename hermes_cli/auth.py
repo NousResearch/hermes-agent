@@ -601,6 +601,28 @@ def _resolve_api_key_provider_secret(
                 key = str(key).strip()
                 if has_usable_secret(key):
                     return key, f"credential_pool:{provider_id}"
+            # fix(#40960): when all entries are in exhaustion cooldown,
+            # return any usable (even exhausted) key so the upstream API
+            # returns its real 429 with the quota-reset timestamp instead
+            # of a misleading 401 from sending an empty Authorization header.
+            try:
+                for exhausted_entry in pool._entries:
+                    ex_key = (
+                        getattr(exhausted_entry, "access_token", "")
+                        or getattr(exhausted_entry, "runtime_api_key", "")
+                        or ""
+                    )
+                    ex_key = str(ex_key).strip()
+                    if has_usable_secret(ex_key):
+                        logger.warning(
+                            "credential_pool: all entries for %s are exhausted; "
+                            "returning an exhausted key to surface the real upstream error",
+                            provider_id,
+                        )
+                        return ex_key, f"credential_pool:{provider_id}:exhausted"
+            except Exception:
+                # best-effort: if introspection fails, fall through to the empty return
+                pass
     except Exception:
         pass
 

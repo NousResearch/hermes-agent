@@ -62,6 +62,12 @@ gateway:
     always_singular:       "✅ 指令已批准（永久允許該模式）。代理正在恢復…"
     always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
 
+  auto_reset:
+    notice:                "◐ 工作階段已自動重設（{reason}）。對話歷史已清除。\n使用 /resume 可瀏覽並還原先前的工作階段。\n可在 config.yaml 的 session_reset 中調整重設時間。"
+    reason_suspended:      "先前的工作階段已停止或中斷"
+    reason_daily:          "每日排程於 {hour}:00"
+    reason_idle:           "閒置 {duration}"
+
   background:
     usage:                 "用法：/background <提示>\n範例：/background 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
@@ -263,6 +269,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ 模型：`{model}`"
+    provider:              "◆ 提供方：{provider}"
+    context:               "◆ 上下文：{context} tokens（{source}）"
+    endpoint:              "◆ 端點：{endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "預設值 — 可在 config 中設定 model.context_length 以覆寫"
+    ctx_source_detected:   "自動偵測"
 
   set_home:
     save_failed:           "無法儲存主頻道：{error}"

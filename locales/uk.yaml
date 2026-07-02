@@ -62,6 +62,12 @@ gateway:
     always_singular:       "✅ Команду схвалено (шаблон схвалено назавжди). Агент відновлює роботу…"
     always_plural:         "✅ Команди схвалено (шаблон схвалено назавжди) ({count} команд). Агент відновлює роботу…"
 
+  auto_reset:
+    notice:                "◐ Сесію автоматично скинуто ({reason}). Історію розмови очищено.\nВикористовуйте /resume, щоб переглянути та відновити попередню сесію.\nЧас скидання налаштовується в config.yaml у розділі session_reset."
+    reason_suspended:      "попередню сесію було зупинено або перервано"
+    reason_daily:          "щоденний розклад о {hour}:00"
+    reason_idle:           "неактивна протягом {duration}"
+
   background:
     usage:                 "Використання: /background <запит>\nПриклад: /background Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."
     started:               "🔄 Фонове завдання запущено: «{preview}»\nID завдання: {task_id}\nМожна продовжити спілкування — результати з'являться тут після завершення."
@@ -263,6 +269,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Недійсний номер контрольної точки. Використовуйте 1-{max}."
     restored:              "✅ Відновлено до контрольної точки {hash}: {reason}\nЗнімок перед відкатом збережено автоматично."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Модель: `{model}`"
+    provider:              "◆ Провайдер: {provider}"
+    context:               "◆ Контекст: {context} токенів ({source})"
+    endpoint:              "◆ Ендпоінт: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "за замовчуванням — задайте model.context_length у конфігу, щоб перевизначити"
+    ctx_source_detected:   "визначено"
 
   set_home:
     save_failed:           "Не вдалося зберегти головний канал: {error}"

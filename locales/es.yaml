@@ -62,6 +62,12 @@ gateway:
     always_singular:       "✅ Comando aprobado (patrón aprobado permanentemente). El agente se está reanudando..."
     always_plural:         "✅ Comandos aprobados (patrón aprobado permanentemente) ({count} comandos). El agente se está reanudando..."
 
+  auto_reset:
+    notice:                "◐ Sesión reiniciada automáticamente ({reason}). Historial de conversación borrado.\nUsa /resume para explorar y restaurar una sesión anterior.\nAjusta el intervalo de reinicio en config.yaml bajo session_reset."
+    reason_suspended:      "la sesión anterior se detuvo o se interrumpió"
+    reason_daily:          "programación diaria a las {hour}:00"
+    reason_idle:           "inactiva durante {duration}"
+
   background:
     usage:                 "Uso: /background <prompt>\nEjemplo: /background Resume las principales historias de HN de hoy\n\nEjecuta el prompt en una sesión separada. Puedes seguir chateando — el resultado aparecerá aquí cuando termine."
     started:               "🔄 Tarea en segundo plano iniciada: \"{preview}\"\nID de tarea: {task_id}\nPuedes seguir chateando — los resultados aparecerán aquí cuando terminen."
@@ -260,6 +266,15 @@ gateway:
     invalid_number:        "Número de checkpoint inválido. Usa 1-{max}."
     restored:              "✅ Restaurado al checkpoint {hash}: {reason}\nSe guardó automáticamente un snapshot previo al rollback."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Modelo: `{model}`"
+    provider:              "◆ Proveedor: {provider}"
+    context:               "◆ Contexto: {context} tokens ({source})"
+    endpoint:              "◆ Endpoint: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "predeterminado — define model.context_length en config para sobreescribirlo"
+    ctx_source_detected:   "detectado"
 
   set_home:
     save_failed:           "No se pudo guardar el canal principal: {error}"

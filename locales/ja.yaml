@@ -62,6 +62,12 @@ gateway:
     always_singular:       "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
     always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
 
+  auto_reset:
+    notice:                "◐ セッションが自動的にリセットされました（{reason}）。会話履歴はクリアされました。\n/resume で以前のセッションを一覧・復元できます。\nリセットのタイミングは config.yaml の session_reset で調整できます。"
+    reason_suspended:      "前回のセッションが停止または中断されたため"
+    reason_daily:          "毎日 {hour}:00 のスケジュールのため"
+    reason_idle:           "{duration} 非アクティブだったため"
+
   background:
     usage:                 "使い方: /background <プロンプト>\n例: /background 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
     started:               "🔄 バックグラウンドタスクを開始しました: 「{preview}」\nタスク ID: {task_id}\nチャットを続けられます — 完了したらここに結果が表示されます。"
@@ -263,6 +269,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無効なチェックポイント番号です。1-{max} を使用してください。"
     restored:              "✅ チェックポイント {hash} に復元しました: {reason}\nロールバック前のスナップショットが自動的に保存されました。"
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ モデル: `{model}`"
+    provider:              "◆ プロバイダー: {provider}"
+    context:               "◆ コンテキスト: {context} トークン ({source})"
+    endpoint:              "◆ エンドポイント: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "デフォルト — config の model.context_length で上書きできます"
+    ctx_source_detected:   "自動検出"
 
   set_home:
     save_failed:           "ホームチャンネルを保存できませんでした: {error}"

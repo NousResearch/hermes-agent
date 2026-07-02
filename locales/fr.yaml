@@ -62,6 +62,12 @@ gateway:
     always_singular:       "✅ Commande approuvée (modèle approuvé de manière permanente). L'agent reprend..."
     always_plural:         "✅ Commandes approuvées (modèle approuvé de manière permanente) ({count} commandes). L'agent reprend..."
 
+  auto_reset:
+    notice:                "◐ Session réinitialisée automatiquement ({reason}). Historique de conversation effacé.\nUtilisez /resume pour parcourir et restaurer une session précédente.\nAjustez le délai de réinitialisation dans config.yaml sous session_reset."
+    reason_suspended:      "la session précédente a été arrêtée ou interrompue"
+    reason_daily:          "planification quotidienne à {hour}:00"
+    reason_idle:           "inactive depuis {duration}"
+
   background:
     usage:                 "Usage : /background <prompt>\nExemple : /background Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
     started:               "🔄 Tâche d'arrière-plan démarrée : « {preview} »\nID de tâche : {task_id}\nVous pouvez continuer à discuter — les résultats apparaîtront ici une fois terminés."
@@ -263,6 +269,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Numéro de point de contrôle invalide. Utilisez 1-{max}."
     restored:              "✅ Restauré au point de contrôle {hash} : {reason}\nUn instantané pré-rollback a été enregistré automatiquement."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Modèle : `{model}`"
+    provider:              "◆ Fournisseur : {provider}"
+    context:               "◆ Contexte : {context} tokens ({source})"
+    endpoint:              "◆ Point de terminaison : {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "par défaut — définissez model.context_length dans la config pour le remplacer"
+    ctx_source_detected:   "détecté"
 
   set_home:
     save_failed:           "Impossible d'enregistrer le canal principal : {error}"

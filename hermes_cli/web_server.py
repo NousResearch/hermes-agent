@@ -4152,41 +4152,63 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
     text clears a key so it falls back to the host/default mapping.
     """
 
+    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock
     from utils import atomic_json_write
 
-    resolve_active_host, _resolve_config_path, _host_block = _honcho_resolvers()
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
     host = resolve_active_host()
+    # Write the same file reads resolve — a hardcoded path would shadow a
+    # config living at one of resolve_config_path's fallbacks with a sparse
+    # copy holding only the submitted keys.
+    path = resolve_config_path()
 
-    path = get_hermes_home() / "honcho.json"
-    cfg: Dict[str, Any] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            cfg = loaded if isinstance(loaded, dict) else {}
-        except Exception:
-            _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
+    # OAuth refresh rotates single-use tokens in this file; an unlocked
+    # read-modify-write racing it would persist a stale refresh token and
+    # revoke the grant, so serialize on the same advisory lock.
+    with _config_refresh_lock(path):
+        cfg: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                cfg = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
 
-    host_block = cfg.setdefault("hosts", {}).setdefault(host, {})
+        hosts = cfg.get("hosts")
+        cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
+        # Target the block reads resolve — including a legacy dot-form key —
+        # so a save updates the live block instead of shadowing it.
+        existing = host_block_of(cfg, host)
+        host_key = next((k for k, v in hosts.items() if v is existing), host) if existing else host
+        host_block = hosts.setdefault(host_key, existing)
 
-    for field in provider.fields:
-        if field.is_secret:
-            submitted = (values.get(field.key) or "").strip()
-            if submitted and field.env_key:
-                save_env_value(field.env_key, submitted)
-            continue
-        if field.key not in values:
-            continue
-        target = host_block if field.scope == "host" else cfg
-        coerced = _coerce_field_value(field, values[field.key])
-        if coerced is _UNSET:
-            target.pop(field.key, None)
-            for alias in field.aliases:
-                target.pop(alias, None)
-        else:
-            target[field.key] = coerced
+        for field in provider.fields:
+            if field.is_secret:
+                submitted = (values.get(field.key) or "").strip()
+                if not submitted:
+                    continue
+                if field.env_key:
+                    save_env_value(field.env_key, submitted)
+                # The client reads the JSON-stored key before the env store, so
+                # persist where honcho setup does — but never overwrite an OAuth
+                # access token; the refresh loop owns that slot.
+                stored = host_block.get(field.key)
+                if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+                    host_block[field.key] = submitted
+                continue
+            if field.key not in values:
+                continue
+            target = host_block if field.scope == "host" else cfg
+            coerced = _coerce_field_value(field, values[field.key])
+            if coerced is _UNSET:
+                target.pop(field.key, None)
+                for alias in field.aliases:
+                    target.pop(alias, None)
+            else:
+                target[field.key] = coerced
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json_write(path, cfg, mode=0o600)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cfg, mode=0o600)
 
 
 @app.get("/api/memory/providers/{name}/config")

@@ -512,6 +512,15 @@ class TestWebServerEndpoints:
 
     # ── Memory provider config (Honcho host-block backend) ──────────────
 
+    @staticmethod
+    def _seed_local_honcho(cfg=None):
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "honcho.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg if cfg is not None else {}), encoding="utf-8")
+        return path
+
     def test_get_honcho_config_returns_safe_defaults(self, monkeypatch, tmp_path):
         # HOME isn't isolated by the suite; pin it so ~/.honcho can't leak in.
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -541,6 +550,7 @@ class TestWebServerEndpoints:
 
     def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_config, load_env
 
@@ -571,11 +581,13 @@ class TestWebServerEndpoints:
         assert cfg["hosts"]["hermes"]["peerName"] == "eri"
         assert cfg["hosts"]["hermes"]["environment"] == "local"
         assert cfg["hosts"]["hermes"]["sessionStrategy"] == "per-repo"
-        # The secret must never be written to the JSON config.
-        assert "hch-test-key" not in json.dumps(cfg)
+        # The key persists where the client actually reads it (the host block
+        # outranks the env store) — GET keeps it write-only regardless.
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
 
     def test_put_honcho_blank_text_clears_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
 
         self.client.put(
@@ -592,6 +604,7 @@ class TestWebServerEndpoints:
 
     def test_put_honcho_partial_save_preserves_other_keys(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
 
         self.client.put(
@@ -619,6 +632,7 @@ class TestWebServerEndpoints:
 
     def test_get_honcho_config_does_not_return_secret(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
 
         self.client.put(
             "/api/memory/providers/honcho/config",
@@ -636,6 +650,7 @@ class TestWebServerEndpoints:
 
     def test_put_honcho_bool_stored_natively_and_false_survives(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
 
         self.client.put(
@@ -654,6 +669,7 @@ class TestWebServerEndpoints:
 
     def test_put_honcho_number_stored_as_native_number(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
 
         self.client.put(
@@ -672,6 +688,7 @@ class TestWebServerEndpoints:
 
     def test_put_honcho_json_round_trips_object(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
+        self._seed_local_honcho()
         from hermes_constants import get_hermes_home
 
         self.client.put(
@@ -684,6 +701,79 @@ class TestWebServerEndpoints:
 
         fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config").json())
         assert json.loads(fields["userPeerAliases"]["value"]) == {"telegram_1": "eri"}
+
+    def test_put_honcho_first_save_merges_into_resolved_config(self, monkeypatch, tmp_path):
+        # No profile-local honcho.json: reads and writes both resolve to the
+        # global config, so a save merges instead of shadowing it with a
+        # sparse profile-local copy.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from hermes_constants import get_hermes_home
+
+        global_path = tmp_path / ".honcho" / "config.json"
+        global_path.parent.mkdir(parents=True)
+        global_path.write_text(
+            json.dumps({"baseUrl": "https://kept.example", "hosts": {"hermes": {"workspace": "kept"}}}),
+            encoding="utf-8",
+        )
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config",
+            json={"values": {"peerName": "eri"}},
+        )
+
+        assert resp.status_code == 200
+        assert not (get_hermes_home() / "honcho.json").exists()
+        cfg = json.loads(global_path.read_text(encoding="utf-8"))
+        assert cfg["baseUrl"] == "https://kept.example"
+        assert cfg["hosts"]["hermes"] == {"workspace": "kept", "peerName": "eri"}
+
+    def test_put_honcho_updates_legacy_dot_form_host_block(self, monkeypatch, tmp_path):
+        # A legacy 'hermes.<profile>' block that reads resolve must be updated
+        # in place, not shadowed by a fresh underscore-form block.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes_work")
+
+        path = self._seed_local_honcho({"hosts": {"hermes.work": {"workspace": "w", "peerName": "eri"}}})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config",
+            json={"values": {"sessionStrategy": "per-repo"}},
+        )
+
+        assert resp.status_code == 200
+        hosts = json.loads(path.read_text(encoding="utf-8"))["hosts"]
+        assert set(hosts) == {"hermes.work"}
+        assert hosts["hermes.work"] == {"workspace": "w", "peerName": "eri", "sessionStrategy": "per-repo"}
+
+    def test_put_honcho_api_key_never_overwrites_oauth_token(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from hermes_cli.config import load_env
+
+        path = self._seed_local_honcho({"hosts": {"hermes": {"apiKey": "hch-at-oauth-token"}}})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config",
+            json={"values": {"apiKey": "manual-key"}},
+        )
+
+        assert resp.status_code == 200
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        # The OAuth grant owns the JSON slot; the manual key lands in the env store.
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-at-oauth-token"
+        assert load_env()["HONCHO_API_KEY"] == "manual-key"
+
+    def test_put_honcho_tolerates_null_hosts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        path = self._seed_local_honcho({"hosts": None})
+
+        resp = self.client.put(
+            "/api/memory/providers/honcho/config",
+            json={"values": {"workspace": "myws"}},
+        )
+
+        assert resp.status_code == 200
+        assert json.loads(path.read_text(encoding="utf-8"))["hosts"]["hermes"]["workspace"] == "myws"
 
     def test_put_honcho_rejects_malformed_number_and_json(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))

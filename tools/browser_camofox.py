@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
+_CONTROL_JSON_MAX_BYTES = 1_000_000
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
 
@@ -137,10 +138,10 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        resp = requests.get(f"{url}/health", timeout=5, stream=True)
         if resp.status_code == 200 and not _vnc_url_checked:
             try:
-                data = resp.json()
+                data = _read_control_json(resp)
                 vnc_port = data.get("vncPort")
                 if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
                     from urllib.parse import urlparse
@@ -410,9 +411,10 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         },
         timeout=_get_command_timeout(),
         headers=_auth_headers(),
+        stream=True,
     )
     resp.raise_for_status()
-    data = resp.json()
+    data = _read_control_json(resp)
     session["tab_id"] = data.get("tabId")
     return session
 
@@ -445,14 +447,62 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+def _read_control_json(resp: requests.Response) -> dict:
+    """Read a bounded Camofox control-plane JSON response."""
+    content_length = resp.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _CONTROL_JSON_MAX_BYTES:
+                close = getattr(resp, "close", None)
+                if close:
+                    close()
+                raise RuntimeError(
+                    f"Camofox response too large ({content_length} bytes; "
+                    f"limit {_CONTROL_JSON_MAX_BYTES})"
+                )
+        except ValueError:
+            pass
+
+    chunks = []
+    total = 0
+    try:
+        for chunk in resp.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _CONTROL_JSON_MAX_BYTES:
+                raise RuntimeError(
+                    f"Camofox response too large (>{_CONTROL_JSON_MAX_BYTES} bytes)"
+                )
+            chunks.append(chunk)
+    finally:
+        close = getattr(resp, "close", None)
+        if close:
+            close()
+
+    raw = b"".join(chunks).decode(resp.encoding or "utf-8")
+    if not raw.strip():
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("Camofox control response must be a JSON object")
+    return data
+
+
 def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     """POST JSON to camofox and return parsed response."""
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout, headers=_auth_headers())
+    resp = requests.post(
+        url,
+        json=body,
+        timeout=timeout,
+        headers=_auth_headers(),
+        stream=True,
+    )
     resp.raise_for_status()
-    return resp.json()
+    return _read_control_json(resp)
 
 
 def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
@@ -460,9 +510,15 @@ def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
+    resp = requests.get(
+        url,
+        params=params,
+        timeout=timeout,
+        headers=_auth_headers(),
+        stream=True,
+    )
     resp.raise_for_status()
-    return resp.json()
+    return _read_control_json(resp)
 
 
 def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
@@ -480,9 +536,15 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
+    resp = requests.delete(
+        url,
+        json=body,
+        timeout=timeout,
+        headers=_auth_headers(),
+        stream=True,
+    )
     resp.raise_for_status()
-    return resp.json()
+    return _read_control_json(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +994,4 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
-
 

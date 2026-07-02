@@ -3,8 +3,11 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from tools.browser_camofox import (
+    _CONTROL_JSON_MAX_BYTES,
+    _read_control_json,
     camofox_back,
     camofox_click,
     camofox_close,
@@ -65,10 +68,33 @@ def _config_with_camofox(**camofox_config):
 def _mock_response(status=200, json_data=None):
     resp = MagicMock()
     resp.status_code = status
-    resp.json.return_value = json_data or {}
+    raw = json.dumps(json_data or {}).encode("utf-8")
+    resp.headers = {"content-length": str(len(raw))}
+    resp.encoding = "utf-8"
+    resp.iter_content.return_value = [raw]
+    resp.json.side_effect = AssertionError("Camofox control JSON must be streamed")
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
+    resp.close = MagicMock()
     return resp
+
+
+def test_control_json_reader_rejects_oversized_response_before_iterating():
+    resp = MagicMock()
+    resp.headers = {"content-length": str(_CONTROL_JSON_MAX_BYTES + 1)}
+    resp.iter_content.side_effect = AssertionError("oversized body should not be read")
+    resp.close = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Camofox response too large"):
+        _read_control_json(resp)
+    resp.close.assert_called_once()
+
+
+def test_control_json_reader_streams_small_json_without_response_json():
+    resp = _mock_response(json_data={"ok": True})
+
+    assert _read_control_json(resp) == {"ok": True}
+    resp.json.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -455,5 +481,3 @@ class TestBrowserToolRouting:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         from tools.browser_tool import check_browser_requirements
         assert check_browser_requirements() is True
-
-

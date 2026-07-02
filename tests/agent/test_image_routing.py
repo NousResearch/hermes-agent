@@ -97,6 +97,35 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
+    def test_auto_unknown_caps_local_endpoint_defaults_native(self):
+        """#29066: LM Studio / local OpenAI-compatible host gets native pixels
+        when caps lookup is None (model not in models.dev)."""
+        cfg = {"model": {"base_url": "http://localhost:1234/v1"}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("custom", "qwen/qwen2.5-vl-7b", cfg) == "native"
+
+    def test_auto_unknown_caps_local_via_provider_base_url(self):
+        cfg = {
+            "model": {"provider": "lmstudio"},
+            "providers": {"lmstudio": {"base_url": "http://127.0.0.1:55888/v1"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("custom", "qwen/qwen3.5-9b", cfg) == "native"
+
+    def test_auto_unknown_caps_remote_endpoint_still_text(self):
+        """Unknown model on a non-local endpoint must NOT auto-promote to native."""
+        cfg = {"model": {"base_url": "https://api.example.com/v1"}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("custom", "some-unknown", cfg) == "text"
+
+    def test_auto_local_endpoint_explicit_false_override_still_text(self):
+        """A user-declared supports_vision:false beats the local-host default."""
+        cfg = {
+            "model": {"base_url": "http://localhost:1234/v1", "supports_vision": False},
+        }
+        # _lookup returns False via the override path, so we don't reach the local check.
+        assert decide_image_input_mode("custom", "tinyllama", cfg) == "text"
+
     def test_auto_respects_aux_vision_override_even_for_vision_model(self):
         """If the user configured a dedicated vision backend, don't bypass it."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}

@@ -2368,6 +2368,72 @@ class TestAuxiliaryFallbackLayering:
             reason="provider unavailable",
         )
 
+    def test_vertex_profile_alias_resolves_auxiliary_client(self, monkeypatch):
+        """Vertex auxiliary resolution should use OAuth2/ADC profile metadata."""
+        import agent.vertex_adapter as vertex_adapter
+
+        base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+        fake_client = SimpleNamespace(base_url=base_url)
+
+        monkeypatch.setattr(vertex_adapter, "has_vertex_credentials", lambda: True)
+        monkeypatch.setattr(vertex_adapter, "get_vertex_config", lambda: ("ya29.test-token", base_url))
+
+        with patch("openai.OpenAI", return_value=fake_client) as mock_openai:
+            client, model = resolve_provider_client(
+                "google-vertex",
+                "google/gemini-3.5-flash",
+            )
+
+        assert client is fake_client
+        assert model == "google/gemini-3.5-flash"
+        mock_openai.assert_called_once_with(
+            api_key="ya29.test-token",
+            base_url=base_url,
+        )
+
+    def test_vertex_no_client_without_chain_reports_adc_guidance(self, monkeypatch):
+        """Vertex has no static API key; auxiliary errors must point at ADC/OAuth."""
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("vertex", "google/gemini-3.5-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")):
+            with pytest.raises(RuntimeError) as exc_info:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        msg = str(exc_info.value)
+        assert "VERTEX_API_KEY" not in msg
+        assert "no API key" not in msg
+        assert "OAuth2" in msg
+        assert "gcloud auth application-default login" in msg
+        assert "VERTEX_CREDENTIALS_PATH" in msg
+
+    @pytest.mark.asyncio
+    async def test_async_vertex_no_client_without_chain_reports_adc_guidance(self, monkeypatch):
+        """Async auxiliary calls should share the same non-API-key guidance."""
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("vertex", "google/gemini-3.5-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")):
+            with pytest.raises(RuntimeError) as exc_info:
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        msg = str(exc_info.value)
+        assert "VERTEX_API_KEY" not in msg
+        assert "no API key" not in msg
+        assert "OAuth2" in msg
+        assert "gcloud auth application-default login" in msg
+        assert "VERTEX_CREDENTIALS_PATH" in msg
+
     def test_fallback_entry_openai_codex_uses_oauth_pool_without_inline_key(self):
         """Configured Codex fallback resolves through Hermes auth / credential pool."""
         from agent.auxiliary_client import _resolve_fallback_entry

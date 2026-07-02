@@ -267,6 +267,10 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
     "tencent": "tencent-tokenhub",
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
@@ -292,6 +296,37 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         else:
             return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def _provider_profile_config(provider: str) -> Tuple[str, Optional[Any]]:
+    """Return a registry-like config from ProviderProfile when auth.py lacks one."""
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return provider, None
+
+    profile = get_provider_profile(provider)
+    if profile is None:
+        return provider, None
+
+    canonical = str(getattr(profile, "name", "") or provider).strip().lower() or provider
+    env_vars = tuple(str(v) for v in (getattr(profile, "env_vars", ()) or ()))
+    api_key_env_vars = tuple(
+        v for v in env_vars
+        if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+    )
+    base_url_env_var = next(
+        (v for v in env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+        "",
+    )
+    return canonical, SimpleNamespace(
+        id=canonical,
+        name=str(getattr(profile, "display_name", "") or canonical),
+        auth_type=str(getattr(profile, "auth_type", "") or "api_key"),
+        inference_base_url=str(getattr(profile, "base_url", "") or ""),
+        api_key_env_vars=api_key_env_vars or env_vars,
+        base_url_env_var=base_url_env_var,
+    )
 
 
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must
@@ -3560,6 +3595,65 @@ def _try_configured_fallback_for_unavailable_client(
     )
 
 
+def _provider_auth_type(provider: str) -> str:
+    """Return a provider's declared auth_type when known."""
+    normalized = _normalize_aux_provider(provider)
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(normalized)
+        if pconfig is not None:
+            return str(getattr(pconfig, "auth_type", "") or "").strip().lower()
+    except Exception:
+        pass
+
+    _canonical, profile_config = _provider_profile_config(normalized)
+    if profile_config is not None:
+        return str(getattr(profile_config, "auth_type", "") or "").strip().lower()
+    return ""
+
+
+def _explicit_provider_unavailable_message(provider: str) -> str:
+    """Build actionable guidance for explicit aux providers that cannot build."""
+    explicit = (provider or "").strip().lower()
+    auth_type = _provider_auth_type(explicit)
+
+    if auth_type == "vertex":
+        return (
+            f"Provider '{explicit}' is set in config.yaml but Vertex AI "
+            "credentials could not be resolved. Vertex uses OAuth2, not a "
+            "static API key: set VERTEX_CREDENTIALS_PATH or "
+            "GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON, or run "
+            "`gcloud auth application-default login` for ADC. Set "
+            "vertex.project_id/vertex.region in config.yaml if they are not "
+            "embedded in the credentials. If google-auth is missing, install "
+            "the extra with `pip install 'hermes-agent[vertex]'`."
+        )
+
+    if auth_type == "aws_sdk":
+        return (
+            f"Provider '{explicit}' is set in config.yaml but AWS SDK "
+            "credentials could not be resolved. Configure AWS credentials "
+            "(for example AWS_PROFILE, AWS_REGION, or the standard AWS "
+            "credential chain), or switch to a different provider with "
+            "`hermes model`."
+        )
+
+    if auth_type in {"external_process", "oauth_device_code", "oauth_external"} or auth_type.startswith("oauth"):
+        return (
+            f"Provider '{explicit}' is set in config.yaml but its account "
+            "credentials could not be resolved. Run `hermes model` to "
+            "authenticate or switch providers, or configure an "
+            "auxiliary fallback_chain for this task."
+        )
+
+    return (
+        f"Provider '{explicit}' is set in config.yaml but no API key "
+        f"was found. Set the {explicit.upper()}_API_KEY environment "
+        f"variable, or switch to a different provider with `hermes model`."
+    )
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key from a fallback-chain entry."""
     explicit = str(entry.get("api_key") or "").strip()
@@ -4411,6 +4505,8 @@ def resolve_provider_client(
         return None, None
 
     pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig is None:
+        provider, pconfig = _provider_profile_config(provider)
     if pconfig is None:
         # Demoted from logger.warning to debug; dedup keyed by provider name
         # so the first occurrence surfaces but repeated retries stay silent.
@@ -5947,9 +6043,7 @@ def call_llm(
                     resolved_provider = fb_label or resolved_provider
                 else:
                     raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
+                        _explicit_provider_unavailable_message(_explicit)
                     )
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
@@ -6521,9 +6615,7 @@ async def async_call_llm(
                     resolved_provider = fb_label or resolved_provider
                 else:
                     raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
+                        _explicit_provider_unavailable_message(_explicit)
                     )
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",

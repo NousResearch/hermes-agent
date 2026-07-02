@@ -185,6 +185,13 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    if getattr(provider, "supports_password", False):
+        # Password-only providers do not implement the OAuth/PKCE
+        # /auth/login redirect flow. Let the ordinary /login page render the
+        # username/password form instead of auto-redirecting to /auth/login,
+        # which would call start_login() and 500.
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

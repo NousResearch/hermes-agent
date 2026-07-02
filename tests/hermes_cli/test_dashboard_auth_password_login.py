@@ -202,7 +202,11 @@ class TestProviderListFlag:
         clear_providers()
         register_provider(StubAuthProvider())
         prev = getattr(web_server.app.state, "auth_required", None)
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         web_server.app.state.auth_required = True
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         try:
             client = TestClient(
                 web_server.app, base_url="https://fly-app.fly.dev"
@@ -213,6 +217,46 @@ class TestProviderListFlag:
         finally:
             clear_providers()
             web_server.app.state.auth_required = prev
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
+
+
+# ---------------------------------------------------------------------------
+# OAuth entrypoints must not auto-route password providers
+# ---------------------------------------------------------------------------
+
+
+class TestPasswordProviderOAuthEntryGuards:
+    def test_html_gate_renders_login_form_instead_of_oauth_redirect(
+        self, gated_app
+    ):
+        """Password providers do not implement the OAuth/PKCE redirect flow."""
+        resp = gated_app.get("/", follow_redirects=False)
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
+    def test_auth_login_redirects_password_provider_to_form_with_safe_next(
+        self, gated_app
+    ):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=/sessions",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
+    def test_auth_login_drops_unsafe_next_for_password_provider(
+        self, gated_app
+    ):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=//evil.example",
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +331,11 @@ class TestPasswordLoginRoute:
         register_provider(StubAuthProvider())
         _reset_password_rate_limit()
         prev = getattr(web_server.app.state, "auth_required", None)
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         web_server.app.state.auth_required = True
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         try:
             client = TestClient(
                 web_server.app, base_url="https://fly-app.fly.dev"
@@ -301,6 +349,8 @@ class TestPasswordLoginRoute:
             clear_providers()
             _reset_password_rate_limit()
             web_server.app.state.auth_required = prev
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
 
     def test_provider_unreachable_returns_503(self, gated_app, pw_provider):
         pw_provider.unreachable = True
@@ -349,7 +399,11 @@ class TestPasswordSessionRefresh:
         register_provider(provider)
         _reset_password_rate_limit()
         prev = getattr(web_server.app.state, "auth_required", None)
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         web_server.app.state.auth_required = True
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         try:
             client = TestClient(
                 web_server.app, base_url="https://fly-app.fly.dev"
@@ -368,6 +422,8 @@ class TestPasswordSessionRefresh:
             clear_providers()
             _reset_password_rate_limit()
             web_server.app.state.auth_required = prev
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
 
 
 # ---------------------------------------------------------------------------

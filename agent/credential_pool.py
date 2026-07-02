@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import random
@@ -99,12 +100,20 @@ STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
+STRATEGY_QUOTA_AWARE = "quota_aware"
 SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
+    STRATEGY_QUOTA_AWARE,
 }
+
+CODEX_QUOTA_USAGE_TTL_SECONDS = 300.0
+CODEX_QUOTA_USAGE_TIMEOUT_SECONDS = 4.0
+CODEX_QUOTA_AVOID_BELOW_FRACTION = 0.20
+_CODEX_QUOTA_CACHE: Dict[str, Tuple[float, Optional[Any]]] = {}
+_CODEX_QUOTA_CACHE_LOCK = threading.Lock()
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
@@ -443,6 +452,28 @@ def get_pool_strategy(provider: str) -> str:
     if strategy in SUPPORTED_POOL_STRATEGIES:
         return strategy
     return STRATEGY_FILL_FIRST
+
+
+def _coerce_quota_fraction(value: Any, default: float) -> float:
+    try:
+        fraction = float(value)
+    except (TypeError, ValueError):
+        return default
+    if 0.0 <= fraction <= 1.0:
+        return fraction
+    return default
+
+
+def get_quota_aware_avoid_below_fraction() -> float:
+    """Return the low-watermark threshold for quota-aware pools."""
+    config = _load_config_safe()
+    quota_config = config.get("credential_pool_quota_aware") if config else None
+    if not isinstance(quota_config, dict):
+        return CODEX_QUOTA_AVOID_BELOW_FRACTION
+    return _coerce_quota_fraction(
+        quota_config.get("avoid_below_fraction"),
+        CODEX_QUOTA_AVOID_BELOW_FRACTION,
+    )
 
 
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
@@ -1481,6 +1512,108 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
+    def _increment_request_count_unlocked(self, entry: PooledCredential) -> PooledCredential:
+        updated = replace(entry, request_count=entry.request_count + 1)
+        self._replace_entry(entry, updated)
+        self._current_id = entry.id
+        return updated
+
+    def _select_least_used_unlocked(self, available: List[PooledCredential]) -> PooledCredential:
+        entry = min(available, key=lambda e: (e.request_count, e.priority, e.id))
+        # Increment usage counter so subsequent selections distribute load
+        return self._increment_request_count_unlocked(entry)
+
+    def _select_quota_aware_unlocked(self, available: List[PooledCredential]) -> Optional[PooledCredential]:
+        if self.provider != "openai-codex":
+            return self._select_least_used_unlocked(available)
+
+        scored: List[Tuple[float, int, int, str, PooledCredential]] = []
+        for entry in available:
+            snapshot = self._codex_usage_snapshot_for_entry(entry)
+            remaining = self._remaining_fraction_from_usage(snapshot)
+            if remaining is None:
+                continue
+            scored.append((remaining, entry.request_count, entry.priority, entry.id, entry))
+
+        if not scored:
+            return self._select_least_used_unlocked(available)
+
+        avoid_below = get_quota_aware_avoid_below_fraction()
+        current = self.current()
+        if current is not None:
+            current_score = next((item for item in scored if item[4].id == current.id), None)
+            if current_score is not None and current_score[0] >= avoid_below:
+                return self._increment_request_count_unlocked(current_score[4])
+
+        def choose_highest_remaining(
+            candidates: List[Tuple[float, int, int, str, PooledCredential]]
+        ) -> PooledCredential:
+            # Highest remaining quota wins; ties go to lower request_count,
+            # then lower priority and stable id for deterministic routing.
+            return min(candidates, key=lambda item: (-item[0], item[1], item[2], item[3]))[4]
+
+        valid_candidates = [
+            item for item in scored if item[0] >= avoid_below
+        ]
+        if current is not None:
+            valid_candidates = [item for item in valid_candidates if item[4].id != current.id]
+        if valid_candidates:
+            return self._increment_request_count_unlocked(
+                choose_highest_remaining(valid_candidates)
+            )
+
+        # If every known credential is below the avoid threshold, fail open to
+        # the least-bad option instead of pretending the whole pool is unusable.
+        return self._increment_request_count_unlocked(choose_highest_remaining(scored))
+
+    def _codex_usage_snapshot_for_entry(self, entry: PooledCredential) -> Optional[Any]:
+        token = str(entry.runtime_api_key or "").strip()
+        if not token:
+            return None
+        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+        cache_key = f"{self.provider}:{entry.id}:{fingerprint}"
+        now = time.time()
+        with _CODEX_QUOTA_CACHE_LOCK:
+            cached = _CODEX_QUOTA_CACHE.get(cache_key)
+            if cached is not None:
+                fetched_at, snapshot = cached
+                if now - fetched_at < CODEX_QUOTA_USAGE_TTL_SECONDS:
+                    return snapshot
+
+        snapshot = None
+        try:
+            from agent.account_usage import fetch_codex_usage_for_token
+
+            snapshot = fetch_codex_usage_for_token(
+                token,
+                entry.runtime_base_url,
+                timeout=CODEX_QUOTA_USAGE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.debug(
+                "credential pool: Codex quota telemetry unavailable for %s/%s: %s",
+                self.provider,
+                entry.id,
+                exc,
+            )
+        with _CODEX_QUOTA_CACHE_LOCK:
+            _CODEX_QUOTA_CACHE[cache_key] = (now, snapshot)
+        return snapshot
+
+    @staticmethod
+    def _remaining_fraction_from_usage(snapshot: Optional[Any]) -> Optional[float]:
+        if snapshot is None or getattr(snapshot, "unavailable_reason", None):
+            return None
+        windows = getattr(snapshot, "windows", ()) or ()
+        used_values: List[float] = []
+        for window in windows:
+            used = getattr(window, "used_percent", None)
+            if isinstance(used, (int, float)):
+                used_values.append(max(0.0, min(100.0, float(used))))
+        if not used_values:
+            return None
+        return max(0.0, min(1.0, 1.0 - (max(used_values) / 100.0)))
+
     def _select_unlocked(self) -> Optional[PooledCredential]:
         available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
@@ -1493,13 +1626,13 @@ class CredentialPool:
             self._current_id = entry.id
             return entry
 
+        if self._strategy == STRATEGY_QUOTA_AWARE and len(available) > 1:
+            entry = self._select_quota_aware_unlocked(available)
+            if entry is not None:
+                return entry
+
         if self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
-            entry = min(available, key=lambda e: e.request_count)
-            # Increment usage counter so subsequent selections distribute load
-            updated = replace(entry, request_count=entry.request_count + 1)
-            self._replace_entry(entry, updated)
-            self._current_id = entry.id
-            return updated
+            return self._select_least_used_unlocked(available)
 
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             entry = available[0]

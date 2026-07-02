@@ -58,31 +58,40 @@ def test_fetch_account_usage_codex(monkeypatch):
             "api_key": "access-token",
         },
     )
-    monkeypatch.setattr(
-        "agent.account_usage._read_codex_tokens",
-        lambda: {"tokens": {"account_id": "acct_123"}},
-    )
-    monkeypatch.setattr(
-        "agent.account_usage.httpx.Client",
-        lambda timeout=15.0: _Client(
-            {
-                "plan_type": "pro",
-                "rate_limit": {
-                    "primary_window": {
-                        "used_percent": 15,
-                        "reset_at": 1_900_000_000,
-                        "limit_window_seconds": 18000,
+    requests = []
+
+    class _CodexClient:
+        def __init__(self, timeout=15.0):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            requests.append((url, headers or {}, self.timeout))
+            return _Response(
+                {
+                    "plan_type": "pro",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 15,
+                            "reset_at": 1_900_000_000,
+                            "limit_window_seconds": 18000,
+                        },
+                        "secondary_window": {
+                            "used_percent": 40,
+                            "reset_at": 1_900_500_000,
+                            "limit_window_seconds": 604800,
+                        },
                     },
-                    "secondary_window": {
-                        "used_percent": 40,
-                        "reset_at": 1_900_500_000,
-                        "limit_window_seconds": 604800,
-                    },
-                },
-                "credits": {"has_credits": True, "balance": 12.5},
-            }
-        ),
-    )
+                    "credits": {"has_credits": True, "balance": 12.5},
+                }
+            )
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _CodexClient)
 
     snapshot = fetch_account_usage("openai-codex")
 
@@ -93,6 +102,9 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+    assert requests
+    assert requests[0][1]["Authorization"] == "Bearer access-token"
+    assert "ChatGPT-Account-Id" not in requests[0][1]
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

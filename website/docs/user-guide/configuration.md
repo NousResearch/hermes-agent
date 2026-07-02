@@ -909,7 +909,21 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`, and `quota_aware`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
+
+`quota_aware` is currently Codex-specific and opt-in:
+
+```yaml
+credential_pool_strategies:
+  openai-codex: quota_aware
+```
+
+For pooled Codex OAuth credentials, Hermes reads the Codex usage endpoint with each entry's bearer token and uses sticky low-watermark routing: keep the current credential while remaining quota is at or above `credential_pool_quota_aware.avoid_below_fraction` (default `0.20`), switch to the highest-remaining candidate above that threshold only once current drops below it, and fall back to the highest remaining credential if every account is low. Ties go to lower `request_count`, then priority/id. If usage telemetry is unavailable, stale, or rate-limited, Hermes falls back gracefully to `least_used` instead of failing closed. Non-Codex providers configured with `quota_aware` degrade to least-used selection.
+
+```yaml
+credential_pool_quota_aware:
+  avoid_below_fraction: 0.20
+```
 
 ## Prompt caching
 

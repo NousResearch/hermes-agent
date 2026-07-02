@@ -303,6 +303,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.sessions import build_sessions_parser, cmd_sessions
 
 
 def _require_tty(command_name: str) -> None:
@@ -12723,6 +12724,11 @@ def main():
     # backup command  (parser built in hermes_cli/subcommands/backup.py)
     # =========================================================================
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
+
+    # =========================================================================
+    # sessions command  (parser built in hermes_cli/subcommands/sessions.py)
+    # =========================================================================
+    build_sessions_parser(subparsers, cmd_sessions=cmd_sessions)
 
     # =========================================================================
     # checkpoints command

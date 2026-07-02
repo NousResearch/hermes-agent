@@ -1,0 +1,7 @@
+name: dashscope
+version: 1.1.0
+description: "Alibaba Cloud DashScope Qwen-Image generation backend (qwen-image-2.0-pro, qwen-image-2.0, qwen-image-max, qwen-image-plus). Uses DashScope native multimodal-generation API."
+author: Fingxing2025
+kind: backend
+requires_env:
+  - DASHSCOPE_API_KEY

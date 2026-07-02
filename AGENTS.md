@@ -398,16 +398,35 @@ versa), you're on the wrong loader. Check `DEFAULT_CONFIG` coverage.
 `save_config()` in `hermes_cli/config.py` automatically:
 - Acquires an exclusive OS file lock (`config_write_lock()`) on `~/.hermes/config.yaml.lock`
 - Writes `~/.hermes/config.yaml` atomically
-- Updates the SHA256 seal at `~/.hermes/config.yaml.sha256` via `seal_config()`
+- Updates the SHA256 sidecar at `~/.hermes/config.yaml.sha256` via `seal_config()`
 - Releases the lock
 
-**Never bypass `save_config()` when writing config.** If you must write config directly (e.g. a restore script), call `seal_config()` afterward to keep the seal in sync.
+**Never bypass `save_config()` when writing config.** If you must write config directly (e.g. a restore script), use `restore_config()` so the lock and sidecar stay in sync.
 
-Public helpers:
-- `seal_config()` — recompute and write the SHA256 seal
-- `verify_config_integrity(locked=False)` — returns `(ok, current_digest, sealed_digest)`; pass `locked=True` from external processes to acquire a shared read lock first
-- `restore_config(content, *, reason="")` — lock → backup → write → reseal (use in restore scripts instead of direct file writes)
-- `config_read_lock()` — shared lock context manager for external readers (e.g. the Config Integrity Watchdog) to acquire before checking integrity
+Low-level helpers (internal use by `save_config()` and `restore_config()` — for new scripts use the CLI commands below):
+- `seal_config()` — recompute and write the SHA256 sidecar
+- `verify_config_integrity(locked=False)` — returns `(ok, current_digest, sealed_digest)`; pass `locked=True` to acquire a shared read lock first
+- `restore_config(content, *, reason="")` — lock → backup → write → reseal
+- `config_read_lock()` — shared lock context manager for external readers
+
+### Git-backed config integrity
+
+PR #67 shipped a git-backed integrity system that supersedes the mutable `.sha256` sidecar for external verification. Seals are stored as an append-only log at `$HERMES_DOTFILES_DIR/hermes/config_integrity.jsonl` and committed to the dotfiles git repo — a commit cannot be silently forged by any process that can write `config.yaml`.
+
+**CLI commands** (dispatched via `hermes config`, implemented in `hermes_cli/config_integrity_cli.py`):
+- `hermes config seal` — hash config, append to log, commit to dotfiles git
+- `hermes config verify` — compare current hash to latest seal; exits 0=ok, 1=tampered, 2=log tampered, 3=no baseline
+- `hermes config restore` — `git checkout HEAD` to revert config, back up tampered file, re-seal
+
+**Skill:** `skills/devops/config-integrity-watchdog/` — ships `scripts/seal.py`, `scripts/verify.py`, `scripts/restore.py` (auto-deployed to `~/.hermes/scripts/` on startup) and `config_integrity.py` (shared core module).
+
+**Env vars:**
+| Variable | Default | Purpose |
+|---|---|---|
+| `HERMES_CONFIG` | `~/.hermes/config.yaml` | Config file to protect |
+| `HERMES_DOTFILES_DIR` | `~/Dev/dotfiles` | Dotfiles git repo root |
+
+**Use `hermes config verify` (not `verify_config_integrity()`) in new cron jobs, watchdog prompts, and restore scripts.**
 
 ---
 

@@ -485,7 +485,19 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     """
     try:
         from hermes_cli.config import cfg_get, load_config
-        user_headers = cfg_get(load_config(), "model", "default_headers")
+        _cfg = load_config()
+        user_headers = cfg_get(_cfg, "model", "default_headers")
+        # ``model.extra_headers`` is an accepted alias (matches the
+        # per-provider ``extra_headers`` key on providers/custom_providers
+        # entries). When both are set they merge, with ``extra_headers``
+        # winning. SECURITY: values may carry credentials — never log them.
+        alias_headers = cfg_get(_cfg, "model", "extra_headers")
+        if isinstance(alias_headers, dict) and alias_headers:
+            merged_user: dict = {}
+            if isinstance(user_headers, dict):
+                merged_user.update(user_headers)
+            merged_user.update(alias_headers)
+            user_headers = merged_user
     except Exception:
         return headers
     if not isinstance(user_headers, dict) or not user_headers:

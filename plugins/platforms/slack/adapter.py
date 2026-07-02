@@ -3788,11 +3788,12 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        if original_text.startswith("!"):
+        command_probe_text = original_text.lstrip()
+        if command_probe_text.startswith("!"):
             try:
                 from hermes_cli.commands import is_gateway_known_command
 
-                first_token = original_text[1:].split(maxsplit=1)[0]
+                first_token = command_probe_text[1:].split(maxsplit=1)[0]
                 # Strip "@suffix" the same way get_command() does, so
                 # forms like ``!stop@hermes`` still resolve.
                 cmd_name = first_token.split("@", 1)[0].lower()
@@ -3801,10 +3802,12 @@ class SlackAdapter(BasePlatformAdapter):
                     and "/" not in cmd_name
                     and is_gateway_known_command(cmd_name)
                 ):
-                    original_text = "/" + original_text[1:]
+                    original_text = "/" + command_probe_text[1:]
+                    command_probe_text = original_text
             except Exception:  # pragma: no cover - defensive
                 pass
 
+        is_command_text = command_probe_text.startswith("/")
         text = original_text
 
         # Extract quoted/forwarded content from Slack blocks.
@@ -4163,8 +4166,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if (original_text or "").startswith("/"):
+        if is_command_text:
             msg_type = MessageType.COMMAND
+
+        # Commands typed as Slack text messages often intentionally carry a
+        # leading space (`` /stop``) so Slack itself does not intercept the
+        # slash. Once classified as a command, pass only the command text into
+        # the gateway dispatcher; do not prepend fetched thread context or
+        # block/attachment rendering before the leading slash.
 
         # Handle file attachments
         media_urls = []
@@ -4514,7 +4523,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         msg_event = MessageEvent(
-            text=text,
+            text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
             source=source,
             raw_message=event,

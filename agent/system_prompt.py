@@ -381,6 +381,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"after explicit direction."
         )
 
+    # ACP attached-file context — the adapter inlines file content as text
+    # blocks. Tell the model to use it directly rather than trying to fetch.
+    stable_parts.append(
+        "`[Attached file: ...]` blocks contain the actual file — read the "
+        "content inline, do not call tools to fetch it."
+    )
+
     platform_key = (agent.platform or "").lower().strip()
     # Resolve the built-in/plugin default hint for this platform, then apply
     # any per-platform override from config (platform_hints.<platform>).

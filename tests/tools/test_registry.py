@@ -730,3 +730,73 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestCheckFnWarnOnce:
+    """A persistently failing check_fn warns once, then logs repeats at DEBUG."""
+
+    def _expire_ttl(self, fn):
+        import time as _time
+        from tools import registry as reg_mod
+        with reg_mod._check_fn_cache_lock:
+            ts, value = reg_mod._check_fn_cache[fn]
+            reg_mod._check_fn_cache[fn] = (
+                ts - reg_mod._CHECK_FN_TTL_SECONDS - 1, value
+            )
+
+    def test_repeat_failures_log_debug_after_first_warning(self, caplog):
+        import logging
+        from tools import registry as reg_mod
+
+        reg_mod.invalidate_check_fn_cache()
+        failing = lambda: False  # noqa: E731
+
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            assert reg_mod._check_fn_cached(failing) is False
+            self._expire_ttl(failing)
+            assert reg_mod._check_fn_cached(failing) is False
+
+        records = [
+            r for r in caplog.records
+            if "dependent tools will be unavailable" in r.getMessage()
+        ]
+        assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG]
+
+    def test_recovery_rearms_the_warning(self, caplog):
+        import logging
+        from tools import registry as reg_mod
+
+        reg_mod.invalidate_check_fn_cache()
+        state = {"ok": False}
+
+        def flapping():
+            return state["ok"]
+
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            assert reg_mod._check_fn_cached(flapping) is False
+            state["ok"] = True
+            self._expire_ttl(flapping)
+            assert reg_mod._check_fn_cached(flapping) is True
+            state["ok"] = False
+            self._expire_ttl(flapping)
+            # Grace period after the True would flake-suppress; clear last_good
+            # to model a distinct outage rather than a flake.
+            with reg_mod._check_fn_cache_lock:
+                reg_mod._check_fn_last_good.pop(flapping, None)
+            assert reg_mod._check_fn_cached(flapping) is False
+
+        records = [
+            r for r in caplog.records
+            if "dependent tools will be unavailable" in r.getMessage()
+        ]
+        assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
+
+    def test_invalidate_clears_warned_state(self):
+        from tools import registry as reg_mod
+
+        reg_mod.invalidate_check_fn_cache()
+        failing = lambda: False  # noqa: E731
+        assert reg_mod._check_fn_cached(failing) is False
+        assert failing in reg_mod._check_fn_warned
+        reg_mod.invalidate_check_fn_cache()
+        assert failing not in reg_mod._check_fn_warned

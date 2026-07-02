@@ -1227,9 +1227,18 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
 
+    # xAI does not expose a native Opus/OGG codec. Telegram auto-voice callers
+    # pass an .ogg target, so synthesize MP3 first and transcode below.
+    needs_opus_transcode = output_path.endswith(".ogg")
+    if needs_opus_transcode:
+        output = Path(output_path)
+        api_output_path = str(output.with_name(f"{output.stem}-{uuid.uuid4().hex}.mp3"))
+    else:
+        api_output_path = output_path
+
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
-    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    codec = "wav" if api_output_path.endswith(".wav") else "mp3"
     payload: Dict[str, Any] = {
         "text": text,
         "voice_id": voice_id,
@@ -1271,8 +1280,19 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     )
     response.raise_for_status()
 
-    with open(output_path, "wb") as f:
+    with open(api_output_path, "wb") as f:
         f.write(response.content)
+
+    if needs_opus_transcode:
+        opus_path = _convert_to_opus(api_output_path)
+        if not opus_path:
+            raise RuntimeError("xAI TTS could not convert MP3 output to OGG Opus")
+        if opus_path != output_path:
+            os.replace(opus_path, output_path)
+        try:
+            os.remove(api_output_path)
+        except OSError:
+            pass
 
     return output_path
 

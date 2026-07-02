@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -275,11 +276,32 @@ class SecretaryEvent:
         for field_name in ("text", "caption"):
             value = getattr(self, field_name)
             if isinstance(value, str) and value:
-                updates[field_name] = redact_sensitive_text(value)
+                updates[field_name] = redact_sensitive_text(value, force=True)
+        if self.raw:
+            updates["raw"] = _redact_audit_payload(self.raw, redact_sensitive_text)
         return replace(self, **updates) if updates else self
 
     def ignored(self, reason: str) -> "SecretaryEvent":
         return replace(self, ignored_reason=reason)
+
+
+def _redact_audit_payload(value: Any, redact_fn: Any) -> Any:
+    """Recursively redact audit payloads before writing local JSONL.
+
+    Business update `raw` payloads can include full text/captions, headers,
+    or vendor-specific token-looking strings nested several levels deep. Audit
+    logs are a security boundary, so force redaction even if verbose logging
+    redaction is disabled for a debugging session.
+    """
+    if isinstance(value, str):
+        return redact_fn(value, force=True)
+    if isinstance(value, Mapping):
+        return {str(key): _redact_audit_payload(item, redact_fn) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_audit_payload(item, redact_fn) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_audit_payload(item, redact_fn) for item in value]
+    return value
 
 
 class SecretaryAuditStore:
@@ -294,6 +316,10 @@ class SecretaryAuditStore:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(line)
             fh.write("\n")
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            logger.warning("[Telegram Business] Could not set restrictive permissions on audit file %s", self.path)
         logger.info(
             "[Telegram Business] Audited %s event for chat=%s message=%s ignored=%s",
             event.event_type,

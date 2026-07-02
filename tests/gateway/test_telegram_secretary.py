@@ -97,6 +97,40 @@ def test_secretary_audit_store_appends_jsonl(tmp_path: Path):
     assert row["event_type"] == "business_message"
     assert row["business_connection_id"] == "bc-1"
     assert row["rights"] == {"can_reply": False}
+    assert (audit_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_secretary_audit_redacts_nested_raw_payload_and_restricts_file_mode(tmp_path: Path):
+    audit_path = tmp_path / "audit" / "business.jsonl"
+    store = SecretaryAuditStore(audit_path)
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+
+    store.append(
+        SecretaryEvent(
+            event_type="business_message",
+            update_id=43,
+            business_connection_id="bc-1",
+            chat_id="100",
+            message_id="8",
+            text=f"OPENAI_API_KEY={secret}",
+            caption=f"Bearer {secret}",
+            raw={
+                "text": f"OPENAI_API_KEY={secret}",
+                "caption": f"Bearer {secret}",
+                "nested": {"token": secret, "items": [f"Authorization: Bearer {secret}"]},
+            },
+            rights={"can_reply": False},
+        ).redacted()
+    )
+
+    serialized = audit_path.read_text(encoding="utf-8")
+    assert secret not in serialized
+    row = json.loads(serialized)
+    assert row["text"] != f"OPENAI_API_KEY={secret}"
+    assert row["caption"] != f"Bearer {secret}"
+    assert row["raw"]["text"] != f"OPENAI_API_KEY={secret}"
+    assert row["raw"]["caption"] != f"Bearer {secret}"
+    assert (audit_path.stat().st_mode & 0o777) == 0o600
 
 
 @pytest.mark.skipif(not REAL_TELEGRAM_UPDATE, reason="real python-telegram-bot Update not installed")

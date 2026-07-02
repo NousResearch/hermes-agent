@@ -5,6 +5,7 @@ import os
 import json
 import shutil
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -6851,6 +6852,26 @@ class TestProbeGatewayHealth:
         assert alive is False
         assert body is None
 
+    def test_probe_uses_configured_short_timeout(self, monkeypatch):
+        """The HTTP probe must not fall through to the OS TCP timeout."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
+        timeouts = []
+
+        def mock_urlopen(req, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            raise TimeoutError("mock timeout")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+
+        alive, body = ws._probe_gateway_health()
+
+        assert alive is False
+        assert body is None
+        assert timeouts == [0.75, 0.75]
+
     def test_normalizes_url_with_health_suffix(self, monkeypatch):
         """If the user sets the URL to include /health, it's stripped to base."""
         import hermes_cli.web_server as ws
@@ -6972,6 +6993,29 @@ class TestStatusRemoteGateway:
         assert data["gateway_pid"] == 999
         assert data["gateway_state"] == "running"
         assert data["gateway_health_url"] == "http://gw:8642"
+
+    def test_status_bounds_the_complete_remote_probe(self, monkeypatch):
+        """Two serial HTTP attempts cannot consume more than the route budget."""
+        import hermes_cli.web_server as ws
+
+        probe_started = threading.Event()
+
+        def slow_probe():
+            probe_started.set()
+            threading.Event().wait(timeout=0.1)
+            return True, {"status": "ok", "pid": 999}
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_ROUTE_TIMEOUT", 0.02)
+        monkeypatch.setattr(ws, "_probe_gateway_health", slow_probe)
+
+        resp = self.client.get("/api/status")
+
+        assert probe_started.is_set()
+        assert resp.status_code == 200
+        assert resp.json()["gateway_running"] is False
 
     def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
         """When local PID check succeeds, the remote probe is never called."""

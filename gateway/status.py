@@ -20,7 +20,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
 
@@ -36,29 +36,34 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_gateway_lock_path: Path | None = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
-def _get_pid_path() -> Path:
+def _get_pid_path(*, process_scope: bool = False) -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
-    home = get_hermes_home()
+    home = get_process_hermes_home() if process_scope else get_hermes_home()
     return home / "gateway.pid"
 
 
-def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
+def _get_gateway_lock_path(
+    pid_path: Optional[Path] = None,
+    *,
+    process_scope: bool = False,
+) -> Path:
     """Return the path to the runtime gateway lock file."""
     if pid_path is not None:
         return pid_path.with_name(_GATEWAY_LOCK_FILENAME)
-    home = get_hermes_home()
+    home = get_process_hermes_home() if process_scope else get_hermes_home()
     return home / _GATEWAY_LOCK_FILENAME
 
 
-def _get_runtime_status_path() -> Path:
+def _get_runtime_status_path(*, process_scope: bool = False) -> Path:
     """Return the persisted runtime health/status file path."""
-    return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
+    return _get_pid_path(process_scope=process_scope).with_name(_RUNTIME_STATUS_FILE)
 
 
 def _get_lock_dir() -> Path:
@@ -665,11 +670,11 @@ def acquire_gateway_runtime_lock() -> bool:
     Unlike the PID file, the lock is owned by the live process itself. If the
     process dies abruptly, the OS releases the lock automatically.
     """
-    global _gateway_lock_handle
+    global _gateway_lock_handle, _gateway_lock_path
     if _gateway_lock_handle is not None:
         return True
 
-    path = _get_gateway_lock_path()
+    path = _get_gateway_lock_path(process_scope=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+", encoding="utf-8")
     if not _try_acquire_file_lock(handle):
@@ -677,16 +682,18 @@ def acquire_gateway_runtime_lock() -> bool:
         return False
     _write_gateway_lock_record(handle)
     _gateway_lock_handle = handle
+    _gateway_lock_path = path
     return True
 
 
 def release_gateway_runtime_lock() -> None:
     """Release the gateway runtime lock when owned by this process."""
-    global _gateway_lock_handle
+    global _gateway_lock_handle, _gateway_lock_path
     handle = _gateway_lock_handle
     if handle is None:
         return
     _gateway_lock_handle = None
+    _gateway_lock_path = None
     _release_file_lock(handle)
     try:
         handle.close()
@@ -698,7 +705,7 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """Return True when some process currently owns the gateway runtime lock."""
     global _gateway_lock_handle
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if _gateway_lock_handle is not None and resolved_lock_path == _gateway_lock_path:
         return True
 
     if not resolved_lock_path.exists():
@@ -724,7 +731,7 @@ def write_pid_file() -> None:
     invocations race: exactly one process wins and the rest get
     FileExistsError.
     """
-    path = _get_pid_path()
+    path = _get_pid_path(process_scope=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = json.dumps(_build_pid_record())
     try:
@@ -755,7 +762,7 @@ def write_runtime_status(
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
-    path = _get_runtime_status_path()
+    path = _get_runtime_status_path(process_scope=True)
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
@@ -915,7 +922,7 @@ def remove_pid_file() -> None:
     PID file (invisible to ``get_running_pid()``).
     """
     try:
-        path = _get_pid_path()
+        path = _get_pid_path(process_scope=True)
         record = _read_json_file(path)
         if record is not None:
             try:

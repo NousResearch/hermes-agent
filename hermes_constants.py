@@ -110,6 +110,22 @@ def get_hermes_home() -> Path:
     return _get_platform_default_hermes_home()
 
 
+def get_process_hermes_home() -> Path:
+    """Return the process-scoped Hermes home, ignoring context-local overrides.
+
+    ``get_hermes_home()`` deliberately honors ``set_hermes_home_override()`` so
+    one gateway process can serve individual profile turns with isolated config,
+    memory, and skills. Process-owned runtime identity files are different:
+    ``gateway.pid``, ``gateway.lock``, and ``gateway_state.json`` belong to the
+    launched process's HERMES_HOME, not to whichever profile context is active
+    on a worker thread at write time.
+    """
+    val = os.environ.get("HERMES_HOME", "").strip()
+    if val:
+        return Path(val)
+    return _get_platform_default_hermes_home()
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 

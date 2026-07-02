@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway import status
 
 
@@ -20,6 +21,35 @@ class TestGatewayPidState:
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
+
+    def test_process_runtime_files_ignore_profile_context_override(self, tmp_path, monkeypatch):
+        """Gateway pid/lock/state files belong to the launched process home.
+
+        Multiplexed profile turns use a context-local Hermes-home override for
+        config/memory isolation. A turn-boundary status write under that context
+        must not move the gateway's process identity files into a profile dir.
+        """
+        process_home = tmp_path / "default"
+        profile_home = process_home / "profiles" / "cfo"
+        process_home.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            assert status.acquire_gateway_runtime_lock() is True
+            status.write_pid_file()
+            status.write_runtime_status(gateway_state="running", active_agents=1)
+        finally:
+            status.release_gateway_runtime_lock()
+            reset_hermes_home_override(token)
+
+        assert (process_home / "gateway.lock").exists()
+        assert (process_home / "gateway.pid").exists()
+        assert (process_home / "gateway_state.json").exists()
+        assert not (profile_home / "gateway.lock").exists()
+        assert not (profile_home / "gateway.pid").exists()
+        assert not (profile_home / "gateway_state.json").exists()
 
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.

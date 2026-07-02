@@ -55,6 +55,11 @@ _QUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$")
 
 
+def _is_list_line(line: str) -> bool:
+    """True if ``line`` is a markdown list item (bullet or ordered)."""
+    return bool(_BULLET_RE.match(line) or _ORDERED_RE.match(line))
+
+
 def _indent_level(spaces: str) -> int:
     """Map leading whitespace to a nesting level (2 spaces or 1 tab per level)."""
     width = 0
@@ -434,7 +439,7 @@ def render_blocks(
                 continue
 
             # List group (bullets + ordered, with nesting)
-            if _BULLET_RE.match(line) or _ORDERED_RE.match(line):
+            if _is_list_line(line):
                 flush_para()
                 items: List[Tuple[int, bool, str]] = []
                 while i < n:
@@ -463,7 +468,7 @@ def render_blocks(
                         j = i + 1
                         while j < n and not lines[j].strip():
                             j += 1
-                        if j < n and (_BULLET_RE.match(lines[j]) or _ORDERED_RE.match(lines[j])):
+                        if j < n and _is_list_line(lines[j]):
                             i = j
                         else:
                             break

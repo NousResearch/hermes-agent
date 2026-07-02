@@ -39,6 +39,8 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_MARKDOWNV2_HINT,
+    TELEGRAM_RICH_MARKDOWN_EXTENSION,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
@@ -108,6 +110,54 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     if isinstance(append_text, str) and append_text.strip():
         return f"{base}\n\n{append_text.strip()}".strip()
     return base
+
+
+def _coerce_config_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if text in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _telegram_rich_messages_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return False
+
+    platforms = cfg.get("platforms") if isinstance(cfg, dict) else None
+    telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+    if isinstance(telegram, dict):
+        extra = telegram.get("extra")
+        if isinstance(extra, dict) and "rich_messages" in extra:
+            return _coerce_config_bool(extra.get("rich_messages"), False)
+
+    top_level = cfg.get("telegram") if isinstance(cfg, dict) else None
+    if isinstance(top_level, dict):
+        extra = top_level.get("extra")
+        if isinstance(extra, dict) and "rich_messages" in extra:
+            return _coerce_config_bool(extra.get("rich_messages"), False)
+    return False
+
+
+def _default_platform_hint(platform_key: str) -> str:
+    if platform_key == "telegram":
+        hint = TELEGRAM_MARKDOWNV2_HINT
+        if _telegram_rich_messages_enabled():
+            hint = f"{hint}\n\n{TELEGRAM_RICH_MARKDOWN_EXTENSION}"
+        return hint
+    return PLATFORM_HINTS.get(platform_key, "")
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -386,7 +436,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # any per-platform override from config (platform_hints.<platform>).
     _default_hint = ""
     if platform_key in PLATFORM_HINTS:
-        _default_hint = PLATFORM_HINTS[platform_key]
+        _default_hint = _default_platform_hint(platform_key)
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:

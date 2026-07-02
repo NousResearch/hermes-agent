@@ -32,6 +32,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    TELEGRAM_RICH_MARKDOWN_EXTENSION,
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
@@ -1086,22 +1087,27 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
-    def test_telegram_hint_encourages_rich_markdown(self):
-        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
-        # encourage native structured markdown instead of forbidding tables.
+    def test_telegram_hint_defaults_to_markdownv2_safe_formatting(self):
         hint = PLATFORM_HINTS["telegram"]
         lowered = hint.lower()
-        assert "Telegram has NO table syntax" not in hint
-        assert "rich markdown" in lowered
-        assert "table" in lowered
-        assert "task list" in lowered
-        assert "math" in lowered
-        # Hint should proactively steer toward structured formatting, not just
-        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "rich markdown" not in lowered
+        assert "avoid rich-only" in lowered
+        assert "markdown tables" in lowered
+        assert "task lists" in lowered
+        assert "math/formulas" in lowered
+        # Legacy MarkdownV2-safe structured formatting should still be allowed.
         assert "bullet" in lowered
         assert "numbered" in lowered
         # Local media delivery guidance must remain intact.
         assert "include MEDIA:" in hint
+
+    def test_telegram_rich_markdown_extension_mentions_rich_constructs(self):
+        hint = TELEGRAM_RICH_MARKDOWN_EXTENSION
+        lowered = hint.lower()
+        assert "rich messages are enabled" in lowered
+        assert "markdown tables" in lowered
+        assert "task lists" in lowered
+        assert "math/formulas" in lowered
 
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
@@ -1644,5 +1650,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

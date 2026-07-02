@@ -8,7 +8,7 @@ platforms). See HA Core ticket: configurable per-platform prompt hints.
 
 import types
 
-from agent.system_prompt import _resolve_platform_hint
+from agent.system_prompt import _default_platform_hint, _resolve_platform_hint
 
 
 def _agent(overrides):
@@ -99,3 +99,38 @@ class TestResolvePlatformHint:
         """append on a platform with no default just yields the extra text."""
         a = _agent({"customplat": {"append": "Only this."}})
         assert _resolve_platform_hint(a, "customplat", "") == "Only this."
+
+
+class TestTelegramDefaultHint:
+    def test_default_telegram_hint_is_markdownv2_safe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        out = _default_platform_hint("telegram")
+        lowered = out.lower()
+        assert "avoid rich-only" in lowered
+        assert "rich messages are enabled" not in lowered
+
+    def test_telegram_rich_messages_opt_in_appends_rich_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "telegram:\n"
+            "  extra:\n"
+            "    rich_messages: true\n",
+            encoding="utf-8",
+        )
+        out = _default_platform_hint("telegram")
+        lowered = out.lower()
+        assert "avoid rich-only" in lowered
+        assert "rich messages are enabled" in lowered
+        assert "markdown tables" in lowered
+
+    def test_telegram_rich_messages_opt_in_via_platforms_section(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      rich_messages: true\n",
+            encoding="utf-8",
+        )
+        out = _default_platform_hint("telegram")
+        assert "rich messages are enabled" in out.lower()

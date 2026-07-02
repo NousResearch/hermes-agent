@@ -615,6 +615,70 @@ class TestGetModelContextLengthLocalFallback:
 
         mock_save.assert_called_once_with("omnicoder-9b", "http://localhost:11434/v1", 131072)
 
+    def test_local_endpoint_stale_cache_reconciled_from_live_probe(self):
+        """Stale disk cache must yield to a live local max_model_len probe."""
+        from agent.model_metadata import get_model_context_length
+
+        model = "NousResearch/Hermes-3-Llama-3.1-70B"
+        base = "http://192.168.1.50:8000/v1"
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=131072), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata._query_local_context_length", return_value=32768), \
+             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(model, base, provider="custom")
+
+        assert result == 32768
+        mock_invalidate.assert_called_once_with(model, base)
+        mock_save.assert_not_called()
+
+    def test_local_endpoint_stale_cache_reconciled_to_valid_live_probe(self):
+        """Live probes at or above the 64K minimum are persisted."""
+        from agent.model_metadata import get_model_context_length
+
+        model = "NousResearch/Hermes-3-Llama-3.1-70B"
+        base = "http://192.168.1.50:8000/v1"
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=131072), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata._query_local_context_length", return_value=65536), \
+             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(model, base, provider="custom")
+
+        assert result == 65536
+        mock_invalidate.assert_called_once_with(model, base)
+        mock_save.assert_called_once_with(model, base, 65536)
+
+    def test_local_endpoint_bypasses_stale_persistent_cache(self):
+        """Hermes-3-Llama names must not inherit the generic llama 131072 default."""
+        from agent.model_metadata import get_model_context_length
+
+        model = "NousResearch/Hermes-3-Llama-3.1-70B"
+        base = "http://spark1:8000/v1"
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=False), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata._query_local_context_length", return_value=32768), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(model, base, provider="custom")
+
+        assert result == 32768
+        mock_save.assert_not_called()
+
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
         """When local server returns None, still falls back to 2M probe tier."""
         from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
@@ -648,8 +712,11 @@ class TestGetModelContextLengthLocalFallback:
         from agent.model_metadata import get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=False), \
              patch("agent.model_metadata._query_local_context_length") as mock_query:
-            result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
+            result = get_model_context_length(
+                "omnicoder-9b", "https://api.example.com/v1"
+            )
 
         assert result == 65536
         mock_query.assert_not_called()

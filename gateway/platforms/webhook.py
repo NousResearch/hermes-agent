@@ -776,14 +776,23 @@ class WebhookAdapter(BasePlatformAdapter):
             if key_fn is None:
                 return
             session_key = key_fn(event.source)
-            if hasattr(store, "_ensure_loaded"):
-                try:
-                    store._ensure_loaded()
-                except Exception:
-                    pass
-            entries = getattr(store, "_entries", {}) or {}
-            entry = entries.get(session_key)
-            session_id = getattr(entry, "session_id", None) if entry else None
+            # Resolve the persisted session_id via the store's public,
+            # lock-held accessor (peek_session_id) rather than reaching into
+            # the private _entries dict without the store lock. Fall back to
+            # the private path only for older stores / test doubles that
+            # predate the accessor.
+            peek = getattr(store, "peek_session_id", None)
+            if callable(peek):
+                session_id = peek(session_key)
+            else:
+                if hasattr(store, "_ensure_loaded"):
+                    try:
+                        store._ensure_loaded()
+                    except Exception:
+                        pass
+                entries = getattr(store, "_entries", {}) or {}
+                entry = entries.get(session_key)
+                session_id = getattr(entry, "session_id", None) if entry else None
             if not session_id:
                 logger.debug(
                     "[webhook] No session_id to close for %s (key=%s)",

@@ -1887,6 +1887,22 @@ class SessionStore:
                 if entry.session_id == session_id:
                     return entry
         return None
+
+    def peek_session_id(self, session_key: str) -> Optional[str]:
+        """Return the persisted session_id currently bound to a session key.
+
+        Public, lock-held accessor for the key→session_id mapping. Callers that
+        need to resolve the session row for a source (e.g. the webhook
+        delivery-close path) should use this rather than reaching into the
+        private ``_entries`` dict without holding ``self._lock``. Returns None
+        when the key is unknown or has no session_id yet.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return getattr(entry, "session_id", None) if entry else None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).

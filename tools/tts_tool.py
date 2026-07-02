@@ -1027,15 +1027,18 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
-        response_format = "opus"
-    else:
-        response_format = "mp3"
+    # Telegram voice bubbles need OGG/Opus. Real OpenAI encodes opus natively
+    # (no ffmpeg needed), but many OpenAI-*compatible* backends (e.g. a
+    # self-hosted Speaches/Kokoro endpoint) only support mp3/flac/wav/pcm and
+    # reject ``response_format="opus"``. Try native opus first, then fall back
+    # to mp3 + local ffmpeg transcode -- mirroring the Edge provider path so a
+    # non-opus backend still delivers a playable voice bubble.
+    wants_opus = output_path.endswith(".ogg")
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
-    try:
+
+    def _synthesize(response_format: str, target_path: str) -> None:
         create_kwargs = {
             "model": model,
             "voice": voice,
@@ -1046,9 +1049,29 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
+        response.stream_to_file(target_path)
 
-        response.stream_to_file(output_path)
-        return output_path
+    try:
+        if not wants_opus:
+            _synthesize("mp3", output_path)
+            return output_path
+
+        try:
+            _synthesize("opus", output_path)
+            return output_path
+        except Exception as e:
+            # Backend likely can't encode opus. Re-synthesize as mp3 and
+            # transcode to OGG/Opus locally.
+            logger.info(
+                "OpenAI TTS opus request failed (%s); retrying as mp3 + ffmpeg transcode",
+                e,
+            )
+            mp3_path = output_path[:-4] + ".mp3"
+            _synthesize("mp3", mp3_path)
+            converted = _convert_to_opus(mp3_path)
+            # If ffmpeg is unavailable, keep the mp3 so the caller still has
+            # playable audio (delivered as a document rather than a voice bubble).
+            return converted or mp3_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -2272,7 +2295,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            file_str = _generate_openai_tts(text, file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")

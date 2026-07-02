@@ -125,7 +125,72 @@ The `gateway/runtime/routes.py` module provides `register_runtime_routes(app)` w
 - approval resolution `not_supported` — requires gateway adapter context not available in standalone RunManager
 - clarify resolution `not_supported` — same reason: requires gateway adapter context
 - true live interruption not implemented — `stop_run` transitions status directly; actual `agent.interrupt()` requires a live `AIAgent` reference
-- HTTP route handlers not mounted into live server yet
+- HTTP route handlers not mounted into live server yet — RESOLVED: mounted in Phase 10A, live-smoke verified in Phase 10B
+
+## Phase 10B — Live Agent-Runs Smoke Verification (completed)
+
+### Live Server
+
+Standalone API server started with runtime route module mounted:
+```bash
+cd hermes-agent && uv run python /tmp/hermes-agent-standalone.py
+# 127.0.0.1:8642, HERMES_USE_RUNTIME_RUNS=1
+# register_runtime_routes(app) delegates to RunManager
+```
+
+Note: `hermes gateway run` was not used because the full gateway starts all messaging adapters (Telegram, etc.) which require credentials. The standalone server exposes only the runtime routes needed for smoke verification.
+
+### Agent Direct /v1/runs Smoke Results
+
+| Step | Endpoint | Result |
+|---|---|---|
+| Create run | POST /v1/runs | 202, run_id returned, status "queued" |
+| Get status | GET /v1/runs/{run_id} | Full RuntimeStatus shape |
+| Get events | GET /v1/runs/{run_id}/events | run.started event with metadata |
+| Stop run | POST /v1/runs/{run_id}/stop | status "cancelled", terminal true |
+| No secrets | All responses | Verified — no API keys, tokens, passwords |
+
+### WebUI Agent-Runs Live Smoke (via WebUI on port 8789 with agent-runs adapter)
+
+| Step | Result |
+|---|---|
+| Runtime capabilities | runtime_adapter="agent-runs", all supports flags correct |
+| Mobile capabilities | deployment_health, workspace_search, resumable_runs all true |
+| Run status proxy | Correctly fetched Agent /v1/runs/{run_id} |
+| Run events proxy | All 3 events (run.started, run.status, done) returned |
+| Cancel proxy | 200, status "cancelled", clean response |
+| Workspace search | 200, no errors, no secrets |
+
+### Post-Smoke Test Suites
+
+**Agent focused: 105 passed, 0 failed**
+```bash
+uv run python -m pytest tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py -v
+```
+
+**WebUI agent-runs env: 149 passed, 8 expected failures**
+```bash
+HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs \
+HERMES_WEBUI_AGENT_RUNS_BASE_URL=http://127.0.0.1:8642 \
+HERMES_WEBUI_AGENT_RUNS_API_KEY=test-key \
+./scripts/test.sh tests/test_agent_runs_adapter.py \
+  tests/test_runtime_adapter_selection.py \
+  tests/test_agent_runs_error_mapping.py \
+  tests/test_runtime_routes.py \
+  tests/test_mobile_capabilities.py \
+  tests/test_deployment_health.py \
+  tests/test_workspace_search.py -v
+```
+
+### Remaining Deferred Items
+- approval resolution — returns 501 not_supported (requires gateway adapter context)
+- clarify resolution — returns 501 not_supported (same)
+- true live agent interruption — `stop_run` transitions status directly; actual `agent.interrupt()` requires live `AIAgent`
+- `/v1/health` not available on standalone server (only on full gateway API server)
+- `hermes gateway run` full startup blocked by messaging adapter dependencies
 
 ## Rollback
 

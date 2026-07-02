@@ -302,3 +302,101 @@ Result: All imports and smoke checks PASS
 
 ### Next task
 **Phase 10B — WebUI live agent-runs smoke**
+
+---
+
+## Phase 10B — WebUI live agent-runs smoke (completed)
+
+### State Before Phase 10B
+- **Commit:** `c53bcc8`
+- **Message:** `feat(Phase 10A): mount runtime runs routes into Agent API server`
+
+### Live Server Startup
+
+Started standalone API server with runtime route module mounted (full `hermes gateway run` not viable for smoke due to messaging adapter startup dependencies):
+
+```bash
+cd hermes-agent
+uv run python /tmp/hermes-agent-standalone.py
+# Binds 127.0.0.1:8642 with HERMES_USE_RUNTIME_RUNS=1
+# register_runtime_routes(app) delegates to RunManager
+```
+
+### Agent Direct Live Smoke Results
+
+All 5 smoke steps passed:
+
+| Step | Endpoint | Result |
+|---|---|---|
+| Create run | POST /v1/runs | 202, returns run_id, status "queued", events_url, status_url, controls |
+| Get status | GET /v1/runs/{run_id} | RuntimeStatus shape: run_id, session_id, status, last_event_id, last_seq, terminal, controls, pending_approval_ids, pending_clarify_ids, error, result, created_at, updated_at |
+| Get events | GET /v1/runs/{run_id}/events | run.started event with seq=1, payload contains message, workspace, profile, model, toolsets, metadata |
+| Stop run | POST /v1/runs/{run_id}/stop | 200, status "cancelled", terminal true, controls cleared |
+| No secrets | All responses | No API keys, tokens, or credentials leaked in any response |
+
+### WebUI Agent-Runs Smoke Results (via Agent app["runtime_run_manager"])
+
+| Step | WebUI Endpoint | Result |
+|---|---|---|
+| Runtime capabilities | GET /api/runtime/capabilities | runtime_adapter="agent-runs", resumable_events=true, last_event_id=true, cancel/approval/clarify supported |
+| Mobile capabilities | GET /api/mobile/capabilities | deployment_health=true, workspace_search=true, resumable_runs=true, adapter="agent-runs" |
+| Deployment health | GET /api/deployment/health | runtime_adapter="agent-runs", agent_runtime_reachable=false (standalone server lacks /v1/health endpoint; functional adapter works) |
+| Run status | GET /api/runs/{run_id} | Correctly proxies to Agent /v1/runs/{run_id} via agent-runs adapter. Returns status "cancelled" for stopped run |
+| Run events | GET /api/runs/{run_id}/events | Returns 3 events: run.started, run.status, done — matches Agent contract |
+| Cancel proxy | POST /api/runs/{run_id}/cancel | 200, status "cancelled", no traceback, no secrets |
+| Workspace search | GET /api/workspace/search | 200, empty results for test workspace, no error, no secret leakage |
+
+### Post-Smoke Test Results
+
+**Agent:**
+```
+uv run python -m pytest tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py -v
+Result: 105 passed, 0 failed in 1.04s — PASS
+```
+
+**WebUI (agent-runs env):**
+```
+HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs \
+HERMES_WEBUI_AGENT_RUNS_BASE_URL=http://127.0.0.1:8642 \
+HERMES_WEBUI_AGENT_RUNS_API_KEY=test-key \
+./scripts/test.sh tests/test_agent_runs_adapter.py \
+  tests/test_runtime_adapter_selection.py \
+  tests/test_agent_runs_error_mapping.py \
+  tests/test_runtime_routes.py \
+  tests/test_mobile_capabilities.py \
+  tests/test_deployment_health.py \
+  tests/test_workspace_search.py -v
+Result: 149 passed, 8 failed in 5.98s — 8 expected failures in test_runtime_routes.py
+  (tests designed for legacy-direct/journal mode; documented in Phase 5)
+```
+
+### Live Server Command Used
+
+```bash
+# Agent standalone server (pid in tmux hermes-agent-smoke):
+cd hermes-agent && uv run python /tmp/hermes-agent-standalone.py
+# Server: 127.0.0.1:8642, runtime routes mounted via register_runtime_routes(app)
+
+# WebUI (via ctl.sh):
+HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs \
+HERMES_WEBUI_AGENT_RUNS_BASE_URL=http://127.0.0.1:8642 \
+HERMES_WEBUI_AGENT_RUNS_API_KEY=test-key \
+HERMES_WEBUI_PORT=8789 \
+HERMES_WEBUI_PASSWORD=test-password \
+./ctl.sh start
+# WebUI: 127.0.0.1:8789 (port 8787 was occupied by unrelated process)
+```
+
+### Issues Found
+
+1. **`agent_runtime_reachable: false` in deployment health** — The standalone server exposes `/health` but deployment health checks `/v1/health` which the standalone server doesn't provide. The full hermes gateway with API server would expose `/v1/health`. Not a functional bug — the agent-runs adapter (run status, events, cancel) works correctly.
+
+2. **Port 8787 occupied** — Unrelated `command-center` dashboard process on port 8787. WebUI smoke used port 8789.
+
+3. **`hermes gateway run` not practical for smoke** — The full gateway starts all messaging adapters (Telegram, etc.) which require credentials and block startup. Standalone Python server with route module was used instead.
+
+### Next task
+**PR review / harden approval-clarify live integration**

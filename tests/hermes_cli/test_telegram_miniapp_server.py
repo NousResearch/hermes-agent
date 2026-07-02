@@ -2,11 +2,13 @@ import hashlib
 import hmac
 import json
 import time
+from typing import get_args
 from urllib.parse import quote
 
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from hermes_cli.telegram_miniapp.models import ActionDecisionValue
 from hermes_cli.telegram_miniapp.previews import build_logs_snapshot, build_sessions_snapshot
 from hermes_cli.telegram_miniapp.server import MiniAppSettings, create_app
 
@@ -109,21 +111,40 @@ def test_route_inventory_and_forbidden_routes_are_absent():
         "/api/actions/restart",
         "/api/actions/approve",
         "/api/actions/reject",
+        "/api/actions/decision",
+        "/api/execute",
+        "/api/tool",
+        "/api/command",
+        "/api/process",
+        "/api/process/kill",
         "/api/restart",
         "/api/approvals/system-mode-change-preview/approve",
         "/api/approvals/system-mode-change-preview/reject",
         "/api/approvals/system-mode-change-preview/decision",
+        "/api/config",
         "/api/config/model",
         "/api/model/switch",
     ]
     forbidden_gets = [
         "/api/actions",
         "/api/restart",
+        "/api/execute",
+        "/api/tool",
+        "/api/command",
+        "/api/process",
     ]
     for path in forbidden_posts:
         assert client.post(path).status_code == 404
     for path in forbidden_gets:
         assert client.get(path).status_code == 404
+
+
+def test_action_decision_contract_is_phase_one_only_and_dormant():
+    assert set(get_args(ActionDecisionValue)) == {"approve_once", "reject_once"}
+    assert "restart" not in get_args(ActionDecisionValue)
+    assert "approve_all" not in get_args(ActionDecisionValue)
+    assert "approve_session" not in get_args(ActionDecisionValue)
+    assert "approve_always" not in get_args(ActionDecisionValue)
 
 
 def test_auth_sets_httponly_api_scoped_cookie_without_raw_init_data():

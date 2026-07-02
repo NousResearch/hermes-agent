@@ -7,7 +7,7 @@ tests without introducing extra runtime behavior.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 class GatewayStatus(TypedDict):
@@ -69,6 +69,31 @@ class ApprovalsSnapshot(TypedDict):
     ok: bool
     meta: PreviewSnapshotMeta
     items: list[ApprovalItem]
+
+
+# Dormant M19 action-gate contracts. These document a future Phase 1
+# approve/reject-once shape only; they do not create routes, handlers, gateway
+# adapters, or frontend fetch calls.
+ActionDecisionValue = Literal["approve_once", "reject_once"]
+
+
+class ActionDecisionRequest(TypedDict):
+    decision: ActionDecisionValue
+    client_request_id: str
+    snapshot_version: str
+
+
+class ActionDecisionResponse(TypedDict):
+    ok: bool
+    decision_id: str
+    status: str
+    message: str
+
+
+class ActionReadyApprovalItem(ApprovalItem, total=False):
+    expires_at: str
+    snapshot_version: str
+    allowed_decisions: list[ActionDecisionValue]
 
 
 class SessionPreviewItem(TypedDict):

@@ -289,8 +289,27 @@ def test_public_smoke_forbidden_action_routes_remain_absent_and_logout_invalidat
     client = make_client()
     auth_client(client)
 
-    assert client.post("/api/restart", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}).status_code == 404
-    assert client.post("/api/actions/restart", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}).status_code == 404
+    forbidden_posts = [
+        "/api/restart",
+        "/api/actions/restart",
+        "/api/actions/approve",
+        "/api/actions/reject",
+        "/api/actions/decision",
+        "/api/execute",
+        "/api/tool",
+        "/api/command",
+        "/api/process",
+        "/api/process/kill",
+        "/api/config",
+        "/api/config/model",
+        "/api/model/switch",
+        "/api/approvals/system-mode-change-preview/decision",
+    ]
+    for path in forbidden_posts:
+        assert client.post(path, headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}).status_code == 404
+
+    assert client.get("/api/actions", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}).status_code == 404
+    assert client.get("/api/restart", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"}).status_code == 404
 
     logout = client.post("/api/logout", headers={"origin": SMOKE_ORIGIN, "host": "hermes-smoke.example"})
     assert logout.status_code == 200

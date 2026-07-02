@@ -12,6 +12,7 @@ asserting the expected env var outcomes.
 import os
 import json
 
+from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
 from tools.terminal_tool import _is_ssh_remote_tilde_cwd
 
 
@@ -42,6 +43,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
             "container_disk": "TERMINAL_CONTAINER_DISK",
+            "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         }
         for cfg_key, env_var in terminal_env_map.items():
             if cfg_key in terminal_cfg:
@@ -75,14 +77,23 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                     alias_val = os.path.expanduser(alias_val)
                 env[alias_env] = alias_val.strip()
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
+    # --- Replicate gateway/run.py placeholder TERMINAL_CWD resolution ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
-        if env.get("TERMINAL_ENV", "").strip().lower() == "ssh":
+    if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:
+        resolved = resolve_placeholder_terminal_cwd(
+            configured_cwd=configured_cwd,
+            terminal_backend=env.get("TERMINAL_ENV", ""),
+            messaging_cwd=env.get("MESSAGING_CWD"),
+            docker_mount_cwd_to_workspace=env.get(
+                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
+            ).lower()
+            in {"true", "1", "yes"},
+            home_fallback="/root",
+        )
+        if resolved is None:
             env.pop("TERMINAL_CWD", None)
         else:
-            messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-            env["TERMINAL_CWD"] = messaging_cwd
+            env["TERMINAL_CWD"] = resolved
 
     return env
 
@@ -225,7 +236,44 @@ class TestNestedTerminalCwdPlaceholderSkip:
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
-        assert result["TERMINAL_CWD"] == "/from/env"
+        assert result.get("TERMINAL_CWD") is None
+
+    def test_docker_placeholder_does_not_inherit_host_home(self):
+        """terminal.cwd: '.' + docker + mount off must not resolve to host home."""
+        cfg = {
+            "terminal": {
+                "cwd": ".",
+                "backend": "docker",
+                "docker_mount_cwd_to_workspace": False,
+            },
+        }
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert "TERMINAL_CWD" not in result
+
+    def test_docker_placeholder_mount_on_preserves_messaging_cwd(self):
+        """Mount-enabled docker still needs the host cwd signal for /workspace."""
+        cfg = {
+            "terminal": {
+                "cwd": ".",
+                "backend": "docker",
+                "docker_mount_cwd_to_workspace": True,
+            },
+        }
+        result = _simulate_config_bridge(
+            cfg, {"MESSAGING_CWD": "/host/project"}
+        )
+        assert result["TERMINAL_CWD"] == "/host/project"
+        assert result["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "True"
+
+    def test_ssh_placeholder_does_not_inherit_host_home(self):
+        cfg = {"terminal": {"cwd": "auto", "backend": "ssh"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert "TERMINAL_CWD" not in result
+
+    def test_local_placeholder_still_falls_back_to_messaging_cwd(self):
+        cfg = {"terminal": {"cwd": ".", "backend": "local"}}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/user"})
+        assert result["TERMINAL_CWD"] == "/home/user"
 
     def test_terminal_home_mode_bridges_to_env(self):
         cfg = {"terminal": {"home_mode": "profile"}}

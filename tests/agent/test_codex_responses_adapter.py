@@ -139,6 +139,154 @@ def test_normalize_codex_response_in_progress_message_still_incomplete():
     assert finish_reason == "incomplete"
 
 
+def test_normalize_codex_response_treats_codex_shell_json_leak_as_incomplete():
+    """Codex occasionally leaks CLI-style shell JSON as assistant text.
+
+    That text is not a final answer and no tool has run, so the adapter must
+    route it through the incomplete continuation path instead of displaying the
+    JSON to the user as if it executed.
+    """
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='Creating the file now.\n{"cmd": "mkdir -p /c/Temp && echo hi > /c/Temp/x.txt"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.tool_calls == []
+    assert assistant_message.codex_message_items is None
+
+
+def test_normalize_codex_response_treats_polite_action_shell_json_as_incomplete():
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='Sure, creating the file now.\n{"cmd": "mkdir -p /c/Temp"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_message_items is None
+
+
+def test_normalize_codex_response_drops_harmony_leak_from_replay_items():
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='assistant to=functions.terminal {"command": "echo hi"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_message_items is None
+
+
+def test_normalize_codex_response_allows_explicit_cmd_json_answer():
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='{"cmd": "npm test"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == '{"cmd": "npm test"}'
+
+
+def test_normalize_codex_response_allows_documented_cmd_json_payload():
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='Use this payload when creating the job:\n{"cmd": "npm test"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == 'Use this payload when creating the job:\n{"cmd": "npm test"}'
+
+
+def test_normalize_codex_response_allows_explanatory_im_returning_cmd_json():
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text='I\'m returning the payload you asked for:\n{"cmd": "npm test"}',
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == 'I\'m returning the payload you asked for:\n{"cmd": "npm test"}'
+
+
 # ---------------------------------------------------------------------------
 # _preflight_codex_api_kwargs — built-in (provider-executed) tools must pass
 # through validation.  Regression guard for the xAI native web_search

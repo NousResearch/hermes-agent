@@ -71,6 +71,38 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Codex can also leak its CLI shell-call serialization as assistant text, e.g.
+# ``{"cmd": "mkdir -p /c/Temp && ..."}``, instead of emitting a structured
+# Responses ``function_call`` item.  Keep this strict: the JSON object must sit
+# at a line boundary and run to the end of the assistant text.
+_CODEX_SHELL_JSON_LEAK_PATTERN = re.compile(
+    r'(?:^|\n)\s*\{\s*"cmd"\s*:\s*"(?:\\.|[^"\\])*"'
+    r'(?:\s*,\s*"[A-Za-z_][\w-]*"\s*:\s*(?:"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?))*'
+    r'\s*\}\s*$',
+    re.DOTALL,
+)
+_CODEX_SHELL_JSON_LEAK_LEADIN_PATTERN = re.compile(
+    r"^(?:sure,\s*)?(?:(?:now\s+)?"
+    r"(?:creating|writing|running|executing|checking|verifying|updating|installing|editing|making)\b|"
+    r"let\s+me\s+(?:create|write|run|execute|check|verify|update|install|edit|make)\b|"
+    r"i(?:'|’)?ll\s+(?:create|write|run|execute|check|verify|update|install|edit|make)\b|"
+    r"i\s+will\s+(?:create|write|run|execute|check|verify|update|install|edit|make)\b|"
+    r"i(?:'|’)?m\s+(?:creating|writing|running|executing|checking|verifying|updating|installing|editing|making)\b|"
+    r"i\s+am\s+(?:creating|writing|running|executing|checking|verifying|updating|installing|editing|making)\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_codex_shell_json_leak(text: str) -> bool:
+    match = _CODEX_SHELL_JSON_LEAK_PATTERN.search(text)
+    if not match:
+        return False
+    lead_in = text[:match.start()].strip()
+    if not lead_in:
+        return False
+    previous_line = lead_in.splitlines()[-1].strip()
+    return bool(_CODEX_SHELL_JSON_LEAK_LEADIN_PATTERN.search(previous_line))
+
 
 # ---------------------------------------------------------------------------
 # Multimodal content helpers
@@ -1292,7 +1324,10 @@ def _normalize_codex_response(
     # ``function_call`` item. The existing loop already handles message
     # append, dedup, and retry budget.
     leaked_tool_call_text = False
-    if final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text):
+    if final_text and not tool_calls and (
+        _TOOL_CALL_LEAK_PATTERN.search(final_text)
+        or _has_codex_shell_json_leak(final_text)
+    ):
         leaked_tool_call_text = True
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content "
@@ -1301,9 +1336,11 @@ def _normalize_codex_response(
             final_text[:300],
         )
         # Clear the text so downstream code doesn't surface the garbage as
-        # a summary. The encrypted reasoning items (if any) are preserved
-        # so the model keeps its chain-of-thought on the retry.
+        # a summary or replay it as a completed assistant message. The
+        # encrypted reasoning items (if any) are preserved so the model keeps
+        # its chain-of-thought on the retry.
         final_text = ""
+        message_items_raw = []
 
     assistant_message = SimpleNamespace(
         content=final_text,

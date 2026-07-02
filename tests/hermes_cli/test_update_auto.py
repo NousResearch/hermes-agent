@@ -125,6 +125,13 @@ def _set_macos_scheduler_env(tmp_path, monkeypatch):
     return hermes_home, calls
 
 
+def test_launchd_target_requires_posix_user_session(monkeypatch):
+    monkeypatch.delattr(update_auto.os, "getuid", raising=False)
+
+    with pytest.raises(RuntimeError, match="POSIX user session"):
+        update_auto._launchd_target()
+
+
 def test_enable_creates_expected_launchd_plist_on_macos(tmp_path, monkeypatch, capsys):
     hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
 

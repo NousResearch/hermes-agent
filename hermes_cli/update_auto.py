@@ -330,7 +330,10 @@ def _launchd_plist_path() -> Path:
 
 
 def _launchd_target() -> str:
-    return f"gui/{os.getuid()}"
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        raise RuntimeError("launchd auto-update scheduling requires a POSIX user session")
+    return f"gui/{getuid()}"
 
 
 def _calendar_intervals(update_schedule: str, plan_schedules: list[str]) -> list[dict[str, int]]:

@@ -496,6 +496,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Use the base splitter but skip pagination indicators — iMessage
         # bubbles flow naturally without "(1/3)" suffixes.
         chunks = BasePlatformAdapter.truncate_message(content, max_length)
+        # The base only appends a "(i/total)" indicator when it actually splits
+        # into multiple chunks; a message that fits in one chunk is returned
+        # verbatim. Only strip when there's an indicator to strip, so a
+        # single-chunk reply that legitimately ends in a "(N/M)" fraction
+        # (scores, page refs, ratios) keeps its final token.
+        if len(chunks) <= 1:
+            return chunks
         return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
 
     async def send(

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable
@@ -34,6 +35,22 @@ _PR_REVIEW_RESOLUTION_PATTERNS = (
     re.compile(r"resolve\s+thread", re.IGNORECASE),
     re.compile(r"thread\s+resolve", re.IGNORECASE),
 )
+_GH_GLOBAL_OPTIONS_WITH_ARGS = {
+    "-H",
+    "-R",
+    "--hostname",
+    "--repo",
+}
+_GIT_GLOBAL_OPTIONS_WITH_ARGS = {
+    "-C",
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--namespace",
+    "--super-prefix",
+    "--work-tree",
+}
 
 
 def resolve_repo_root_for_path(path_text: str | None) -> Path | None:
@@ -59,6 +76,15 @@ def command_requires_pr_head_guard(command: str) -> tuple[bool, str]:
     normalized = " ".join(str(command or "").split())
     if not normalized:
         return False, ""
+    tokens = _tokenize_command(normalized)
+    if _is_git_push_command(tokens):
+        return True, "PR mutation"
+    if _is_gh_pr_command(tokens, {"edit", "merge", "comment"}):
+        return True, "PR mutation"
+    if _is_gh_pr_command(tokens, {"view", "checks", "diff"}):
+        return True, "CI diagnosis"
+    if _is_gh_run_command(tokens):
+        return True, "CI diagnosis"
     if any(pattern.search(normalized) for pattern in _PR_MUTATION_PATTERNS):
         return True, "PR mutation"
     if any(pattern.search(normalized) for pattern in _PR_REVIEW_RESOLUTION_PATTERNS):
@@ -68,7 +94,10 @@ def command_requires_pr_head_guard(command: str) -> tuple[bool, str]:
     return False, ""
 
 
-def collect_pr_head_evidence(repo_root: Path) -> dict[str, Any] | None:
+def collect_pr_head_evidence(
+    repo_root: Path,
+    command: str | None = None,
+) -> dict[str, Any] | None:
     """Collect live PR head facts for *repo_root* and store them in context."""
     repo_root = Path(repo_root)
     local_head_sha = _git(repo_root, "rev-parse", "HEAD")
@@ -76,7 +105,7 @@ def collect_pr_head_evidence(repo_root: Path) -> dict[str, Any] | None:
     if not local_head_sha or not local_branch:
         return None
 
-    gh_json = _gh_pr_view(repo_root)
+    gh_json = _gh_pr_view(repo_root, target=_extract_gh_pr_target(command))
     if gh_json is None:
         return None
 
@@ -120,7 +149,7 @@ def enforce_pr_head_invariant(
     else:
         risk_label = action_label
 
-    evidence = collect_pr_head_evidence(repo_root)
+    evidence = collect_pr_head_evidence(repo_root, command=command)
     if not evidence:
         if risk_label == "review-thread resolution":
             return (
@@ -379,6 +408,78 @@ def _fetch_pr_patch(repo_root: Path) -> str | None:
     return patch_text if patch_text.strip() else None
 
 
+def _tokenize_command(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return [part for part in str(command).split() if part]
+
+
+def _skip_global_options(tokens: list[str], option_names: set[str]) -> int | None:
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in option_names:
+            i += 2
+            continue
+        if any(token.startswith(option) and token != option for option in option_names):
+            i += 1
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return i
+    return None
+
+
+def _is_git_push_command(tokens: list[str]) -> bool:
+    if not tokens or tokens[0] != "git":
+        return False
+    command_index = _skip_global_options(tokens, _GIT_GLOBAL_OPTIONS_WITH_ARGS)
+    return command_index is not None and tokens[command_index] == "push"
+
+
+def _is_gh_pr_command(tokens: list[str], actions: set[str]) -> bool:
+    if not tokens or tokens[0] != "gh":
+        return False
+    command_index = _skip_global_options(tokens, _GH_GLOBAL_OPTIONS_WITH_ARGS)
+    if command_index is None or tokens[command_index] != "pr":
+        return False
+    if command_index + 1 >= len(tokens):
+        return False
+    return tokens[command_index + 1] in actions
+
+
+def _is_gh_run_command(tokens: list[str]) -> bool:
+    if not tokens or tokens[0] != "gh":
+        return False
+    command_index = _skip_global_options(tokens, _GH_GLOBAL_OPTIONS_WITH_ARGS)
+    if command_index is None or tokens[command_index] != "run":
+        return False
+    return command_index + 1 < len(tokens) and tokens[command_index + 1] in {"rerun", "watch", "view"}
+
+
+def _extract_gh_pr_target(command: str | None) -> str | None:
+    tokens = _tokenize_command(str(command or ""))
+    if not tokens or tokens[0] != "gh":
+        return None
+    command_index = _skip_global_options(tokens, _GH_GLOBAL_OPTIONS_WITH_ARGS)
+    if command_index is None or tokens[command_index] != "pr":
+        return None
+    if command_index + 1 >= len(tokens):
+        return None
+    action = tokens[command_index + 1]
+    if action not in {"view", "edit", "merge", "comment", "checks", "diff"}:
+        return None
+    target_index = command_index + 2
+    if target_index >= len(tokens):
+        return None
+    target = tokens[target_index].strip()
+    if not target or target.startswith("-"):
+        return None
+    return target
+
+
 def _patch_still_mentions_issue(
     patch_text: str,
     *,
@@ -436,10 +537,14 @@ def _git(repo_root: Path, *args: str) -> str | None:
     return completed.stdout.strip()
 
 
-def _gh_pr_view(repo_root: Path) -> dict[str, Any] | None:
+def _gh_pr_view(repo_root: Path, target: str | None = None) -> dict[str, Any] | None:
     try:
+        args = ["gh", "pr", "view"]
+        if target:
+            args.append(target)
+        args.extend(["--json", "number,headRefName,headRefOid,repository"])
         completed = subprocess.run(
-            ["gh", "pr", "view", "--json", "number,headRefName,headRefOid,repository"],
+            args,
             cwd=str(repo_root),
             capture_output=True,
             text=True,

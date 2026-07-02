@@ -89,6 +89,41 @@ def _mock_gh_pr_view_and_diff(
     return _run
 
 
+def _mock_gh_pr_view_with_target(
+    expected_target: str,
+    number: int,
+    branch: str,
+    sha: str,
+    repo_name: str,
+    fallback_sha: str,
+):
+    matching_payload = json.dumps(
+        {
+            "number": number,
+            "headRefName": branch,
+            "headRefOid": sha,
+            "repository": {"nameWithOwner": repo_name},
+        }
+    )
+    fallback_payload = json.dumps(
+        {
+            "number": 99,
+            "headRefName": "main",
+            "headRefOid": fallback_sha,
+            "repository": {"nameWithOwner": repo_name},
+        }
+    )
+
+    def _run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+            target = cmd[3] if len(cmd) > 3 and not cmd[3].startswith("-") else ""
+            payload = matching_payload if target == str(expected_target) else fallback_payload
+            return subprocess.CompletedProcess(cmd, 0, payload, "")
+        return _REAL_RUN(cmd, *args, **kwargs)
+
+    return _run
+
+
 def test_repo_root_resolution_finds_git_root(tmp_path):
     repo, _ = _init_repo(tmp_path, "feat/runtime-guardrails")
     assert resolve_repo_root_for_path(str(repo / "README.md")) == repo
@@ -96,7 +131,10 @@ def test_repo_root_resolution_finds_git_root(tmp_path):
 
 def test_command_classifier_flags_pr_sensitive_actions():
     assert command_requires_pr_head_guard("git push origin HEAD")[0] is True
+    assert command_requires_pr_head_guard("git -C /repo push origin HEAD")[0] is True
+    assert command_requires_pr_head_guard("git -c core.sshCommand=ssh push origin HEAD")[0] is True
     assert command_requires_pr_head_guard("gh pr edit 17 --title foo")[0] is True
+    assert command_requires_pr_head_guard("gh -R org/repo pr merge 17 --squash")[0] is True
     assert command_requires_pr_head_guard("gh pr checks 17")[0] is True
     assert command_requires_pr_head_guard("echo hello")[0] is False
 
@@ -119,6 +157,31 @@ def test_matching_live_pr_head_allows_pr_mutation(tmp_path, monkeypatch):
     assert evidence["pr_head_verified"] is True
     assert evidence["pr_number"] == 17
     assert evidence["live_pr_head_sha"] == head_sha
+    clear_runtime_evidence()
+
+
+def test_explicit_pr_target_is_used_for_live_head_evidence(tmp_path):
+    repo, head_sha = _init_repo(tmp_path, "feat/runtime-guardrails")
+    clear_runtime_evidence()
+
+    with patch(
+        "agent.pr_head_guard.subprocess.run",
+        side_effect=_mock_gh_pr_view_with_target(
+            "17",
+            17,
+            "feat/runtime-guardrails",
+            head_sha,
+            "org/repo",
+            f"{head_sha[:-1]}0",
+        ),
+    ):
+        result = check_all_command_guards(
+            "gh -R org/repo pr merge 17 --squash",
+            "local",
+            repo_root=str(repo),
+        )
+
+    assert result["approved"] is True
     clear_runtime_evidence()
 
 

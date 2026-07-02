@@ -53,7 +53,7 @@ export interface OAuthProvider {
   disconnect_hint?: null | string
   disconnectable?: boolean
   docs_url: string
-  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
+  flow: 'device_code' | 'external' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -77,12 +77,6 @@ export type OAuthStartResponse =
       session_id: string
       user_code: string
       verification_url: string
-    }
-  | {
-      auth_url: string
-      expires_in: number
-      flow: 'loopback'
-      session_id: string
     }
 
 export interface OAuthSubmitResponse {

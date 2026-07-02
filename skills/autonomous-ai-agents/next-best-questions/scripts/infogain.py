@@ -20,6 +20,7 @@ Exit codes: 0 ok, 1 error, 2 Ollama unreachable, 3 no problem given.
 """
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -51,6 +52,10 @@ DEFAULTS = {
     "gen_samples": 1,
     "gen_temperature": 0.0,
     "answers_per_question": 5,
+    "answer_samples": 6,             # #26 sampled-P(a): forced-choice draws per question
+    "answer_sample_temperature": 1.0,  # (both only used when answer_prob_mode="sampled")
+    "solution_samples": 4,           # #27 solution-space Δplan: K candidate solutions per RUN
+    "solution_temperature": 0.8,     # (both only used when value_judge_mode="solution")
     "max_rounds": 3,
     "mmr_lambda": 0.4,
     "plan_timeout": 180,
@@ -59,8 +64,8 @@ DEFAULTS = {
     "judge_timeout": 150,
 }
 _INT = {"min_bucket_size", "target_bucket_size", "hard_cap", "questions_per_round",
-        "answers_per_question", "max_rounds", "gen_samples", "plan_timeout", "gen_timeout",
-        "answer_timeout", "judge_timeout"}
+        "answers_per_question", "answer_samples", "solution_samples", "max_rounds", "gen_samples",
+        "plan_timeout", "gen_timeout", "answer_timeout", "judge_timeout"}
 _MODEL_KEYS = ("plan_model", "question_gen_model", "answer_model", "value_judge_model",
                "consolidate_model")
 
@@ -181,12 +186,19 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     judge_model = resolve_alias(cfg["value_judge_model"])
     cons_model = resolve_alias(cfg["consolidate_model"])
 
-    # Elicitation seam (#24): default "absolute" (the validated per-answer 0-1 judge). "pairwise"
-    # swaps in the comparative judge (forced choices → Bradley-Terry → same delta_plan/stakes fields).
-    # Absent key → "absolute", so every cfg built straight from DEFAULTS is byte-identical.
+    # Elicitation seam (#24/#27): default "absolute" (the validated per-answer 0-1 judge).
+    # "pairwise" swaps in the comparative judge (forced choices → Bradley-Terry → same
+    # delta_plan/stakes fields). "solution" grounds Δplan in a sampled solution set (bound after
+    # framing below — it needs the baseline). Absent key → "absolute", so every cfg built straight
+    # from DEFAULTS is byte-identical.
     judge_mode = str(cfg.get("value_judge_mode") or "absolute").strip().lower()
     judge_batch = (pipeline.judge_plan_change_pairwise_batch if judge_mode == "pairwise"
                    else pipeline.judge_plan_change_batch)
+
+    # P(a) seam (#26): default "stated" (the projection call's self-reported probabilities).
+    # "sampled" re-estimates P(a) from forced-choice draws (Laplace-smoothed frequencies);
+    # stated probs survive as `stated_prob`. Absent key → "stated", byte-identical default.
+    prob_mode = str(cfg.get("answer_prob_mode") or "stated").strip().lower()
 
     # Families layer (domain exposure): when on, round 1 generates scoped + contrarian + vantage
     # families and questions within each; selection still scores each question on its own merit, with
@@ -209,6 +221,22 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
                              "consolidate": cons_model},
                   "framing": (framing_sink[0] if framing_sink else None),
                   "rounds": []} if trace else None)
+
+    # Solution-space judge (#27): sample the K-candidate solution set ONCE (solution 1 = the
+    # baseline, free) and bind it into the judge seam. Reused across all questions and rounds.
+    solutions = None
+    if judge_mode == "solution":
+        k = int(cfg.get("solution_samples", 4))
+        log(f"sampling {k} candidate solutions via {plan_model} ...")
+        sol_sink = [] if trace else None
+        solutions = pipeline.sample_solutions(
+            problem, framing, plan_model, k=k,
+            temperature=float(cfg.get("solution_temperature", 0.8)),
+            timeout=cfg["plan_timeout"], sink=sol_sink, evidence=evidence)
+        judge_batch = functools.partial(pipeline.judge_plan_change_solution_batch,
+                                        solutions=solutions)
+        if trace:
+            trace_obj["solutions"] = {"list": solutions, "calls": sol_sink}
 
     seen, scored_all = [], []
     rounds_used = 0
@@ -272,11 +300,18 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
                     "stop_reason": "no new questions"})
             break
 
-        log(f"round {rounds_used}: projecting answers ({ans_model}) + "
+        log(f"round {rounds_used}: projecting answers ({ans_model}, {prob_mode} P) + "
             f"judging plan-change ({judge_model}, {judge_mode}) for {len(fresh)} questions ...")
-        fresh = pipeline.project_answers_batch(
-            problem, framing, fresh, ans_model, cfg["answers_per_question"],
-            cfg["answer_timeout"], capture=trace, evidence=evidence)
+        if prob_mode == "sampled":
+            fresh = pipeline.project_answers_sampled_batch(
+                problem, framing, fresh, ans_model, cfg["answers_per_question"],
+                cfg["answer_timeout"], capture=trace, evidence=evidence,
+                n_samples=int(cfg.get("answer_samples", 6)),
+                sample_temperature=float(cfg.get("answer_sample_temperature", 1.0)))
+        else:
+            fresh = pipeline.project_answers_batch(
+                problem, framing, fresh, ans_model, cfg["answers_per_question"],
+                cfg["answer_timeout"], capture=trace, evidence=evidence)
         fresh = judge_batch(
             problem, framing, baseline_plan, fresh, judge_model, cfg["judge_timeout"],
             capture=trace)
@@ -355,7 +390,12 @@ def _trace_question(r):
         "type": r.get("type"),
         "why": r.get("why"),
         "derivable_prob": r.get("derivable_prob"),
+        "prob_mode_used": r.get("prob_mode_used"),   # #26: sampled | stated | stated-fallback
+        "sample_counts": r.get("sample_counts"),
         "answers": [{"answer": a.get("answer"), "prob": a.get("prob"),
+                     **({"stated_prob": a.get("stated_prob")} if "stated_prob" in a else {}),
+                     **({"viable_solutions": a.get("viable_solutions")}
+                        if "viable_solutions" in a else {}),
                      "delta_plan": a.get("delta_plan"), "stakes": a.get("stakes")}
                     for a in (r.get("answers") or [])],
         "breakdown": voi.score_breakdown(r),
@@ -363,6 +403,7 @@ def _trace_question(r):
         "value": r.get("value"),
         "recommendation": r.get("recommendation"),
         "answers_call": (r.get("_trace") or {}).get("project"),
+        "prob_samples_call": (r.get("_trace") or {}).get("prob_samples"),
         "judge_call": (r.get("_trace") or {}).get("judge"),
     }
 
@@ -675,11 +716,18 @@ def build_parser():
                    help="Preset over the breadth knobs: 'focus' (default — prioritized top few) "
                         "or 'breadth' (wider coverage: more questions/rounds, bigger bucket). "
                         "Individual flags and INFOGAIN_* env vars override the preset.")
-    p.add_argument("--value-judge-mode", choices=["absolute", "pairwise"], default=None,
+    p.add_argument("--value-judge-mode", choices=["absolute", "pairwise", "solution"], default=None,
                    help="How to elicit per-answer response-change/stakes: 'absolute' (default — "
-                        "score each answer 0-1) or 'pairwise' (forced-choice comparisons → "
-                        "Bradley-Terry; off-by-default experiment, #24). (Special-cased outside "
+                        "score each answer 0-1), 'pairwise' (forced-choice comparisons → "
+                        "Bradley-Terry; off-by-default experiment, #24), or 'solution' (Δplan = "
+                        "fraction of --solution-samples sampled candidate solutions the answer "
+                        "invalidates; off-by-default experiment, #27). (Special-cased outside "
                         "the auto-flags, like --mode.)")
+    p.add_argument("--answer-prob-mode", choices=["stated", "sampled"], default=None,
+                   help="How to estimate per-answer probabilities P(a): 'stated' (default — the "
+                        "projection call's self-reported probs) or 'sampled' (forced-choice "
+                        "frequency over --answer-samples draws; off-by-default experiment, #26). "
+                        "(Special-cased outside the auto-flags, like --value-judge-mode.)")
     p.add_argument("--families", action=argparse.BooleanOptionalAction, default=None,
                    help="Generate FAMILIES of questions first (scoped + contrarian + vantage + "
                         "premortem) for coverage, then score each question on its merit. Default ON; "
@@ -724,6 +772,9 @@ def resolve_config(args):
     # value_judge_mode: a string selector, resolved like `mode` (CLI > env > "absolute" default).
     cfg["value_judge_mode"] = (getattr(args, "value_judge_mode", None)
                                or os.environ.get("INFOGAIN_VALUE_JUDGE_MODE") or "absolute")
+    # answer_prob_mode (#26): same treatment (CLI > env > "stated" default).
+    cfg["answer_prob_mode"] = (getattr(args, "answer_prob_mode", None)
+                               or os.environ.get("INFOGAIN_ANSWER_PROB_MODE") or "stated")
     return cfg
 
 

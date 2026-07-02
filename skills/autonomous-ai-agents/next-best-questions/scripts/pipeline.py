@@ -23,6 +23,7 @@ many small scoring calls parallelize without the agent-loop / reasoning-effort r
 import concurrent.futures
 import json
 import os
+import random
 import re
 import sys
 import threading
@@ -584,6 +585,100 @@ def project_answers(problem, framing, rec, model, m, timeout=120, capture=False,
     return rec
 
 
+# ── stage 2, sampled-P(a) variant (off by default; #26) ───────────────────────
+# The absolute projection above asks the model to STATE per-answer probabilities — LLM
+# self-reported probabilities are poorly calibrated (BED-LLM arXiv:2508.21184, OPEN
+# arXiv:2403.05534). This variant keeps the projection call (it still enumerates the answer
+# support + derivable_prob) and then re-estimates P(a) empirically: N tiny forced-choice
+# samples at temperature ("which option is most plausible?", options shuffled per sample to
+# kill position bias), Laplace-smoothed frequencies over the option indices. Stated probs are
+# preserved as `stated_prob` (the control arm / fallback), so voi.py sees the same fields.
+
+_CHOICE_RE = re.compile(r"\d+")
+
+
+def answer_choice_prompt(problem, framing, question, options, evidence=None):
+    listing = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
+    return (
+        "Pick the single most plausible answer to a clarifying question about a prompt.\n\n"
+        f"PROMPT:\n{problem}\n"
+        f"{_evidence_block(evidence, 'treat as known facts')}"
+        f"\nGOAL: {framing.get('goal', '')}\n"
+        f"QUESTION: {question}\n\n"
+        f"OPTIONS:\n{listing}\n\n"
+        "Reply with ONLY the option number (a single integer). No words, no punctuation."
+    )
+
+
+def sample_answer_distribution(problem, framing, rec, model, n_samples=6, temperature=1.0,
+                               timeout=60, capture=False, evidence=None, alpha=0.5):
+    """Overwrite each answer's `prob` with a Laplace-smoothed empirical frequency from
+    `n_samples` forced-choice draws (stated probs kept as `stated_prob`). Falls back to the
+    stated probs (tag `prob_mode_used="stated-fallback"`) when fewer than ⌈N/2⌉ samples
+    parse — a hard-failing model must not silently zero the distribution."""
+    answers = rec.get("answers") or []
+    m = len(answers)
+    for a in answers:
+        a["stated_prob"] = a.get("prob", 0.0)
+    if m < 2 or n_samples < 1:  # nothing to sample over — a 0/1-option support IS its distribution
+        rec["prob_mode_used"] = "stated"
+        return rec
+    options = [a.get("answer", "") for a in answers]
+
+    def _one(i):
+        # Deterministic per-sample shuffle (question+index seeded) — reproducible, no shared RNG.
+        order = list(range(m))
+        random.Random(f"{rec.get('question', '')}#{i}").shuffle(order)
+        prompt = answer_choice_prompt(problem, framing, rec["question"],
+                                      [options[j] for j in order], evidence)
+        r = raw_chat(model, prompt, timeout=timeout, temperature=temperature, num_predict=16)
+        pick = None
+        if not r["error"]:
+            hit = _CHOICE_RE.search(r["content"])
+            if hit:
+                k = int(hit.group()) - 1
+                if 0 <= k < m:
+                    pick = order[k]  # map the shuffled position back to the canonical answer
+        return pick, r
+
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(n_samples, MAX_WORKERS)) as ex:
+        draws = list(ex.map(_one, range(n_samples)))
+
+    counts = [0] * m
+    valid = 0
+    for pick, _r in draws:
+        if pick is not None:
+            counts[pick] += 1
+            valid += 1
+    rec["sample_counts"] = counts
+    if valid < (n_samples + 1) // 2:
+        rec["prob_mode_used"] = "stated-fallback"
+    else:
+        denom = valid + alpha * m
+        for j, a in enumerate(answers):
+            a["prob"] = (counts[j] + alpha) / denom
+        rec["prob_mode_used"] = "sampled"
+    if capture:
+        rec.setdefault("_trace", {})["prob_samples"] = {
+            "model": model, "n_samples": n_samples, "valid": valid, "counts": counts,
+            "prompt": answer_choice_prompt(problem, framing, rec["question"], options, evidence),
+            "raw": [r["content"] for _p, r in draws],
+        }
+    return rec
+
+
+def project_answers_sampled(problem, framing, rec, model, m, timeout=120, capture=False,
+                            evidence=None, n_samples=6, sample_temperature=1.0):
+    """Stage 2 (sampled variant). Same contract as project_answers; additionally re-estimates
+    P(a) from forced-choice samples (see sample_answer_distribution)."""
+    project_answers(problem, framing, rec, model, m, timeout, capture, evidence)
+    return sample_answer_distribution(problem, framing, rec, model, n_samples=n_samples,
+                                      temperature=sample_temperature,
+                                      timeout=min(timeout, 60), capture=capture,
+                                      evidence=evidence)
+
+
 def judge_plan_change(problem, framing, baseline_plan, rec, model, timeout=150, capture=False):
     """Stage 3 (single question). Adds delta_plan + stakes to each answer in rec."""
     answers = rec.get("answers") or []
@@ -718,6 +813,125 @@ def judge_plan_change_pairwise(problem, framing, baseline_plan, rec, model, time
     return rec
 
 
+# ── stage 3, solution-space variant (off by default; #27) ─────────────────────
+# The absolute judge scores delta_plan ABSTRACTLY ("how much would your response change, 0-1?").
+# This variant grounds it in a concrete self-consistency set (Active Task Disambiguation,
+# arXiv:2502.04485; ClarifyGPT): sample K candidate responses ONCE per run, then judge each
+# projected answer by WHICH candidates remain viable if it is true — delta_plan = invalidated/K.
+# Stakes elicitation is unchanged (still per-answer 0-1); the output fields are the same
+# delta_plan/stakes, so it is a drop-in for voi.score_record exactly like the pairwise judge.
+# Accepted caveat: delta quantizes to {0, 1/K, ..., 1} and a collapsed solution set (K
+# near-identical responses) pushes it toward 0/1 — report dispersion, let the eval gate decide.
+
+
+def solution_prompt(problem, framing, evidence=None):
+    return (
+        "Give your best RESPONSE to a prompt, as one self-contained answer.\n\n"
+        f"PROMPT:\n{problem}\n"
+        f"{_evidence_block(evidence, 'treat as known facts')}"
+        f"\nGOAL: {framing.get('goal', '')}\n"
+        f"RESPONSE TYPE: {framing.get('decision', '')}\n\n"
+        "Return ONLY a JSON object:\n"
+        '{"solution": str}\n'
+        "- solution: the best response/answer you would give RIGHT NOW (2-4 sentences). "
+        "Assume the most likely interpretation of any ambiguity.\n"
+        "Respond ONLY with the JSON object."
+    )
+
+
+def sample_solutions(problem, framing, model, k=4, temperature=0.8, timeout=180, sink=None,
+                     evidence=None):
+    """Stage 0b (#27; ONCE per run — reused across all questions and rounds). The
+    self-consistency solution set: solution 1 is the existing baseline_plan (free), k−1 more
+    are sampled at temperature. Returns a list of solution strings (may be < k on failures)."""
+    baseline = (framing.get("baseline_plan") or "").strip()
+    sols = [baseline] if baseline else []
+    need = max(0, k - len(sols))
+
+    def _one(_i):
+        local = [] if sink is not None else None
+        obj, _err = _call_json(model, solution_prompt(problem, framing, evidence), timeout,
+                               num_predict=350, sink=local, temperature=temperature)
+        s = (obj.get("solution") or "").strip() if isinstance(obj, dict) else ""
+        return s, (local[0] if local else None)
+
+    if need:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(need, MAX_WORKERS)) as ex:
+            results = list(ex.map(_one, range(need)))
+        for s, cap in results:
+            if sink is not None and cap:
+                sink.append(cap)
+            if s:
+                sols.append(s)
+    return sols
+
+
+def solution_judge_prompt(problem, framing, solutions, question, answers):
+    sol_listing = "\n".join(f"S{i + 1}. {s}" for i, s in enumerate(solutions))
+    ans_listing = "\n".join(f"{i + 1}. {a.get('answer', '')}" for i, a in enumerate(answers))
+    return (
+        "Several candidate RESPONSES to a prompt are viable under its current ambiguity. "
+        "Judge how each possible answer to a clarifying question would cut that set down.\n\n"
+        f"PROMPT:\n{problem}\n\n"
+        f"GOAL: {framing.get('goal', '')}\n\n"
+        f"CANDIDATE RESPONSES (all currently viable):\n{sol_listing}\n\n"
+        f"QUESTION: {question}\n\n"
+        f"POSSIBLE ANSWERS:\n{ans_listing}\n\n"
+        "For EACH answer, in the SAME ORDER, report:\n"
+        "- viable: the candidate response NUMBERS that would remain good responses if this "
+        "answer is true (a response survives only if it would need no substantive change).\n"
+        "- stakes: 0-1, the cost/harm of proceeding with response S1 if this answer is "
+        "actually true (0 = harmless, 1 = severely wrong or misleading).\n\n"
+        "Return ONLY a JSON object:\n"
+        '{"answers": [{"viable": [int, ...], "stakes": float}, ...]}\n'
+        "with exactly one entry per answer, in the given order.\n"
+        "Respond ONLY with the JSON object."
+    )
+
+
+def judge_plan_change_solution(problem, framing, solutions, rec, model, timeout=150,
+                               capture=False):
+    """Stage 3 (#27 solution-space). Same contract as judge_plan_change: writes delta_plan +
+    stakes onto each answer — but delta_plan is grounded as the fraction of the K candidate
+    solutions the answer invalidates. Also records `viable_solutions` per answer (diagnostic).
+    Safe-zeroes on any parse failure, mirroring the absolute judge."""
+    answers = rec.get("answers") or []
+    if not answers or not solutions:
+        return rec
+    k = len(solutions)
+    sink = [] if capture else None
+    obj, err = _call_json(
+        model, solution_judge_prompt(problem, framing, solutions, rec["question"], answers),
+        timeout, num_predict=500, sink=sink,
+    )
+    judged = obj.get("answers") if isinstance(obj, dict) else (
+        obj if isinstance(obj, list) else [])
+    judged = judged or []
+    for i, a in enumerate(answers):
+        j = judged[i] if i < len(judged) and isinstance(judged[i], dict) else {}
+        viable = j.get("viable")
+        if isinstance(viable, list):
+            good = set()
+            for v in viable:
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= iv <= k:
+                    good.add(iv)
+            a["delta_plan"] = (k - len(good)) / k
+            a["viable_solutions"] = sorted(good)
+        else:
+            a["delta_plan"] = 0.0
+            a["viable_solutions"] = None
+        a["stakes"] = j.get("stakes", 0.0)
+    if err:
+        rec["error"] = err
+    if capture and sink:
+        rec.setdefault("_trace", {})["judge"] = sink[0]
+    return rec
+
+
 # ── parallel batch helpers ───────────────────────────────────────────────────
 
 
@@ -746,6 +960,14 @@ def project_answers_batch(problem, framing, recs, model, m, timeout=120, capture
         recs)
 
 
+def project_answers_sampled_batch(problem, framing, recs, model, m, timeout=120, capture=False,
+                                  evidence=None, n_samples=6, sample_temperature=1.0):
+    return _parallel(
+        lambda r: project_answers_sampled(problem, framing, r, model, m, timeout, capture,
+                                          evidence, n_samples, sample_temperature),
+        recs)
+
+
 def judge_plan_change_batch(problem, framing, baseline_plan, recs, model, timeout=150,
                             capture=False):
     return _parallel(
@@ -759,4 +981,15 @@ def judge_plan_change_pairwise_batch(problem, framing, baseline_plan, recs, mode
     return _parallel(
         lambda r: judge_plan_change_pairwise(problem, framing, baseline_plan, r, model, timeout,
                                              capture),
+        recs)
+
+
+def judge_plan_change_solution_batch(problem, framing, baseline_plan, recs, model, timeout=150,
+                                     capture=False, solutions=None):
+    """Same positional contract as judge_plan_change_batch so run()'s judge seam can
+    functools.partial the per-run `solutions` in. baseline_plan is solutions[0] by
+    construction; it is accepted (and used as a 1-solution fallback) for drop-in parity."""
+    sols = solutions or ([baseline_plan] if baseline_plan else [])
+    return _parallel(
+        lambda r: judge_plan_change_solution(problem, framing, sols, r, model, timeout, capture),
         recs)

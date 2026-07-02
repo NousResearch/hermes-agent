@@ -319,18 +319,31 @@ def _paired(deltas):
             "wins": sum(1 for d in deltas if d > 1e-6), "losses": sum(1 for d in deltas if d < -1e-6)}
 
 
+# The shipped defaults each A/B challenges: absolute judge (#24 pairwise, #27 solution) and
+# stated P(a) (#26 sampled). The control is whichever of these a run's method tags contain.
+_CONTROL_METHODS = ("absolute", "stated")
+
+
+def split_methods(methods):
+    """(control, [challengers]) from a set of method tags. Control = the shipped default present
+    in the run; every other method challenges it."""
+    ms = sorted(methods)
+    control = next((m for m in ms if m in _CONTROL_METHODS), None)
+    return control, [m for m in ms if m != control]
+
+
 def ab_within_task(rows):
-    """The #24 GATE. Compares each elicitation method's WITHIN-TASK ranking (per-prompt Spearman of
-    value √(U·EVSI) vs the realized target). Ranked on `realized_stakes` (where within-task signal
-    lives), NOT `realized_change` (within-task-dead). Adopt pairwise ONLY if it beats absolute by
-    Δρ>0.02 on the PRIMARY target AND the per-prompt paired delta is broad, not a 1-2-outlier mean."""
+    """The A/B GATE (#24 pairwise, #26 sampled-P, #27 solution-Δ — same decisive rule). Compares
+    each method's WITHIN-TASK ranking (per-prompt Spearman of value √(U·EVSI) vs the realized
+    target). Adopt a challenger ONLY if it beats the control by Δρ>0.02 on the PRIMARY target
+    (realized_regret) AND the per-prompt paired delta is broad, not a 1-2-outlier mean."""
     by_method = defaultdict(list)
     for r in rows:
         by_method[r.get("method") or "absolute"].append(r)
     if len(by_method) < 2:
         return  # not an A/B run
     print("\n" + "=" * 70)
-    print("#24 GATE — WITHIN-TASK RANKING by elicitation method (per-prompt mean ρ)")
+    print("A/B GATE — WITHIN-TASK RANKING by method (per-prompt mean ρ)")
     print("=" * 70)
     rhos = {m: {t: within_task_rhos(by_question(mr), t) for t, _ in _GATE_TARGETS}
             for m, mr in by_method.items()}
@@ -343,22 +356,27 @@ def ab_within_task(rows):
             star = "  <- best" if v is not None and v == best else ""
             print(f"    {method:<10} mean ρ = {v:+.3f}{star}" if v is not None
                   else f"    {method:<10} mean ρ = n/a")
-    if "absolute" in rhos and "pairwise" in rhos:
-        print("\n  VERDICT (keyed on the PRIMARY target realized_regret; per-prompt paired Δρ):")
-        for target in ("realized_regret", "realized_stakes"):
-            a, p = rhos["absolute"][target], rhos["pairwise"][target]
-            common = sorted(set(a) & set(p))
-            st = _paired([p[c] - a[c] for c in common])
-            if not st:
-                continue
-            # "distinguishable from zero" guard: broad (majority wins, no worse than 1 loss for a small
-            # sample) AND mean beyond ~1 SE. Deliberately conservative — a 2-outlier mean must NOT pass.
-            broad = st["wins"] >= st["losses"] * 2 and st["losses"] <= max(1, st["n"] // 4)
-            beyond_noise = st["mean"] > st["se"]
-            decisive = st["mean"] > 0.02 and broad and beyond_noise
-            print(f"    {target}: Δρ mean {st['mean']:+.3f} (sd {st['sd']:.2f}, se {st['se']:.2f}), "
-                  f"pairwise wins {st['wins']}/{st['n']} (losses {st['losses']}) → "
-                  f"{'ADOPT pairwise' if decisive else 'keep absolute (not a clear, broad win)'}")
+    control, challengers = split_methods(rhos)
+    if control and challengers:
+        print(f"\n  VERDICT (control = {control}; keyed on the PRIMARY target realized_regret; "
+              "per-prompt paired Δρ):")
+        for chal in challengers:
+            for target in ("realized_regret", "realized_stakes"):
+                a, p = rhos[control][target], rhos[chal][target]
+                common = sorted(set(a) & set(p))
+                st = _paired([p[c] - a[c] for c in common])
+                if not st:
+                    continue
+                # "distinguishable from zero" guard: broad (majority wins, no worse than 1 loss for a
+                # small sample) AND mean beyond ~1 SE. Deliberately conservative — a 2-outlier mean
+                # must NOT pass.
+                broad = st["wins"] >= st["losses"] * 2 and st["losses"] <= max(1, st["n"] // 4)
+                beyond_noise = st["mean"] > st["se"]
+                decisive = st["mean"] > 0.02 and broad and beyond_noise
+                print(f"    {chal} vs {control} on {target}: Δρ mean {st['mean']:+.3f} "
+                      f"(sd {st['sd']:.2f}, se {st['se']:.2f}), "
+                      f"{chal} wins {st['wins']}/{st['n']} (losses {st['losses']}) → "
+                      f"{f'ADOPT {chal}' if decisive else f'keep {control} (not a clear, broad win)'}")
 
 
 def main(argv):
@@ -368,11 +386,12 @@ def main(argv):
         print(f"no usable rows in {path}", file=sys.stderr)
         return 1
     # If this is an A/B run, report the per-method gate first, then fall through to the standard
-    # single-method analysis on the absolute rows (the live default) for the usual diagnostics.
+    # single-method analysis on the CONTROL rows (the live default) for the usual diagnostics.
     methods = {r.get("method") for r in rows if r.get("method")}
     if len(methods) >= 2:
         ab_within_task(rows)
-        rows = [r for r in rows if (r.get("method") or "absolute") == "absolute"]
+        control, _ = split_methods(methods)
+        rows = [r for r in rows if (r.get("method") or "absolute") == (control or "absolute")]
     questions = by_question(rows)
     print(f"\nloaded {len(rows)} answer-rows / {len(questions)} questions / "
           f"{len({q['prompt'] for q in questions})} prompts from {path}\n")

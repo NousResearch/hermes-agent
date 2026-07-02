@@ -87,9 +87,13 @@ def main(argv=None):
 
     with open(args.path) as f:
         data = json.load(f)
+    # ab runs emit one row per (pair, method) over the SAME stored texts — keep one judged row per
+    # pair: the run's control method ("absolute" for judge A/Bs, "stated" for the #26 probs A/B).
+    methods = {r.get("method") for r in data.get("rows", []) if r.get("method")}
+    control = next((m for m in ("absolute", "stated") if m in methods), "absolute")
     rows = [r for r in data.get("rows", [])
             if r.get("baseline_resp") and r.get("new_resp") and r.get("realized_change") is not None
-            and r.get("method", "absolute") == "absolute"]  # ab runs: one judged row per pair
+            and r.get("method", "absolute") == control]
     if not rows:
         print("no rows with stored responses — rerun validate_evsi with --keep-responses",
               file=sys.stderr)

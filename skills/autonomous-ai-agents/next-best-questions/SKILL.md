@@ -212,9 +212,14 @@ flag/env still wins (e.g. `--gen-samples 5 --gen-temperature 1.0`).
 Defaults live as module constants in `scripts/infogain.py`, overridable by `INFOGAIN_*` env vars
 or CLI flags (e.g. `--min-bucket-size 5`, `--discard-threshold 0.5`, `--answer-model qwen`). Model
 names are `ask`-style aliases (`glm`, `deepseek`, `fast`, `qwen`, …) resolved via `model_utils`.
-`--value-judge-mode absolute|pairwise` selects the Δplan/stakes elicitation (`pairwise` =
+`--value-judge-mode absolute|pairwise|solution` selects the Δplan/stakes elicitation (`pairwise` =
 forced-choice → Bradley-Terry, the #24 experiment — its powered A/B closed **keep `absolute`**, so
-the flag exists for re-testing, not for live use).
+the flag exists for re-testing, not for live use; `solution` = Δplan grounded as the fraction of
+`--solution-samples` sampled candidate solutions an answer invalidates — the #27 experiment,
+off-by-default pending its A/B gate). `--answer-prob-mode stated|sampled` selects the P(a) estimate
+(`sampled` = Laplace-smoothed frequencies over `--answer-samples` forced-choice draws instead of the
+model's self-stated probabilities — the #26 experiment, off-by-default pending its A/B gate; stated
+probs survive as `stated_prob`).
 
 ## Dependency
 

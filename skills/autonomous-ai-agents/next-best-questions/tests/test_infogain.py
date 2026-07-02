@@ -15,6 +15,7 @@ Run:  python3 tests/test_infogain.py -v
 import json
 import math
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -493,6 +494,122 @@ class TestPipelineMocked(unittest.TestCase):
         empty = {"question": "Q", "answers": []}  # no answers -> rec returned unchanged
         self.assertIs(pipeline.judge_plan_change_pairwise("p", {"goal": "g"}, "b", empty, "fast"), empty)
 
+    # ── sampled P(a), #26 ──
+    def _sample_rec(self):
+        return {"question": "Which DB?", "answers": [{"answer": "pg", "prob": 0.7},
+                                                     {"answer": "mongo", "prob": 0.3}],
+                "derivable_prob": 0.2}
+
+    def test_sampled_probs_frequencies_and_smoothing(self):
+        # 6 parseable draws → Laplace-smoothed frequencies (α=0.5, m=2): prob = (c+0.5)/7,
+        # counts sum to n, probs sum to 1, and the stated probs survive as stated_prob.
+        rec = self._sample_rec()
+        with self._mock_raw("1"):
+            pipeline.sample_answer_distribution("p", {"goal": "g"}, rec, "fast", n_samples=6)
+        self.assertEqual(rec["prob_mode_used"], "sampled")
+        self.assertEqual(sum(rec["sample_counts"]), 6)
+        self.assertEqual([a["stated_prob"] for a in rec["answers"]], [0.7, 0.3])
+        self.assertAlmostEqual(sum(a["prob"] for a in rec["answers"]), 1.0)
+        for c, a in zip(rec["sample_counts"], rec["answers"]):
+            self.assertAlmostEqual(a["prob"], (c + 0.5) / 7.0)
+
+    def test_sampled_probs_shuffle_maps_back(self):
+        # The model always votes for the option labelled "pg", wherever the per-sample shuffle
+        # put it — every count must land on answer 0 (mapping shuffled position → canonical).
+        rec = self._sample_rec()
+
+        def vote_pg(model, prompt, **k):
+            n = re.search(r"(\d+)\. pg\b", prompt).group(1)
+            return {"content": n, "error": None, "elapsed": 0.0}
+
+        with mock.patch.object(pipeline, "raw_chat", side_effect=vote_pg):
+            pipeline.sample_answer_distribution("p", {"goal": "g"}, rec, "fast", n_samples=6)
+        self.assertEqual(rec["sample_counts"], [6, 0])
+        self.assertGreater(rec["answers"][0]["prob"], rec["answers"][1]["prob"])
+
+    def test_sampled_probs_fallback_keeps_stated(self):
+        # unparseable ("no idea") and out-of-range ("9") replies don't count; below ⌈N/2⌉ valid
+        # the stated distribution must survive untouched, tagged stated-fallback.
+        for bad in ("no idea", "9"):
+            rec = self._sample_rec()
+            with self._mock_raw(bad):
+                pipeline.sample_answer_distribution("p", {"goal": "g"}, rec, "fast", n_samples=6)
+            self.assertEqual(rec["prob_mode_used"], "stated-fallback")
+            self.assertEqual([a["prob"] for a in rec["answers"]], [0.7, 0.3])
+            self.assertEqual([a["stated_prob"] for a in rec["answers"]], [0.7, 0.3])
+
+    def test_sampled_probs_single_answer_short_circuits(self):
+        # a 0/1-option support IS its distribution — no sampling calls, tagged stated.
+        one = {"question": "Q", "answers": [{"answer": "x", "prob": 1.0}]}
+        with mock.patch.object(pipeline, "raw_chat",
+                               side_effect=AssertionError("must not call the model")):
+            pipeline.sample_answer_distribution("p", {"goal": "g"}, one, "fast", n_samples=6)
+        self.assertEqual(one["prob_mode_used"], "stated")
+        self.assertEqual(one["answers"][0]["stated_prob"], 1.0)
+
+    # ── solution-space Δplan, #27 ──
+    def test_sample_solutions_reuses_baseline_first(self):
+        framing = {"goal": "g", "decision": "d", "baseline_plan": "the baseline"}
+        with mock.patch.object(pipeline, "_call_json",
+                               return_value=({"solution": "an alternative"}, None)) as m:
+            sols = pipeline.sample_solutions("p", framing, "fast", k=3)
+        self.assertEqual(sols[0], "the baseline")   # solution 1 is free
+        self.assertEqual(len(sols), 3)
+        self.assertEqual(m.call_count, 2)           # only k-1 sampled
+        # failures shrink the set rather than padding it with empties
+        with mock.patch.object(pipeline, "_call_json", return_value=(None, "boom")):
+            sols = pipeline.sample_solutions("p", framing, "fast", k=3)
+        self.assertEqual(sols, ["the baseline"])
+
+    def test_solution_judge_delta_is_invalidated_fraction(self):
+        sols = ["s1", "s2", "s3", "s4"]
+        rec = {"question": "Q", "answers": [{"answer": "a", "prob": 0.6},
+                                            {"answer": "b", "prob": 0.4}]}
+        judged = {"answers": [{"viable": [1, 3], "stakes": 0.7},          # 2 of 4 invalidated
+                              {"viable": [1, 2, 3, 4], "stakes": 0.1}]}   # nothing invalidated
+        with mock.patch.object(pipeline, "_call_json", return_value=(judged, None)):
+            pipeline.judge_plan_change_solution("p", {"goal": "g"}, sols, rec, "fast")
+        a = rec["answers"]
+        self.assertEqual(a[0]["delta_plan"], 0.5)
+        self.assertEqual(a[0]["viable_solutions"], [1, 3])
+        self.assertEqual(a[0]["stakes"], 0.7)                             # stakes passthrough
+        self.assertEqual(a[1]["delta_plan"], 0.0)
+        voi.score_record(rec)                                             # drop-in for the formula
+        self.assertGreaterEqual(rec["value"], 0.0)
+
+    def test_solution_judge_safe_zero_and_bounds(self):
+        sols = ["s1", "s2"]
+        rec = {"question": "Q", "answers": [{"answer": "a", "prob": 1.0}]}
+        with mock.patch.object(pipeline, "_call_json", return_value=(None, "bad json")):
+            pipeline.judge_plan_change_solution("p", {"goal": "g"}, sols, rec, "fast")
+        self.assertEqual(rec["answers"][0]["delta_plan"], 0.0)            # safe-zero
+        self.assertEqual(rec["answers"][0]["stakes"], 0.0)
+        # out-of-range / junk viable entries are ignored, not counted as invalidations of nothing
+        rec2 = {"question": "Q", "answers": [{"answer": "a", "prob": 1.0}]}
+        judged = {"answers": [{"viable": [0, 1, 9, "x"], "stakes": 0.5}]}  # only 1 is in-range
+        with mock.patch.object(pipeline, "_call_json", return_value=(judged, None)):
+            pipeline.judge_plan_change_solution("p", {"goal": "g"}, sols, rec2, "fast")
+        self.assertEqual(rec2["answers"][0]["delta_plan"], 0.5)           # (2-1)/2
+        self.assertEqual(rec2["answers"][0]["viable_solutions"], [1])
+        empty = {"question": "Q", "answers": []}                          # no answers -> unchanged
+        self.assertIs(pipeline.judge_plan_change_solution("p", {"goal": "g"}, sols, empty, "fast"),
+                      empty)
+
+    def test_project_answers_sampled_roundtrip(self):
+        # composition: projection call first (answers + derivable), then N forced-choice draws.
+        rec = {"question": "Which DB?"}
+        replies = iter(['{"derivable_prob":0.2,"answers":[{"answer":"pg","prob":0.6},'
+                        '{"answer":"mongo","prob":0.4}]}'] + ["1"] * 4)
+        with mock.patch.object(pipeline, "raw_chat",
+                               side_effect=lambda *a, **k: {"content": next(replies),
+                                                            "error": None, "elapsed": 0.0}):
+            pipeline.project_answers_sampled("p", {"goal": "g"}, rec, "fast", 5, n_samples=4)
+        self.assertEqual(rec["prob_mode_used"], "sampled")
+        self.assertEqual(len(rec["answers"]), 2)
+        self.assertEqual([a["stated_prob"] for a in rec["answers"]], [0.6, 0.4])
+        voi.score_record(rec)   # the swapped probs feed the frozen formula unchanged
+        self.assertGreaterEqual(rec["value"], 0.0)
+
 
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
 class TestOrchestrationMocked(unittest.TestCase):
@@ -776,6 +893,107 @@ class TestModeConfig(unittest.TestCase):
         finally:
             os.environ.pop("INFOGAIN_VALUE_JUDGE_MODE", None) if old is None else os.environ.update(
                 {"INFOGAIN_VALUE_JUDGE_MODE": old})
+
+    # ── solution judge mode (#27, off by default) ──
+    def test_value_judge_mode_solution_cli_and_knobs(self):
+        cfg = self._cfg(["--value-judge-mode", "solution", "p"])
+        self.assertEqual(cfg["value_judge_mode"], "solution")
+        self.assertEqual(cfg["solution_samples"], 4)
+        self.assertEqual(cfg["solution_temperature"], 0.8)
+        self.assertEqual(self._cfg(["--solution-samples", "6", "p"])["solution_samples"], 6)
+
+    def test_run_solution_mode_samples_once_and_binds_judge(self):
+        cfg = {k: v for k, v in infogain.DEFAULTS.items()}
+        cfg["families"] = {"enabled": False}
+        cfg["max_rounds"] = 2          # 2 rounds must NOT re-sample the solution set
+        cfg["target_bucket_size"] = 99  # force both rounds to run
+        cfg["min_bucket_size"] = 99
+        cfg["value_judge_mode"] = "solution"
+        calls = {"sample": 0, "judge": 0, "sols": None}
+
+        def fake_sample(*a, **k):
+            calls["sample"] += 1
+            return ["baseline", "alt1", "alt2", "alt3"]
+
+        def fake_solution_batch(p, f, b, recs, *a, **kw):
+            calls["judge"] += 1
+            calls["sols"] = kw.get("solutions")
+            return recs
+
+        gen_n = {"i": 0}
+
+        def fake_gen(*a, **k):
+            gen_n["i"] += 1
+            return ([{"question": f"Q{gen_n['i']}", "target": f"t{gen_n['i']}",
+                      "answers": [], "derivable_prob": 0.1}], None)
+
+        with mock.patch.object(pipeline, "frame_and_plan",
+                               return_value=({"goal": "g", "decision": "d", "success_criteria": [],
+                                              "baseline_plan": "baseline"}, None)), \
+             mock.patch.object(pipeline, "sample_solutions", side_effect=fake_sample), \
+             mock.patch.object(pipeline, "generate_questions", side_effect=fake_gen), \
+             mock.patch.object(pipeline, "project_answers_batch",
+                               side_effect=lambda p, f, recs, *a, **k: recs), \
+             mock.patch.object(pipeline, "judge_plan_change_solution_batch",
+                               side_effect=fake_solution_batch):
+            infogain.run("vague task", cfg)
+        self.assertEqual(calls["sample"], 1)                 # sampled ONCE per run
+        self.assertEqual(calls["judge"], 2)                  # bound judge used every round
+        self.assertEqual(calls["sols"], ["baseline", "alt1", "alt2", "alt3"])
+
+    # ── answer_prob_mode selector (#26, off by default) ──
+    def test_answer_prob_mode_defaults_stated(self):
+        cfg = self._cfg(["a problem"])
+        self.assertEqual(cfg["answer_prob_mode"], "stated")
+        self.assertEqual(cfg["answer_samples"], 6)
+        self.assertEqual(cfg["answer_sample_temperature"], 1.0)
+
+    def test_answer_prob_mode_cli(self):
+        self.assertEqual(self._cfg(["--answer-prob-mode", "sampled", "p"])["answer_prob_mode"],
+                         "sampled")
+        self.assertEqual(self._cfg(["--answer-samples", "4", "p"])["answer_samples"], 4)
+
+    def test_answer_prob_mode_env(self):
+        old = os.environ.get("INFOGAIN_ANSWER_PROB_MODE")
+        try:
+            os.environ["INFOGAIN_ANSWER_PROB_MODE"] = "sampled"
+            self.assertEqual(self._cfg(["p"])["answer_prob_mode"], "sampled")
+            # CLI beats env
+            self.assertEqual(self._cfg(["--answer-prob-mode", "stated", "p"])["answer_prob_mode"],
+                             "stated")
+        finally:
+            os.environ.pop("INFOGAIN_ANSWER_PROB_MODE", None) if old is None else os.environ.update(
+                {"INFOGAIN_ANSWER_PROB_MODE": old})
+
+    def test_run_routes_projection_by_answer_prob_mode(self):
+        # the SAFETY INVARIANT, asserted: a cfg straight from DEFAULTS (no answer_prob_mode key)
+        # must route to the stated projection batch; "sampled" must route to the sampled one.
+        def _go(cfg):
+            seen = {"fn": None}
+            with mock.patch.object(pipeline, "frame_and_plan",
+                                   return_value=({"goal": "g", "decision": "d",
+                                                  "success_criteria": [], "baseline_plan": "p"},
+                                                 None)), \
+                 mock.patch.object(pipeline, "generate_questions",
+                                   side_effect=lambda *a, **k: ([{"question": "Q", "target": "t",
+                                                                 "answers": [],
+                                                                 "derivable_prob": 0.1}], None)), \
+                 mock.patch.object(pipeline, "project_answers_batch",
+                                   side_effect=lambda p, f, recs, *a, **k: (
+                                       seen.__setitem__("fn", "stated"), recs)[1]), \
+                 mock.patch.object(pipeline, "project_answers_sampled_batch",
+                                   side_effect=lambda p, f, recs, *a, **k: (
+                                       seen.__setitem__("fn", "sampled"), recs)[1]), \
+                 mock.patch.object(pipeline, "judge_plan_change_batch",
+                                   side_effect=lambda p, f, b, recs, *a, **k: recs):
+                infogain.run("vague task", cfg)
+            return seen["fn"]
+
+        cfg = {k: v for k, v in infogain.DEFAULTS.items()}
+        cfg["families"] = {"enabled": False}
+        cfg["max_rounds"] = 1
+        self.assertEqual(_go(dict(cfg)), "stated")
+        self.assertEqual(_go(dict(cfg, answer_prob_mode="sampled")), "sampled")
 
     def test_default_run_uses_absolute_judge_batch(self):
         # the SAFETY INVARIANT, asserted: a cfg straight from DEFAULTS (no value_judge_mode key) must

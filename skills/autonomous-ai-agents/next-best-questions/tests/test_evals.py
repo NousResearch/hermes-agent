@@ -178,6 +178,24 @@ class TestAnalyzeEvsi(unittest.TestCase):
         self.assertEqual({t[0] for t in analyze_evsi._GATE_TARGETS},
                          {"realized_regret", "realized_stakes", "realized_change"})
 
+    def test_split_methods_control_detection(self):
+        # the shipped default present in the run is the control; everything else challenges it
+        self.assertEqual(analyze_evsi.split_methods({"absolute", "pairwise"}),
+                         ("absolute", ["pairwise"]))
+        self.assertEqual(analyze_evsi.split_methods({"stated", "sampled"}),
+                         ("stated", ["sampled"]))
+        self.assertEqual(analyze_evsi.split_methods({"absolute", "solution"}),
+                         ("absolute", ["solution"]))
+
+    def test_gate_generalizes_to_probs_methods(self):
+        # #26 shape: methods stated/sampled — the verdict block must run with control=stated
+        rows = []
+        for pr in ("P1", "P2", "P3"):
+            for m in ("stated", "sampled"):
+                rows += [self._row(pr, "qa", m, 1.0, 0.5, 0.9, 0.9, 0.5, 0.9),
+                         self._row(pr, "qb", m, 1.0, 0.5, 0.2, 0.2, 0.5, 0.2)]
+        analyze_evsi.ab_within_task(rows)  # must not raise
+
 
 @unittest.skipUnless(_OK, "skill scripts not importable")
 class TestSelectionPolicies(unittest.TestCase):
@@ -251,6 +269,105 @@ class TestValidateEvsiRows(unittest.TestCase):
                                                source="all_scored")
         self.assertEqual(rows[0]["lens"], "")
         self.assertEqual(rows[0]["family"], "")
+
+
+@unittest.skipUnless(_OK, "skill scripts not importable")
+class TestAbProbs(unittest.TestCase):
+    """#26 probs A/B machinery: per-method prob rows, the swap lever, union answer selection."""
+
+    def _record(self):
+        return {"question": "Which DB?", "target": "db",
+                "derivable_prob": 0.2, "prob_mode_used": "sampled",
+                "answers": [{"answer": "pg", "prob": 0.9, "stated_prob": 0.5,
+                             "delta_plan": 0.8, "stakes": 0.7},
+                            {"answer": "mongo", "prob": 0.1, "stated_prob": 0.5,
+                             "delta_plan": 0.3, "stakes": 0.2}]}
+
+    def test_swap_probs_roundtrip_and_stated_mode_noop(self):
+        rec = self._record()
+        validate_evsi._swap_probs([rec])
+        self.assertEqual((rec["answers"][0]["prob"], rec["answers"][0]["stated_prob"]), (0.5, 0.9))
+        validate_evsi._swap_probs([rec])
+        self.assertEqual((rec["answers"][0]["prob"], rec["answers"][0]["stated_prob"]), (0.9, 0.5))
+        plain = {"answers": [{"answer": "x", "prob": 0.7}]}  # stated-mode record: no stated_prob
+        validate_evsi._swap_probs([plain])
+        self.assertEqual(plain["answers"][0]["prob"], 0.7)
+
+    def test_tested_answers_union_of_top_n(self):
+        a1, a2 = {"answer": "a1"}, {"answer": "a2"}
+        q = {"answers": [a1, a2]}
+        methods = {"sampled": {"a": {id(q): {id(a1): (0, 0, 0.9), id(a2): (0, 0, 0.1)}}},
+                   "stated": {"a": {id(q): {id(a1): (0, 0, 0.2), id(a2): (0, 0, 0.8)}}}}
+        got = validate_evsi._tested_answers(q, methods, max_answers=1)
+        self.assertEqual({a["answer"] for a in got}, {"a1", "a2"})  # union of the two top-1s
+        got = validate_evsi._tested_answers(q, {"stated": methods["stated"]}, max_answers=1)
+        self.assertEqual([a["answer"] for a in got], ["a2"])  # single method = plain top-N
+
+    def test_run_prompt_ab_probs_emits_per_method_prob(self):
+        record = self._record()
+        validate_evsi.voi.score_record(record)  # as the sampled run would have scored it
+        fake_result = {"framing": {"baseline_plan": "B"}, "all_scored": [record]}
+        with mock.patch.object(validate_evsi.infogain, "run", return_value=fake_result), \
+             mock.patch.object(validate_evsi.pipeline, "resolve_alias", side_effect=lambda m: m), \
+             mock.patch.object(validate_evsi.pipeline, "frame_and_plan",
+                               return_value=({"baseline_plan": "B2"}, None)), \
+             mock.patch.object(validate_evsi, "change_judge", return_value=0.6), \
+             mock.patch.object(validate_evsi, "stakes_judge", return_value=0.5):
+            cfg = {"plan_model": "fast", "value_judge_model": "fast", "judge_timeout": 10,
+                   "answer_prob_mode": "sampled"}
+            rows, _ = validate_evsi.run_prompt({"id": "add-auth", "problem": "p"}, cfg,
+                                               judge_model="fast", max_answers=3, timeout=10,
+                                               source="all_scored", ab_probs=True)
+        by_m = {}
+        for r in rows:
+            by_m.setdefault(r["method"], {})[r["answer"]] = r
+        self.assertEqual(set(by_m), {"sampled", "stated"})
+        # prob is per-method: the same answer carries its arm's P(a)
+        self.assertEqual(by_m["sampled"]["pg"]["prob"], 0.9)
+        self.assertEqual(by_m["stated"]["pg"]["prob"], 0.5)
+        # q-level scores move with P (entropy + EVSI weighting differ between arms)
+        self.assertNotEqual(by_m["sampled"]["pg"]["q_value"], by_m["stated"]["pg"]["q_value"])
+        # realized fields are shared (method-independent measurement)
+        self.assertEqual(by_m["sampled"]["pg"]["realized_regret"],
+                         by_m["stated"]["pg"]["realized_regret"])
+        # and the record is restored to the sampled state after the stated re-score
+        self.assertEqual(record["answers"][0]["prob"], 0.9)
+
+    def test_run_prompt_ab_solution_emits_both_methods(self):
+        # #27 shape: absolute snapshot first, then the solution re-judge mutates delta_plan and
+        # the "solution" snapshot picks it up — two rows per pair with per-method projected_delta.
+        record = {"question": "Q", "target": "t", "derivable_prob": 0.2,
+                  "answers": [{"answer": "a", "prob": 1.0, "delta_plan": 0.8, "stakes": 0.7}]}
+        validate_evsi.voi.score_record(record)
+        fake_result = {"framing": {"baseline_plan": "B"}, "all_scored": [record]}
+
+        def fake_solution_judge(p, f, b, recs, *a, **k):
+            self.assertEqual(k.get("solutions"), ["B", "alt"])
+            for q in recs:
+                for ans in q["answers"]:
+                    ans["delta_plan"] = 0.5  # 1 of 2 solutions invalidated
+            return recs
+
+        with mock.patch.object(validate_evsi.infogain, "run", return_value=fake_result), \
+             mock.patch.object(validate_evsi.pipeline, "resolve_alias", side_effect=lambda m: m), \
+             mock.patch.object(validate_evsi.pipeline, "sample_solutions",
+                               return_value=["B", "alt"]), \
+             mock.patch.object(validate_evsi.pipeline, "judge_plan_change_solution_batch",
+                               side_effect=fake_solution_judge), \
+             mock.patch.object(validate_evsi.pipeline, "frame_and_plan",
+                               return_value=({"baseline_plan": "B2"}, None)), \
+             mock.patch.object(validate_evsi, "change_judge", return_value=0.6), \
+             mock.patch.object(validate_evsi, "stakes_judge", return_value=0.5):
+            cfg = {"plan_model": "fast", "value_judge_model": "fast", "judge_timeout": 10,
+                   "solution_samples": 2, "solution_temperature": 0.8, "plan_timeout": 10}
+            rows, _ = validate_evsi.run_prompt({"id": "add-auth", "problem": "p"}, cfg,
+                                               judge_model="fast", max_answers=3, timeout=10,
+                                               source="all_scored", ab_solution=True)
+        by_m = {r["method"]: r for r in rows}
+        self.assertEqual(set(by_m), {"absolute", "solution"})
+        self.assertEqual(by_m["absolute"]["projected_delta"], 0.8)
+        self.assertEqual(by_m["solution"]["projected_delta"], 0.5)
+        self.assertEqual(by_m["absolute"]["realized_regret"], by_m["solution"]["realized_regret"])
 
 
 @unittest.skipUnless(_OK, "skill scripts not importable")

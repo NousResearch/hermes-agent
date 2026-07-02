@@ -96,24 +96,53 @@ def stakes_judge(prompt, baseline, new, model, timeout):
 
 def _snapshot(records):
     """Freeze the PROJECTED scores of a record set keyed by object id, BEFORE any re-judging mutates
-    the per-answer delta_plan/stakes (and before re-score_record overwrites q-level u/evsi/value).
-    Returns {"q": {id(q): {u,evsi,value}}, "a": {id(q): {id(a): (delta, stakes)}}}."""
+    the per-answer delta_plan/stakes/prob (and before re-score_record overwrites q-level u/evsi/value).
+    Returns {"q": {id(q): {u,evsi,value}}, "a": {id(q): {id(a): (delta, stakes, prob)}}}. prob is
+    per-method since #26 (the stated/sampled arms disagree on it)."""
     q_scores, a_scores = {}, {}
     for q in records:
         q_scores[id(q)] = {"u": q.get("u", 0.0), "evsi": q.get("evsi", 0.0),
                            "value": q.get("value", 0.0)}
         a_scores[id(q)] = {id(a): (voi.clamp01(a.get("delta_plan", 0.0)),
-                                   voi.clamp01(a.get("stakes", 0.0)))
+                                   voi.clamp01(a.get("stakes", 0.0)),
+                                   voi.clamp01(a.get("prob", 0.0)))
                            for a in (q.get("answers") or [])}
     return {"q": q_scores, "a": a_scores}
 
 
+def _swap_probs(records):
+    """Swap prob <-> stated_prob on every answer (the #26 A/B lever). Fallback records
+    (prob == stated_prob) are a no-op, which is the honest behavior of the sampled arm."""
+    for q in records:
+        for a in (q.get("answers") or []):
+            if "stated_prob" in a:
+                a["prob"], a["stated_prob"] = a["stated_prob"], a["prob"]
+
+
+def _tested_answers(q, methods, max_answers):
+    """The answers to pay a realized measurement for: the UNION of each method's top-N by that
+    method's P(a). With one method (or methods agreeing on P) this is exactly the old top-N."""
+    ans = q.get("answers") or []
+    seen_ids, keep = set(), []
+    for snap in methods.values():
+        probs = snap["a"][id(q)]
+        for a in sorted(ans, key=lambda a: -probs.get(id(a), (0.0, 0.0, 0.0))[2])[:max_answers]:
+            if id(a) not in seen_ids:
+                seen_ids.add(id(a))
+                keep.append(a)
+    return keep
+
+
 def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=False,
-               keep_responses=False, change_fn=None):
+               keep_responses=False, change_fn=None, ab_probs=False, ab_solution=False):
     """One prompt → realized-vs-projected rows. With ab=True, BOTH elicitation methods (absolute +
     pairwise) are scored on the SAME question/answer set and the realized measurement (re-derive +
     judges) is shared across them — so the per-method within-task ranking is a clean A/B and the
-    only added cost is the pairwise re-judge calls, not a second realized pass."""
+    only added cost is the pairwise re-judge calls, not a second realized pass.
+
+    With ab_probs=True (#26; cfg must carry answer_prob_mode="sampled"), the two arms are the two
+    P(a) estimates over the SAME answers: "sampled" (as run) vs "stated" (swap prob<->stated_prob,
+    re-score). No extra model calls at all — the sampling already happened inside the run."""
     result = infogain.run(pr["problem"], cfg)  # absolute judge (default cfg)
     plan_model = pipeline.resolve_alias(cfg["plan_model"])
     elicit_model = pipeline.resolve_alias(cfg["value_judge_model"])  # same model, both elicitations
@@ -121,23 +150,46 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
     baseline = framing.get("baseline_plan", "")
     records = result.get(source, [])
 
-    # Snapshot ABSOLUTE projected scores first (the default run produced them), THEN, for ab, re-judge
-    # the same records with the pairwise judge and snapshot those. Realized is measured once below.
-    methods = {"absolute": _snapshot(records)}
-    if ab:
-        pipeline.judge_plan_change_pairwise_batch(pr["problem"], framing, baseline, records,
-                                                  elicit_model, cfg["judge_timeout"])
+    if ab_probs:
+        # Arm 1 = the run as scored (sampled P). Arm 2 = stated P: swap, re-score, snapshot, restore.
+        methods = {"sampled": _snapshot(records)}
+        _swap_probs(records)
         for q in records:
             voi.score_record(q)
-        methods["pairwise"] = _snapshot(records)
+        methods["stated"] = _snapshot(records)
+        _swap_probs(records)
+        for q in records:
+            voi.score_record(q)
+    else:
+        # Snapshot ABSOLUTE projected scores first (the default run produced them), THEN, for ab,
+        # re-judge the same records with the pairwise judge and snapshot those. Realized is measured
+        # once below.
+        methods = {"absolute": _snapshot(records)}
+        if ab:
+            pipeline.judge_plan_change_pairwise_batch(pr["problem"], framing, baseline, records,
+                                                      elicit_model, cfg["judge_timeout"])
+            for q in records:
+                voi.score_record(q)
+            methods["pairwise"] = _snapshot(records)
+        if ab_solution:
+            # #27: sample the K-solution set once, re-judge the SAME records with the
+            # solution-space judge (Δplan = invalidated/K), re-score, snapshot as "solution".
+            sols = pipeline.sample_solutions(pr["problem"], framing, plan_model,
+                                             k=int(cfg.get("solution_samples", 4)),
+                                             temperature=float(cfg.get("solution_temperature", 0.8)),
+                                             timeout=cfg.get("plan_timeout", timeout))
+            pipeline.judge_plan_change_solution_batch(pr["problem"], framing, baseline, records,
+                                                      elicit_model, cfg["judge_timeout"],
+                                                      solutions=sols)
+            for q in records:
+                voi.score_record(q)
+            methods["solution"] = _snapshot(records)
 
     rows = []
     # source="all_scored" tests across the WHOLE value spectrum (incl. below-threshold questions) —
     # needed in the agentic domain and for the within-task ranking comparison (more questions/prompt).
     for q in records:
-        answers = sorted((q.get("answers") or []),
-                         key=lambda a: -voi.clamp01(a.get("prob", 0)))[:max_answers]
-        for a in answers:
+        for a in _tested_answers(q, methods, max_answers):
             fact = f"{q['question']} -> {a.get('answer', '')}"
             new, _ = pipeline.frame_and_plan(pr["problem"], plan_model, timeout, evidence=[fact])
             new_resp = (new or {}).get("baseline_plan", "")
@@ -151,7 +203,6 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
                 # lens/family carried from the scored record so analyze_evsi can attribute realized
                 # value per lens (e.g. premortem vs the rest). Flat generator leaves these empty.
                 "lens": q.get("lens") or "", "family": q.get("family") or "",
-                "prob": round(voi.clamp01(a.get("prob", 0)), 3),
                 "realized_change": None if realized is None else round(realized, 3),
                 "realized_stakes": None if r_stakes is None else round(r_stakes, 3),
                 "realized_regret": None if regret is None else round(regret, 3),  # method-independent
@@ -162,8 +213,10 @@ def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket", ab=F
                 shared["baseline_resp"] = baseline
                 shared["new_resp"] = new_resp
             for method, snap in methods.items():
-                qd, ad = snap["q"][id(q)], snap["a"][id(q)].get(id(a), (0.0, 0.0))
-                rows.append({**shared, "method": method,
+                qd, ad = snap["q"][id(q)], snap["a"][id(q)].get(id(a), (0.0, 0.0, 0.0))
+                # prob is PER-METHOD since #26 (the stated/sampled arms disagree on it); the
+                # by_question P'-renormalization downstream splits rows by method first.
+                rows.append({**shared, "method": method, "prob": round(ad[2], 3),
                              "projected_delta": round(ad[0], 3), "stakes": round(ad[1], 3),
                              "q_u": round(qd["u"], 3), "q_evsi": round(qd["evsi"], 3),
                              "q_value": round(qd["value"], 3)})
@@ -190,6 +243,20 @@ def main(argv=None):
                    help="A/B both elicitation methods (absolute + pairwise) on the SAME question/answer "
                         "set, sharing the realized measurement. Emits two rows per pair tagged with "
                         "`method`; analyze_evsi reports per-method within-task ρ. (#24 gate.)")
+    p.add_argument("--ab-probs", action="store_true",
+                   help="A/B the two P(a) estimates (#26 gate): run with answer_prob_mode=sampled, "
+                        "then score the SAME records under sampled vs stated P (swap prob<->"
+                        "stated_prob + re-score — zero extra model calls). Rows tagged method="
+                        "sampled|stated; realized measurement shared over the union of each "
+                        "method's top-N answers. Mutually exclusive with --ab.")
+    p.add_argument("--ab-solution", action="store_true",
+                   help="A/B the solution-space Δplan judge (#27 gate): after the default absolute "
+                        "run, sample K candidate solutions once and re-judge the SAME records "
+                        "(Δplan = invalidated/K), sharing the realized measurement. Rows tagged "
+                        "method=absolute|solution. Mutually exclusive with --ab/--ab-probs.")
+    p.add_argument("--answer-prob-mode", choices=["stated", "sampled"], default=None,
+                   help="pin the P(a) estimate for the run (#26). Use `sampled` here iff #26 was "
+                        "adopted, so a #27 A/B runs both arms on the winning P mode.")
     p.add_argument("--families", action="store_true",
                    help="run with the families layer on — rows carry lens/family for per-lens "
                         "attribution (default: flat generator, empty lens).")
@@ -204,6 +271,8 @@ def main(argv=None):
                         "before adopting.")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args(argv)
+    if sum((args.ab, args.ab_probs, args.ab_solution)) > 1:
+        p.error("--ab / --ab-probs / --ab-solution are separate experiments — run them separately")
 
     cfg = dict(infogain.DEFAULTS)
     for k in ("plan_model", "question_gen_model", "answer_model"):
@@ -215,6 +284,10 @@ def main(argv=None):
         cfg["value_judge_model"] = args.elicit_model
     cfg["max_rounds"] = 1
     cfg["mode"] = "focus"
+    if args.ab_probs:
+        cfg["answer_prob_mode"] = "sampled"  # the run itself samples; the stated arm is a re-score
+    elif args.answer_prob_mode:
+        cfg["answer_prob_mode"] = args.answer_prob_mode  # e.g. pin the #26 winner under --ab-solution
     if args.families:
         cfg["families"] = infogain.families_cfg(args.premortem, families_model=args.gen_model)
     judge_model = pipeline.resolve_alias(args.judge_model)  # alias -> real model name
@@ -226,7 +299,8 @@ def main(argv=None):
         try:
             prows, _ = run_prompt(pr, cfg, judge_model, args.max_answers, args.timeout,
                                   args.source, ab=args.ab, keep_responses=args.keep_responses,
-                                  change_fn=change_judge_graded if args.graded_change_judge else None)
+                                  change_fn=change_judge_graded if args.graded_change_judge else None,
+                                  ab_probs=args.ab_probs, ab_solution=args.ab_solution)
         except Exception as e:
             prows = [{"prompt": pr["id"], "error": str(e)}]
         rows.extend(prows)
@@ -235,11 +309,13 @@ def main(argv=None):
                 json.dump({"rows": rows, "n": len(rows), "partial": True,
                            "gen_model": args.gen_model, "judge_model": args.judge_model,
                            "change_judge": "graded" if args.graded_change_judge else "original",
+                           "answer_prob_mode": cfg.get("answer_prob_mode", "stated"),
                            "elapsed_s": round(time.time() - t0, 1)}, f, indent=2, default=str)
 
     out = {"rows": rows, "n": len(rows), "partial": False,
            "gen_model": args.gen_model, "judge_model": args.judge_model,
            "change_judge": "graded" if args.graded_change_judge else "original",
+           "answer_prob_mode": cfg.get("answer_prob_mode", "stated"),
            "elapsed_s": round(time.time() - t0, 1)}
     payload = json.dumps(out, indent=2, default=str)
     if args.out:

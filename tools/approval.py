@@ -184,16 +184,31 @@ def _is_gateway_approval_context() -> bool:
 
     Cron jobs are NEVER gateway-approval contexts even when they originate
     from a gateway platform (cron binds HERMES_SESSION_PLATFORM via
-    contextvars for delivery routing). Cron approvals are governed by
+    contextvars for delivery routing).  Cron approvals are governed by
     ``approvals.cron_mode`` config, not interactive resolve — letting cron
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
+
+    However, when the scheduler and gateway share a process, the scheduler
+    sets ``HERMES_CRON_SESSION`` process-wide at boot.  Interactive gateway
+    sessions running in that same process inherit the flag even though a
+    user *is* present.  Gateway session indicators (``HERMES_GATEWAY_SESSION``
+    env var or a non-empty ``HERMES_SESSION_PLATFORM`` contextvar) are
+    per-session and therefore more specific — they take precedence over the
+    process-wide cron flag.  The scheduler explicitly sets the session
+    platform to ``""`` for every cron job, so cron jobs never satisfy the
+    gateway-platform check.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
-        return False
+    # Per-session gateway indicators take precedence over the process-wide
+    # cron flag — they unambiguously identify an interactive session.
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
-    return bool(_get_session_platform())
+    if _get_session_platform():
+        return True
+    # No interactive session context — fall back to the cron flag.
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return False
+    return False
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
@@ -2652,7 +2667,10 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    # Skip when the session is an interactive gateway context — the gateway
+    # has a user present who can approve.  (is_gateway is already computed
+    # above via _is_gateway_approval_context().)
+    if env_var_enabled("HERMES_CRON_SESSION") and not is_gateway:
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,

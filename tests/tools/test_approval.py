@@ -2076,9 +2076,10 @@ class TestApprovalTimeoutIsNotConsent:
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)
-        # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
-        # _is_gateway_approval_context(); a leaked value from a parent cron
-        # process would force the cron path and break these gateway tests.
+        # _is_gateway_approval_context() now checks per-session gateway
+        # indicators (HERMES_GATEWAY_SESSION, session platform) before the
+        # process-wide HERMES_CRON_SESSION flag.  Pop the cron flag anyway
+        # so these tests don't depend on that precedence for correctness.
         os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
@@ -2370,3 +2371,62 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestGatewayContextOverridesCronSession:
+    """Gateway session indicators must take precedence over the process-wide
+    HERMES_CRON_SESSION flag (#56771).
+
+    When the scheduler and gateway share a process, the scheduler sets
+    ``HERMES_CRON_SESSION`` process-wide at boot.  Interactive gateway
+    sessions inherit it even though a user is present.  Per-session gateway
+    indicators (``HERMES_GATEWAY_SESSION``, non-empty session platform) must
+    override the leaked flag so tools like ``execute_code`` are not blocked.
+    """
+
+    def test_gateway_env_overrides_cron_flag(self, monkeypatch):
+        """HERMES_GATEWAY_SESSION=1 + HERMES_CRON_SESSION=1 → gateway context."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        assert approval_module._is_gateway_approval_context() is True
+
+    def test_session_platform_overrides_cron_flag(self, monkeypatch):
+        """Non-empty session platform + HERMES_CRON_SESSION=1 → gateway."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        from gateway import session_context
+        monkeypatch.setattr(
+            session_context, "get_session_env",
+            lambda name, default="": "telegram" if name == "HERMES_SESSION_PLATFORM" else default,
+        )
+        assert approval_module._is_gateway_approval_context() is True
+
+    def test_cron_flag_alone_is_not_gateway(self, monkeypatch):
+        """HERMES_CRON_SESSION=1 with no gateway indicators → not gateway."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        from gateway import session_context
+        monkeypatch.setattr(
+            session_context, "get_session_env",
+            lambda name, default="": default,
+        )
+        assert approval_module._is_gateway_approval_context() is False
+
+    def test_execute_code_not_blocked_in_gateway_with_cron_leak(
+        self, monkeypatch
+    ):
+        """execute_code must not be blocked when gateway context is present
+        even though HERMES_CRON_SESSION is set (#56771)."""
+        from tools.approval import check_execute_code_guard
+        from unittest.mock import patch as _patch
+
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        cfg = {"approvals": {"mode": "manual"}}
+        with _patch("hermes_cli.config.load_config", return_value=cfg):
+            with _patch("tools.approval._get_approval_mode",
+                        return_value="manual"):
+                # Should get pending_approval (gateway asks user), NOT blocked.
+                result = check_execute_code_guard("print(1)", "local")
+        assert result.get("status") == "pending_approval"
+        assert result.get("outcome") != "blocked"

@@ -4096,10 +4096,30 @@ class SessionDB:
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
 
-        # Step 4: Remove dangling boolean operators at start/end that would
-        # cause syntax errors (e.g. "hello AND" or "OR world")
-        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
-        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        # Step 4: Remove boolean operators sitting in a syntactically invalid
+        # position — at the start, at the end, or adjacent to another operator.
+        # FTS5 rejects bare, leading, trailing and stacked operators ("AND",
+        # "OR world", "a AND OR b", "AND NOT x", "a AND AND b") as syntax
+        # errors; the swallowed error turns a query that has real search terms
+        # into silent zero results (same class as the colon bug fixed in
+        # search_messages). A single start/end regex only caught one operator
+        # at one edge, so stacked/adjacent operators still leaked through. Walk
+        # the tokens instead, keeping the first operator of any consecutive run
+        # and dropping leading/trailing ones.
+        _bool_ops = {"AND", "OR", "NOT"}
+        cleaned_tokens: list[str] = []
+        prev_was_operator = True  # start-of-query counts as "after an operator"
+        for token in sanitized.split():
+            if token.upper() in _bool_ops:
+                if prev_was_operator:
+                    continue  # leading or adjacent operator — drop it
+                prev_was_operator = True
+            else:
+                prev_was_operator = False
+            cleaned_tokens.append(token)
+        while cleaned_tokens and cleaned_tokens[-1].upper() in _bool_ops:
+            cleaned_tokens.pop()
+        sanitized = " ".join(cleaned_tokens)
 
         # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning

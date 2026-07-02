@@ -1329,6 +1329,34 @@ class TestFTS5Search:
         assert any("deployment" in (r.get("snippet") or r.get("content", "")).lower()
                    for r in results)
 
+    def test_search_stacked_boolean_operators_still_finds_content(self, db):
+        """Queries with stacked/adjacent boolean operators must not silently
+        return empty.
+
+        FTS5 rejects stacked operators ("a AND OR b", "a AND AND b") and
+        stacked leading operators ("AND NOT x") as syntax errors. The step-4
+        sanitizer only stripped a single operator at one edge, so these leaked
+        through, MATCH raised, and the swallowed error turned a query with real
+        terms into zero results — the same silent-empty class as the colon bug
+        (test_search_colon_query_still_finds_content).
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="docker and kubernetes deployment notes")
+
+        # Control: the well-formed boolean query finds the message.
+        assert len(db.search_messages("docker AND kubernetes")) >= 1
+
+        # Stacked/adjacent operators must still find it, not silently return [].
+        for query in (
+            "docker AND OR kubernetes",   # adjacent operators
+            "docker AND AND kubernetes",  # doubled operator
+            "AND docker",                 # leading operator
+            "docker OR OR kubernetes",    # doubled OR
+        ):
+            results = db.search_messages(query)
+            assert isinstance(results, list)
+            assert len(results) >= 1, f"Query {query!r} silently returned []"
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")
@@ -1362,6 +1390,25 @@ class TestFTS5Search:
         assert ':' not in s('TODO: fix')
         assert s('TODO: fix').split() == ['TODO', 'fix']
         assert ':' not in s('error:timeout')
+
+    def test_sanitize_fts5_query_collapses_stacked_operators(self):
+        """Stacked / adjacent / leading boolean operators are reduced to a
+        valid FTS5 query instead of leaking through as a syntax error."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Adjacent operators collapse to the first of the run.
+        assert s('a AND OR b') == 'a AND b'
+        assert s('docker AND AND kubernetes') == 'docker AND kubernetes'
+        assert s('x OR OR y') == 'x OR y'
+        assert s('a NOT NOT b') == 'a NOT b'
+        # Stacked leading operators are all dropped.
+        assert s('AND NOT docker') == 'docker'
+        # A query that is only operators reduces to empty.
+        assert s('AND OR NOT') == ''
+        assert s('NOT') == ''
+        # Single-edge cases still behave as before.
+        assert s('hello AND') == 'hello'
+        assert s('OR world') == 'world'
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""

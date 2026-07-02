@@ -147,6 +147,54 @@ class TestSecurityGating:
 
 
 # ---------------------------------------------------------------------------
+# credential scrubbing on the install ladder
+# ---------------------------------------------------------------------------
+
+
+class TestPipFallbackEnvScrub:
+    def test_pip_fallback_strips_provider_credentials(self, monkeypatch):
+        """The uv tier scrubs Hermes-managed secrets; the pip fallback tier must
+        too. On a host without uv, every lazy install goes through pip, and
+        without scrubbing the operator's provider keys leak into the pip
+        subprocess (and any package build hook it runs)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret-should-not-leak")
+
+        calls: list = []
+
+        class _Done:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def _fake_run(cmd, **kwargs):
+            calls.append((list(cmd), kwargs))
+            return _Done()
+
+        # No uv on PATH -> force the pip fallback tier.
+        _orig_which = ld.shutil.which
+        monkeypatch.setattr(
+            ld.shutil, "which",
+            lambda name: None if name == "uv" else _orig_which(name),
+        )
+        monkeypatch.setattr(ld.subprocess, "run", _fake_run)
+
+        ld._venv_pip_install(("harmless-pkg>=1.0",))
+
+        install = next(
+            c for c in calls
+            if "install" in c[0] and any("harmless-pkg" in a for a in c[0])
+        )
+        _cmd, kwargs = install
+        env = kwargs.get("env")
+        assert env is not None, (
+            "pip fallback must pass an explicit scrubbed env, not inherit os.environ"
+        )
+        assert "OPENROUTER_API_KEY" not in env, (
+            "provider credential leaked into the pip fallback subprocess env"
+        )
+
+
+# ---------------------------------------------------------------------------
 # ensure() happy/sad paths
 # ---------------------------------------------------------------------------
 

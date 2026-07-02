@@ -681,10 +681,17 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                                       f"pip not available and ensurepip failed: {e}")
 
         try:
+            # Scrub Hermes-managed credentials from the pip subprocess too, so
+            # the fallback tier matches the uv tier above. Without this, on any
+            # host without ``uv`` the pip child (and any package build hook it
+            # runs) inherits the operator's full environment — provider API
+            # keys, gateway tokens, GitHub auth — which #53937 set out to strip
+            # by default across the whole spawn surface.
             r = subprocess.run(
                 pip_cmd + ["install", *target_args, *constraint_args, *specs],
                 capture_output=True, text=True, timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                env=uv_env,
             )
             if r.returncode == 0 and target is not None:
                 _activate_target_on_syspath(target)

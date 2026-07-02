@@ -453,4 +453,49 @@ Result: OK, status "queued", all fields populated — PASS
 - `gateway/runtime/routes.py` — array message parsing fix
 
 ### Next task
-**Phase 11B — Harden approval/clarify live integration**
+**Phase 11C — True live AIAgent interruption and continuation, or PR submission if continuation remains out of scope.**
+
+---
+
+## Phase 11B — Approval/Clarify Lifecycle Integration (completed)
+
+### State Before Phase 11B
+- **Commit:** `5e34f8e`
+- **Message:** `Phase 11A: PR review — fix TOCTOU race in append_event and extend array message parsing`
+
+### What Was Done
+Replaced the 501 `not_supported` approval/clarify stubs with a first-class pending action lifecycle in `RunManager`:
+- `request_approval(run_id, approval_id, payload)` / `resolve_approval(run_id, approval_id, choice, payload)`
+- `request_clarify(run_id, clarify_id, payload)` / `resolve_clarify(run_id, clarify_id, answer, payload)`
+- Full error handling: not_found (404, run or action), conflict (409, terminal/duplicate)
+- Secret redaction in all payloads (9 key-name variants)
+- URL path run_id enforcement in routes
+- Status transitions back to running when all pending IDs cleared
+
+### Changed Files
+- `gateway/runtime/run_manager.py` — full approval/clarify lifecycle methods
+- `gateway/runtime/routes.py` — approval/clarify handlers with error mapping, URL path validation, body run_id rejection
+- `tests/gateway/test_runtime_approval_clarify.py` — new (38 tests)
+- `tests/gateway/test_runtime_run_manager.py` — updated
+- `tests/gateway/test_runtime_routes.py` — updated
+- `tests/gateway/test_runtime_server_mount.py` — updated
+
+### Exact Tests
+```
+scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py \
+  tests/gateway/test_runtime_approval_clarify.py
+Result: 154 passed, 0 failed (5 files)
+```
+
+### Live Smoke Status
+RunManager-level verified. HTTP endpoint smoke via `test_runtime_server_mount.py` integration tests. Full live AIAgent continuation deferred.
+
+### Remaining Risks
+1. True AIAgent continuation after approval/clarify — requires bridging session_key-based approval primitives to run_id-based runtime tracking
+2. The gateway's `GatewayRunner` owns the only live `AIAgent` instances; the runtime `RunManager` is an isolated storage layer
+
+### Next task
+**Phase 11C — True live AIAgent interruption and continuation, or PR submission if continuation remains out of scope.**

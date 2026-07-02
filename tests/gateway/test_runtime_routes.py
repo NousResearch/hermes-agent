@@ -163,31 +163,47 @@ class TestStopRunContract:
 
 
 class TestApprovalContract:
-    def test_post_approval_returns_not_supported(self):
+    def test_post_approval_unknown_id_returns_not_found(self):
         mgr = RunManager()
         r = mgr.create_run("sess")
-        result = mgr.resolve_approval(r["run_id"], "approve")
-        assert result["error"] == "not_supported"
+        result = mgr.resolve_approval(r["run_id"], "apr_unknown", "approve")
+        assert result["error"] == "not_found"
         assert "message" in result
 
     def test_approval_unknown_run_not_found(self):
         mgr = RunManager()
-        result = mgr.resolve_approval("run_nonexistent", "deny")
+        result = mgr.resolve_approval("run_nonexistent", "apr-1", "deny")
         assert result["error"] == "not_found"
+
+    def test_approval_resolution_works_with_request(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_approval(r["run_id"], "apr-1")
+        result = mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        assert result["status"] == "resolved"
+        assert result["type"] == "approval"
 
 
 class TestClarifyContract:
-    def test_post_clarify_returns_not_supported(self):
+    def test_post_clarify_unknown_id_returns_not_found(self):
         mgr = RunManager()
         r = mgr.create_run("sess")
-        result = mgr.resolve_clarify(r["run_id"], "my response")
-        assert result["error"] == "not_supported"
+        result = mgr.resolve_clarify(r["run_id"], "clar_unknown", "yes")
+        assert result["error"] == "not_found"
         assert "message" in result
 
     def test_clarify_unknown_run_not_found(self):
         mgr = RunManager()
-        result = mgr.resolve_clarify("run_nonexistent", "text")
+        result = mgr.resolve_clarify("run_nonexistent", "clar-1", "text")
         assert result["error"] == "not_found"
+
+    def test_clarify_resolution_works_with_request(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_clarify(r["run_id"], "clar-1")
+        result = mgr.resolve_clarify(r["run_id"], "clar-1", "yes")
+        assert result["status"] == "resolved"
+        assert result["type"] == "clarify"
 
 
 class TestErrorShapes:
@@ -199,13 +215,15 @@ class TestErrorShapes:
         assert result["error"] == "not_found"
         assert isinstance(result["message"], str)
 
-    def test_not_supported_error_has_standard_shape(self):
+    def test_conflict_error_has_standard_shape(self):
         mgr = RunManager()
         r = mgr.create_run("sess")
-        result = mgr.resolve_approval(r["run_id"], "approve")
+        mgr.request_approval(r["run_id"], "apr-1")
+        mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        result = mgr.resolve_approval(r["run_id"], "apr-1", "approve")
         assert "error" in result
         assert "message" in result
-        assert result["error"] == "not_supported"
+        assert result["error"] == "conflict"
 
     def test_redaction_applied_to_error_responses(self):
         mgr = RunManager()
@@ -223,5 +241,5 @@ class TestMalformedRequests:
             assert mgr.get_status(rid) is None
             assert mgr.read_events(rid) is None
             assert mgr.stop_run(rid).get("error") == "not_found"
-            assert mgr.resolve_approval(rid, "approve").get("error") == "not_found"
-            assert mgr.resolve_clarify(rid, "text").get("error") == "not_found"
+            assert mgr.resolve_approval(rid, "apr-1", "approve").get("error") == "not_found"
+            assert mgr.resolve_clarify(rid, "clar-1", "text").get("error") == "not_found"

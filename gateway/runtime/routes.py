@@ -245,6 +245,17 @@ def register_runtime_routes(
                 error_formatter("Invalid JSON"), status=400
             )
 
+        body_run_id = str(body.get("run_id", "")).strip()
+        if body_run_id and body_run_id != run_id:
+            return web.json_response(
+                error_formatter(
+                    "run_id mismatch: URL path run_id must match or be omitted from body",
+                    code="invalid_request_error",
+                ),
+                status=400,
+            )
+
+        approval_id = str(body.get("approval_id", "")).strip()
         choice = str(body.get("choice", "")).strip()
         if not choice:
             return web.json_response(
@@ -252,26 +263,25 @@ def register_runtime_routes(
                 status=400,
             )
 
-        result = run_manager.resolve_approval(run_id, choice)
+        result = run_manager.resolve_approval(run_id, approval_id, choice)
 
         if result.get("error") == "not_found":
+            msg = str(result.get("message", ""))
+            code = "run_not_found"
+            if "Approval" in msg:
+                code = "action_not_found"
             return web.json_response(
-                error_formatter(
-                    f"Run not found: {run_id}",
-                    code="run_not_found",
-                ),
+                error_formatter(msg, code=code),
                 status=404,
             )
 
-        if result.get("error") == "not_supported":
+        if result.get("error") == "conflict":
             return web.json_response(
-                {
-                    "object": "hermes.run.approval_response",
-                    "run_id": run_id,
-                    "status": "not_supported",
-                    "message": result.get("message", ""),
-                },
-                status=501,
+                error_formatter(
+                    str(result.get("message", "")),
+                    code="conflict",
+                ),
+                status=409,
             )
 
         return web.json_response(
@@ -291,7 +301,18 @@ def register_runtime_routes(
                 error_formatter("Invalid JSON"), status=400
             )
 
-        response_text = body.get("response") or body.get("text") or ""
+        body_run_id = str(body.get("run_id", "")).strip()
+        if body_run_id and body_run_id != run_id:
+            return web.json_response(
+                error_formatter(
+                    "run_id mismatch: URL path run_id must match or be omitted from body",
+                    code="invalid_request_error",
+                ),
+                status=400,
+            )
+
+        clarify_id = str(body.get("clarify_id", "")).strip()
+        response_text = body.get("response") or body.get("text") or body.get("answer") or ""
         if not response_text:
             return web.json_response(
                 error_formatter(
@@ -300,26 +321,25 @@ def register_runtime_routes(
                 status=400,
             )
 
-        result = run_manager.resolve_clarify(run_id, str(response_text))
+        result = run_manager.resolve_clarify(run_id, clarify_id, str(response_text))
 
         if result.get("error") == "not_found":
+            msg = str(result.get("message", ""))
+            code = "run_not_found"
+            if "Clarify" in msg:
+                code = "action_not_found"
             return web.json_response(
-                error_formatter(
-                    f"Run not found: {run_id}",
-                    code="run_not_found",
-                ),
+                error_formatter(msg, code=code),
                 status=404,
             )
 
-        if result.get("error") == "not_supported":
+        if result.get("error") == "conflict":
             return web.json_response(
-                {
-                    "object": "hermes.run.clarify_response",
-                    "run_id": run_id,
-                    "status": "not_supported",
-                    "message": result.get("message", ""),
-                },
-                status=501,
+                error_formatter(
+                    str(result.get("message", "")),
+                    code="conflict",
+                ),
+                status=409,
             )
 
         return web.json_response(

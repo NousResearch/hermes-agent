@@ -247,3 +247,75 @@ git revert 40a255a
 ```
 
 The `gateway/runtime/` package is an additive layer with no callers yet. Removing the directory and tests would have zero impact on the running Agent server.
+
+## Phase 11B Approval/Clarify Integration
+
+### Implemented Behavior
+
+Replaced the 501 `not_supported` approval/clarify stubs with a first-class pending action lifecycle in `RunManager`:
+
+- **`request_approval(run_id, approval_id, payload)`** — creates pending approval, appends `approval.requested` event, transitions to `awaiting_approval`
+- **`resolve_approval(run_id, approval_id, choice, payload=None)`** — removes pending ID, appends `approval.resolved` event, returns resolved response
+- **`request_clarify(run_id, clarify_id, payload)`** — creates pending clarify, appends `clarify.requested` event, transitions to `awaiting_clarify`
+- **`resolve_clarify(run_id, clarify_id, answer, payload=None)`** — removes pending ID, appends `clarify.resolved` event, returns resolved response
+
+Error behavior:
+- Unknown run → `not_found` (404)
+- Unknown action_id → `not_found` with `action_not_found` code (404)
+- Terminal run → `conflict` (409)
+- Duplicate resolution → `conflict` (409)
+- No pending action and no live resolver → `not_found` (not `not_supported`)
+
+Status transitions:
+- `resolve_approval`/`resolve_clarify` remove resolved IDs; when all pending IDs are cleared, status transitions back to `running`
+- Multiple pending approvals/clarifies supported; status stays `awaiting_*` until all cleared
+
+Secret redaction:
+- 9 key-name variants (`api_key`, `token`, `password`, etc.) redacted in all request/resolve payloads
+- Resolution event payload is redacted before storage
+- Uses existing `redact_secrets()` from `models.py`
+
+URL path run_id enforcement:
+- Routes reject requests where body `run_id` differs from URL path `run_id`
+
+### Resolver Architecture
+
+No live AIAgent continuation reference is available in the runtime layer. The gateway's real approval/clarify mechanisms live in `gateway/run.py` with `tools/approval.py` and `tools/clarify_gateway.py`, which use threading events keyed by session, not run_id. The runtime RunManager provides the strongest safe runtime-control layer on its own.
+
+### Tests Run
+
+```
+scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py \
+  tests/gateway/test_runtime_approval_clarify.py
+Result: 154 tests passed, 0 failed (5 files) — PASS
+```
+
+### Import Smoke
+
+```python
+from gateway.runtime.run_manager import RunManager
+m = RunManager()
+m.request_approval(run_id, "approval_smoke", {"command": "echo ok", "api_key": "SHOULD_REDACT"})
+r = m.resolve_approval(run_id, "approval_smoke", choice="approve")
+# Status: resolved, secrets redacted, events appended — PASS
+```
+
+### Live Smoke
+
+RunManager-level verified. Full HTTP live smoke deferred due to lack of test-only injection endpoints for pending actions on the standalone server. The `test_runtime_server_mount.py` integration tests validate the full aiohttp route path.
+
+### Remaining Deferred Items
+
+1. True AIAgent continuation after approval/clarify — requires bridging session_key-based approval primitives (`tools/approval.py`) to run_id-based runtime tracking. The gateway's `GatewayRunner` owns the only live `AIAgent` instances.
+
+### Files Changed
+
+- `gateway/runtime/run_manager.py` — full approval/clarify lifecycle methods
+- `gateway/runtime/routes.py` — approval/clarify handlers with error mapping, URL path validation
+- `tests/gateway/test_runtime_approval_clarify.py` — new test file (38 tests)
+- `tests/gateway/test_runtime_run_manager.py` — updated TestApprovalAndClarify → TestApprovalRequestAndResolve
+- `tests/gateway/test_runtime_routes.py` — updated contract tests
+- `tests/gateway/test_runtime_server_mount.py` — updated server mount tests

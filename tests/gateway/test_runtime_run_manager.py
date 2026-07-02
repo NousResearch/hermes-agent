@@ -16,14 +16,19 @@ from gateway.runtime.run_manager import RunManager
 from gateway.runtime.models import (
     RUN_STATUS_QUEUED,
     RUN_STATUS_RUNNING,
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_AWAITING_CLARIFY,
     RUN_STATUS_CANCELLING,
     RUN_STATUS_CANCELLED,
     RUN_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
     EVENT_RUN_STARTED,
+    EVENT_APPROVAL_REQUESTED,
+    EVENT_APPROVAL_RESOLVED,
+    EVENT_CLARIFY_REQUESTED,
+    EVENT_CLARIFY_RESOLVED,
     EVENT_DONE,
     EVENT_ERROR,
-    EVENT_APPROVAL_REQUESTED,
     TERMINAL_STATUSES,
 )
 
@@ -247,28 +252,95 @@ class TestStatusTransitions:
         assert result["status"] == "cancelled"
 
 
-class TestApprovalAndClarify:
-    def test_approval_unsupported_on_known_run(self):
+class TestApprovalRequestAndResolve:
+    def test_request_approval_adds_pending_id_and_events(self):
         mgr = RunManager()
-        r = mgr.create_run("s")
-        result = mgr.resolve_approval(r["run_id"], "approve")
-        assert result["error"] == "not_supported"
+        r = mgr.create_run("sess")
+        result = mgr.request_approval(r["run_id"], "apr-1", payload={"command": "ls"})
+        assert result is not None
+        status = mgr.get_status(r["run_id"])
+        assert "apr-1" in status["pending_approval_ids"]
+        events = mgr.read_events(r["run_id"])
+        types = [e["type"] for e in events["events"]]
+        assert EVENT_APPROVAL_REQUESTED in types
 
-    def test_approval_unknown_run_returns_not_found(self):
+    def test_resolve_approval_removes_pending_id_and_appends_event(self):
         mgr = RunManager()
-        result = mgr.resolve_approval("run_nonexistent", "approve")
+        r = mgr.create_run("sess")
+        mgr.request_approval(r["run_id"], "apr-1")
+        result = mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        assert result.get("status") == "resolved"
+        status = mgr.get_status(r["run_id"])
+        assert "apr-1" not in status["pending_approval_ids"]
+        events = mgr.read_events(r["run_id"])
+        types = [e["type"] for e in events["events"]]
+        assert EVENT_APPROVAL_RESOLVED in types
+
+    def test_resolve_approval_unknown_run_returns_not_found(self):
+        mgr = RunManager()
+        result = mgr.resolve_approval("run_nonexistent", "apr-1", "approve")
         assert result["error"] == "not_found"
 
-    def test_clarify_unsupported_on_known_run(self):
+    def test_resolve_approval_unknown_id_returns_not_found(self):
         mgr = RunManager()
-        r = mgr.create_run("s")
-        result = mgr.resolve_clarify(r["run_id"], "response text")
-        assert result["error"] == "not_supported"
-
-    def test_clarify_unknown_run_returns_not_found(self):
-        mgr = RunManager()
-        result = mgr.resolve_clarify("run_nonexistent", "response")
+        r = mgr.create_run("sess")
+        result = mgr.resolve_approval(r["run_id"], "apr_unknown", "approve")
         assert result["error"] == "not_found"
+
+    def test_resolve_approval_duplicate_returns_conflict(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_approval(r["run_id"], "apr-1")
+        mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        result = mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        assert result["error"] == "conflict"
+
+    def test_resolve_approval_terminal_run_returns_conflict(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_approval(r["run_id"], "apr-1")
+        mgr.stop_run(r["run_id"])
+        result = mgr.resolve_approval(r["run_id"], "apr-1", "approve")
+        assert result["error"] == "conflict"
+
+    def test_request_clarify_adds_pending_id_and_events(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        result = mgr.request_clarify(r["run_id"], "clar-1", payload={"question": "OK?"})
+        assert result is not None
+        status = mgr.get_status(r["run_id"])
+        assert "clar-1" in status["pending_clarify_ids"]
+
+    def test_resolve_clarify_removes_pending_id_and_appends_event(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_clarify(r["run_id"], "clar-1")
+        result = mgr.resolve_clarify(r["run_id"], "clar-1", "yes")
+        assert result.get("status") == "resolved"
+        status = mgr.get_status(r["run_id"])
+        assert "clar-1" not in status["pending_clarify_ids"]
+
+    def test_resolve_clarify_unknown_id_returns_not_found(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        result = mgr.resolve_clarify(r["run_id"], "clar_unknown", "yes")
+        assert result["error"] == "not_found"
+
+    def test_clarify_duplicate_returns_conflict(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_clarify(r["run_id"], "clar-1")
+        mgr.resolve_clarify(r["run_id"], "clar-1", "yes")
+        result = mgr.resolve_clarify(r["run_id"], "clar-1", "yes")
+        assert result["error"] == "conflict"
+
+    def test_clarify_terminal_run_returns_conflict(self):
+        mgr = RunManager()
+        r = mgr.create_run("sess")
+        mgr.request_clarify(r["run_id"], "clar-1")
+        mgr.stop_run(r["run_id"])
+        result = mgr.resolve_clarify(r["run_id"], "clar-1", "yes")
+        assert result["error"] == "conflict"
 
 
 class TestThreadSafety:

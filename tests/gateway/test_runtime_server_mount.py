@@ -9,8 +9,8 @@ Covers:
 - GET  /v1/runs/{run_id} — poll status
 - GET  /v1/runs/{run_id}/events — JSON event replay
 - POST /v1/runs/{run_id}/stop — interrupt
-- POST /v1/runs/{run_id}/approval — not_supported (501)
-- POST /v1/runs/{run_id}/clarify — not_supported (501)
+- POST /v1/runs/{run_id}/approval — resolve lifecycle
+- POST /v1/runs/{run_id}/clarify — resolve lifecycle
 - Unknown run → 404
 - Secret redaction in responses
 - Malformed requests → 400
@@ -337,14 +337,14 @@ class TestStopRunViaServer:
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/runs/{run_id}/approval — resolve (not_supported)
+# POST /v1/runs/{run_id}/approval — resolve (not_found without request)
 # ---------------------------------------------------------------------------
 
 
 class TestApprovalViaServer:
 
     @pytest.mark.asyncio
-    async def test_returns_not_supported_501(self):
+    async def test_without_request_returns_404(self):
         app = _create_runtime_app()
         async with TestClient(TestServer(app)) as cli:
             create_resp = await cli.post("/v1/runs", json=_create_body())
@@ -353,12 +353,11 @@ class TestApprovalViaServer:
 
             resp = await cli.post(
                 f"/v1/runs/{run_id}/approval",
-                json={"choice": "once"},
+                json={"choice": "once", "approval_id": "apr_test"},
             )
-            assert resp.status == 501
+            assert resp.status == 404
             body = await resp.json()
-            assert body["status"] == "not_supported"
-            assert body["run_id"] == run_id
+            assert body["error"]["code"] == "action_not_found"
 
     @pytest.mark.asyncio
     async def test_missing_choice_returns_400(self):
@@ -380,22 +379,36 @@ class TestApprovalViaServer:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 "/v1/runs/run_nonexistent/approval",
-                json={"choice": "deny"},
+                json={"choice": "deny", "approval_id": "apr-1"},
             )
             assert resp.status == 404
             data = await resp.json()
             assert data["error"]["code"] == "run_not_found"
 
+    @pytest.mark.asyncio
+    async def test_url_body_run_id_mismatch_returns_400(self):
+        app = _create_runtime_app()
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            data = await create_resp.json()
+            run_id = data["run_id"]
+
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "once", "run_id": "different_run"},
+            )
+            assert resp.status == 400
+
 
 # ---------------------------------------------------------------------------
-# POST /v1/runs/{run_id}/clarify — resolve (not_supported)
+# POST /v1/runs/{run_id}/clarify — resolve (not_found without request)
 # ---------------------------------------------------------------------------
 
 
 class TestClarifyViaServer:
 
     @pytest.mark.asyncio
-    async def test_returns_not_supported_501(self):
+    async def test_without_request_returns_404(self):
         app = _create_runtime_app()
         async with TestClient(TestServer(app)) as cli:
             create_resp = await cli.post("/v1/runs", json=_create_body())
@@ -404,15 +417,14 @@ class TestClarifyViaServer:
 
             resp = await cli.post(
                 f"/v1/runs/{run_id}/clarify",
-                json={"response": "my answer"},
+                json={"response": "my answer", "clarify_id": "clar_test"},
             )
-            assert resp.status == 501
+            assert resp.status == 404
             body = await resp.json()
-            assert body["status"] == "not_supported"
-            assert body["run_id"] == run_id
+            assert body["error"]["code"] == "action_not_found"
 
     @pytest.mark.asyncio
-    async def test_accepts_text_field(self):
+    async def test_accepts_answer_field(self):
         app = _create_runtime_app()
         async with TestClient(TestServer(app)) as cli:
             create_resp = await cli.post("/v1/runs", json=_create_body())
@@ -421,11 +433,11 @@ class TestClarifyViaServer:
 
             resp = await cli.post(
                 f"/v1/runs/{run_id}/clarify",
-                json={"text": "my answer"},
+                json={"answer": "my answer", "clarify_id": "clar_test"},
             )
-            assert resp.status == 501
+            assert resp.status == 404
             body = await resp.json()
-            assert body["status"] == "not_supported"
+            assert body["error"]["code"] == "action_not_found"
 
     @pytest.mark.asyncio
     async def test_missing_response_returns_400(self):
@@ -447,11 +459,25 @@ class TestClarifyViaServer:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 "/v1/runs/run_nonexistent/clarify",
-                json={"response": "text"},
+                json={"response": "text", "clarify_id": "clar-1"},
             )
             assert resp.status == 404
             data = await resp.json()
             assert data["error"]["code"] == "run_not_found"
+
+    @pytest.mark.asyncio
+    async def test_url_body_run_id_mismatch_returns_400(self):
+        app = _create_runtime_app()
+        async with TestClient(TestServer(app)) as cli:
+            create_resp = await cli.post("/v1/runs", json=_create_body())
+            data = await create_resp.json()
+            run_id = data["run_id"]
+
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/clarify",
+                json={"response": "yes", "run_id": "different_run"},
+            )
+            assert resp.status == 400
 
 
 # ---------------------------------------------------------------------------

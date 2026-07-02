@@ -13,16 +13,23 @@ from gateway.runtime.models import (
     RuntimeEvent,
     RuntimeStatus,
     RUN_STATUS_QUEUED,
+    RUN_STATUS_AWAITING_APPROVAL,
+    RUN_STATUS_AWAITING_CLARIFY,
     RUN_STATUS_CANCELLING,
     RUN_STATUS_CANCELLED,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     EVENT_RUN_STARTED,
     EVENT_RUN_STATUS,
+    EVENT_APPROVAL_REQUESTED,
+    EVENT_APPROVAL_RESOLVED,
+    EVENT_CLARIFY_REQUESTED,
+    EVENT_CLARIFY_RESOLVED,
     EVENT_DONE,
     EVENT_ERROR,
     TERMINAL_STATUSES,
     TERMINAL_EVENT_TYPES,
+    redact_secrets,
 )
 
 
@@ -268,36 +275,210 @@ class RunManager:
             )
             return status.to_dict()
 
+    def request_approval(
+        self,
+        run_id: str,
+        approval_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            status = self._runs.get(run_id)
+            if status is None:
+                return None
+            if status.terminal:
+                return None
+            payload = payload or {}
+            clean_payload = redact_secrets(dict(payload))
+            status.pending_approval_ids.append(approval_id)
+            status.status = RUN_STATUS_AWAITING_APPROVAL
+            status.updated_at = time.time()
+            self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_APPROVAL_REQUESTED,
+                payload={
+                    "approval_id": approval_id,
+                    "payload": clean_payload,
+                },
+            )
+            self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_RUN_STATUS,
+                payload={
+                    "status": RUN_STATUS_AWAITING_APPROVAL,
+                    "previous": RUN_STATUS_QUEUED,
+                },
+            )
+            return {
+                "run_id": run_id,
+                "approval_id": approval_id,
+                "status": "requested",
+            }
+
     def resolve_approval(
         self,
         run_id: str,
+        approval_id: str,
         choice: str,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         with self._lock:
-            if run_id not in self._runs:
+            status = self._runs.get(run_id)
+            if status is None:
                 return {
                     "error": "not_found",
                     "message": f"Run not found: {run_id}",
                 }
+            if approval_id not in status.pending_approval_ids:
+                already = False
+                events = self._events.get(run_id, [])
+                for ev in events:
+                    p = ev.payload
+                    if isinstance(p, dict) and p.get("approval_id") == approval_id:
+                        if ev.type in (EVENT_APPROVAL_RESOLVED,):
+                            already = True
+                            break
+                if already:
+                    return {
+                        "error": "conflict",
+                        "message": f"Approval {approval_id} has already been resolved.",
+                    }
+                return {
+                    "error": "not_found",
+                    "message": f"Approval {approval_id} not found for run {run_id}.",
+                }
+            if status.terminal:
+                return {
+                    "error": "conflict",
+                    "message": f"Run {run_id} is in terminal state and cannot accept approval resolution.",
+                }
+            payload = payload or {}
+            clean_payload = redact_secrets(dict(payload))
+            status.pending_approval_ids.remove(approval_id)
+            if not status.pending_approval_ids and not status.pending_clarify_ids:
+                status.status = RUN_STATUS_QUEUED
+            status.controls = list(status.controls)
+            status.updated_at = time.time()
+            event = self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_APPROVAL_RESOLVED,
+                payload={
+                    "approval_id": approval_id,
+                    "choice": choice,
+                    "payload": clean_payload,
+                },
+            )
             return {
-                "error": "not_supported",
-                "message": "Approval resolution is not supported by the current runtime implementation.",
+                "run_id": run_id,
+                "action_id": approval_id,
+                "type": "approval",
+                "status": "resolved",
+                "event": event.to_dict(redact=True),
+            }
+
+    def request_clarify(
+        self,
+        run_id: str,
+        clarify_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            status = self._runs.get(run_id)
+            if status is None:
+                return None
+            if status.terminal:
+                return None
+            payload = payload or {}
+            clean_payload = redact_secrets(dict(payload))
+            status.pending_clarify_ids.append(clarify_id)
+            status.status = RUN_STATUS_AWAITING_CLARIFY
+            status.updated_at = time.time()
+            self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_CLARIFY_REQUESTED,
+                payload={
+                    "clarify_id": clarify_id,
+                    "payload": clean_payload,
+                },
+            )
+            self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_RUN_STATUS,
+                payload={
+                    "status": RUN_STATUS_AWAITING_CLARIFY,
+                    "previous": RUN_STATUS_QUEUED,
+                },
+            )
+            return {
+                "run_id": run_id,
+                "clarify_id": clarify_id,
+                "status": "requested",
             }
 
     def resolve_clarify(
         self,
         run_id: str,
-        response: str,
+        clarify_id: str,
+        answer: str,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         with self._lock:
-            if run_id not in self._runs:
+            status = self._runs.get(run_id)
+            if status is None:
                 return {
                     "error": "not_found",
                     "message": f"Run not found: {run_id}",
                 }
+            if clarify_id not in status.pending_clarify_ids:
+                already = False
+                events = self._events.get(run_id, [])
+                for ev in events:
+                    p = ev.payload
+                    if isinstance(p, dict) and p.get("clarify_id") == clarify_id:
+                        if ev.type in (EVENT_CLARIFY_RESOLVED,):
+                            already = True
+                            break
+                if already:
+                    return {
+                        "error": "conflict",
+                        "message": f"Clarify {clarify_id} has already been resolved.",
+                    }
+                return {
+                    "error": "not_found",
+                    "message": f"Clarify {clarify_id} not found for run {run_id}.",
+                }
+            if status.terminal:
+                return {
+                    "error": "conflict",
+                    "message": f"Run {run_id} is in terminal state and cannot accept clarify resolution.",
+                }
+            payload = payload or {}
+            clean_payload = redact_secrets(dict(payload))
+            status.pending_clarify_ids.remove(clarify_id)
+            if not status.pending_approval_ids and not status.pending_clarify_ids:
+                status.status = RUN_STATUS_QUEUED
+            status.controls = list(status.controls)
+            status.updated_at = time.time()
+            event = self._append_event(
+                run_id=run_id,
+                session_id=status.session_id,
+                event_type=EVENT_CLARIFY_RESOLVED,
+                payload={
+                    "clarify_id": clarify_id,
+                    "answer": answer,
+                    "payload": clean_payload,
+                },
+            )
             return {
-                "error": "not_supported",
-                "message": "Clarify resolution is not supported by the current runtime implementation.",
+                "run_id": run_id,
+                "action_id": clarify_id,
+                "type": "clarify",
+                "status": "resolved",
+                "event": event.to_dict(redact=True),
             }
 
     def _append_event(

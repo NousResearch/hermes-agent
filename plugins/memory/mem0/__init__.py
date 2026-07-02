@@ -9,10 +9,15 @@ Configuration
 -------------
 Secret (lives in $HERMES_HOME/.env or the environment):
   MEM0_API_KEY       — Mem0 Platform API key (required for platform mode)
+  MEM0_HOST          — Base URL of a self-hosted Mem0 server. When set, the
+                       plugin talks to that server directly over HTTP
+                       (X-API-Key auth) instead of the cloud API.
 
 Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hermes memory
 setup`):
   mode               — Backend mode: "platform" (default) or "oss"
+  host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
+                       When set, routes to the self-hosted HTTP backend.
   user_id            — Canonical user identifier. When set, it is applied
                        uniformly across every gateway (CLI, Telegram, Slack,
                        Discord, …) so the same human gets one merged memory
@@ -44,7 +49,7 @@ logger = logging.getLogger(__name__)
 # for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
-_PREFETCH_WAIT_SECS = 1.5
+_PREFETCH_WAIT_SECS = 3
 
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
@@ -81,6 +86,7 @@ def _load_config() -> dict:
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
     }
@@ -107,41 +113,22 @@ def _load_config() -> dict:
 # Tool schemas
 # ---------------------------------------------------------------------------
 
-LIST_SCHEMA = {
-    "name": "mem0_list",
-    "description": (
-        "List ALL stored memories about the user, unranked and paginated. "
-        "Use for a full overview/audit at conversation start, or to browse "
-        "everything when you don't have a specific query. For answering a "
-        "specific question, prefer mem0_search."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "page": {"type": "integer", "description": "Page number (default: 1)."},
-            "page_size": {"type": "integer", "description": "Results per page (default: 100, max: 200)."},
-        },
-        "required": [],
-    },
-}
-
 SEARCH_SCHEMA = {
     "name": "mem0_search",
     "description": (
         "Search the user's memories by meaning; returns facts ranked by "
-        "relevance. Use this BEFORE answering any question that may depend on "
+        "relevance. Use this before answering any question that may depend on "
         "what you know about the user (preferences, facts, history, people, "
         "projects, past decisions). For multi-part or multi-hop questions, "
-        "call it MULTIPLE times — vary the wording and run follow-up searches "
-        "on what earlier results reveal; one search is rarely enough. Set "
-        "rerank=true for higher accuracy on important queries."
+        "call it several times — vary the wording and run follow-up searches "
+        "on what earlier results reveal; one search is rarely enough."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
-            "rerank": {"type": "boolean", "description": "Rerank results for relevance (default: true, platform mode only)."},
+            "rerank": {"type": "boolean", "description": "Rerank results for relevance (default: false, platform mode only)."},
         },
         "required": ["query"],
     },
@@ -169,7 +156,7 @@ UPDATE_SCHEMA = {
     "name": "mem0_update",
     "description": (
         "Replace the text of an existing memory by its ID (take the ID from a "
-        "mem0_search or mem0_list result). Use when a stored fact has changed "
+        "mem0_search result). Use when a stored fact has changed "
         "or was wrong — correct it in place instead of adding a duplicate."
     ),
     "parameters": {
@@ -185,7 +172,7 @@ UPDATE_SCHEMA = {
 DELETE_SCHEMA = {
     "name": "mem0_delete",
     "description": (
-        "Delete a memory by its ID (take the ID from a mem0_search or mem0_list "
+        "Delete a memory by its ID (take the ID from a mem0_search "
         "result). Use when a stored fact is obsolete or the user asks you to "
         "forget it; prefer mem0_update if the fact merely changed."
     ),
@@ -214,6 +201,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._backend = None
         self._mode = "platform"
         self._api_key = ""
+        self._host = ""
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
@@ -239,7 +227,9 @@ class Mem0MemoryProvider(MemoryProvider):
         mode = cfg.get("mode", "platform")
         if mode == "oss":
             return bool(cfg.get("oss", {}).get("vector_store"))
-        return bool(cfg.get("api_key"))
+        # Platform needs an api_key; self-hosted needs a host (api_key optional
+        # when the server runs with AUTH_DISABLED).
+        return bool(cfg.get("api_key") or cfg.get("host"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -262,9 +252,10 @@ class Mem0MemoryProvider(MemoryProvider):
         api_key_required = mode != "oss"
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-            {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -288,6 +279,9 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))
+            if self._host:
+                from ._backend import SelfHostedBackend
+                return SelfHostedBackend(self._api_key, self._host)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
         except Exception as e:
@@ -342,6 +336,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Resolution order for user_id:
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
@@ -378,22 +373,28 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"channel": self._channel} if self._channel else {}
 
     def system_prompt_block(self) -> str:
-        mode_label = "platform (cloud API)" if self._mode == "platform" else "OSS (self-hosted)"
-        rerank_note = " Rerank is available on search." if self._mode == "platform" else ""
+        if self._host:
+            mode_label = "self-hosted (HTTP API)"
+        elif self._mode == "platform":
+            mode_label = "platform (cloud API)"
+        else:
+            mode_label = "OSS (self-hosted)"
+        # Rerank is a Mem0 Platform feature only.
+        rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
         return (
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
             "You have persistent memory of this user from past conversations. "
-            "ALWAYS call mem0_search before answering anything that could depend "
+            "You should call mem0_search before answering anything that could depend "
             "on prior context (the user's preferences, facts, history, people, "
             "projects, or earlier decisions) — do not rely on the chat window "
             "alone, and do not assume you have no memory.\n"
-            "For multi-part or multi-hop questions, run SEVERAL searches with "
+            "For multi-part or multi-hop questions, run several searches with "
             "different wording/angles and follow-up searches on what the first "
             "results surface; one search is rarely enough. Keep searching until "
             "you have every fact the question needs before you answer.\n"
             "Tools: mem0_search to find memories, mem0_add to store facts, "
-            f"mem0_list for a full overview, mem0_update and mem0_delete to manage by ID.{rerank_note}"
+            f"mem0_update and mem0_delete to manage by ID.{rerank_note}"
         )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -426,7 +427,7 @@ class Mem0MemoryProvider(MemoryProvider):
             body = ""
             try:
                 results = backend.search(
-                    query, filters=self._read_filters(), top_k=10, rerank=True,
+                    query, filters=self._read_filters(), top_k=10, rerank=False,
                 )
                 lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
                 if lines:
@@ -497,7 +498,7 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [LIST_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:
@@ -516,36 +517,13 @@ class Mem0MemoryProvider(MemoryProvider):
                 msg += f" Check that your {vs.get('provider', 'vector store')} is running."
             return json.dumps({"error": msg})
 
-        if tool_name == "mem0_list":
-            try:
-                page = max(1, int(args.get("page", 1)))
-                page_size = min(max(1, int(args.get("page_size", 100))), 200)
-                response = self._backend.get_all(
-                    filters=self._read_filters(), page=page, page_size=page_size,
-                )
-                self._record_success()
-                results = response.get("results", [])
-                if not results:
-                    return json.dumps({"result": "No memories stored yet."})
-                items = [{"id": m.get("id"), "memory": m.get("memory", "")}
-                         for m in results]
-                return json.dumps({
-                    "results": items,
-                    "count": response.get("count", len(items)),
-                    "page": page, "page_size": page_size,
-                })
-            except Exception as e:
-                if not _is_client_error(e):
-                    self._record_failure()
-                return tool_error(self._format_error("Failed to list memories", e))
-
-        elif tool_name == "mem0_search":
+        if tool_name == "mem0_search":
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
                 top_k = max(1, min(int(args.get("top_k", 10)), 50))
-                rerank_raw = args.get("rerank", True)
+                rerank_raw = args.get("rerank", False)
                 if isinstance(rerank_raw, str):
                     rerank = rerank_raw.lower() not in ("false", "0", "no")
                 else:
@@ -576,7 +554,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 )
                 self._record_success()
                 event_id = result.get("event_id") if isinstance(result, dict) else None
-                msg = "Fact stored." if self._mode == "oss" else "Fact queued for storage."
+                # Cloud add is async (server-side extraction); OSS and self-hosted store synchronously.
+                msg = "Fact stored." if (self._mode == "oss" or self._host) else "Fact queued for storage."
                 return json.dumps({"result": msg, "event_id": event_id})
             except Exception as e:
                 self._record_failure()

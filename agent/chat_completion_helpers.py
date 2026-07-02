@@ -1884,7 +1884,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
-    request_client_holder = {"client": None, "diag": None, "owner_tid": None}
+    request_client_holder = {
+        "client": None,
+        "kind": None,
+        "diag": None,
+        "owner_tid": None,
+    }
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
     # rationale. The streaming retry loop is where the 7-minute cascading-
@@ -1898,9 +1903,43 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _set_request_client(client):
         with request_client_lock:
             request_client_holder["client"] = client
+            request_client_holder["kind"] = "openai_client"
             # See #29507 explanation in the non-streaming variant above.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
+
+    def _stream_close_callable(stream):
+        close = getattr(stream, "close", None)
+        if callable(close):
+            return close
+        response = getattr(stream, "response", None)
+        close = getattr(response, "close", None)
+        if callable(close):
+            return close
+        return None
+
+    def _set_request_stream_handle(stream):
+        if _stream_close_callable(stream) is None:
+            return stream
+        with request_client_lock:
+            request_client_holder["client"] = stream
+            request_client_holder["kind"] = "stream"
+            request_client_holder["owner_tid"] = threading.get_ident()
+        return stream
+
+    def _close_request_stream_handle(stream, reason: str) -> None:
+        close = _stream_close_callable(stream)
+        if close is None:
+            return
+        try:
+            close()
+            logger.info("Streaming response handle closed (%s)", reason)
+        except Exception as exc:
+            logger.debug(
+                "Streaming response handle close failed (%s): %s",
+                reason,
+                exc,
+            )
 
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A
@@ -1909,18 +1948,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # so the worker thread retains ownership of the FD release.
         with request_client_lock:
             request_client = request_client_holder.get("client")
+            request_kind = request_client_holder.get("kind")
             owner_tid = request_client_holder.get("owner_tid")
             stranger_thread = (
-                request_client is not None
+                request_kind == "openai_client"
+                and request_client is not None
                 and owner_tid is not None
                 and owner_tid != threading.get_ident()
             )
             if not stranger_thread:
                 request_client_holder["client"] = None
+                request_client_holder["kind"] = None
                 request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        if stranger_thread:
+        if request_kind == "stream":
+            _close_request_stream_handle(request_client, reason)
+        elif stranger_thread:
             agent._abort_request_openai_client(request_client, reason=reason)
         else:
             agent._close_request_openai_client(request_client, reason=reason)
@@ -2037,6 +2081,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = create(**stream_kwargs)
+        if agent.provider == "moa":
+            stream = _set_request_stream_handle(stream)
 
         # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
         # openai-codex aggregator) accept stream=True but still return a

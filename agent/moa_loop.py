@@ -618,6 +618,10 @@ class MoAChatCompletions:
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        # Resolved aggregator slot ({provider, model, ...}) from the most recent
+        # create(); read by session cost accounting to price the aggregator's
+        # acting turn at its real model instead of the virtual preset name.
+        self.last_aggregator_slot: Any = None
         # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
@@ -704,10 +708,24 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
-        # MoA does not cap reference or aggregator output: each model uses its
-        # own maximum. Passing max_tokens=None makes call_llm omit the parameter
-        # (it never caps by default), so a long aggregator synthesis is never
-        # truncated and providers that reject max_tokens don't 400.
+        # Expose the resolved aggregator slot so session cost accounting can
+        # price the aggregator's acting turn at its REAL model/provider. The
+        # agent's model/provider on the MoA path are the virtual preset name
+        # ("closed") and "moa", which have no pricing entry — without this the
+        # aggregator's spend (often the bulk of the turn) is silently dropped
+        # and the session cost reflects advisor fan-out only.
+        self.last_aggregator_slot = dict(aggregator) if aggregator else None
+        # By default MoA does not cap reference or aggregator output: each model
+        # uses its own maximum (max_tokens=None → call_llm omits the parameter,
+        # so a long aggregator synthesis is never truncated and providers that
+        # reject max_tokens don't 400). A preset MAY set reference_max_tokens to
+        # cap ADVISOR output only — advisor generation is the dominant MoA
+        # latency (turn latency correlates ~0.88 with output tokens), and the
+        # aggregator only needs the gist of each advisor's judgement, so a cap
+        # (e.g. 600) measurably cuts per-turn wall time (~44% on a sample task).
+        # The acting aggregator is never capped here (its output is the
+        # user-visible answer).
+        reference_max_tokens = preset.get("reference_max_tokens")
         temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
         aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
 
@@ -751,7 +769,7 @@ class MoAChatCompletions:
                 reference_models,
                 ref_messages,
                 temperature=temperature,
-                max_tokens=None,
+                max_tokens=reference_max_tokens,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -900,6 +918,14 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    @property
+    def last_aggregator_slot(self) -> Any:
+        """Resolved aggregator slot ({provider, model, ...}) from the most
+        recent create(), or None. Read by session cost accounting to price the
+        aggregator's acting turn at its real model instead of the virtual
+        preset name."""
+        return getattr(self.chat.completions, "last_aggregator_slot", None)
 
     def consume_and_save_trace(
         self, session_id: Any = None, aggregator_output_fallback: Any = None

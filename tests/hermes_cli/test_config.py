@@ -1528,6 +1528,61 @@ class TestVerifyOnStopMigration:
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
 
+class TestDelegationCapUnificationMigration:
+    """v32 → v33: fold deprecated max_async_children into max_concurrent_children."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_stale_default_key_removed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 3\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        # Default-valued (3) async cap must not shrink a raised children cap.
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_raised_async_cap_folded_into_children_cap(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 20\n"
+                "  max_concurrent_children: 5\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 20
+
+    def test_higher_children_cap_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 8\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_no_delegation_section_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        # Migration must not materialize a delegation section it never had.
+        assert "delegation" not in raw
+
+    def test_default_config_has_no_max_async_children(self):
+        assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
+
+
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""
 

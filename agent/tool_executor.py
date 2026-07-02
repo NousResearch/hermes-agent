@@ -638,7 +638,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            # Daemon workers: an interrupted/timed-out batch is abandoned with
+            # shutdown(wait=False), but stdlib ThreadPoolExecutor workers are
+            # non-daemon and registered in concurrent.futures' atexit hook,
+            # which joins them unconditionally — so one wedged tool thread
+            # would block interpreter exit forever (multi-minute CLI exits).
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            executor = DaemonThreadPoolExecutor(max_workers=max_workers)
             abandon_executor = False
             try:
                 for submit_index, (i, tc, name, args) in enumerate(runnable_calls):

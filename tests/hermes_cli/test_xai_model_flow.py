@@ -33,12 +33,11 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
     main_mod._model_flow_xai_oauth(
         {},
         current_model="grok-build-0.1",
-        args=argparse.Namespace(manual_paste=True, no_browser=True, timeout=3),
+        args=argparse.Namespace(no_browser=True, timeout=3),
     )
 
     assert captured["login_calls"] == 1
     assert captured["force_new_login"] is True
-    assert captured["args"].manual_paste is True
     assert captured["args"].no_browser is True
     assert captured["args"].timeout == 3
 

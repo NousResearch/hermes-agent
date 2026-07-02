@@ -1852,7 +1852,6 @@ export const ja = defineLocale({
     flowSubtitles: {
       pkce: 'ブラウザーを開いてサインインし、ここに戻ります',
       device_code: 'ブラウザーで確認ページを開きます — Hermes が自動接続します',
-      loopback: 'サインインのためブラウザーを開きます — Hermes が自動接続します',
       external: 'ターミナルで一度サインインして、チャットに戻ります'
     },
     startingSignIn: provider => `${provider} のサインインを開始中...`,

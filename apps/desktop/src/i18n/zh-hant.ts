@@ -1793,7 +1793,6 @@ export const zhHant = defineLocale({
     flowSubtitles: {
       pkce: '開啟瀏覽器登入，然後回到這裡繼續',
       device_code: '在瀏覽器中開啟驗證頁面 — Hermes 會自動連線',
-      loopback: '開啟瀏覽器登入 — Hermes 會自動連線',
       external: '先在終端機登入一次，然後回來繼續聊天'
     },
     startingSignIn: provider => `正在為 ${provider} 啟動登入...`,

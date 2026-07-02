@@ -1744,7 +1744,6 @@ export const en: Translations = {
     flowSubtitles: {
       pkce: 'Opens your browser to sign in, then continues here',
       device_code: 'Opens a verification page in your browser — Hermes connects automatically',
-      loopback: 'Opens your browser to sign in — Hermes connects automatically',
       external: 'Sign in once in your terminal, then come back to chat'
     },
     startingSignIn: provider => `Starting sign-in for ${provider}...`,

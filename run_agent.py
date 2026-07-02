@@ -4112,7 +4112,7 @@ class AIAgent:
         #
         # When an agent is using a non-singleton credential — e.g. a manual
         # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
-        # a different account than the loopback_pkce singleton, or an agent
+        # a different account than the device_code singleton, or an agent
         # constructed with an explicit ``api_key=`` arg — force-refreshing
         # the singleton here and adopting its tokens silently re-routes the
         # rest of the conversation onto the singleton's account.  The

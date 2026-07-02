@@ -817,6 +817,22 @@ class ConfigUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+class ClaudeAgentSdkUpdate(BaseModel):
+    # off | inference | delegate | hybrid
+    mode: str = "off"
+    permission_mode: Optional[str] = None
+    max_turns: Optional[int] = None
+    max_budget_usd: Optional[float] = None
+    profile: Optional[str] = None
+
+
+class AnthropicOAuthUpdate(BaseModel):
+    # When True, Hermes skips the Claude Code / subscription-OAuth sources for
+    # the anthropic provider and uses only ANTHROPIC_API_KEY.
+    disabled: bool = False
+    profile: Optional[str] = None
+
+
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
@@ -4046,6 +4062,131 @@ async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
 
 
+# ---------------------------------------------------------------------------
+# Claude Agent SDK runtime (model.claude_agent_sdk)
+#
+# This is a runtime variant of the native `anthropic` provider (drives turns
+# through the Claude Agent SDK / `claude` CLI, enabling subscription-OAuth).
+# It lives under `model.claude_agent_sdk`, which _normalize_config_for_web
+# flattens away, so it needs its own read/write endpoints rather than riding
+# the generic /api/config schema panel.
+# ---------------------------------------------------------------------------
+_CLAUDE_AGENT_SDK_MODES = {"off", "inference", "delegate", "hybrid"}
+
+
+def _model_cfg_as_dict(model_cfg: Any) -> Dict[str, Any]:
+    """Return a mutable copy of the ``model`` config section as a dict.
+
+    Promotes a bare-string ``model`` to ``{"default": <name>}`` so runtime
+    sub-keys can nest under it without dropping the configured model name.
+    """
+    if isinstance(model_cfg, dict):
+        return dict(model_cfg)
+    if isinstance(model_cfg, str) and model_cfg.strip():
+        return {"default": model_cfg}
+    return {}
+
+
+def _claude_agent_sdk_to_ui(raw: Any) -> Dict[str, Any]:
+    """Normalize a raw ``model.claude_agent_sdk`` value to the UI shape."""
+    base = {"mode": "off", "permission_mode": None, "max_turns": None, "max_budget_usd": None}
+    if isinstance(raw, str):
+        mode = raw.strip().lower() or "off"
+        base["mode"] = mode if mode in _CLAUDE_AGENT_SDK_MODES else "off"
+        return base
+    if isinstance(raw, dict):
+        mode = str(raw.get("mode") or "off").strip().lower()
+        if raw.get("enabled") is False or mode not in _CLAUDE_AGENT_SDK_MODES:
+            mode = "off"
+        return {
+            "mode": mode,
+            "permission_mode": raw.get("permission_mode"),
+            "max_turns": raw.get("max_turns"),
+            "max_budget_usd": raw.get("max_budget_usd"),
+        }
+    return base
+
+
+def _apply_claude_agent_sdk(
+    model_cfg: Any,
+    *,
+    mode: str,
+    permission_mode: Optional[str] = None,
+    max_turns: Optional[int] = None,
+    max_budget_usd: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Return a new ``model`` dict with ``claude_agent_sdk`` set/removed."""
+    out = _model_cfg_as_dict(model_cfg)
+    if mode == "off":
+        out.pop("claude_agent_sdk", None)
+    else:
+        entry: Dict[str, Any] = {"mode": mode}
+        if permission_mode:
+            entry["permission_mode"] = permission_mode
+        if max_turns is not None:
+            entry["max_turns"] = max_turns
+        if max_budget_usd is not None:
+            entry["max_budget_usd"] = max_budget_usd
+        out["claude_agent_sdk"] = entry
+    return out
+
+
+@app.get("/api/model/claude-agent-sdk")
+async def get_claude_agent_sdk(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        cfg = read_raw_config()
+    model_cfg = cfg.get("model")
+    raw = model_cfg.get("claude_agent_sdk") if isinstance(model_cfg, dict) else None
+    return _claude_agent_sdk_to_ui(raw)
+
+
+@app.put("/api/model/claude-agent-sdk")
+async def put_claude_agent_sdk(body: ClaudeAgentSdkUpdate, profile: Optional[str] = None):
+    mode = (body.mode or "off").strip().lower()
+    if mode not in _CLAUDE_AGENT_SDK_MODES:
+        raise HTTPException(status_code=400, detail=f"invalid mode: {body.mode!r}")
+    with _profile_scope(body.profile or profile):
+        cfg = read_raw_config()
+        cfg["model"] = _apply_claude_agent_sdk(
+            cfg.get("model"),
+            mode=mode,
+            permission_mode=body.permission_mode,
+            max_turns=body.max_turns,
+            max_budget_usd=body.max_budget_usd,
+        )
+        save_config(cfg)
+    return {"ok": True, "mode": mode}
+
+
+def _apply_anthropic_oauth_disabled(model_cfg: Any, *, disabled: bool) -> Dict[str, Any]:
+    """Return a new ``model`` dict with ``anthropic_disable_oauth`` set/removed."""
+    out = _model_cfg_as_dict(model_cfg)
+    if disabled:
+        out["anthropic_disable_oauth"] = True
+    else:
+        out.pop("anthropic_disable_oauth", None)
+    return out
+
+
+@app.get("/api/model/anthropic-oauth")
+async def get_anthropic_oauth(profile: Optional[str] = None):
+    """Whether subscription-OAuth is disabled for the anthropic provider."""
+    with _profile_scope(profile):
+        cfg = read_raw_config()
+    model_cfg = cfg.get("model")
+    disabled = bool(model_cfg.get("anthropic_disable_oauth")) if isinstance(model_cfg, dict) else False
+    return {"disabled": disabled}
+
+
+@app.put("/api/model/anthropic-oauth")
+async def put_anthropic_oauth(body: AnthropicOAuthUpdate, profile: Optional[str] = None):
+    with _profile_scope(body.profile or profile):
+        cfg = read_raw_config()
+        cfg["model"] = _apply_anthropic_oauth_disabled(cfg.get("model"), disabled=bool(body.disabled))
+        save_config(cfg)
+    return {"ok": True, "disabled": bool(body.disabled)}
+
+
 _EMPTY_MODEL_INFO: dict = {
     "model": "",
     "provider": "",
@@ -6486,8 +6627,9 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": _copilot_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
-    # first, then the subscription OAuth path (which only works with extra
-    # usage credits on top of a Claude Max plan — see disclaimer in name).
+    # first, then the combined subscription path (native OAuth — which only
+    # works with extra usage credits on top of a Claude Max plan — or the
+    # Claude Agent SDK; the inference method is chosen per-connection).
     {
         "id": "anthropic",
         "name": "Anthropic API Key",
@@ -6498,7 +6640,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     },
     {
         "id": "claude-code",
-        "name": "Anthropic OAuth: Required Extra Usage Credits to Use Subscription",
+        "name": "Anthropic Claude (Subscription)",
         "flow": "external",
         "cli_command": "claude setup-token",
         "docs_url": "https://docs.claude.com/en/docs/claude-code",

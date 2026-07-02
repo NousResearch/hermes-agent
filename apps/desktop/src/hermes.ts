@@ -367,6 +367,58 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   })
 }
 
+// Claude Agent SDK runtime (model.claude_agent_sdk). A runtime variant of the
+// native `anthropic` provider — drives turns through the Claude Agent SDK /
+// `claude` CLI (subscription-OAuth capable). Read/written via dedicated
+// endpoints because _normalize_config_for_web flattens model.* away.
+export type ClaudeAgentSdkMode = 'off' | 'inference' | 'delegate' | 'hybrid'
+
+export interface ClaudeAgentSdkConfig {
+  mode: ClaudeAgentSdkMode
+  permission_mode?: string | null
+  max_turns?: number | null
+  max_budget_usd?: number | null
+}
+
+export function getClaudeAgentSdk(): Promise<ClaudeAgentSdkConfig> {
+  return window.hermesDesktop.api<ClaudeAgentSdkConfig>({
+    ...profileScoped(),
+    path: '/api/model/claude-agent-sdk'
+  })
+}
+
+export function saveClaudeAgentSdk(body: ClaudeAgentSdkConfig): Promise<{ ok: boolean; mode: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; mode: string }>({
+    ...profileScoped(),
+    path: '/api/model/claude-agent-sdk',
+    method: 'PUT',
+    body
+  })
+}
+
+// Anthropic subscription-OAuth kill switch (model.anthropic_disable_oauth).
+// When disabled, Hermes skips the Claude Code / subscription-OAuth credential
+// sources for the anthropic provider and uses only ANTHROPIC_API_KEY.
+export interface AnthropicOAuthConfig {
+  disabled: boolean
+}
+
+export function getAnthropicOAuth(): Promise<AnthropicOAuthConfig> {
+  return window.hermesDesktop.api<AnthropicOAuthConfig>({
+    ...profileScoped(),
+    path: '/api/model/anthropic-oauth'
+  })
+}
+
+export function saveAnthropicOAuth(body: AnthropicOAuthConfig): Promise<{ disabled: boolean; ok: boolean }> {
+  return window.hermesDesktop.api<{ disabled: boolean; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/anthropic-oauth',
+    method: 'PUT',
+    body
+  })
+}
+
 export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
   return window.hermesDesktop.api<MemoryProviderConfig>({
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`

@@ -14,7 +14,17 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import {
+  disconnectOAuthProvider,
+  getAnthropicOAuth,
+  getClaudeAgentSdk,
+  listOAuthProviders,
+  saveAnthropicOAuth,
+  saveClaudeAgentSdk
+} from '@/hermes'
+import type { ClaudeAgentSdkMode } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -174,16 +184,32 @@ function OAuthPicker({
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
-          {connected.map(p => (
-            <ConnectedProviderRow
-              disconnecting={disconnecting === p.id}
-              key={p.id}
-              onDisconnect={onDisconnect}
-              onSelect={select}
-              onTerminalDisconnect={onTerminalDisconnect}
-              provider={p}
-            />
-          ))}
+          {connected.map(p => {
+            // The combined subscription card (native OAuth / Claude Agent SDK
+            // picker) only applies to the claude-code connection — the plain
+            // API-key row has no inference-method choice.
+            const isClaudeSubscription = p.id === 'claude-code'
+
+            return isClaudeSubscription ? (
+              <AnthropicConnectionBlock
+                disconnecting={disconnecting === p.id}
+                key={p.id}
+                onDisconnect={onDisconnect}
+                onSelect={select}
+                onTerminalDisconnect={onTerminalDisconnect}
+                provider={p}
+              />
+            ) : (
+              <ConnectedProviderRow
+                disconnecting={disconnecting === p.id}
+                key={p.id}
+                onDisconnect={onDisconnect}
+                onSelect={select}
+                onTerminalDisconnect={onTerminalDisconnect}
+                provider={p}
+              />
+            )
+          })}
         </>
       )}
       {showOthers && (
@@ -208,6 +234,149 @@ function OAuthPicker({
         </Button>
       )}
     </section>
+  )
+}
+
+// How the Anthropic subscription connection runs turns: native OAuth, or one
+// of the Claude Agent SDK modes. Stored as model.claude_agent_sdk (mode "off"
+// == native OAuth) — 'oauth' is a UI-only alias for that.
+type AnthropicMethod = 'delegate' | 'hybrid' | 'inference' | 'oauth'
+
+const SDK_METHOD_HINT =
+  'Runs via the official Agent SDK (the `claude` CLI) — uses your subscription’s Agent SDK credit. Requires the CLI installed and logged in; for multi-tenant / production, prefer an Anthropic API key.'
+
+const ANTHROPIC_METHODS: { hint: string; label: string; value: AnthropicMethod }[] = [
+  {
+    value: 'oauth',
+    label: 'Native OAuth — direct Anthropic API',
+    hint: 'Native OAuth calls the Anthropic API directly — draws extra-usage credits.'
+  },
+  {
+    value: 'inference',
+    label: 'Claude Agent SDK · Inference — Hermes drives the loop',
+    hint: SDK_METHOD_HINT
+  },
+  { value: 'delegate', label: 'Claude Agent SDK · Delegate — SDK’s own tools', hint: SDK_METHOD_HINT },
+  { value: 'hybrid', label: 'Claude Agent SDK · Hybrid — SDK loop + Hermes tools', hint: SDK_METHOD_HINT }
+]
+
+// The connected Anthropic account rendered as ONE card: the connection header
+// (status + disconnect, via ConnectedProviderRow) on top, then a divider, then
+// the runtime controls — an on/off switch for the provider itself (off writes
+// model.anthropic_disable_oauth and clears the SDK mode, so Hermes stops
+// routing inference through this connection entirely), and when on, a single
+// "Inference method" selector: native OAuth or a Claude Agent SDK mode
+// (inference/delegate/hybrid). TOS: the Agent SDK is Anthropic's sanctioned
+// path for subscription use (draws the Agent SDK credit, not extra-usage).
+function AnthropicConnectionBlock({
+  disconnecting,
+  onDisconnect,
+  onSelect,
+  onTerminalDisconnect,
+  provider
+}: {
+  disconnecting: boolean
+  onDisconnect: (provider: OAuthProvider) => void
+  onSelect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
+  provider: OAuthProvider
+}) {
+  const [enabled, setEnabled] = useState(true)
+  const [method, setMethod] = useState<AnthropicMethod>('oauth')
+
+  useEffect(() => {
+    let alive = true
+    Promise.all([getClaudeAgentSdk().catch(() => null), getAnthropicOAuth().catch(() => null)]).then(
+      ([sdk, oauth]) => {
+        if (!alive) {
+          return
+        }
+
+        const mode = (sdk?.mode as ClaudeAgentSdkMode) || 'off'
+
+        if (mode !== 'off') {
+          setMethod(mode)
+          setEnabled(true)
+        } else {
+          setMethod('oauth')
+          setEnabled(!oauth?.disabled)
+        }
+      }
+    )
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Persist one consistent state: provider off => SDK mode "off" AND the OAuth
+  // kill switch set; provider on => OAuth allowed + the chosen method's mode.
+  const write = useCallback(
+    async (nextEnabled: boolean, nextMethod: AnthropicMethod) => {
+      const prev = { enabled, method }
+      setEnabled(nextEnabled)
+      setMethod(nextMethod)
+
+      try {
+        const mode: ClaudeAgentSdkMode = nextEnabled && nextMethod !== 'oauth' ? nextMethod : 'off'
+        await Promise.all([
+          saveClaudeAgentSdk({ mode }),
+          saveAnthropicOAuth({ disabled: !nextEnabled })
+        ])
+      } catch (err) {
+        setEnabled(prev.enabled)
+        setMethod(prev.method)
+        notifyError(err, 'Failed to update Anthropic provider settings')
+      }
+    },
+    [enabled, method]
+  )
+
+  return (
+    <div className="overflow-hidden rounded-[6px] bg-primary/5">
+      <ConnectedProviderRow
+        disconnecting={disconnecting}
+        onDisconnect={onDisconnect}
+        onSelect={onSelect}
+        onTerminalDisconnect={onTerminalDisconnect}
+        provider={provider}
+      />
+      <div className="grid gap-2.5 border-t border-muted-foreground/15 px-3 pb-3 pt-2.5">
+        <label className="flex items-center justify-between gap-3">
+          <span className="min-w-0">
+            <span className="block text-[length:var(--conversation-text-font-size)] font-semibold">
+              Use for inference
+            </span>
+            <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+              {enabled
+                ? 'Hermes routes Anthropic turns through this connection.'
+                : 'Off — Hermes won’t use this connection for inference (only an ANTHROPIC_API_KEY, if set).'}
+            </span>
+          </span>
+          <Switch checked={enabled} onCheckedChange={on => void write(on, method)} />
+        </label>
+        {enabled && (
+          <div className="grid gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Inference method</span>
+            <Select onValueChange={v => void write(true, v as AnthropicMethod)} value={method}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ANTHROPIC_METHODS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-[0.68rem] leading-5 text-muted-foreground/70">
+              {ANTHROPIC_METHODS.find(option => option.value === method)?.hint}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 

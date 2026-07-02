@@ -9,6 +9,13 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+def _without_windows_git_config(cmd):
+    """Normalize Windows update git invocations for platform-agnostic assertions."""
+    if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"]:
+        return ["git", *cmd[3:]]
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
@@ -407,13 +414,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        normalized = _without_windows_git_config(cmd)
+        if normalized == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if normalized == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if normalized == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if normalized == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -456,13 +464,14 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        normalized = _without_windows_git_config(cmd)
+        if normalized == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if normalized == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if normalized == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if normalized == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -483,6 +492,8 @@ def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
         "_load_installable_optional_extras",
         lambda group="all": ["termux", "mcp"] if group == "termux-all" else [],
     )
+    monkeypatch.setattr(hermes_main, "_verify_console_scripts_installed", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_verify_core_dependencies_installed", lambda *a, **kw: None)
 
     def fake_run_with_heartbeat(cmd, **kwargs):
         calls.append(cmd)
@@ -578,7 +589,11 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    reset_calls = [
+        _without_windows_git_config(c)
+        for c in recorded
+        if "reset" in c and "--hard" in c
+    ]
     assert len(reset_calls) == 1
     assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
 
@@ -699,9 +714,10 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    fetch_calls = [c for c in recorded if "fetch" in c]
+    normalized_recorded = [_without_windows_git_config(c) for c in recorded]
+    fetch_calls = [c for c in normalized_recorded if "fetch" in c]
     assert fetch_calls == [["git", "fetch", "origin", "main"]]
-    assert ["git", "fetch", "origin"] not in recorded
+    assert ["git", "fetch", "origin"] not in normalized_recorded
 
 
 # ---------------------------------------------------------------------------
@@ -881,8 +897,11 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     git("init", "-q")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")
-    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
-    (tmp_path / "tracked.txt").write_text("x\n")
+    (tmp_path / ".gitignore").write_text(
+        repo_gitignore.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "tracked.txt").write_text("x\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "init")
 

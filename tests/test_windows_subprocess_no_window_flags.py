@@ -397,5 +397,14 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     server._SlashWorker("session-key", "model-x")
 
-    assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    # Filter for the worker spawn: the module-import update check
+    # (hermes_cli.banner.prefetch_update_check) runs git in a daemon thread
+    # through the same subprocess module, and one of its spawns can land in
+    # `captured` while the fake Popen is installed.
+    worker_calls = [
+        (cmd, kwargs)
+        for cmd, kwargs in captured
+        if cmd[:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
+    ]
+    assert worker_calls, f"slash worker never spawned; captured: {[c[0][:3] for c in captured]}"
+    assert worker_calls[0][1]["creationflags"] == _CREATE_NO_WINDOW

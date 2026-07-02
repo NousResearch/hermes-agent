@@ -1066,6 +1066,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._self_is_explicitly_mentioned(message):
                             return
+                    if (
+                        self._discord_bots_require_inline_mention()
+                        and not self._self_is_raw_mentioned(message)
+                    ):
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -4670,6 +4675,44 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
+    def _self_is_raw_mentioned(self, message: Any) -> bool:
+        """Return True only when this bot has an inline mention token.
+
+        Discord reply-pings can add the replied-to bot to ``message.mentions``
+        without a literal ``<@bot>`` token in ``message.content``. This helper
+        intentionally ignores the resolved mentions list so the bot admission
+        gate can distinguish an explicit cross-bot address from a reply chip.
+        """
+        if not self._client or not self._client.user:
+            return False
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _discord_bots_require_inline_mention(self) -> bool:
+        """Whether another bot must type an inline @mention to trigger us.
+
+        Off by default. When on, a bot-authored message only wakes this bot
+        if its content contains a literal ``<@thisbot>`` token. A Discord
+        reply/quote to one of our messages is NOT enough on its own, because
+        Discord's reply-ping silently adds us to ``message.mentions`` even
+        though the author never typed our handle — which otherwise lets two
+        bots ping-pong replies at each other indefinitely. Humans are never
+        affected by this gate; it only applies to bot authors.
+
+        Config: ``discord.bots_require_inline_mention`` (or env
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+        """
+        configured = self.config.extra.get("bots_require_inline_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -7599,7 +7642,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
-    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
+    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -7614,6 +7658,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
+        os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

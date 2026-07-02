@@ -1141,6 +1141,49 @@ class TestVisionClientFallback:
         assert response.usage.prompt_tokens == 3
         assert response.usage.completion_tokens == 4
 
+    def test_anthropic_auxiliary_client_uses_model_output_limit_by_default(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        final_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="aux response")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+        )
+        messages_api = SimpleNamespace(create=MagicMock())
+        real_client = SimpleNamespace(messages=messages_api)
+        captured_kwargs = {}
+
+        def fake_create_anthropic_message(_client, kwargs):
+            captured_kwargs.update(kwargs)
+            return final_message
+
+        client = AnthropicAuxiliaryClient(
+            real_client,
+            "claude-opus-4-8",
+            "sk-test",
+            "https://api.anthropic.com",
+        )
+
+        with patch(
+            "agent.anthropic_adapter.create_anthropic_message",
+            side_effect=fake_create_anthropic_message,
+        ):
+            response = client.chat.completions.create(
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "aux response"
+        # Behavior contract, not a frozen literal: a capless native-Anthropic
+        # aux call must default to the model's native output ceiling (resolved
+        # via _get_anthropic_max_output) rather than the old hidden 2000 cap.
+        # Asserting against the resolver keeps this test alive across
+        # model-table churn while still catching a regression to `or 2000`.
+        from agent.anthropic_adapter import _get_anthropic_max_output
+
+        expected_ceiling = _get_anthropic_max_output("claude-opus-4-8")
+        assert expected_ceiling > 2000
+        assert captured_kwargs["max_tokens"] == expected_ceiling
+
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
@@ -1480,7 +1523,13 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is fake_client
         assert model == "openai/gpt-5.4-mini"
-        assert mock_resolve.call_count == 1
+        # A DIFFERENT model resolves its own client (model participates in the
+        # cache key). This isolation is what stops two concurrent advisors on
+        # the same provider/base_url/key (e.g. a MoA fan-out) from sharing — and
+        # racing the lifecycle of — one cached client. Same-model reuse is still
+        # a single resolve (verified elsewhere); distinct models => distinct
+        # resolves.
+        assert mock_resolve.call_count == 2
 
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
@@ -2538,6 +2587,8 @@ class TestTransientTransportRetry:
         p1, p2, p3 = self._patches(primary)
         with (
             p1, p2, p3,
+            patch("agent.auxiliary_client._transient_retry_count", return_value=1),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
             patch(
                 "agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
@@ -2549,7 +2600,7 @@ class TestTransientTransportRetry:
         ):
             result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"fallback": True}
-        # Primary tried twice (initial + same-target retry), then fallback.
+        # Primary tried twice (initial + one same-target retry), then fallback.
         assert primary.chat.completions.create.call_count == 2
         assert fb_client.chat.completions.create.call_count == 1
 

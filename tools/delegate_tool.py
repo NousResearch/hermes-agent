@@ -392,36 +392,34 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-_DEFAULT_MAX_ASYNC_CHILDREN = 3
+_LEGACY_MAX_ASYNC_WARNED = False
 
 
 def _get_max_async_children() -> int:
-    """Read delegation.max_async_children from config (floor 1, no ceiling).
+    """Concurrency cap for background (``background=true``) delegations.
 
-    Caps how many background (``background=true``) subagents can run at once.
-    When at capacity, a new async dispatch is REJECTED (not queued) so a
-    runaway model can't pile up unbounded background work. Separate from
-    max_concurrent_children, which bounds a single synchronous batch.
+    DEPRECATED KNOB: ``delegation.max_async_children`` has been unified into
+    ``delegation.max_concurrent_children`` — one cap governs both a single
+    synchronous batch's parallelism and how many background delegation units
+    may run at once. When at capacity, a new async dispatch is REJECTED (not
+    queued) so a runaway model can't pile up unbounded background work; the
+    caller falls back to running the work synchronously.
+
+    A leftover ``max_async_children`` in config.yaml is ignored (the config
+    migration removes it, folding a raised value into
+    ``max_concurrent_children``); we log a one-time deprecation warning if
+    one is still present.
     """
+    global _LEGACY_MAX_ASYNC_WARNED
     cfg = _load_config()
-    val = cfg.get("max_async_children")
-    if val is not None:
-        try:
-            return max(1, int(val))
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.max_async_children=%r is not a valid integer; "
-                "using default %d",
-                val, _DEFAULT_MAX_ASYNC_CHILDREN,
-            )
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
-    if env_val:
-        try:
-            return max(1, int(env_val))
-        except (TypeError, ValueError):
-            return _DEFAULT_MAX_ASYNC_CHILDREN
-    return _DEFAULT_MAX_ASYNC_CHILDREN
+    if cfg.get("max_async_children") is not None and not _LEGACY_MAX_ASYNC_WARNED:
+        _LEGACY_MAX_ASYNC_WARNED = True
+        logger.warning(
+            "delegation.max_async_children is deprecated and ignored; "
+            "delegation.max_concurrent_children now caps background "
+            "delegations too. Remove the stale key from config.yaml."
+        )
+    return _get_max_concurrent_children()
 
 
 def _get_child_timeout() -> Optional[float]:
@@ -1889,7 +1887,11 @@ def _run_single_child(
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
+        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
+        # below; a stdlib non-daemon worker would then block interpreter
+        # exit at atexit-join time if the child never unwinds.
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
             # so dangerous-command prompts from the subagent don't fall back to
@@ -2537,7 +2539,11 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            # Daemon workers (tools.daemon_pool): the `with` block still joins
+            # normally, but if the parent is interrupted while a child is
+            # wedged, the abandoned worker must not block interpreter exit.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2875,7 +2881,16 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
-        return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
+        _cap_result = _execute_and_aggregate()
+        if isinstance(_cap_result, dict):
+            _cap_result["note"] = (
+                "The background delegation pool was at capacity "
+                "(delegation.max_concurrent_children), so the subagent(s) ran "
+                "SYNCHRONOUSLY and the result is included above. Raise "
+                "delegation.max_concurrent_children in config.yaml to allow "
+                "more concurrent background delegations."
+            )
+        return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)

@@ -1184,11 +1184,38 @@ def restore_primary_runtime(agent) -> bool:
         if pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
+                entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
+                primary_provider = str(rt.get("provider") or "").strip().lower()
+                entry_matches_primary = entry_provider == primary_provider
+                # Custom endpoints all carry the generic ``custom`` provider on
+                # the agent while the pool entry is keyed ``custom:<name>`` (see
+                # CUSTOM_POOL_PREFIX). Resolve the primary's base_url to its
+                # ``custom:<name>`` key via the canonical helper and compare
+                # against the entry's key — this mirrors the sibling guard in
+                # ``recover_with_credential_pool`` (see above) and correctly
+                # disambiguates multiple custom providers that share one gateway
+                # base_url. Fixes #56885.
+                from agent.credential_pool import CUSTOM_POOL_PREFIX
+                if (
+                    primary_provider == "custom"
+                    and entry_provider.startswith(CUSTOM_POOL_PREFIX)
+                ):
+                    entry_matches_primary = False
+                    try:
+                        from agent.credential_pool import get_custom_provider_pool_key
+                        primary_base_url = str(rt.get("base_url") or "").strip()
+                        primary_key = (
+                            get_custom_provider_pool_key(primary_base_url) or ""
+                        ).strip().lower()
+                        entry_matches_primary = bool(primary_key) and primary_key == entry_provider
+                    except Exception:
+                        entry_matches_primary = False
+
                 entry_key = (
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
                 )
-                if entry_key:
+                if entry_key and entry_matches_primary:
                     # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
                     # reapplies base-url-scoped headers, and carries the
                     # accumulated base_url / OAuth-detection fixes (#33163).
@@ -1197,6 +1224,14 @@ def restore_primary_runtime(agent) -> bool:
                         "Restore re-selected pool entry %s (%s)",
                         getattr(entry, "id", "?"),
                         getattr(entry, "label", "?"),
+                    )
+                elif entry_key:
+                    logger.info(
+                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+                        getattr(entry, "id", "?"),
+                        getattr(entry, "label", "?"),
+                        entry_provider or "?",
+                        primary_provider or "?",
                     )
 
         # ── Reset fallback chain for the new turn ──

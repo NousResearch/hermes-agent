@@ -128,6 +128,25 @@ def _is_openai_codex_backend(agent) -> bool:
     )
 
 
+def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
+    """Minimum wall-clock stale timeout for openai-codex by estimated context.
+
+    Gateway/Telegram sessions routinely ship ~15–25k tokens of tools +
+    instructions before the first user message. Subscription-backed Codex can
+    legitimately spend several minutes in backend admission/prefill at that
+    size; the generic 90s non-stream stale default aborts healthy calls. The
+    floor engages above 10k estimated tokens so those gateway-scale payloads
+    are covered; smaller requests keep the generic default.
+    """
+    if est_tokens > 100_000:
+        return 1200.0
+    if est_tokens > 50_000:
+        return 900.0
+    if est_tokens > 10_000:
+        return 600.0
+    return 0.0
+
+
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     """Return a normalized OpenRouter provider.sort value or None."""
     if not isinstance(raw_sort, str):
@@ -316,12 +335,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _openai_codex_backend = _is_openai_codex_backend(agent)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
     if _codex_watchdog_enabled and _openai_codex_backend:
-        if _est_tokens_for_codex_watchdog > 100_000:
-            _stale_timeout = max(_stale_timeout, 1200.0)
-        elif _est_tokens_for_codex_watchdog > 50_000:
-            _stale_timeout = max(_stale_timeout, 900.0)
-        elif _est_tokens_for_codex_watchdog > 25_000:
-            _stale_timeout = max(_stale_timeout, 600.0)
+        _codex_floor = openai_codex_stale_timeout_floor(_est_tokens_for_codex_watchdog)
+        if _codex_floor:
+            _stale_timeout = max(_stale_timeout, _codex_floor)
 
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
@@ -344,7 +360,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
-        _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 25_000.0)
+        _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
         }
@@ -2017,13 +2033,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
 
-        # Some OpenAI-compatible adapters (for example copilot-acp) accept
-        # stream=True but still return a completed response object rather than
-        # an iterator of chunks.  Treat that as "streaming unsupported" for the
-        # rest of this session instead of crashing on ``for chunk in stream``
-        # with ``'types.SimpleNamespace' object is not iterable`` (#11732).
-        response_choices = getattr(stream, "choices", None)
-        if isinstance(response_choices, list) and response_choices:
+        # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
+        # openai-codex aggregator) accept stream=True but still return a
+        # completed response object rather than an iterator of chunks.  Treat
+        # that as "streaming unsupported" for the rest of this session instead
+        # of crashing on ``for chunk in stream`` with ``'types.SimpleNamespace'
+        # object is not iterable`` (#11732, #55933).
+        #
+        # Discriminate on the mere PRESENCE of a ``choices`` attribute, not on
+        # it being a non-empty list: an adapter may hand back a completed
+        # response whose ``choices`` is ``None`` or empty (an error /
+        # content-filter / terminal frame), and every such shape is still a
+        # whole response — not a token stream — that would crash iteration just
+        # the same.  A genuine provider stream (SDK ``Stream`` object,
+        # generator) exposes no ``choices`` attribute, so it is left untouched.
+        if hasattr(stream, "choices"):
             logger.info(
                 "Streaming request returned a final response object instead of "
                 "an iterator; switching %s/%s to non-streaming for this session.",
@@ -2031,7 +2055,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent.model or "unknown",
             )
             agent._disable_streaming = True
-            message = getattr(response_choices[0], "message", None)
+            # An empty/None ``choices`` carries no message to surface; return the
+            # completed object as-is so the outer loop's normal invalid-response
+            # validation (conversation_loop.py) handles it via the retry path,
+            # never ``for chunk in stream``.
+            choices = stream.choices
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            message = getattr(first_choice, "message", None)
             if message is not None:
                 reasoning_text = (
                     getattr(message, "reasoning_content", None)

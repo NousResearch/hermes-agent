@@ -574,6 +574,31 @@ def build_session_context_prompt(
     return "\n".join(lines)
 
 
+# Keys of a /model session override that are safe to persist to disk.
+# ``api_key`` (and anything else, e.g. ``api_mode`` which is re-derived from
+# provider resolution) is intentionally excluded: credentials must NEVER be
+# written to sessions.json.  On rehydration after a gateway restart the
+# runner re-resolves credentials via the normal runtime provider resolution.
+PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+
+
+def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """Return a copy of *override* containing only persistable, non-secret keys.
+
+    Returns ``None`` when the input is empty/not a dict or no persistable
+    values remain, so callers can store the result directly on
+    ``SessionEntry.model_override``.
+    """
+    if not isinstance(override, dict):
+        return None
+    cleaned = {
+        k: str(v)
+        for k, v in override.items()
+        if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
+    }
+    return cleaned or None
+
+
 @dataclass
 class SessionEntry:
     """
@@ -644,6 +669,15 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Session-scoped /model override (model/provider/base_url ONLY — never
+    # credentials).  ``_session_model_overrides`` in the gateway runner is
+    # in-memory, so before this field a gateway restart silently reverted
+    # every session to the global default model.  api_key/api_mode are
+    # re-resolved through the normal runtime provider resolution when the
+    # override is rehydrated after a restart and are never written to disk
+    # (see sanitize_model_override / SessionStore.set_model_override).
+    model_override: Optional[Dict[str, str]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -675,6 +709,10 @@ class SessionEntry:
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
         }
+        if self.model_override:
+            # Defence-in-depth: strip credentials even if a caller stored an
+            # unsanitized dict directly on the entry.
+            result["model_override"] = sanitize_model_override(self.model_override)
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -736,6 +774,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            model_override=sanitize_model_override(data.get("model_override")),
         )
 
 
@@ -965,6 +1004,7 @@ class SessionStore:
             return
 
         stale_keys: list = []
+        recovered_keys = 0
         try:
             for key, entry in self._entries.items():
                 row = db.get_session(entry.session_id)
@@ -972,6 +1012,43 @@ class SessionStore:
                 # end_reason is None  -> session alive — keep
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
+                    recovered_entry = None
+                    if entry.origin is not None:
+                        try:
+                            recovered_entry = self._recover_session_from_db(
+                                session_key=key,
+                                source=entry.origin,
+                                now=_now(),
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "gateway.session: recovery lookup failed for stale "
+                                "sessions.json entry %r -> %s: %s",
+                                key,
+                                entry.session_id,
+                                exc,
+                            )
+
+                    # If the stale entry points at a compression-ended parent but
+                    # a newer live child session exists for the exact same gateway
+                    # peer, repoint the routing index instead of dropping it. A
+                    # hard restart between compression rotation and the next clean
+                    # save otherwise leaves Telegram with no resumable mapping, so
+                    # queued/resume-pending work disappears until the user sends a
+                    # fresh message.
+                    if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
+                        logger.warning(
+                            "gateway.session: repointing stale sessions.json entry "
+                            "%r from ended %s (end_reason=%r) to recovered %s",
+                            key,
+                            entry.session_id,
+                            row["end_reason"],
+                            recovered_entry.session_id,
+                        )
+                        self._entries[key] = recovered_entry
+                        recovered_keys += 1
+                        continue
+
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",
@@ -988,7 +1065,7 @@ class SessionStore:
         for key in stale_keys:
             del self._entries[key]
 
-        if stale_keys:
+        if stale_keys or recovered_keys:
             self._save()
 
     def _save(self) -> None:
@@ -1476,6 +1553,37 @@ class SessionStore:
                     session_key,
                     entry.origin,
                 )
+
+    def set_model_override(
+        self, session_key: str, override: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist (or clear) the session-scoped /model override.
+
+        Only non-secret keys (model/provider/base_url — see
+        ``sanitize_model_override``) are written; ``api_key``/``api_mode``
+        are re-resolved at rehydration time via the normal runtime provider
+        resolution.  Pass ``None`` (or a dict with no persistable values)
+        to clear the persisted override, e.g. on /new.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            cleaned = sanitize_model_override(override)
+            if entry.model_override == cleaned:
+                return
+            entry.model_override = cleaned
+            self._save()
+
+    def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
+        """Return the persisted /model override for *session_key*, if any."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            return dict(entry.model_override) if entry.model_override else None
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

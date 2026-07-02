@@ -2731,7 +2731,7 @@ class TestConcurrentToolExecution:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
-        with patch("agent.tool_executor.concurrent.futures.ThreadPoolExecutor", ShutdownExecutor):
+        with patch("tools.daemon_pool.DaemonThreadPoolExecutor", ShutdownExecutor):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2

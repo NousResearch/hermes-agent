@@ -7333,6 +7333,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_count_ge(self, n: int = 1) -> bool:
+        """Check if at least N sessions exist.
+
+        Short-circuits via LIMIT — much cheaper than COUNT(*) when
+        you only need an existence check.  Use this instead of
+        ``session_count() >= n`` when the exact count is irrelevant.
+        """
+        cursor = self._conn.execute("SELECT 1 FROM sessions LIMIT ?", (n,))
+        rows = cursor.fetchall()
+        return len(rows) >= n
+
     def session_count_by_source(
         self,
         *,
@@ -7558,9 +7569,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
             )
-            if cursor.fetchone()[0] == 0:
+            if cursor.fetchone() is None:
                 return False
             if expected_ids is not None:
                 actual_ids = {

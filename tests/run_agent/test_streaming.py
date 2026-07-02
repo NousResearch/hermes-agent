@@ -3,6 +3,7 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -717,6 +718,68 @@ class TestStreamingFallback:
         assert response is final_response
         assert agent._disable_streaming is True
         assert deltas == []
+
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    def test_moa_interrupt_closes_stream_handle(
+        self, mock_create, mock_close_openai, mock_abort_openai
+    ):
+        """MoA interrupts must close the per-request stream, not the facade client."""
+        from run_agent import AIAgent
+
+        class _BlockingClosableStream:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.closed = threading.Event()
+                self.close_calls = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.entered.set()
+                if not self.closed.wait(timeout=5):
+                    raise TimeoutError("MoA test stream was not closed")
+                raise RuntimeError("stream closed")
+
+            def close(self):
+                self.close_calls += 1
+                self.closed.set()
+
+        stream = _BlockingClosableStream()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = stream
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="default",
+            provider="moa",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent.client = mock_client
+
+        def _request_interrupt():
+            assert stream.entered.wait(timeout=2)
+            agent._interrupt_requested = True
+
+        interrupter = threading.Thread(target=_request_interrupt, daemon=True)
+        interrupter.start()
+
+        with pytest.raises(InterruptedError):
+            agent._interruptible_streaming_api_call({"model": "default", "messages": []})
+
+        assert stream.closed.wait(timeout=2)
+        assert stream.close_calls == 1
+        mock_create.assert_called_once()
+        mock_close_openai.assert_not_called()
+        mock_abort_openai.assert_not_called()
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

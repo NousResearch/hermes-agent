@@ -74,3 +74,9 @@ class TestBootstrapNotice:
         from hermes_cli.plugins import budget_enforcement_bootstrap_notice
 
         assert budget_enforcement_bootstrap_notice() is None
+
+
+def test_budget_enforcement_hint_default_is_true():
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+
+    assert cfg_get(DEFAULT_CONFIG, "agent", "budget_enforcement_hint") is True

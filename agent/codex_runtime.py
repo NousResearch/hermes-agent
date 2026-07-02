@@ -669,8 +669,41 @@ def _consume_codex_event_stream(
     # Build the final output list.  Prefer items observed via output_item.done;
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize
     # a single message item so downstream normalization has something to work with.
+    _dedup_assembled: str | None = None
     if collected_output_items:
-        output = list(collected_output_items)
+        # Some providers (e.g. Bedrock mantle) emit cumulative message
+        # output_items where each item is a prefix-superset of the prior.
+        # Concatenating them would duplicate text quadratically.  Collapse
+        # consecutive message-type items to the last (most complete) one,
+        # preserving function_call / reasoning / other item types untouched.
+        deduped: List[Any] = []
+        last_msg_idx: int | None = None
+        for idx, item in enumerate(collected_output_items):
+            item_type = getattr(item, "type", None)
+            if item_type == "message":
+                # Replace the previous message slot with this (longer) one.
+                if last_msg_idx is not None:
+                    deduped[last_msg_idx] = item
+                else:
+                    deduped.append(item)
+                    last_msg_idx = len(deduped) - 1
+            else:
+                # Non-message items (function_call, reasoning, …) always kept.
+                deduped.append(item)
+                # Reset message slot so a message after tool calls is kept.
+                last_msg_idx = None
+        output = deduped
+
+        # When cumulative-message dedup collapsed N snapshots into 1, the
+        # collected_text_deltas list still contains all N streams (each a
+        # prefix-superset).  Derive assembled_text from the final deduped
+        # message item instead, so output_text is not duplicated.
+        if last_msg_idx is not None:
+            _last_item = deduped[last_msg_idx]
+            for _c in getattr(_last_item, "content", []):
+                if getattr(_c, "type", None) == "output_text":
+                    _dedup_assembled = getattr(_c, "text", None)
+                    break
     elif collected_text_deltas and not has_tool_calls:
         assembled = "".join(collected_text_deltas)
         output = [SimpleNamespace(
@@ -693,7 +726,7 @@ def _consume_codex_event_stream(
             "Codex Responses stream did not emit a terminal response"
         )
 
-    assembled_text = "".join(collected_text_deltas)
+    assembled_text = _dedup_assembled if _dedup_assembled is not None else "".join(collected_text_deltas)
 
     final = SimpleNamespace(
         output=output,

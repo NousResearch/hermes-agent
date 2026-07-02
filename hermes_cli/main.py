@@ -5863,8 +5863,16 @@ def _find_stale_dashboard_pids(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
+                    # Normalise away ``--profile <name>`` / ``-p <name>``
+                    # — same rationale as the POSIX branch below.
+                    import re as _re
+                    _cmd_norm = _re.sub(
+                        r"\s{2,}",
+                        " ",
+                        _re.sub(r"(?:--profile|-p)\s+\S+", "", current_cmd),
+                    )
                     if (
-                        any(p in current_cmd for p in patterns)
+                        any(p in _cmd_norm for p in patterns)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5897,7 +5905,18 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    # Normalise away ``--profile <name>`` / ``-p <name>``
+                    # so that ``hermes --profile bruce dashboard`` still
+                    # matches the ``"hermes dashboard"`` pattern.  Without
+                    # this, non-default-profile dashboard processes are
+                    # invisible to the stale-dashboard sweep (issue #56717).
+                    import re as _re
+                    _cmd_norm = _re.sub(
+                        r"\s{2,}",
+                        " ",
+                        _re.sub(r"(?:--profile|-p)\s+\S+", "", command),
+                    )
+                    if any(p in _cmd_norm for p in patterns) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

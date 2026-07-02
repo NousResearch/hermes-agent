@@ -168,6 +168,126 @@ class TestResolveTaskProviderModel:
         assert api_key == "sk-test"
         assert api_mode is None
 
+    def test_explicit_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """An *explicit* `provider="moa"` arg (e.g. a per-task model override
+        naming a MoA preset) must resolve to the preset's aggregator, not the
+        literal "moa" string — mirrors #53827's fix for the implicit
+        "main provider is moa" case in _resolve_auto(), which this function
+        never went through."""
+        preset = {
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        }
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="opus-gpt",
+            base_url="moa://local",
+            api_key="moa-virtual-provider",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        # The virtual moa:// endpoint must not be forwarded to the aggregator.
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` in config.yaml — the same crash,
+        reached via the config path instead of an explicit call-time arg.
+        Before the fix this returned ("moa", ...) verbatim, and
+        resolve_provider_client() would then look up "moa" in
+        PROVIDER_REGISTRY (which has no such entry, it's not a real HTTP
+        provider), fail, and surface a "MOA_API_KEY environment variable"
+        error for a provider that was never meant to be reached over the wire."""
+        preset = {
+            "aggregator": {"provider": "anthropic", "model": "claude-opus-4.8"},
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_falls_back_to_default_preset(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` with no `model:` set must resolve
+        against the user's default MoA preset, not crash or leave "moa"
+        unresolved — resolve_moa_preset() already falls back to
+        default_preset when name is falsy; this just confirms the call site
+        doesn't force a preset name where none was configured."""
+        preset = {
+            "aggregator": {"provider": "nous", "model": "hermes-4-405b"},
+        }
+
+        def fake_resolve(cfg, name):
+            assert name is None  # no auxiliary.<task>.model configured
+            return preset
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr("hermes_cli.moa_config.resolve_moa_preset", fake_resolve)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_provider_moa_falls_back_to_literal_when_preset_resolution_fails(self, monkeypatch):
+        """If the MoA preset can't be resolved (e.g. renamed/deleted), the
+        function must not raise — it degrades to the pre-fix behavior
+        (literal "moa") rather than crash resolve_provider_client() harder."""
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="gone-preset",
+        )
+
+        assert resolved_provider == "moa"
+        assert model == "gone-preset"
+
+    def test_non_moa_provider_unaffected_by_unwrap_logic(self):
+        """Regression guard: providers other than "moa" must not be touched
+        by the new unwrap branch."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="anthropic",
+            model="claude-haiku-4-5-20251001",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-haiku-4-5-20251001"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).

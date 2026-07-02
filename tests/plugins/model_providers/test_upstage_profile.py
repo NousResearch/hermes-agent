@@ -50,13 +50,12 @@ class TestUpstageProfile:
         # catalog — Mini is capable but not agentic, so it's never promoted as a
         # default. Live /v1/models still surfaces everything when a key is set.
         assert upstage_profile.fallback_models == (
-            "solar-pro",
             "solar-pro3",
         )
 
-    def test_default_model_is_solar_pro(self, upstage_profile):
+    def test_default_model_is_solar_pro3(self, upstage_profile):
         # Entry [0] is the setup default (get_default_model_for_provider).
-        assert upstage_profile.fallback_models[0] == "solar-pro"
+        assert upstage_profile.fallback_models[0] == "solar-pro3"
 
     def test_aux_model_left_empty(self, upstage_profile):
         # Unset → auxiliary side tasks fall back to the user's main model.
@@ -163,7 +162,7 @@ class TestUpstageReasoning:
 
     def test_none_model_defaults_to_reasoning(self, upstage_profile):
         # No model in context → treated as reasoning-capable, consistent with
-        # the provider default (fallback_models[0] == "solar-pro").
+        # the provider default (fallback_models[0] == "solar-pro3").
         _, top_level = upstage_profile.build_api_kwargs_extras(model=None)
         assert top_level == {"reasoning_effort": "medium"}
 

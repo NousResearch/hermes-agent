@@ -552,6 +552,33 @@ class TestRoutingIntents:
             assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
 
 
+class TestBuiltinDeliveryPlatforms:
+    """Built-in platforms must pass the ``_KNOWN_DELIVERY_PLATFORMS`` gate."""
+
+    def test_whatsapp_cloud_home_channel_resolves(self, monkeypatch):
+        """whatsapp_cloud is a built-in adapter (never in the plugin
+        registry), so the hardcoded set is its only admission path; without
+        it the home-channel target silently vanishes from the resolution."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("WHATSAPP_CLOUD_HOME_CHANNEL", "15551234567")
+        targets = _resolve_delivery_targets(
+            {"deliver": "whatsapp_cloud", "origin": None}
+        )
+        assert targets == [
+            {"platform": "whatsapp_cloud", "chat_id": "15551234567", "thread_id": None}
+        ]
+
+    def test_every_home_target_platform_is_known(self):
+        """Anti-drift guard: every platform with a home-target env var must
+        be deliverable — a mismatch means cron delivery is silently dropped
+        (the resolver returns no target and records no delivery error)."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS, _is_known_delivery_platform
+
+        for platform in _HOME_TARGET_ENV_VARS:
+            assert _is_known_delivery_platform(platform), platform
+
+
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 

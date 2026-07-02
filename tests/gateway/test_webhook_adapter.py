@@ -1009,6 +1009,35 @@ class TestDeliverCrossPlatformThreadId:
         )
 
 
+class TestBuiltinDeliverPlatforms:
+    """send()'s admission gate for built-in (non-plugin) platforms."""
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_cloud_passes_the_builtin_gate(self):
+        """whatsapp_cloud is a built-in adapter (never in the plugin
+        registry), so ``_BUILTIN_DELIVER_PLATFORMS`` is its only admission
+        path through ``send()``; without it the identical route config
+        fails "Unknown deliver type" while ``deliver_only`` routes (which
+        skip the gate via ``_direct_deliver``) work."""
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("whatsapp_cloud"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+
+        adapter._delivery_info["webhook:r:1"] = {
+            "deliver": "whatsapp_cloud",
+            "deliver_extra": {"chat_id": "15551234567"},
+        }
+        result = await adapter.send("webhook:r:1", "hello")
+        assert result.success is True
+        mock_target.send.assert_awaited_once_with(
+            "15551234567", "hello", metadata=None
+        )
+
+
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a
     non-loopback bind. Guards against accidentally exposing an unauthenticated

@@ -73,6 +73,7 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
+from tools.threat_patterns import MAX_SCAN_CHARS as _MAX_SCAN_CHARS
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
@@ -224,6 +225,21 @@ class MemoryStore:
             if not entry or entry.startswith("[BLOCKED:"):
                 sanitized.append(entry)
                 continue
+            # Entries larger than the scanner's window would inject their
+            # unscanned tail into the system prompt. Such an entry is >30x any
+            # store's char limit and cannot be a legitimate curated note — block
+            # it outright instead of scanning only its prefix.
+            if len(entry) > _MAX_SCAN_CHARS:
+                logger.warning(
+                    "Memory entry from %s blocked at load time: too large to scan (%d chars)",
+                    filename, len(entry),
+                )
+                sanitized.append(
+                    f"[BLOCKED: {filename} entry too large to scan "
+                    f"({len(entry):,} chars). Removed from system prompt; "
+                    f"use memory(action=remove) to delete the original.]"
+                )
+                continue
             findings = scan_for_threats(entry, scope="strict")
             if findings:
                 logger.warning(
@@ -316,6 +332,20 @@ class MemoryStore:
             return self.user_entries
         return self.memory_entries
 
+    def _entries_for_display(self, target: str) -> List[str]:
+        """Live entries with load-time threat sanitization applied.
+
+        Error responses echo the current entries back to the model so it can
+        pick a consolidation target. Live state keeps poisoned entries verbatim
+        (so the user can see and remove them), but echoing them raw would let a
+        poisoned-on-disk entry — one the snapshot already replaced with
+        ``[BLOCKED:…]`` — re-enter the conversation through the error path. Route
+        every echo through the same sanitizer the snapshot uses so the two
+        injection surfaces stay symmetric.
+        """
+        filename = "USER.md" if target == "user" else "MEMORY.md"
+        return self._sanitize_entries_for_snapshot(self._entries_for(target), filename)
+
     def _set_entries(self, target: str, entries: List[str]):
         if target == "user":
             self.user_entries = entries
@@ -375,7 +405,7 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": self._entries_for_display(target),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -411,7 +441,7 @@ class MemoryStore:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
-                    "current_entries": entries,
+                    "current_entries": self._entries_for_display(target),
                 })
 
             if len(matches) > 1:
@@ -444,7 +474,7 @@ class MemoryStore:
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": self._entries_for_display(target),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -472,7 +502,7 @@ class MemoryStore:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
-                    "current_entries": entries,
+                    "current_entries": self._entries_for_display(target),
                 })
 
             if len(matches) > 1:
@@ -591,7 +621,7 @@ class MemoryStore:
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                         f"entries in the same batch (see current_entries below), then retry."
                     ),
-                    "current_entries": self._entries_for(target),
+                    "current_entries": self._entries_for_display(target),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -608,7 +638,7 @@ class MemoryStore:
         return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
-            "current_entries": self._entries_for(target),
+            "current_entries": self._entries_for_display(target),
             "usage": f"{current:,}/{limit:,}",
         })
 
@@ -671,10 +701,28 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
+        # Render-side hard cap. The char limit is enforced only on the tool
+        # write path; bypass writers (weekly consolidation cron, UI edit, manual
+        # append) can grow a memory file without bound, and the whole thing would
+        # otherwise be injected verbatim into every session's system prompt.
+        # Truncate head+tail so an oversized file can't blow the context window.
+        render_cap = max(limit * 2, 4000)
+        if current > render_cap:
+            head = int(render_cap * 0.7)
+            tail = int(render_cap * 0.2)
+            omitted = current - head - tail
+            content = (
+                content[:head]
+                + f"\n\n[... {omitted:,} chars truncated — memory over budget "
+                f"({current:,}/{limit:,}); consolidate via memory(action=remove/replace) ...]\n\n"
+                + content[-tail:]
+            )
+
+        over = " ⚠ OVER BUDGET" if current > limit else ""
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars{over}]"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars{over}]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -949,7 +997,7 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
                 f"to {action}. None was provided. Reissue the {action} with old_text "
                 f"set to part of one of the current_entries below."
             ),
-            "current_entries": entries,
+            "current_entries": store._entries_for_display(target),
             "usage": f"{current:,}/{limit:,}",
         },
         ensure_ascii=False,

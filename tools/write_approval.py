@@ -103,6 +103,26 @@ def _normalize_enabled(value: Any) -> bool:
     return False
 
 
+def background_stage_enabled() -> bool:
+    """Whether unattended background-review MEMORY writes should be staged.
+
+    Reads ``memory.background_write_approval`` from config.yaml. Unlike the main
+    ``write_approval`` gate this defaults to ``True`` (opt-out): the background
+    self-improvement fork autonomously decides what to persist and is the
+    documented source of the "wrong assumptions" memory pollution, so its writes
+    are staged for the user's approval even when the general gate is off.
+    Foreground (user-present) writes are unaffected. Set the key to ``false`` to
+    restore direct background writes.
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        raw = cfg_get(cfg, MEMORY, "background_write_approval", default=True)
+    except Exception:
+        return True
+    return _normalize_enabled(raw)
+
+
 # ---------------------------------------------------------------------------
 # Pending store (file-backed)
 # ---------------------------------------------------------------------------
@@ -271,6 +291,21 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
+    # Unattended background-review MEMORY writes stage for approval even when the
+    # general gate is off. The review fork writes with no user present and is the
+    # documented source of "wrong assumptions" pollution; staging keeps anything
+    # it inferred out of long-term memory (and every future system prompt) until
+    # the user sees it via /memory pending. Opt out with
+    # memory.background_write_approval: false. Skills keep their own path below.
+    if subsystem == MEMORY and is_background() and background_stage_enabled():
+        return GateDecision(
+            stage=True,
+            message=(
+                "Staged for approval (background review memory write). "
+                "Not yet saved — review with /memory pending."
+            ),
+        )
+
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 

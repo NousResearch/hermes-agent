@@ -58,6 +58,13 @@ MAX_SCAN_CHARS = 65_536
 # bypasses without introducing unbounded repetition.
 _FILLER = r"(?:\w+\s+){0,8}"
 
+# CJK gap: Chinese/Japanese text has no inter-word whitespace, so the ``\w+\s+``
+# filler above never matches between Han characters.  This bounded any-char gap
+# lets CJK attack patterns tolerate a few characters between the anchor tokens
+# (e.g. "忽略[之前的所有]指令") without unbounded backtracking.  Kept small to
+# hold false positives down on legitimate Chinese memory content.
+_CJK_GAP = r"[^\n]{0,16}"
+
 # Each entry: (regex, pattern_id, scope)
 # scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
@@ -132,6 +139,21 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Hardcoded secrets ────────────────────────────────────────────
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+
+    # ── Multilingual (CJK) injection / exfiltration ──────────────────
+    # The patterns above are English-only.  On a Chinese-primary deployment,
+    # memory entries and tool results are Chinese, so an attacker's Chinese
+    # "instruction-style" content passes the scanner and persists into every
+    # future system prompt.  These anchor on verb+object pairs specific to
+    # override/deception/exfil so legitimate Chinese notes stay clean.  Verb
+    # anchoring (not bare nouns like "指令"/"prompt") keeps false positives low.
+    (rf'(?:忽略|忽視|无视|無視|不要理会|不用理会){_CJK_GAP}(?:指令|指示|命令|要求|提示词|提示語|prompt)', "prompt_injection_cjk", "all"),
+    (rf'(?:无视|無視|忽略|忽視|违反|違反|绕过|繞過|不遵守){_CJK_GAP}(?:规则|規則|规定|規定|限制|约束|約束|指示)', "disregard_rules_cjk", "all"),
+    (rf'(?:不要|不准|不得|别|請勿|请勿|千万别|千萬別){_CJK_GAP}(?:告诉|告訴|让|讓|使|告知)[^\n]{{0,6}}用户', "deception_hide_cjk", "all"),
+    (rf'(?:发送|發送|上传|上傳|传送|傳送|发到|發到|上报|上報|post){_CJK_GAP}https?://', "send_to_url_cjk", "strict"),
+    (rf'(?:对话历史|對話歷史|聊天记录|聊天記錄|聊天历史|完整上下文|全部上下文|对话记录|對話記錄|系统提示词|系統提示詞|历史消息){_CJK_GAP}(?:发送|發送|上传|上傳|传送|傳送|导出|導出|外发|外發|泄露|洩露|发给|發給)', "context_exfil_cjk", "strict"),
+    (r'你现在(?:是|要扮演|要充当|就是)|你現在(?:是|要扮演|要充當|就是)', "role_hijack_cjk", "context"),
+    (rf'(?:不受|无视|無視|忽略|绕过|繞過|关闭|關閉|禁用){_CJK_GAP}(?:限制|约束|約束|安全|过滤|過濾|审查|審查|防护|防護)', "remove_filters_cjk", "context"),
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.

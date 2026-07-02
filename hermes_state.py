@@ -2672,43 +2672,6 @@ class SessionDB:
             current = child_id
         return current
 
-    def is_session_descendant(self, ancestor_session_id: str, candidate_session_id: str) -> bool:
-        """Return True when ``candidate_session_id`` descends from ``ancestor_session_id``.
-
-        Used by gateway routing to distinguish a stale topic binding that still
-        points at a compression ancestor from an unrelated/restored session.  The
-        check walks parent links upward from the candidate, so siblings and
-        unrelated sessions never match.
-        """
-        ancestor_session_id = str(ancestor_session_id or "").strip()
-        candidate_session_id = str(candidate_session_id or "").strip()
-        if not ancestor_session_id or not candidate_session_id:
-            return False
-        if ancestor_session_id == candidate_session_id:
-            return False
-
-        current = candidate_session_id
-        seen = {current}
-        with self._lock:
-            for _ in range(100):
-                row = self._conn.execute(
-                    "SELECT parent_session_id FROM sessions WHERE id = ?",
-                    (current,),
-                ).fetchone()
-                if row is None:
-                    return False
-                parent_id = row["parent_session_id"] if hasattr(row, "keys") else row[0]
-                parent_id = str(parent_id or "").strip()
-                if not parent_id:
-                    return False
-                if parent_id == ancestor_session_id:
-                    return True
-                if parent_id in seen:
-                    return False
-                seen.add(parent_id)
-                current = parent_id
-        return False
-
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 

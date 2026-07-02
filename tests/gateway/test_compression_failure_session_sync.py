@@ -194,3 +194,30 @@ def test_stale_generation_cannot_publish_compression_split():
     assert session_store.entry.session_id == "session-before-compression"
     assert session_store.save_calls == 0
     assert session_store.peer_records == []
+
+
+def test_moved_active_binding_cannot_publish_late_compression_split():
+    session_store = _SessionStore()
+    session_store.entry.session_id = "fresh-session-after-new"
+    runner = _runner(session_store)
+    runner._session_run_generation = {SESSION_KEY: 1}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="user-1",
+    )
+
+    result = runner._publish_compression_session_split(
+        session_key=SESSION_KEY,
+        source=source,
+        previous_session_id="session-before-compression",
+        new_session_id="late-compressed-child",
+        reason="unit-test",
+        run_generation=1,
+    )
+
+    assert result is None
+    assert session_store.entry.session_id == "fresh-session-after-new"
+    assert session_store.save_calls == 0
+    assert session_store.peer_records == []

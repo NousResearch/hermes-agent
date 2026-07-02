@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_state import SessionDB
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
 
@@ -331,6 +332,103 @@ async def test_inject_watch_notification_advances_session_route_to_compression_t
     adapter.handle_message.assert_awaited_once()
     synth_event = adapter.handle_message.await_args.args[0]
     assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "proc_owner"
+
+
+@pytest.mark.asyncio
+async def test_run_process_watcher_advances_to_compression_tip_and_preserves_restored_binding(
+    monkeypatch, tmp_path
+):
+    """notify_on_complete follows compression tips without downgrading restored topics.
+
+    This exercises the real watcher path rather than only calling
+    ``_inject_watch_notification`` directly.
+    """
+    from datetime import datetime
+
+    import tools.process_registry as pr_module
+    from gateway.session import SessionEntry, SessionSource
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="123", user_id="proc_owner")
+    session_db.create_session(
+        session_id="parent-session", source="telegram", user_id="proc_owner",
+    )
+    session_db.end_session("parent-session", end_reason="compression")
+    session_db.create_session(
+        session_id="child-session",
+        source="telegram",
+        user_id="proc_owner",
+        parent_session_id="parent-session",
+    )
+    key = "agent:main:telegram:dm:123:24296"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="proc_owner",
+        user_name="alice",
+    )
+    session_db.bind_telegram_topic(
+        chat_id="123",
+        thread_id="24296",
+        user_id="proc_owner",
+        session_key=key,
+        session_id="parent-session",
+        managed_mode="restored",
+    )
+    runner._session_db = SimpleNamespace(_db=session_db)
+    entry = SessionEntry(
+        session_key=key,
+        session_id="parent-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=source,
+    )
+    runner.session_store._entries[key] = entry
+    runner.session_store._loaded = True
+    runner.session_store._record_gateway_session_peer = MagicMock()
+
+    await runner._run_process_watcher({
+        "session_id": "proc_restored",
+        "check_interval": 0,
+        "session_key": key,
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "24296",
+        "user_id": "proc_owner",
+        "user_name": "alice",
+        "notify_on_complete": True,
+    })
+
+    assert entry.session_id == "child-session"
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="123", thread_id="24296",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "child-session"
+    assert binding["managed_mode"] == "restored"
+    runner.session_store._record_gateway_session_peer.assert_called_once_with(
+        "child-session", key, source
+    )
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    assert synth_event.source.thread_id == "24296"
     assert synth_event.source.user_id == "proc_owner"
 
 

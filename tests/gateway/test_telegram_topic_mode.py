@@ -591,22 +591,6 @@ async def test_restored_topic_binding_does_not_follow_compression_tip(tmp_path, 
     assert binding["managed_mode"] == "restored"
 
 
-def test_is_session_descendant_handles_direct_multihop_and_siblings(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="root", source="telegram")
-    db.create_session(session_id="child", source="telegram", parent_session_id="root")
-    db.create_session(session_id="grandchild", source="telegram", parent_session_id="child")
-    db.create_session(session_id="sibling", source="telegram", parent_session_id="root")
-    db.create_session(session_id="unrelated", source="telegram")
-
-    assert db.is_session_descendant("root", "child") is True
-    assert db.is_session_descendant("root", "grandchild") is True
-    assert db.is_session_descendant("child", "grandchild") is True
-    assert db.is_session_descendant("child", "sibling") is False
-    assert db.is_session_descendant("root", "unrelated") is False
-    assert db.is_session_descendant("root", "root") is False
-
-
 @pytest.mark.asyncio
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run

@@ -3413,6 +3413,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         source: SessionSource,
         session_entry,
+        *,
+        managed_mode: str = "auto",
     ) -> None:
         """Persist the Telegram topic -> Hermes session binding for topic lanes."""
         session_db = getattr(self, "_session_db", None)
@@ -3426,6 +3428,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(source.user_id or ""),
             session_key=session_entry.session_key,
             session_id=session_entry.session_id,
+            managed_mode=managed_mode,
         )
 
     def _sync_telegram_topic_binding(
@@ -3448,11 +3451,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not self._is_telegram_topic_lane(source):
             return
         try:
-            self._record_telegram_topic_binding(source, session_entry)
+            managed_mode = (
+                "restored"
+                if self._telegram_topic_binding_is_restored(source)
+                else "auto"
+            )
+            self._record_telegram_topic_binding(
+                source,
+                session_entry,
+                managed_mode=managed_mode,
+            )
         except Exception:
             logger.debug(
                 "telegram topic binding refresh failed (%s)", reason, exc_info=True,
             )
+
+    def _telegram_topic_binding_is_restored(self, source: Optional[SessionSource]) -> bool:
+        """Return True when ``source`` points at an explicit /topic restore binding.
+
+        Compression healing may advance fast routing indexes, but restored topic
+        bindings are operator intent and must not be silently rewritten back to
+        ``managed_mode='auto'`` by a later background notification.
+        """
+        if source is None:
+            return False
+        try:
+            if not self._is_telegram_topic_lane(source):
+                return False
+        except Exception:
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        # This helper is called from off-loop compression publication paths;
+        # unwrap the async facade so the binding check stays synchronous.
+        session_db = getattr(session_db, "_db", session_db)
+        getter = getattr(session_db, "get_telegram_topic_binding", None)
+        if not callable(getter):
+            return False
+        try:
+            binding = getter(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+        except Exception:
+            logger.debug("telegram topic binding restored check failed", exc_info=True)
+            return False
+        return bool(binding and str(binding.get("managed_mode") or "") == "restored")
 
     def _publish_compression_session_split(
         self,
@@ -3463,7 +3508,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         new_session_id: str,
         reason: str,
         run_generation: Optional[int] = None,
-        sync_topic: bool = True,
     ):
         """Publish a compression-created child as the live gateway session.
 
@@ -3571,7 +3615,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
 
-        if sync_topic and route_source is not None:
+        if route_source is not None:
             self._sync_telegram_topic_binding(route_source, entry, reason=reason)
         return entry
 
@@ -3639,7 +3683,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             previous_session_id=current_session_id,
             new_session_id=tip_session_id,
             reason=reason,
-            sync_topic=True,
         ) or entry
 
     def _recover_telegram_topic_thread_id(
@@ -10361,23 +10404,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if binding:
                 bound_session_id = str(binding.get("session_id") or "")
                 binding_is_restored = str(binding.get("managed_mode") or "") == "restored"
-                # Heal bindings that point at a pre-compression parent: walk
-                # the compression-continuation chain forward to its tip so the
-                # next message resumes the compressed child instead of
-                # reloading the oversized parent transcript (#20470/#29712/
-                # #33414). Explicit /topic restored bindings stay authoritative
-                # until the operator changes them.
+                # Heal bindings that point at a pre-compression parent by
+                # walking only the compression-continuation chain. Generic
+                # parent/child lineage is intentionally ignored here: branch,
+                # delegate, and tool sessions also have parents, but they are
+                # not sanctioned replacements for the Telegram topic binding.
+                # Explicit /topic restored bindings stay authoritative until
+                # the operator changes them.
                 if bound_session_id and self._session_db is not None and not binding_is_restored:
                     try:
-                        if await self._session_db.is_session_descendant(
+                        canonical_session_id = await self._session_db.get_compression_tip(
                             bound_session_id,
-                            session_entry.session_id,
-                        ):
-                            canonical_session_id = session_entry.session_id
-                        else:
-                            canonical_session_id = await self._session_db.get_compression_tip(
-                                bound_session_id,
-                            )
+                        )
                     except Exception:
                         logger.debug(
                             "compression-tip lookup failed for %s",

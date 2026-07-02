@@ -149,6 +149,7 @@ _OFFLOADED_SYNC_HELPERS = frozenset({
     "_session_has_compression_in_flight",
     "_publish_compression_session_split",
     "_advance_session_entry_to_compression_tip",
+    "_telegram_topic_binding_is_restored",
     "_build_process_event_source",
 })
 

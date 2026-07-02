@@ -229,13 +229,13 @@ The invariant is:
 
 The gateway helpers enforcing this are:
 
-- `GatewayRunner._publish_compression_session_split()` — atomically updates the
-  `SessionEntry`, persists `sessions.json`, records gateway peer metadata, and refreshes
-  topic bindings for a live compression rotation.
+- `GatewayRunner._publish_compression_session_split()` — guards the live route,
+  updates the `SessionEntry`, persists `sessions.json`, then best-effort records
+  gateway peer metadata and refreshes topic bindings for a live compression rotation.
 - `GatewayRunner._advance_session_entry_to_compression_tip()` — delivery-time repair for
   synthetic events that may fire long after the spawning turn compressed.
-- `SessionDB.get_compression_tip()` / `SessionDB.is_session_descendant()` — lineage checks
-  against `parent_session_id` in `state.db`.
+- `SessionDB.get_compression_tip()` — follows compression-only continuation lineage
+  through `parent_session_id` in `state.db`.
 
 ---
 

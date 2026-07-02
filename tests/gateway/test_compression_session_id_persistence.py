@@ -125,7 +125,6 @@ class TestCompressionSessionPropagation:
             new_session_id=new_sid,
             reason="test",
             run_generation=1,
-            sync_topic=False,
         )
 
         assert published is session_entry
@@ -154,7 +153,6 @@ class TestCompressionSessionPropagation:
             new_session_id=same_sid,
             reason="test",
             run_generation=1,
-            sync_topic=False,
         )
 
         assert published is None
@@ -180,7 +178,6 @@ class TestCompressionSessionPropagation:
             new_session_id=new_sid,
             reason="test",
             run_generation=1,
-            sync_topic=False,
         )
 
         contextvar_sid = get_session_env("HERMES_SESSION_ID", "")

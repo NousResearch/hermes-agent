@@ -209,13 +209,13 @@ The change must keep prompt caching stable: session keys identify cached agent i
   - `hermes_state.py`
   - `tests/gateway/test_telegram_topic_mode.py`
   - `tests/test_hermes_state.py`
-- **Approach:** Add or reuse a lineage helper such as `SessionDB.is_session_descendant()` so `_handle_message_with_agent()` can distinguish “binding points at a stale ancestor” from “binding intentionally restored.” If the current `SessionEntry.session_id` is a descendant of the bound session and the binding is not restored, prefer the current descendant and rewrite the binding through `_sync_telegram_topic_binding()`.
-- **Patterns to follow:** PR #43766’s descendant-preference logic; existing `get_telegram_topic_binding()` / `bind_telegram_topic()` tests.
+- **Approach:** Use `SessionDB.get_compression_tip()` so `_handle_message_with_agent()` follows only compression-continuation lineage. Do not treat generic `parent_session_id` descendants as topic-binding replacements. If the binding is not restored and the compression tip differs from the bound parent, switch the route and rewrite the binding through `_sync_telegram_topic_binding()`.
+- **Patterns to follow:** Existing `get_compression_tip()`, `get_telegram_topic_binding()`, and `bind_telegram_topic()` tests.
 - **Test scenarios:**
   - Happy path: topic binding points at old parent A, session store points at descendant B, and the next Telegram message runs on B without `switch_session()` rewinding to A.
   - Restored binding: managed mode is `restored`; the binding stays on the restored session even if a descendant exists.
   - Compression-tip path: `get_compression_tip()` returns canonical child B and the binding is rewritten to B.
-  - Lineage helper: `is_session_descendant()` returns true for direct and multi-hop descendants, false for siblings and unrelated sessions.
+  - Generic descendants: non-compression parent/child lineage is not followed for topic binding repair.
 - **Verification:** Telegram topic mode cannot drag a compressed conversation back to an old parent unless the operator explicitly restored that binding.
 
 ### U6. Make background and delegation notifications compression-tip-aware

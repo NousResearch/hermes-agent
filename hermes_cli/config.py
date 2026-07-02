@@ -847,6 +847,15 @@ def ensure_hermes_home():
     any files created (e.g. SOUL.md) are group-writable (0660).
     """
     home = get_hermes_home()
+    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
+    # If a stale process keeps running after the profile was renamed/deleted,
+    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
+    # and make the deleted profile reappear in Desktop/profile lists.
+    if home.parent.name == "profiles" and not home.exists():
+        raise FileNotFoundError(
+            f"Named profile home does not exist: {home}. "
+            "Create the profile explicitly before using it."
+        )
     if is_managed():
         old_umask = os.umask(0o007)
         try:

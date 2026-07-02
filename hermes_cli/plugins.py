@@ -2107,6 +2107,36 @@ def get_pre_tool_call_block_message(
     return None
 
 
+_BUDGET_SEVERITY = {"ok": 0, "soft": 1, "hard": 2}
+
+
+def get_budget_check_verdict(**context: Any) -> Optional[Dict[str, Any]]:
+    """Query ``on_budget_check`` hooks and return the most-severe verdict.
+
+    A budget plugin returns a verdict dict on ACCUMULATED spend for a scope::
+
+        {"status": "soft", "message": "...", "scope": "cron_job", ...}
+
+    Only ``status`` (``ok``/``soft``/``hard``) is required; ``message`` is the
+    plugin-authored notice the core surfaces. The most-severe verdict across
+    all registered plugins wins. Non-dict results and results without a valid
+    ``status`` are ignored. Returns ``None`` when no plugin returns a valid
+    verdict (including when no plugin registers the hook).
+    """
+    results = invoke_hook("on_budget_check", **context)
+    best: Optional[Dict[str, Any]] = None
+    best_sev = -1
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        sev = _BUDGET_SEVERITY.get(result.get("status"))
+        if sev is None:
+            continue
+        if sev > best_sev:
+            best, best_sev = result, sev
+    return best
+
+
 def get_pre_verify_continue_message(
     *,
     session_id: str = "",

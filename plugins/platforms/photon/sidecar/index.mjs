@@ -484,6 +484,10 @@ async function closeAdvancedClients() {
   }
 }
 
+function isUpstreamMessageRpcError(error) {
+  return /MessageService\/(Edit|Unsend)Message/.test(String(error?.message ?? error ?? ""));
+}
+
 function isAdvancedTransportError(error) {
   const message = String(error?.message ?? error ?? "");
   return (
@@ -1106,6 +1110,10 @@ const server = http.createServer(async (req, res) => {
         return ok(res, { messageId, edited: true, method: "space.send(edit)" });
       } catch (spectrumError) {
         if (!advancedCreateClient) throw spectrumError;
+        // Spectrum's provider edit already calls the advanced EditMessage RPC;
+        // when the failure names that RPC the upstream service itself failed
+        // and the fallback would re-dial the identical endpoint.
+        if (isUpstreamMessageRpcError(spectrumError)) throw spectrumError;
         console.error(
           "photon-sidecar: Spectrum edit failed; trying advanced edit fallback: " +
             (spectrumError && spectrumError.stack
@@ -1165,6 +1173,7 @@ const server = http.createServer(async (req, res) => {
         return ok(res, { messageId, unsent: true, method: "space.send(unsend)" });
       } catch (spectrumError) {
         if (!advancedCreateClient) throw spectrumError;
+        if (isUpstreamMessageRpcError(spectrumError)) throw spectrumError;
         console.error(
           "photon-sidecar: Spectrum unsend failed; trying advanced unsend fallback: " +
             (spectrumError && spectrumError.stack

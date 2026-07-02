@@ -28,5 +28,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install guard dependencies
+        run: python -m pip install PyYAML
+
       - name: Run Pi2 install guard checks
         run: python scripts/check_pi2_install_guards.py --repo .

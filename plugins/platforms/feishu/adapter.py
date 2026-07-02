@@ -2322,7 +2322,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                     except Exception as exc:
-                        if active_reply_to and not (metadata or {}).get("thread_id"):
+                        if self._can_retry_reply_as_top_level(active_reply_to, metadata):
                             logger.warning(
                                 "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
                                 exc,
@@ -2336,7 +2336,10 @@ class FeishuAdapter(BasePlatformAdapter):
                             )
                         else:
                             raise
-                    if not self._response_succeeded(response) and active_reply_to and not (metadata or {}).get("thread_id"):
+                    if (
+                        not self._response_succeeded(response)
+                        and self._can_retry_reply_as_top_level(active_reply_to, metadata)
+                    ):
                         code = getattr(response, "code", "unknown")
                         msg = getattr(response, "msg", "")
                         logger.warning(
@@ -2397,7 +2400,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     if msg_type == "interactive":
-                        if reply_to and not (metadata or {}).get("thread_id"):
+                        if self._can_retry_reply_as_top_level(reply_to, metadata):
                             logger.warning(
                                 "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
                                 exc,
@@ -2434,7 +2437,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if msg_type == "interactive" and not self._response_succeeded(response):
                     code = getattr(response, "code", "unknown")
                     msg = getattr(response, "msg", "")
-                    if reply_to and not (metadata or {}).get("thread_id"):
+                    if self._can_retry_reply_as_top_level(reply_to, metadata):
                         logger.warning(
                             "[Feishu] Interactive card reply was rejected (code=%s msg=%s); retrying as a top-level card before plain text fallback",
                             code,
@@ -5209,7 +5212,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_threads_enabled = bool(self.config.extra.get("reply_in_thread", True))
+        reply_threads_enabled = self._reply_threads_enabled()
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to
         if not effective_reply_to and thread_id and reply_threads_enabled:
@@ -5254,6 +5257,19 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
+
+    def _reply_threads_enabled(self) -> bool:
+        return bool(self.config.extra.get("reply_in_thread", True))
+
+    def _has_effective_reply_thread(self, metadata: Optional[Dict[str, Any]]) -> bool:
+        return bool((metadata or {}).get("thread_id") and self._reply_threads_enabled())
+
+    def _can_retry_reply_as_top_level(
+        self,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        return bool(reply_to and not self._has_effective_reply_thread(metadata))
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
@@ -5397,7 +5413,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
+                        if self._has_effective_reply_thread(metadata):
                             logger.warning(
                                 "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
                                 "skipping top-level fallback to avoid creating a new topic",

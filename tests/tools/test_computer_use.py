@@ -1233,7 +1233,7 @@ class TestLazyMcpInstall:
         from tools import lazy_deps
         assert lazy_deps.feature_specs("tool.computer_use") == (
             "mcp==1.27.2",
-            "starlette==1.2.1",
+            "starlette==1.3.1",
         )
 
     def test_start_lazy_installs_mcp(self):
@@ -1252,7 +1252,7 @@ class TestLazyMcpInstall:
         from tools.computer_use import cua_backend
         from tools.lazy_deps import FeatureUnavailable
         unavailable = FeatureUnavailable(
-            "tool.computer_use", ("mcp==1.26.0",), "lazy installs disabled"
+            "tool.computer_use", ("mcp==1.27.2", "starlette==1.3.1"), "lazy installs disabled"
         )
         with patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure", side_effect=unavailable), \

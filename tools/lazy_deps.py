@@ -220,7 +220,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
         "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
@@ -235,8 +235,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "mcp==1.27.2",
+        "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
 }
 

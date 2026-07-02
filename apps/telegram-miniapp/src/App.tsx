@@ -41,6 +41,15 @@ const STALE_AFTER_MS = 45_000;
 
 type FreshnessState = "mock" | "fresh" | "refreshing" | "stale" | "offline";
 type LogLevelFilter = LogLine["level"] | "all";
+type EndpointKey = "status" | "capabilities" | "approvals" | "sessions" | "logs";
+type EndpointState = "preview" | "checking" | "ok" | "degraded";
+
+type EndpointHealthItem = {
+  key: EndpointKey;
+  label: string;
+  state: EndpointState;
+  detail: string;
+};
 
 const logLevelFilters: ReadonlyArray<{ key: LogLevelFilter; label: string }> = [
   { key: "all", label: "Все" },
@@ -62,6 +71,23 @@ const navTitles: Record<NavKey, string> = {
   sessions: "Сессии агентов",
   approvals: "Контур одобрений",
   logs: "Журнал событий",
+};
+
+const endpointKeys: EndpointKey[] = ["status", "capabilities", "approvals", "sessions", "logs"];
+
+const endpointLabels: Record<EndpointKey, string> = {
+  status: "Статус системы",
+  capabilities: "Матрица возможностей",
+  approvals: "Очередь одобрений",
+  sessions: "Сессии",
+  logs: "Логи",
+};
+
+const endpointDetails: Record<EndpointState, string> = {
+  preview: "локальное превью",
+  checking: "проверяю read-only snapshot",
+  ok: "read-only snapshot получен",
+  degraded: "snapshot временно недоступен",
 };
 
 const STORAGE_KEYS = {
@@ -104,6 +130,49 @@ function removeStoredValue(key: string): void {
   } catch {
     // localStorage is optional in Telegram WebView/private contexts.
   }
+}
+
+function createEndpointHealth(state: EndpointState): Record<EndpointKey, EndpointHealthItem> {
+  return endpointKeys.reduce(
+    (items, key) => ({
+      ...items,
+      [key]: {
+        key,
+        label: endpointLabels[key],
+        state,
+        detail: endpointDetails[state],
+      },
+    }),
+    {} as Record<EndpointKey, EndpointHealthItem>,
+  );
+}
+
+function createEndpointStateUpdates(state: EndpointState): Record<EndpointKey, EndpointState> {
+  return endpointKeys.reduce(
+    (items, key) => ({
+      ...items,
+      [key]: state,
+    }),
+    {} as Record<EndpointKey, EndpointState>,
+  );
+}
+
+function updateEndpointHealth(current: Record<EndpointKey, EndpointHealthItem>, updates: Partial<Record<EndpointKey, EndpointState>>): Record<EndpointKey, EndpointHealthItem> {
+  return endpointKeys.reduce(
+    (items, key) => {
+      const state = updates[key] ?? current[key].state;
+      return {
+        ...items,
+        [key]: {
+          key,
+          label: endpointLabels[key],
+          state,
+          detail: endpointDetails[state],
+        },
+      };
+    },
+    {} as Record<EndpointKey, EndpointHealthItem>,
+  );
 }
 
 function RiskBadge({ action }: { action: Pick<QuickAction, "risk"> }) {
@@ -245,11 +314,13 @@ function StatusSection({
   safetyText,
   approvalCount,
   capabilities,
+  endpointHealth,
 }: {
   cards: ReadonlyArray<{ label: string; value: string; meta: string; tone: string }>;
   safetyText: string;
   approvalCount: number;
   capabilities: CapabilityItem[];
+  endpointHealth: EndpointHealthItem[];
 }) {
   return (
     <>
@@ -293,6 +364,25 @@ function StatusSection({
           </div>
         </section>
       ) : null}
+
+      <section className="endpoint-health-card glass-card" aria-label="Состояние read-only snapshots">
+        <div className="section-heading">
+          <div>
+            <p className="mono-label">M14 / ENDPOINT HEALTH</p>
+            <h2>Снимки данных</h2>
+          </div>
+          <span className="lock-pill">без payload</span>
+        </div>
+        <div className="endpoint-health-list">
+          {endpointHealth.map((item) => (
+            <article className="endpoint-health-row" data-state={item.state} key={item.key}>
+              <span>{item.label}</span>
+              <strong>{item.state === "ok" ? "ok" : item.state === "checking" ? "check" : item.state === "degraded" ? "degraded" : "preview"}</strong>
+              <small>{item.detail}</small>
+            </article>
+          ))}
+        </div>
+      </section>
 
       <section className="command-card glass-card" aria-label="Быстрые маршруты">
         <div className="section-heading">
@@ -611,6 +701,7 @@ export function App() {
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
   const [serverCapabilities, setServerCapabilities] = useState<CapabilityItem[]>([]);
+  const [endpointHealth, setEndpointHealth] = useState<Record<EndpointKey, EndpointHealthItem>>(() => createEndpointHealth("preview"));
   const [snapshotMeta, setSnapshotMeta] = useState<Record<"approvals" | "sessions" | "logs", SnapshotMeta | null>>({ approvals: null, sessions: null, logs: null });
   const [isPaletteOpen, setPaletteOpen] = useState(false);
   const [isRefreshing, setRefreshing] = useState(false);
@@ -698,38 +789,63 @@ export function App() {
       if (manual) triggerTelegramRefreshHaptic("start");
       setRefreshing(true);
       setApiState((current) => (current === "connected" ? current : "connecting"));
+      setEndpointHealth((current) => updateEndpointHealth(current, createEndpointStateUpdates("checking")));
 
       try {
-        const [status, capabilities, approvals, sessions, logs] = await Promise.all([
+        const [status, capabilities, approvals, sessions, logs] = await Promise.allSettled([
           fetchStatusSnapshot(),
-          fetchCapabilitiesSnapshot().catch(() => ({ ok: false, items: [] })),
+          fetchCapabilitiesSnapshot(),
           fetchApprovalsSnapshot(),
           fetchSessionsSnapshot(),
           fetchLogsSnapshot(),
         ]);
         if (requestId !== refreshRequestId.current) return;
 
-        setSnapshot(status);
-        const mappedApprovals = approvals.items.map(mapServerApproval);
-        const mappedSessions = sessions.items.map(mapServerSession);
-        const mappedLogs = logs.items.map(mapServerLog);
-        setServerApprovals(mappedApprovals);
-        setServerSessions(mappedSessions);
-        setServerLogs(mappedLogs);
-        setServerCapabilities(capabilities.items);
-        setSnapshotMeta({ approvals: approvals.meta ?? null, sessions: sessions.meta ?? null, logs: logs.meta ?? null });
-        setSelectedApprovalId((current) => {
-          if (mappedApprovals.some((approval) => approval.id === current)) return current;
-          return mappedApprovals[0]?.id ?? "";
-        });
-        setSelectedSessionId((current) => {
-          if (mappedSessions.some((session) => session.id === current)) return current;
-          return mappedSessions[0]?.id ?? "";
-        });
-        setSelectedLogKey((current) => {
-          if (mappedLogs.some((line) => logLineKey(line) === current)) return current;
-          return mappedLogs[0] ? logLineKey(mappedLogs[0]) : "";
-        });
+        setEndpointHealth((current) => updateEndpointHealth(current, {
+          status: status.status === "fulfilled" ? "ok" : "degraded",
+          capabilities: capabilities.status === "fulfilled" ? "ok" : "degraded",
+          approvals: approvals.status === "fulfilled" ? "ok" : "degraded",
+          sessions: sessions.status === "fulfilled" ? "ok" : "degraded",
+          logs: logs.status === "fulfilled" ? "ok" : "degraded",
+        }));
+
+        if (status.status !== "fulfilled") {
+          setApiState("offline");
+          if (manual) triggerTelegramRefreshHaptic("warning");
+          return;
+        }
+
+        setSnapshot(status.value);
+        if (approvals.status === "fulfilled") {
+          const mappedApprovals = approvals.value.items.map(mapServerApproval);
+          setServerApprovals(mappedApprovals);
+          setSnapshotMeta((current) => ({ ...current, approvals: approvals.value.meta ?? null }));
+          setSelectedApprovalId((current) => {
+            if (mappedApprovals.some((approval) => approval.id === current)) return current;
+            return mappedApprovals[0]?.id ?? "";
+          });
+        }
+        if (sessions.status === "fulfilled") {
+          const mappedSessions = sessions.value.items.map(mapServerSession);
+          setServerSessions(mappedSessions);
+          setSnapshotMeta((current) => ({ ...current, sessions: sessions.value.meta ?? null }));
+          setSelectedSessionId((current) => {
+            if (mappedSessions.some((session) => session.id === current)) return current;
+            return mappedSessions[0]?.id ?? "";
+          });
+        }
+        if (logs.status === "fulfilled") {
+          const mappedLogs = logs.value.items.map(mapServerLog);
+          setServerLogs(mappedLogs);
+          setSnapshotMeta((current) => ({ ...current, logs: logs.value.meta ?? null }));
+          setSelectedLogKey((current) => {
+            if (mappedLogs.some((line) => logLineKey(line) === current)) return current;
+            return mappedLogs[0] ? logLineKey(mappedLogs[0]) : "";
+          });
+        }
+        if (capabilities.status === "fulfilled") {
+          setServerCapabilities(capabilities.value.items);
+        }
         const refreshedAt = Date.now();
         setLastSuccessAt(refreshedAt);
         setNow(refreshedAt);
@@ -738,6 +854,7 @@ export function App() {
       } catch {
         if (requestId === refreshRequestId.current) {
           setApiState("offline");
+          setEndpointHealth((current) => updateEndpointHealth(current, createEndpointStateUpdates("degraded")));
           if (manual) triggerTelegramRefreshHaptic("warning");
         }
       } finally {
@@ -756,6 +873,7 @@ export function App() {
       setServerSessions([]);
       setServerLogs([]);
       setServerCapabilities([]);
+      setEndpointHealth(createEndpointHealth("preview"));
       setSnapshotMeta({ approvals: null, sessions: null, logs: null });
       setLastSuccessAt(null);
       setRefreshing(false);
@@ -888,7 +1006,7 @@ export function App() {
       />
       <SourceStrip meta={currentSourceMeta} />
 
-      {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} capabilities={serverCapabilities} /> : null}
+      {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} capabilities={serverCapabilities} endpointHealth={endpointKeys.map((key) => endpointHealth[key])} /> : null}
       {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
       {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
       {activeTab === "logs" ? (

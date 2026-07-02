@@ -478,7 +478,8 @@ h2 {
 }
 
 .quick-grid,
-.capability-grid {
+.capability-grid,
+.endpoint-health-list {
   position: relative;
   z-index: 1;
   display: grid;
@@ -490,6 +491,10 @@ h2 {
 }
 
 .capability-grid {
+  grid-template-columns: 1fr;
+}
+
+.endpoint-health-list {
   grid-template-columns: 1fr;
 }
 
@@ -559,6 +564,68 @@ h2 {
   color: #075766;
   background: rgba(0, 213, 255, 0.1);
   font-style: normal;
+}
+
+.endpoint-health-card {
+  padding: 17px;
+  margin-bottom: 12px;
+  border-color: rgba(0, 213, 255, 0.14);
+}
+
+.endpoint-health-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  border: 1px solid rgba(21, 23, 25, 0.08);
+  border-radius: 17px;
+  padding: 11px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.endpoint-health-row span,
+.endpoint-health-row small {
+  color: var(--c-text-muted);
+  font-size: 0.76rem;
+  line-height: 1.28;
+}
+
+.endpoint-health-row span {
+  color: var(--c-text);
+  font-weight: 760;
+  letter-spacing: -0.015em;
+}
+
+.endpoint-health-row strong {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  border-radius: 999px;
+  padding: 6px 8px;
+  color: #075766;
+  background: rgba(0, 213, 255, 0.1);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.endpoint-health-row[data-state="ok"] strong {
+  color: #175c32;
+  background: rgba(183, 255, 74, 0.16);
+}
+
+.endpoint-health-row[data-state="checking"] strong {
+  animation: pulseDot 900ms ease-in-out infinite;
+}
+
+.endpoint-health-row[data-state="degraded"] {
+  border-color: rgba(201, 138, 19, 0.2);
+  background: rgba(201, 138, 19, 0.08);
+}
+
+.endpoint-health-row[data-state="degraded"] strong {
+  color: #7a4a06;
+  background: rgba(201, 138, 19, 0.12);
 }
 
 .tap {

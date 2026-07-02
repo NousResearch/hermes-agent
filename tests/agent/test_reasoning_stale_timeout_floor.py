@@ -69,9 +69,17 @@ import pytest
     ("openai/o3-pro", 600.0),
     ("openai/o3-mini", 300.0),
     ("openai/o4-mini", 300.0),
-    # Anthropic Claude 4.x thinking variants.
+    # Anthropic Claude 4.x thinking variants.  Canonical Sonnet IDs are
+    # hyphenated (claude-sonnet-4-5 / -4-6); the legacy dotted forms are
+    # kept for back-compat.  Both must resolve to the 180s floor — the
+    # dotted-only table entries used to miss the hyphenated canonical IDs
+    # because re.escape made the "." a literal dot.
     ("anthropic/claude-opus-4-6", 240.0),
     ("anthropic/claude-opus-4-20250514", 240.0),
+    ("anthropic/claude-sonnet-4-6", 180.0),
+    ("claude-sonnet-4-6", 180.0),
+    ("anthropic/claude-sonnet-4-5", 180.0),
+    ("anthropic/claude-sonnet-4-20250514", 180.0),
     ("anthropic/claude-sonnet-4.5", 180.0),
     ("anthropic/claude-sonnet-4.6", 180.0),
     # xAI Grok reasoning variants — explicit, not bare `grok`.

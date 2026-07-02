@@ -3048,6 +3048,7 @@ class GatewaySlashCommandsMixin:
                 # ANY failure — a reconcile bug must never break /compress or
                 # ship wrong math (same contract as the hygiene announce).
                 _granular = None
+                _granular_has_wire = False
                 if _rewritten and len(compressed) != len(history):
                     try:
                         from agent.compaction_stats import build_hygiene_stats
@@ -3088,6 +3089,17 @@ class GatewaySlashCommandsMixin:
                                 None,
                                 None,
                                 basis="stored",
+                                # Wire-first (Ace 2026-07-02): when the REAL
+                                # provider-measured before-count exists, the
+                                # block's Context line carries the wire story
+                                # (measured before → next-request estimate)
+                                # and the trailing Full-request line below is
+                                # skipped as a duplicate.
+                                wire_before=real_before_tokens,
+                                wire_after=full_after_tokens,
+                            )
+                            _granular_has_wire = (
+                                real_before_tokens > 0 and full_after_tokens > 0
                             )
                             # Honest, store-correct recovery pointer.
                             if _engine_name == "lcm":
@@ -3113,6 +3125,7 @@ class GatewaySlashCommandsMixin:
                             exc_info=True,
                         )
                         _granular = None
+                        _granular_has_wire = False
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
                 # path (otherwise the failure is silently logged).
@@ -3178,6 +3191,10 @@ class GatewaySlashCommandsMixin:
             # estimate — the real post-compression count doesn't exist until
             # the next live API call.
             #
+            # Wire-first: when the granular block already rendered the wire
+            # story on its Context line (measured before → next-request
+            # estimate), this line would be a duplicate — skip it.
+            #
             # When the stored transcript was NOT rewritten, the next request
             # resends the same context — say "unchanged" instead of printing a
             # before → after pair whose delta is pure estimator noise (#F2).
@@ -3190,6 +3207,8 @@ class GatewaySlashCommandsMixin:
                 lines.append(
                     t("gateway.compress.full_request_unchanged", before=_fr_before)
                 )
+            elif _granular_has_wire:
+                pass  # wire story already on the granular Context line
             elif real_before_tokens > 0:
                 lines.append(
                     t(

@@ -795,6 +795,71 @@ class TestGranularBasisLabel:
         assert "Full request size" not in stored  # caller appends it, not the renderer
 
 
+class TestGranularWireFirst:
+    """Wire-first /compress feedback (Ace 2026-07-02): when the caller supplies
+    the REAL provider-measured before-count + a next-request estimate, the
+    stored-basis block's prominent token line becomes the WIRE story (exact
+    measured before, ~estimated after), and the archive totals are demoted into
+    the Removed header as an explicit 'token-est' parenthetical. One number
+    story — the footer figure and the /compress figure can no longer disagree."""
+
+    def test_wire_mode_context_line_uses_measured_numbers(self):
+        s = _good_stats()
+        out = _format_granular_announce(
+            "🗜️ head", s, "m", False, None, None,
+            basis="stored", wire_before=236_012, wire_after=80_143,
+        )
+        # exact measured before (commas, no ~), estimated after (~)
+        assert "Context:   236,012 → ~80,143 tokens" in out
+        # freed/pct computed on WIRE numbers: 155,869 → ~155K, 66%
+        assert "freed ~155K, 66% smaller" in out
+        assert "before measured, after next-request estimate" in out
+        # the stored-transcript label must NOT be the prominent line anymore
+        assert "Stored transcript:" not in out
+
+    def test_wire_mode_demotes_archive_totals_into_removed_header(self):
+        s = _good_stats()
+        out = _format_granular_announce(
+            "🗜️ head", s, "m", False, None, None,
+            basis="stored", wire_before=236_012, wire_after=80_143,
+        )
+        # archive story explicitly labeled as token-est, in the Removed header
+        assert "Removed from stored transcript (716 messages," in out
+        assert "token-est reclaimed from archive):" in out
+        # kept-in-transcript replacement-cost wording unchanged
+        assert "kept in transcript" in out
+
+    def test_wire_mode_no_net_reduction_guard(self):
+        s = _good_stats()
+        out = _format_granular_announce(
+            "🗜️ head", s, "m", False, None, None,
+            basis="stored", wire_before=50_000, wire_after=60_000,
+        )
+        assert "no net reduction expected" in out
+        assert "% smaller" not in out
+
+    def test_wire_mode_requires_both_numbers(self):
+        # Missing/zero wire numbers → unchanged stored-basis rendering
+        s = _good_stats()
+        for wb, wa in ((0, 80_143), (236_012, 0), (None, None)):
+            out = _format_granular_announce(
+                "🗜️ head", s, "m", False, None, None,
+                basis="stored", wire_before=wb, wire_after=wa,
+            )
+            assert "Stored transcript:" in out
+            assert "token-est reclaimed from archive" not in out
+
+    def test_wire_kwargs_ignored_on_live_basis(self):
+        # Auto-announce path must stay byte-identical even if kwargs leak in
+        s = _good_stats()
+        live_plain = _format_granular_announce("h", s, "m", False, None, None)
+        live_kw = _format_granular_announce(
+            "h", s, "m", False, None, None,
+            wire_before=236_012, wire_after=80_143,
+        )
+        assert live_kw == live_plain
+
+
 class TestProviderModelSplit:
     def test_no_triple_prefix(self):
         # model carries its own provider prefix AND a provider is passed

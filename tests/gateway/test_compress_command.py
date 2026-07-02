@@ -601,17 +601,22 @@ async def test_compress_command_renders_granular_breakdown_on_real_compression()
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    # Granular block present: Messages/Stored-transcript axis lines + removed buckets.
+    # Granular block present: Messages axis + wire Context line + removed buckets.
     assert "Messages:" in result
     # The summary row must be classified as summary, not "kept chat"
     # (built-in SUMMARY_PREFIX marker → kept 2 recent chat + 1 summary).
     assert "kept 2 recent chat + 1 summary" in result
-    # Manual /compress measures the STORED transcript, not the live wire — the
-    # labels must say so (2026-07-02 basis-honesty fix). The live-context
-    # wording belongs only to the auto-compaction announce.
-    assert "Stored transcript:" in result
+    # Wire-first (Ace 2026-07-02): with a REAL provider-measured before-count
+    # (453,542), the prominent token line is the WIRE story — measured before →
+    # next-request estimate — NOT the archive estimate.
+    assert "Context:   453,542 → ~" in result
+    assert "before measured, after next-request estimate" in result
+    # The archive totals are demoted into the Removed header, explicitly labeled
+    # token-est so they can't be read as request-size savings.
     assert "Removed from stored transcript" in result
-    assert "Context:" not in result
+    assert "token-est reclaimed from archive" in result
+    # The old stand-alone 'Stored transcript:' prominent line is gone in wire mode.
+    assert "Stored transcript:" not in result
     assert "Removed from live context" not in result
     # Tool sub-split names the tool-result rows explicitly.
     assert "tool-result message" in result
@@ -619,9 +624,9 @@ async def test_compress_command_renders_granular_breakdown_on_real_compression()
     assert "Model: test-prov/test-model" in result
     # Recovery pointer for the rotated (non-LCM) store.
     assert "previous transcript preserved: sess-1" in result
-    # Full-request line (the REAL wire truth) still appended beside the
-    # storage block — this is the number that reflects request-size.
-    assert "Full request size: 453,542" in result
+    # The duplicate Full-request line is SKIPPED — the wire story is already on
+    # the Context line above (no double-reporting of 453,542).
+    assert "Full request size: 453,542" not in result
     # And it must never claim "No changes".
     assert "No changes" not in result
 
@@ -672,12 +677,15 @@ async def test_compress_command_granular_failure_degrades_to_two_line():
 
 
 @pytest.mark.asyncio
-async def test_compress_command_lcm_engine_uses_stored_basis_labels():
+async def test_compress_command_lcm_engine_wire_first_context_line():
     """Ace's live case (2026-07-02): an LCM session whose /compress granular
     block measured the STORED transcript but labeled it 'Context:' / 'Removed
     from live context' — overstating wire savings (~689K→~37K, 'freed 651K')
-    against a real 303K request. The block must now read STORED-transcript
-    wording, while the separate Full-request line stays the wire truth.
+    against a real 303K request. The fix: with a REAL provider-measured
+    before-count, the prominent Context line becomes the WIRE story (measured
+    303,201 → next-request estimate); the archive totals are demoted into the
+    Removed header as token-est; and the duplicate Full-request line is skipped.
+    One number story — footer and /compress can no longer disagree.
     """
     history = _make_tool_heavy_history()
     chat = _tool_heavy_chat(history)
@@ -719,20 +727,24 @@ async def test_compress_command_lcm_engine_uses_stored_basis_labels():
     # E2E proof — print the full delivered message.
     print("\n───── delivered /compress message (LCM) ─────\n" + result + "\n────────────────────────────────────────────")
 
-    # Storage-basis labels — the fix.
-    assert "Stored transcript:" in result
+    # Wire-first: the prominent token line is the WIRE story with the REAL
+    # measured before (303,201), not the archive estimate.
+    assert "Context:   303,201 → ~" in result
+    assert "before measured, after next-request estimate" in result
+    # Archive totals demoted into the Removed header, labeled token-est.
     assert "Removed from stored transcript" in result
-    # The replacement-cost line is present in this scenario; when present it must
-    # carry the stored-basis 'kept in transcript' wording (not 'kept in context').
+    assert "token-est reclaimed from archive" in result
+    # The replacement-cost line, when present, carries the stored-basis wording.
     if "Replacement cost" in result:
         assert "kept in transcript" in result
-    # The misleading live-wire wording must be gone from the manual path.
-    assert "Context:" not in result
+    # The old stand-alone 'Stored transcript:' line and the misleading live-wire
+    # wording must both be absent from the manual wire-first path.
+    assert "Stored transcript:" not in result
     assert "Removed from live context" not in result
     assert "kept in context" not in result
-    # The wire truth is the separate Full-request line, carrying the REAL
-    # provider-measured before (303,201) — NOT the storage estimate.
-    assert "Full request size: 303,201" in result
+    # The duplicate Full-request line is SKIPPED — the wire truth (303,201) is
+    # already the Context line above; no double-reporting.
+    assert "Full request size: 303,201" not in result
     # LCM recovery pointer.
     assert "lcm.db" in result
     assert "No changes" not in result

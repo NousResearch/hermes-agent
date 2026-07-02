@@ -418,6 +418,8 @@ def _format_granular_announce(
     head: str, stats: "Any", model_part: str,
     after_fallback: bool, window_from: "int | None", window_to: "int | None",
     *, basis: str = "live",
+    wire_before: "int | None" = None,
+    wire_after: "int | None" = None,
 ) -> str:
     """Render the multi-line single-unit (messages) breakdown from a validated
     ``CompactionStats``. Every line leads with messages; tokens are the
@@ -437,10 +439,21 @@ def _format_granular_announce(
       transcript:`` / ``Removed from stored transcript`` / ``kept in
       transcript``. The real wire cut is the caller's separate ``Full request
       size:`` line (provider-measured), appended below this block.
+
+    ``wire_before`` / ``wire_after`` (stored basis only): when the caller has a
+    REAL provider-measured before-count and a pre-flight next-request estimate,
+    the prominent token line becomes the WIRE story (``Context:
+    303,201 → ~80K``) — real numbers first, per Ace's 2026-07-02 decision. The
+    stored-transcript token totals are then demoted into the ``Removed from
+    stored transcript`` header as an explicitly-labeled ``token-est``
+    parenthetical, and the caller should NOT append a duplicate ``Full request
+    size:`` line. Both must be > 0; otherwise the stored-basis rendering is
+    unchanged (post-restart sessions have no measured count).
     """
     stored = basis == "stored"
-    ctx_label = "Stored transcript:" if stored else "Context:  "
-    freed_verb = "reclaimed" if stored else "freed"
+    wire_mode = bool(stored and (wire_before or 0) > 0 and (wire_after or 0) > 0)
+    ctx_label = "Stored transcript:" if (stored and not wire_mode) else "Context:  "
+    freed_verb = "reclaimed" if (stored and not wire_mode) else "freed"
     removed_hdr = "stored transcript" if stored else "live context"
     kept_where = "transcript" if stored else "context"
     lines: list[str] = []
@@ -453,8 +466,28 @@ def _format_granular_announce(
     lines.append(f"{head}")
     lines.append(f"   Messages:  {stats.pre_messages} → {stats.post_messages}   ({' + '.join(kept_bits)})")
 
+    # Token line. Wire mode (stored basis + real measured count available):
+    # the wire story — REAL before (exact, no ~), estimated after (~). The
+    # freed/pct math runs on the wire numbers so the headline savings are the
+    # request-size truth, not archive storage.
+    if wire_mode:
+        _wb, _wa = int(wire_before or 0), int(wire_after or 0)
+        _wfreed = _wb - _wa
+        if _wfreed > 0:
+            _wpct = round(_wfreed * 100 / _wb) if _wb else 0
+            lines.append(
+                f"   Context:   {_wb:,} → ~{_wa:,} tokens"
+                f"   (freed {_abbrev_tokens(_wfreed)}, {_wpct}% smaller"
+                f" · before measured, after next-request estimate)"
+            )
+        else:
+            lines.append(
+                f"   Context:   {_wb:,} → ~{_wa:,} tokens"
+                f"   (no net reduction expected"
+                f" · before measured, after next-request estimate)"
+            )
     # Context/Stored line — guard freed<=0 (no net reduction)
-    if stats.freed_tokens > 0 and stats.freed_pct is not None:
+    elif stats.freed_tokens > 0 and stats.freed_pct is not None:
         lines.append(
             f"   {ctx_label} {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
             f"   ({freed_verb} {_abbrev_tokens(stats.freed_tokens)}, {stats.freed_pct}% smaller)"
@@ -468,7 +501,17 @@ def _format_granular_announce(
     # "Removed from <basis>" block — omit entirely when nothing cleared
     removed = stats.cleared_count + stats.folded_count
     if removed > 0:
-        lines.append(f"   Removed from {removed_hdr} ({removed} messages):")
+        if wire_mode:
+            # Wire mode: the stored-transcript totals live HERE, explicitly
+            # labeled as archive token-estimates so they can't be read as
+            # request-size savings.
+            _arch_freed = max(int(stats.freed_tokens or 0), 0)
+            lines.append(
+                f"   Removed from {removed_hdr} ({removed} messages,"
+                f" {_abbrev_tokens(_arch_freed)} token-est reclaimed from archive):"
+            )
+        else:
+            lines.append(f"   Removed from {removed_hdr} ({removed} messages):")
         # cleared bucket: render the tool/other sub-split when populated, else coarse line
         if stats.cleared_count > 0:
             if stats.cleared_tool_count is not None:

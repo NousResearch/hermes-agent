@@ -2,6 +2,8 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+> updated by Codex 2026-07-02: repo agent instructions live in `CLAUDE.md`; do not recreate `AGENTS.md`.
+
 ## Development Environment
 
 ```bash

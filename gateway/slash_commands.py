@@ -3056,6 +3056,17 @@ class GatewaySlashCommandsMixin:
             from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
+            # Preserve the same platform + stable gateway session identity that a
+            # normal gateway turn passes (gateway/run.py main turn), so external
+            # context engines bind this temporary compression agent to the
+            # original platform conversation instead of falling back to an
+            # unbound/default "cli" host source — see #50422. _platform_config_key
+            # maps LOCAL->"cli" exactly like the live turn, avoiding a new
+            # "local" vs "cli" mismatch.
+            from gateway.run import _platform_config_key
+            platform_key = (
+                _platform_config_key(source.platform) if source.platform else None
+            )
             model, runtime_kwargs = self._resolve_session_agent_runtime(
                 source=source,
                 session_key=session_key,
@@ -3082,6 +3093,21 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
+            # Bind the temporary compression agent to the originating source's
+            # platform + stable gateway session key. These are *authoritative*
+            # identity invariants (derived from `source`), so assign them into
+            # runtime_kwargs directly rather than via setdefault: a value already
+            # present there from the resolver would be a placeholder/stale
+            # identity and must not win. Assigning (vs passing a second explicit
+            # kwarg) also keeps each key single-valued, avoiding a "got multiple
+            # values for keyword argument" TypeError. platform is only set when
+            # known: for a source without platform metadata we leave it unset so
+            # AIAgent's default (platform=None -> source "cli") applies, exactly
+            # the prior behavior. _resolve_session_agent_runtime does not set
+            # either key today, so in practice this just adds them.
+            if platform_key is not None:
+                runtime_kwargs["platform"] = platform_key
+            runtime_kwargs["gateway_session_key"] = session_key
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,

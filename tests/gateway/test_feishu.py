@@ -4944,3 +4944,185 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuOutboundPayload(unittest.TestCase):
+    """Tests for _build_outbound_payload with interactive card support."""
+
+    def _import_builders(self):
+        from plugins.platforms.feishu.adapter import (
+            _STRUCTURED_MD_RE,
+            _build_interactive_card_payload,
+            _extract_card_header,
+        )
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from gateway.config import PlatformConfig
+
+        # _build_outbound_payload is an instance method; create a throwaway adapter.
+        adapter = FeishuAdapter(PlatformConfig())
+
+        return {
+            "_STRUCTURED_MD_RE": _STRUCTURED_MD_RE,
+            "_build_outbound_payload": adapter._build_outbound_payload,
+            "_build_interactive_card_payload": _build_interactive_card_payload,
+            "_extract_card_header": _extract_card_header,
+        }
+
+    # ------------------------------------------------------------------
+    # msg_type dispatch
+    # ------------------------------------------------------------------
+
+    def test_structured_md_yields_interactive(self):
+        builders = self._import_builders()
+        _build_outbound_payload = builders["_build_outbound_payload"]
+
+        cases = [
+            # table
+            "| col1 | col2 |\n|------|------|\n| a | b |",
+            # code block
+            "Here is code:\n```python\nprint('hello')\n```",
+            # h2 heading + list
+            "## Summary\n- item 1\n- item 2\n- item 3",
+            # 3+ numbered items
+            "1. First\n2. Second\n3. Third",
+        ]
+        for content in cases:
+            with self.subTest(content=content[:50]):
+                msg_type, payload = _build_outbound_payload(content)
+                self.assertEqual(
+                    msg_type, "interactive",
+                    f"Expected 'interactive' for structured markdown, got '{msg_type}'"
+                )
+                card = json.loads(payload)
+                self.assertIn("elements", card)
+
+    def test_simple_markdown_yields_post(self):
+        builders = self._import_builders()
+        _build_outbound_payload = builders["_build_outbound_payload"]
+
+        cases = [
+            "**bold text** with some *italic*",
+            "A [link](https://example.com) here",
+            "`inline code` mixed with text",
+        ]
+        for content in cases:
+            with self.subTest(content=content[:50]):
+                msg_type, payload = _build_outbound_payload(content)
+                self.assertEqual(
+                    msg_type, "post",
+                    f"Expected 'post' for simple markdown, got '{msg_type}'"
+                )
+                post = json.loads(payload)
+                self.assertIn("zh_cn", post)
+
+    def test_plain_text_yields_text(self):
+        builders = self._import_builders()
+        _build_outbound_payload = builders["_build_outbound_payload"]
+
+        cases = [
+            "Just a plain message with no formatting",
+            "你好，这是一个普通消息",
+            "Single line",
+        ]
+        for content in cases:
+            with self.subTest(content=content[:50]):
+                msg_type, payload = _build_outbound_payload(content)
+                self.assertEqual(
+                    msg_type, "text",
+                    f"Expected 'text' for plain content, got '{msg_type}'"
+                )
+                text_obj = json.loads(payload)
+                self.assertIn("text", text_obj)
+
+    # ------------------------------------------------------------------
+    # Card header extraction
+    # ------------------------------------------------------------------
+
+    def test_header_from_h2_heading(self):
+        builders = self._import_builders()
+        _extract_card_header = builders["_extract_card_header"]
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        content = "## 银行采购中标分析\n\n- 建行鲲鹏 7.2 亿\n- 交通银行鲲鹏 2.2 亿"
+        header = _extract_card_header(content)
+        self.assertEqual(header, "银行采购中标分析")
+
+        payload = _build_interactive_card_payload(content)
+        card = json.loads(payload)
+        self.assertEqual(card["header"]["title"]["content"], "银行采购中标分析")
+
+    def test_no_header_without_heading(self):
+        builders = self._import_builders()
+        _extract_card_header = builders["_extract_card_header"]
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        content = "| col1 | col2 |\n|------|------|\n| a | b |"
+        header = _extract_card_header(content)
+        self.assertIsNone(header)
+
+        payload = _build_interactive_card_payload(content)
+        card = json.loads(payload)
+        self.assertNotIn("header", card)
+
+    def test_header_truncation(self):
+        builders = self._import_builders()
+        _extract_card_header = builders["_extract_card_header"]
+
+        long_title = "这是一个非常长的标题" * 10  # ~100 chars
+        content = f"## {long_title}\n\nContent here"
+        header = _extract_card_header(content)
+        self.assertLessEqual(len(header), 63)  # 60 + "…"
+
+    # ------------------------------------------------------------------
+    # Interactive card payload structure
+    # ------------------------------------------------------------------
+
+    def test_card_payload_structure(self):
+        builders = self._import_builders()
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        content = "## Title\n\nSome markdown **bold** content"
+        payload = _build_interactive_card_payload(content)
+        card = json.loads(payload)
+
+        self.assertTrue(card["config"]["wide_screen_mode"])
+        self.assertEqual(card["header"]["template"], "blue")
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+        self.assertEqual(card["elements"][0]["content"], content)
+
+    def test_empty_content_placeholder(self):
+        builders = self._import_builders()
+        _build_interactive_card_payload = builders["_build_interactive_card_payload"]
+
+        payload = _build_interactive_card_payload("")
+        card = json.loads(payload)
+        self.assertEqual(card["elements"][0]["content"], "…")
+
+    # ------------------------------------------------------------------
+    # _STRUCTURED_MD_RE detection
+    # ------------------------------------------------------------------
+
+    def test_structured_md_re_table(self):
+        builders = self._import_builders()
+        _STRUCTURED_MD_RE = builders["_STRUCTURED_MD_RE"]
+
+        self.assertTrue(_STRUCTURED_MD_RE.search("| a | b |\n|----|----|\n| 1 | 2 |"))
+        self.assertFalse(
+            _STRUCTURED_MD_RE.search("Just a regular line with | in it")
+        )
+
+    def test_structured_md_re_code_block(self):
+        builders = self._import_builders()
+        _STRUCTURED_MD_RE = builders["_STRUCTURED_MD_RE"]
+
+        self.assertTrue(_STRUCTURED_MD_RE.search("```python\ncode\n```"))
+        self.assertFalse(_STRUCTURED_MD_RE.search("No code here"))
+
+    def test_structured_md_re_lists(self):
+        builders = self._import_builders()
+        _STRUCTURED_MD_RE = builders["_STRUCTURED_MD_RE"]
+
+        self.assertTrue(_STRUCTURED_MD_RE.search("- a\n- b\n- c"))
+        self.assertTrue(_STRUCTURED_MD_RE.search("1. first\n2. second\n3. third"))
+        # 2 items should NOT trigger
+        self.assertFalse(_STRUCTURED_MD_RE.search("- a\n- b"))

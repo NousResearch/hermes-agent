@@ -1000,11 +1000,19 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
         try:
-            cur_cfg = load_config().get("model", {})
+            cfg = load_config()
+            cur_cfg = cfg.get("model", {})
             cur_provider = (
                 str(cur_cfg.get("provider", "") or "").strip().lower()
                 if isinstance(cur_cfg, dict) else ""
             )
+            # User-defined providers (config.yaml providers: section) are NOT
+            # in _KNOWN_PROVIDER_NAMES but are real providers — preserve them
+            # instead of falling back to openrouter. This fixes the desktop GUI
+            # where model selection overwrites a custom provider with openrouter.
+            user_provs = cfg.get("providers", {})
+            if isinstance(user_provs, dict) and canonical in user_provs:
+                return prov_in, model_in
         except Exception:
             cur_provider = ""
         from hermes_cli.models import _AGGREGATOR_PROVIDERS

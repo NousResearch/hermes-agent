@@ -686,6 +686,50 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _render_category_index(name: str, skills: List[Dict[str, Any]]) -> Optional[str]:
+    """Return a category-index response when *name* is a category, not a skill.
+
+    The startup/skills catalog shows categories next to skill names. Models (and
+    humans) sometimes pass the category label itself to ``skill_view`` — for
+    example ``autonomous-ai-agents`` — which used to produce a hard "skill not
+    found" even though the category exists. Treat that as a lightweight index so
+    the caller can recover by loading one of the real skill names.
+    """
+    category_skills = [s for s in _sort_skills(skills) if s.get("category") == name]
+    if not category_skills:
+        return None
+
+    skill_names = [s["name"] for s in category_skills]
+    bullet_lines = [
+        f"- {s['name']} (`skill_view(name='{s['name']}')`): {s.get('description', '').strip()}".rstrip()
+        for s in category_skills
+    ]
+    first = skill_names[0]
+    content = (
+        f"# {name}\n\n"
+        "This is a skill category, not an individual skill. "
+        "Load the specific skill that matches the task.\n\n"
+        "## Skills in this category\n"
+        + "\n".join(bullet_lines)
+        + "\n\n"
+        f"Example: skill_view(name='{first}')"
+    )
+    return json.dumps(
+        {
+            "success": True,
+            "name": name,
+            "category": name,
+            "description": f"Skill category containing {len(skill_names)} skill(s).",
+            "content": content,
+            "category_skills": skill_names,
+            "linked_files": None,
+            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+            "hint": "This is a category index. Call skill_view with one of category_skills to load a real skill.",
+        },
+        ensure_ascii=False,
+    )
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
@@ -1082,7 +1126,7 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+            paths = [smd.as_posix() for _, smd in candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
@@ -1109,7 +1153,12 @@ def skill_view(
             skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():
-            available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+            all_skills = _sort_skills(_find_all_skills())
+            if not file_path:
+                category_index = _render_category_index(name, all_skills)
+                if category_index:
+                    return category_index
+            available = [s["name"] for s in all_skills[:20]]
             return json.dumps(
                 {
                     "success": False,
@@ -1375,10 +1424,10 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(SKILLS_DIR))
+            rel_path = skill_md.relative_to(SKILLS_DIR).as_posix()
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
-            rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
+            rel_path = skill_md.relative_to(skill_md.parent.parent).as_posix() if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )

@@ -466,6 +466,21 @@ class TestSkillView:
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
 
+    def test_view_category_returns_category_index(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code", category="autonomous-ai-agents")
+            _make_skill(tmp_path, "hermes-agent", category="autonomous-ai-agents")
+            raw = skill_view("autonomous-ai-agents")
+
+        result = json.loads(raw)
+
+        assert result["success"] is True
+        assert result["name"] == "autonomous-ai-agents"
+        assert result["category"] == "autonomous-ai-agents"
+        assert result["category_skills"] == ["claude-code", "hermes-agent"]
+        assert "skill category" in result["content"].lower()
+        assert "skill_view(name='hermes-agent')" in result["content"]
+
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")

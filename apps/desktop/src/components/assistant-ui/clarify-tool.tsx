@@ -45,6 +45,12 @@ function isClarifyRespondTimeoutError(error: unknown): boolean {
   return /request timed out:\s*clarify\.respond/i.test(message)
 }
 
+function isClarifyNoPendingRequestError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /no pending answer request/i.test(message)
+}
+
 function readClarifyArgs(args: unknown): ClarifyArgs {
   if (!args || typeof args !== 'object') {
     return {}
@@ -189,6 +195,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
   const [selectedChoices, setSelectedChoices] = useState<string[]>([])
   const [otherFocused, setOtherFocused] = useState(false)
+  const [expired, setExpired] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
@@ -236,6 +243,16 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             detail: error instanceof Error ? error.message : String(error),
             durationMs: 12_000
           })
+        } else if (isClarifyNoPendingRequestError(error)) {
+          clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
+          setExpired(true)
+          notify({
+            kind: 'warning',
+            title: copy.responseExpiredTitle,
+            message: copy.responseExpiredMessage,
+            detail: error instanceof Error ? error.message : String(error),
+            durationMs: 12_000
+          })
         } else {
           notifyError(error, copy.sendFailed)
         }
@@ -246,6 +263,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     [
       copy.gatewayDisconnected,
       copy.notReady,
+      copy.responseExpiredMessage,
+      copy.responseExpiredTitle,
       copy.responsePendingMessage,
       copy.responsePendingTitle,
       copy.sendFailed,
@@ -319,6 +338,15 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     },
     [submitDraft]
   )
+
+  if (expired) {
+    return (
+      <ClarifyShell className="grid gap-1 px-2.5 py-2" role="status">
+        <div className="font-medium text-(--ui-text-primary)">{copy.responseExpiredTitle}</div>
+        <div className="text-xs text-(--ui-text-secondary)">{copy.responseExpiredMessage}</div>
+      </ClarifyShell>
+    )
+  }
 
   if (loading) {
     return (

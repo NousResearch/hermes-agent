@@ -2277,6 +2277,8 @@ export const zh: Translations = {
       sendFailed: '无法发送澄清响应',
       responsePendingTitle: '澄清响应可能仍在处理中',
       responsePendingMessage: 'Hermes 未能及时确认该选择。后端可能仍会收到它，请稍等片刻再重试，以避免重复响应。',
+      responseExpiredTitle: '澄清请求已过期',
+      responseExpiredMessage: '该选择请求已不再等待回复。请等 Hermes 重新提问后，再回答新的提示。',
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',

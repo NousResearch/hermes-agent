@@ -275,4 +275,26 @@ describe('ClarifyTool response timeout handling', () => {
       })
     })
   })
+
+  it('clears expired clarify requests when the backend has no pending request', async () => {
+    const requestMock = renderPendingClarify({
+      request: vi.fn(async () => {
+        throw new Error('RPC 4009: no pending answer request')
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue waiting/i }))
+
+    await waitFor(() => expect(requestMock).toHaveBeenCalled())
+
+    await waitFor(() => {
+      expect($clarifyRequests.get()[SESSION_ID]).toBeUndefined()
+      expect(screen.getByText('Clarify request expired')).toBeTruthy()
+      expect($notifications.get()[0]).toMatchObject({
+        kind: 'warning',
+        title: 'Clarify request expired',
+        message: expect.stringContaining('no longer pending')
+      })
+    })
+  })
 })

@@ -2113,6 +2113,8 @@ export const en: Translations = {
       responsePendingTitle: 'Clarify response may still be processing',
       responsePendingMessage:
         'Hermes did not confirm the choice in time. The backend may still receive it, so wait a moment before trying again to avoid duplicate responses.',
+      responseExpiredTitle: 'Clarify request expired',
+      responseExpiredMessage: 'That choice request is no longer pending. Wait for Hermes to ask again, then answer the fresh prompt.',
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',

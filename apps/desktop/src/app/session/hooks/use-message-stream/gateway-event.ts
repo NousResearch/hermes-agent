@@ -369,9 +369,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
 
           // A pending clarify blocks the turn, so the first tool.complete after
-          // one is the clarify resolving — drop the "needs input" flag here so
-          // the sidebar indicator clears as soon as it's answered, not only at
-          // message.complete.
+          // one is the clarify resolving — drop both the request itself and the
+          // "needs input" flag here so stale transcript panels cannot send a
+          // second clarify.respond after the backend has already unblocked.
+          if (payload?.name === 'clarify') {
+            clearClarifyRequest(undefined, sessionId)
+          }
+
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
           // terminal/process tool calls are the only things that spawn or reap

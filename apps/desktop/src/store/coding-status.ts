@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
+import { desktopGit } from '@/lib/desktop-git'
 
 import { $worktreeRefreshToken } from './projects'
 import { $busy, $currentCwd } from './session'
@@ -44,7 +45,7 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
 })
 
 async function loadWorktrees(target: string): Promise<void> {
-  const list = window.hermesDesktop?.git?.worktreeList
+  const list = desktopGit()?.worktreeList
 
   if (!list) {
     $repoWorktrees.set([])
@@ -80,7 +81,7 @@ const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
  */
 export async function refreshRepoStatus(cwd?: null | string): Promise<void> {
   const target = normalizeCwd(cwd ?? $currentCwd.get())
-  const probe = window.hermesDesktop?.git?.repoStatus
+  const probe = desktopGit()?.repoStatus
   const seq = (repoStatusRefreshSeq += 1)
 
   if (!target || !probe) {

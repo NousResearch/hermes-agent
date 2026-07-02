@@ -39,6 +39,7 @@ from hermes_cli.dashboard_auth.base import (
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
     clear_session_cookies,
+    clear_sso_attempt_cookie,
     detect_https,
     read_pkce_cookie,
     read_session_cookies,
@@ -358,6 +359,9 @@ async def auth_callback(
         prefix=_prefix(request),
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
+    # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
+    # so it never lingers to suppress a future silent attempt after logout.
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
 
 

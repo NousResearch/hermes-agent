@@ -130,7 +130,9 @@ def _config_default_interface_early() -> str:
             import yaml as _yaml_iface
 
             with open(cfg_path, encoding="utf-8") as _f:
-                raw = _yaml_iface.safe_load(_f) or {}
+                raw = _yaml_iface.load(
+                    _f, Loader=getattr(_yaml_iface, "CSafeLoader", None) or _yaml_iface.SafeLoader
+                ) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")
@@ -255,13 +257,10 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import shlex
 import shutil
 import stat
 import subprocess
-from hermes_cli._subprocess_compat import (
-    windows_detach_popen_kwargs,
-    windows_hide_flags,
-)
 from pathlib import Path
 from typing import Optional
 
@@ -534,7 +533,9 @@ try:
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
-            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+            _early_cfg_raw = _yaml_early.load(
+                _f, Loader=getattr(_yaml_early, "CSafeLoader", None) or _yaml_early.SafeLoader
+            ) or {}
         # Managed scope: overlay administrator-pinned values so a managed
         # security.redact_secrets / network.force_ipv4 wins here too. This early
         # bridge reads config.yaml directly (before load_config is usable), so
@@ -570,7 +571,7 @@ try:
         mode=(
             "gui"
             if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
-            in {"dashboard", "gui", "desktop"}
+            in {"dashboard", "serve", "gui", "desktop"}
             else "cli"
         )
     )
@@ -615,6 +616,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_stepfun,
     _model_flow_bedrock_api_key,
     _model_flow_bedrock,
+    _model_flow_vertex,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
     _model_flow_moa,
@@ -827,6 +829,8 @@ def _has_any_provider_configured() -> bool:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
                 if key.strip() in provider_env_vars and val:
@@ -2109,7 +2113,7 @@ def _launch_tui(
     code: Optional[int] = None
     try:
         try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)  # windows-footgun: ok — foreground TUI hand-off, console is intentional
+            code = subprocess.call(argv, cwd=str(cwd), env=env)
         except KeyboardInterrupt:
             code = 130
 
@@ -2622,7 +2626,6 @@ def cmd_whatsapp(args):
             ],
             cwd=str(bridge_dir),
             env=with_hermes_node_path(),
-            creationflags=windows_hide_flags(),
         )
     except KeyboardInterrupt:
         pass
@@ -3107,6 +3110,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "vertex":
+        _model_flow_vertex(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
@@ -5294,7 +5299,7 @@ def _redownload_electron_dist(
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
-        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False, creationflags=windows_hide_flags())
+        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
     except OSError:
         return False
     return _electron_dist_ok(project_root)
@@ -5414,7 +5419,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, creationflags=windows_hide_flags())
+        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
@@ -5445,6 +5450,46 @@ def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
         return False
     env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
     return True
+
+
+def _desktop_linux_needs_no_sandbox() -> bool:
+    """Return True when Chromium/Electron should bypass the Linux sandbox.
+
+    Ubuntu 23.10+ can enable AppArmor's
+    ``apparmor_restrict_unprivileged_userns`` hardening, which breaks
+    Chromium/Electron's user-namespace sandbox for normal users unless the app
+    ships a working root-owned 4755 ``chrome-sandbox`` helper. In headless or
+    non-interactive CLI contexts we may be unable to ``sudo chown/chmod`` that
+    helper, so detect the host restriction and fall back to ``--no-sandbox``
+    rather than hard-failing the launcher.
+
+    We intentionally do NOT return True for root users here: running Electron as
+    root without a sandbox is a qualitatively riskier path than launching as an
+    unprivileged desktop user on an AppArmor-restricted host. The root case
+    should remain an explicit user choice.
+    """
+    if sys.platform != "linux":
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return False
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
+    """Return True when ``chrome-sandbox`` exists as a regular file."""
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(sandbox_lstat.st_mode)
+
 
 
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
@@ -5479,10 +5524,48 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
-        if subprocess.run(command, check=False, creationflags=windows_hide_flags()).returncode != 0:
+        if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
     return True
+
+
+def _desktop_launch_options() -> tuple[list[str], str]:
+    """Read `desktop.*` launch options from config.yaml.
+
+    Returns ``(electron_flags, disable_gpu)`` where ``electron_flags`` is a list
+    of extra Electron CLI flags and ``disable_gpu`` is one of "auto"/"1"/"0"
+    (normalized for the HERMES_DESKTOP_DISABLE_GPU env var the Electron app
+    reads). Best-effort: any config error yields the safe defaults
+    ``([], "auto")`` so a malformed config never blocks the launch.
+    """
+    flags: list[str] = []
+    disable_gpu = "auto"
+    try:
+        from hermes_cli.config import load_config
+
+        desktop_cfg = (load_config() or {}).get("desktop") or {}
+    except Exception:
+        return flags, disable_gpu
+
+    raw_flags = desktop_cfg.get("electron_flags")
+    if isinstance(raw_flags, str):
+        flags = shlex.split(raw_flags, posix=(os.name != "nt"))
+    elif isinstance(raw_flags, (list, tuple)):
+        flags = [str(f) for f in raw_flags if str(f).strip()]
+
+    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
+    if isinstance(raw_gpu, bool):
+        disable_gpu = "1" if raw_gpu else "0"
+    elif isinstance(raw_gpu, str):
+        low = raw_gpu.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            disable_gpu = "1"
+        elif low in ("0", "false", "no", "off"):
+            disable_gpu = "0"
+        else:
+            disable_gpu = "auto"
+    return flags, disable_gpu
 
 
 def cmd_gui(args: argparse.Namespace):
@@ -5510,6 +5593,14 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+
+    # Desktop launch options from config.yaml (`desktop.electron_flags`,
+    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
+    # Electron app already reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
+    config_electron_flags, config_disable_gpu = _desktop_launch_options()
+    if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
+        env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
@@ -5590,7 +5681,7 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -5617,7 +5708,7 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -5633,7 +5724,7 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False, creationflags=windows_hide_flags())
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -5675,7 +5766,7 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
+        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -5683,11 +5774,17 @@ def cmd_gui(args: argparse.Namespace):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
+    launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
-        sys.exit(1)
+        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
+            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            launch_command.append("--no-sandbox")
+        else:
+            sys.exit(1)
 
-    print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False, creationflags=windows_hide_flags())
+    launch_command.extend(config_electron_flags)
+    print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
 
@@ -5711,9 +5808,9 @@ def _find_stale_dashboard_pids(
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
-    backend child process: when the desktop spawns ``hermes dashboard`` as
+    backend child process: when the desktop spawns ``hermes serve`` as
     a backend and triggers an auto-update, the update must not kill the
-    dashboard that the desktop itself manages.  The desktop sets the
+    backend that the desktop itself manages.  The desktop sets the
     environment variable ``HERMES_DESKTOP_CHILD_PID`` on the spawned
     backend process; ``_kill_stale_dashboard_processes`` reads it and
     passes it here.  (#37532)
@@ -5724,14 +5821,18 @@ def _find_stale_dashboard_pids(
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+        # The headless backend (`hermes serve`) is the same long-lived server
+        # under a different command name — the desktop app spawns it. Reap it
+        # on update for the same frontend/backend-mismatch reason.
+        "hermes serve",
+        "hermes_cli.main serve",
+        "hermes_cli/main.py serve",
     ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
     try:
         if sys.platform == "win32":
-            from hermes_cli import _subprocess_compat
-
             # wmic may emit text in the system code page (for example cp936
             # on zh-CN systems), not UTF-8. In text mode, subprocess output
             # decoding depends on Python's configuration (locale-dependent
@@ -5739,13 +5840,19 @@ def _find_stale_dashboard_pids(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            result = _subprocess_compat.run(
+            # CREATE_NO_WINDOW hides the conhost flash: this scan can run from
+            # the windowless pythonw.exe desktop/gateway backend during an
+            # update, where a bare wmic spawn would pop a console window.
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
                 text=True,
                 timeout=10,
                 encoding="utf-8",
                 errors="ignore",
+                creationflags=windows_hide_flags(),
             )
             if result.returncode != 0 or result.stdout is None:
                 return []
@@ -5979,11 +6086,9 @@ def _kill_stale_dashboard_processes(
     failed: list[tuple[int, str]] = []
 
     if sys.platform == "win32":
-        from hermes_cli import _subprocess_compat
-
         for pid in pids:
             try:
-                result = _subprocess_compat.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,
@@ -6235,7 +6340,6 @@ def _update_via_zip(args):
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 cwd=PROJECT_ROOT,
                 check=True,
-                creationflags=windows_hide_flags(),
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
@@ -6325,7 +6429,6 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         check=True,
-        creationflags=windows_hide_flags(),
     )
     stash_ref = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
@@ -6746,7 +6849,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
             check=True,
-            creationflags=windows_hide_flags(),
         )
     except subprocess.CalledProcessError:
         print(
@@ -6911,6 +7013,55 @@ def _recover_from_interrupted_install() -> None:
         # the install itself will surface the real problem.
         logger.debug("Could not create install-recovery lock: %s", exc)
 
+    # Windows self-lock guard: if hermes.exe is the launcher that spawned
+    # this Python process, any attempt to pip-install will fail with
+    # "拒绝访问 / WinError 32" because the running .exe cannot be replaced.
+    # Rather than entering the permanent retry loop described in issue
+    # #45542, clear the marker and give the user an offline recovery command.
+    if _is_windows():
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None:
+            shims = _hermes_exe_shims(scripts_dir)
+            if shims:
+                _shim_set: set[str] = set()
+                for _s in shims:
+                    try:
+                        _shim_set.add(str(_s.resolve()).lower())
+                    except OSError:
+                        _shim_set.add(str(_s).lower())
+                try:
+                    import psutil
+                    _me = psutil.Process()
+                    for _anc in [_me] + list(_me.parents()):
+                        try:
+                            _anc_exe = _anc.exe()
+                            _anc_norm = str(Path(_anc_exe).resolve()).lower()
+                        except Exception:
+                            continue
+                        if _anc_norm in _shim_set:
+                            print(
+                                "✗ Hermes is running from the binary that "
+                                "needs to be replaced — the auto-recovery "
+                                "cannot overwrite a running executable."
+                            )
+                            print(
+                                "  Restart Hermes from a different terminal, "
+                                "then run the manual recovery command below:"
+                            )
+                            print(f'    cd /d "{PROJECT_ROOT}"')
+                            print(
+                                f'    "{sys.executable}" -m pip install '
+                                '-e ".[all]"'
+                            )
+                            _clear_update_incomplete_marker()
+                            try:
+                                lock_path.unlink()
+                            except OSError:
+                                pass
+                            return
+                except Exception:
+                    pass  # psutil is best-effort; fall through to install
+
     saved_stdout_fd = None
     saved_sys_stdout = sys.stdout
     try:
@@ -7018,7 +7169,6 @@ def _run_install_with_heartbeat(
             cwd=PROJECT_ROOT,
             check=True,
             env=env,
-            creationflags=windows_hide_flags(),
         )
     finally:
         done.set()
@@ -7047,10 +7197,12 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     """
     if not _is_windows():
         return []
-    return [
-        scripts_dir / "hermes.exe",
-        scripts_dir / "hermes-gateway.exe",
-    ]
+
+    names = set(_load_console_script_names()) or {"hermes", "hermes-agent", "hermes-acp"}
+    # The gateway shim is not a [project.scripts] entry point, but older
+    # update/install paths still rewrite and quarantine it.
+    names.add("hermes-gateway")
+    return [scripts_dir / f"{name}.exe" for name in sorted(names)]
 
 
 def _detect_concurrent_hermes_instances(
@@ -7494,6 +7646,7 @@ def _install_python_dependencies_with_optional_fallback(
 
     try:
         _install(["install", "-e", f".[{group}]"])
+        _verify_console_scripts_installed(install_cmd_prefix, env=env)
         return
     except subprocess.CalledProcessError:
         print(
@@ -7531,6 +7684,97 @@ def _install_python_dependencies_with_optional_fallback(
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+    _verify_console_scripts_installed(install_cmd_prefix, env=env)
+
+
+def _load_console_script_names() -> list[str]:
+    """Return ``[project.scripts]`` entry-point names from pyproject.toml."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return []
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        scripts = data.get("project", {}).get("scripts", {}) or {}
+        return [str(name) for name in scripts if name]
+    except Exception as e:
+        logger.debug("console script verification: failed to read pyproject.toml: %s", e)
+        return []
+
+
+def _verify_console_scripts_installed(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Ensure every declared console_script shim exists on disk after install.
+
+    On Windows, ``uv pip install -e .`` can register ``hermes.exe`` in the
+    wheel RECORD while the file never lands on disk — typically when the live
+    ``hermes.exe`` shim is locked during ``hermes update``, or when uv/distlib
+    skips a launcher write. The symptom is ``hermes-agent.exe`` and
+    ``hermes-acp.exe`` present but ``hermes.exe`` missing, so ``hermes`` drops
+    off PATH even though the install reported success (issue #52931).
+
+    If any shim is missing we reinstall with ``--reinstall -e .`` under the
+    same quarantine dance as the primary install path, then re-check.
+    """
+    if not _is_windows():
+        return
+
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return
+
+    names = _load_console_script_names()
+    if not names:
+        return
+
+    def _missing() -> list[str]:
+        return [
+            name
+            for name in names
+            if not (scripts_dir / f"{name}.exe").is_file()
+        ]
+
+    missing = _missing()
+    if not missing:
+        return
+
+    print(
+        f"  ⚠ Verification: {len(missing)} console script(s) missing on disk: "
+        f"{', '.join(missing)}"
+    )
+    print("  → Reinstalling entry points with --reinstall...")
+
+    try:
+        _run_quarantined_install(
+            install_cmd_prefix + ["install", "--reinstall", "-e", "."],
+            env=env,
+            scripts_dir=scripts_dir,
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning("console script verification: repair install failed: %s", e)
+        print(
+            "  ⚠ Entry point repair failed; try `hermes update --force` after "
+            "closing other hermes processes."
+        )
+        return
+
+    still_missing = _missing()
+    if still_missing:
+        print(
+            f"  ⚠ Still missing after repair: {', '.join(still_missing)}. "
+            "Workaround: python -m hermes_cli.main <command>"
+        )
+    else:
+        print("  ✓ All console entry points restored")
 
 
 def _verify_core_dependencies_installed(
@@ -7816,7 +8060,6 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
             pip_cmd + ["install", "uv", "--only-binary", ":all:"],
             cwd=PROJECT_ROOT,
             check=False,
-            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return None
@@ -8918,7 +9161,7 @@ def _cmd_update_pip(args):
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {"creationflags": windows_hide_flags()}
+    run_kwargs = {}
     if export_virtualenv:
         run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
     result = subprocess.run(cmd, **run_kwargs)
@@ -9391,7 +9634,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     cwd=PROJECT_ROOT,
                     check=True,
-                    creationflags=windows_hide_flags(),
                 )
             if _is_termux_env():
                 install_group = "termux-all"
@@ -10506,6 +10748,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "uninstall",
         "profile",
         "dashboard",
+        "serve",
         "desktop",
         "gui",
         "honcho",
@@ -10916,13 +11159,19 @@ def cmd_profile(args):
         remove = getattr(args, "remove", False)
         custom_name = getattr(args, "alias_name", None)
 
-        from hermes_cli.profiles import profile_exists
+        from hermes_cli.profiles import profile_exists, validate_alias_name
 
         if not profile_exists(name):
             print(f"Error: Profile '{name}' does not exist.")
             sys.exit(1)
 
         alias_name = custom_name or name
+
+        try:
+            validate_alias_name(alias_name)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
         if remove:
             if remove_wrapper_script(alias_name):
@@ -11483,7 +11732,7 @@ def cmd_dashboard(args):
         # re-executing the dashboard for a non-default profile.  Use
         # subprocess.Popen + sys.exit() on Windows to avoid the crash.
         if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)  # windows-footgun: ok — foreground re-exec, child owns the console
+            proc = subprocess.Popen(reexec_argv, env=env)
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)
@@ -11656,7 +11905,7 @@ def _build_provider_choices() -> list[str]:
         # Fallback: static list guarantees the CLI always works
         return [
             "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
-            "anthropic", "gemini", "xai", "bedrock", "azure-foundry",
+            "anthropic", "gemini", "vertex", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
@@ -11676,9 +11925,10 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
@@ -12614,6 +12864,27 @@ def main():
         _register_pets_cli(pets_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("pets CLI wiring failed: %s", _exc)
+
+    # =========================================================================
+    # journey command — learned skills + memories over time, in the terminal
+    # =========================================================================
+    journey_parser = subparsers.add_parser(
+        "journey",
+        aliases=["learning", "memory-graph"],
+        help="Timeline of learned skills + memories over time",
+        description=(
+            "A terminal rendition of the desktop Star Map / Memory Graph: a "
+            "timeline bar chart of learned skills and memories over time "
+            "(oldest at top, newest at bottom) plus a playable constellation "
+            "scrubber. Mirrors the TUI `/journey` overlay and the desktop panel."
+        ),
+    )
+    try:
+        from hermes_cli.journey import register_cli as _register_journey_cli
+
+        _register_journey_cli(journey_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("journey CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # memory command  (parser built in hermes_cli/subcommands/memory.py)

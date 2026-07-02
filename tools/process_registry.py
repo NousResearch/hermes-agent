@@ -42,7 +42,6 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli import _subprocess_compat
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -59,6 +58,7 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -196,6 +196,15 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
+        # Live-output sink set by a driver (e.g. the desktop gateway): called from
+        # reader threads with (session, chunk) to stream output to a UI in
+        # real time, instead of polling the output tail.
+        self.on_output = None
+        # Close-view sink set by a driver (desktop gateway): called with
+        # (session_or_none, process_id) when the agent asks to close a read-only
+        # terminal tab. Distinct from kill — the process keeps running; only the
+        # UI view is dropped (the user can reopen it from the status stack).
+        self.on_close = None
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -204,6 +213,17 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    def _emit_output(self, session: ProcessSession, chunk: str) -> None:
+        """Forward a freshly-read chunk to the live-output sink, if one is set.
+        Called from reader threads; never raise into the read loop."""
+        sink = self.on_output
+        if sink is None or not chunk:
+            return
+        try:
+            sink(session, chunk)
+        except Exception:
+            pass
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -570,11 +590,12 @@ class ProcessRegistry:
             return
         if _IS_WINDOWS:
             try:
-                _subprocess_compat.run(
+                subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -900,13 +921,33 @@ class ProcessRegistry:
     # ----- Reader / Poller Threads -----
 
     def _reader_loop(self, session: ProcessSession):
-        """Background thread: read stdout from a local Popen process."""
+        """Background thread: read stdout from a local Popen process.
+
+        IMPORTANT: avoid ``TextIOWrapper.read(4096)`` here. On pipes that call can
+        block until EOF (or a large buffer fills), which makes "live" output land
+        in one burst at process exit. ``buffer.read1(4096)`` yields incremental
+        chunks as bytes become available, then we decode to text.
+        """
         first_chunk = True
         try:
+            stdout = session.process.stdout
+            if stdout is None:
+                return
+
+            raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
             while True:
-                chunk = session.process.stdout.read(4096)
-                if not chunk:
-                    break
+                if raw_read is not None:
+                    raw = raw_read(4096)
+                    if not raw:
+                        break
+                    chunk = raw.decode("utf-8", errors="replace")
+                else:
+                    # Fallback for mocked/alternate streams without a buffered raw
+                    # interface. This may be less "live", but keeps compatibility.
+                    chunk = stdout.read(4096)
+                    if not chunk:
+                        break
+
                 if first_chunk:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
@@ -915,6 +956,7 @@ class ProcessRegistry:
                     if len(session.output_buffer) > session.max_output_chars:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
                 self._check_watch_patterns(session, chunk)
+                self._emit_output(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
@@ -953,6 +995,7 @@ class ProcessRegistry:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
                         self._check_watch_patterns(session, delta)
+                        self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -1001,6 +1044,7 @@ class ProcessRegistry:
                             if len(session.output_buffer) > session.max_output_chars:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
                         self._check_watch_patterns(session, text)
+                        self._emit_output(session, text)
                 except EOFError:
                     break
                 except Exception:
@@ -1270,6 +1314,7 @@ class ProcessRegistry:
 
         result = {
             "session_id": session.id,
+            "command": session.command,
             "status": "exited" if session.exited else "running",
             "output": "\n".join(selected),
             "total_lines": total_lines,
@@ -1329,6 +1374,7 @@ class ProcessRegistry:
                 self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
+                    "command": session.command,
                     "exit_code": session.exit_code,
                     "completion_reason": session.completion_reason,
                     "termination_source": session.termination_source,
@@ -1341,6 +1387,7 @@ class ProcessRegistry:
             if _is_interrupted():
                 result = {
                     "status": "interrupted",
+                    "command": session.command,
                     "output": strip_ansi(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
@@ -1355,6 +1402,7 @@ class ProcessRegistry:
 
         result = {
             "status": "timeout",
+            "command": session.command,
             "output": strip_ansi(session.output_buffer[-1000:]),
         }
         if timeout_note:
@@ -1385,24 +1433,10 @@ class ProcessRegistry:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process tree
-                try:
-                    if _IS_WINDOWS:
-                        session.process.terminate()
-                    else:
-                        import psutil
-                        try:
-                            parent = psutil.Process(session.process.pid)
-                            for child in parent.children(recursive=True):
-                                try:
-                                    child.terminate()
-                                except psutil.NoSuchProcess:
-                                    pass
-                            parent.terminate()
-                        except psutil.NoSuchProcess:
-                            pass
-                except (ProcessLookupError, PermissionError):
-                    session.process.kill()
+                # Local process -- kill the process tree. On Windows this
+                # must be taskkill /T /F; Popen.terminate() only kills the
+                # shell wrapper and leaves Git Bash descendants behind.
+                self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
@@ -1478,6 +1512,37 @@ class ProcessRegistry:
         """Send data + newline to a running process's stdin (like pressing Enter)."""
         return self.write_stdin(session_id, data + "\n")
 
+    def request_close_terminal(self, session_id: str) -> dict:
+        """Ask the desktop GUI to close the read-only terminal tab mirroring this
+        background process.
+
+        This does NOT kill the process — it only drops the view. Output keeps
+        streaming into the (capped) buffer and the user can reopen the tab from
+        the status stack. Desktop-only: returns an error if no UI close sink is
+        wired (e.g. CLI / messaging)."""
+        sink = self.on_close
+        if sink is None:
+            return {
+                "status": "error",
+                "error": "close_terminal is only available in the Hermes desktop app.",
+            }
+        # The session may already be finished (or pruned) — the tab can still
+        # linger and be closed, so a missing session is not an error here.
+        session = self.get(session_id)
+        try:
+            sink(session, session_id)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        return {
+            "status": "ok",
+            "closed": session_id,
+            "note": (
+                "Closed the read-only terminal tab. The process was not killed; "
+                "its output remains available and the user can reopen the tab "
+                "from the status stack."
+            ),
+        }
+
     def close_stdin(self, session_id: str) -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
         session = self.get(session_id)
@@ -1514,15 +1579,28 @@ class ProcessRegistry:
         except Exception:
             return 0
 
-    def list_sessions(self, task_id: str = None) -> list:
-        """List all running and recently-finished processes."""
+    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+        """List all running and recently-finished processes.
+
+        When ``task_id`` is given, processes for that task are included. When
+        ``session_key`` is also given, session-scoped background processes
+        (``background: true``) registered under that gateway session are
+        surfaced too, even if they belong to a different task — so the agent
+        can discover a forgotten preview server that is blocking session
+        reset (#29177). Such cross-task entries are flagged with
+        ``"session_scoped": true``.
+        """
         with self._lock:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
 
-        if task_id:
-            all_sessions = [s for s in all_sessions if s.task_id == task_id]
+        if task_id or session_key:
+            all_sessions = [
+                s for s in all_sessions
+                if (task_id and s.task_id == task_id)
+                or (session_key and s.session_key == session_key)
+            ]
 
         result = []
         for s in all_sessions:
@@ -1536,6 +1614,11 @@ class ProcessRegistry:
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Flag processes surfaced only because they share the gateway
+            # session (not the current task) — these are the long-lived
+            # background processes a user may have forgotten about (#29177).
+            if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
+                entry["session_scoped"] = True
             # Trigger metadata so a goal-loop judge can decide to wait on this
             # process's OWN signal (a watch-pattern match or completion), not
             # just its exit. A watcher with watch_patterns may never exit.
@@ -1567,17 +1650,35 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
+    def has_active_for_session(
+        self, session_key: str, max_active_age: Optional[float] = None,
+    ) -> bool:
+        """Check if there are active processes for a gateway session key.
+
+        When *max_active_age* is set (seconds), processes that started more
+        than that many seconds ago are **ignored** — they are still running
+        but are considered stale and must not block session idle / daily
+        reset.  This prevents a forgotten ``http.server`` (or any long-lived
+        preview process) from permanently freezing the session lifecycle.
+
+        Args:
+            session_key: Gateway session key to check.
+            max_active_age: If set, ignore processes older than this many
+                seconds.  ``None`` retains the legacy behaviour (any running
+                process blocks).
+        """
         with self._lock:
             sessions = list(self._running.values())
 
         for session in sessions:
             self._refresh_detached_session(session)
 
+        now = time.time()
         with self._lock:
             return any(
-                s.session_key == session_key and not s.exited
+                s.session_key == session_key
+                and not s.exited
+                and (max_active_age is None or (now - s.started_at) < max_active_age)
                 for s in self._running.values()
             )
 
@@ -2044,6 +2145,31 @@ PROCESS_SCHEMA = {
 }
 
 
+def _redact_process_result(result: dict) -> dict:
+    """Redact secrets from background-process output before it reaches the
+    model, session.db, and CLI display.
+
+    Mirrors the foreground ``terminal`` redaction (terminal_tool.py) so the
+    two surfaces can't diverge — issue #43025 (background output was returned
+    verbatim). Respects ``security.redact_secrets`` (no force): output fields
+    pass through ``redact_terminal_output`` which picks ``code_file`` based on
+    the recorded command (env dumps get the ENV-assignment pass). The command
+    string itself is also redacted in case it carried an inline credential.
+    """
+    if not isinstance(result, dict):
+        return result
+    from agent.redact import redact_sensitive_text, redact_terminal_output
+
+    command = result.get("command") or ""
+    for field in ("output", "output_preview"):
+        value = result.get(field)
+        if isinstance(value, str) and value:
+            result[field] = redact_terminal_output(value, command)
+    if isinstance(result.get("command"), str) and result["command"]:
+        result["command"] = redact_sensitive_text(result["command"], code_file=True)
+    return result
+
+
 def _handle_process(args, **kw):
     task_id = kw.get("task_id")
     action = args.get("action", "")
@@ -2051,17 +2177,28 @@ def _handle_process(args, **kw):
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":
-        return json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
+        # Surface session-scoped background processes (e.g. a forgotten
+        # preview server) in addition to this task's own — they share the
+        # gateway session_key and can block session reset (#29177).
+        try:
+            from tools.approval import get_current_session_key
+            session_key = get_current_session_key(default="") or ""
+        except Exception:
+            session_key = ""
+        return json.dumps(
+            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
+            ensure_ascii=False,
+        )
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
-            return json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
-            return json.dumps(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.read_log(
+                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
-            return json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":
             return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
         elif action == "write":

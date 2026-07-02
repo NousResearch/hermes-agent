@@ -204,10 +204,13 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         env = getattr(cached, "env", None)
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
         # Legacy: a cache entry carrying its own cwd with no env to own it.
         if env is None and getattr(cached, "cwd", None):
-            return getattr(cached, "cwd", None)
+            legacy_cwd = getattr(cached, "cwd", None)
+            _remember_last_known_cwd(container_key, legacy_cwd)
+            return legacy_cwd
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
@@ -216,6 +219,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
+            _remember_last_known_cwd(container_key, live_cwd)
             return live_cwd
     except Exception:
         pass
@@ -240,9 +244,25 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
+    # is more authoritative than the shared last-known anchor: it is keyed by
+    # the raw session id, so when two worktree sessions share the single
+    # "default" terminal env, a NON-owning session must resolve against its OWN
+    # registered worktree — never the other session's leftover cwd. (Checked
+    # before _last_known_cwd, which is keyed by the shared container id.)
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
+    # When the terminal env was cleaned up mid-conversation, the live cwd is
+    # gone but the directory the agent navigated to is still recorded in the
+    # durable _last_known_cwd registry. Prefer it over the config/process
+    # fallback so a relative-path write resolved BEFORE the env is rebuilt
+    # still lands in the user's directory (root cause of #26211: write happens
+    # via _resolve_path_for_task -> here, which runs before _get_file_ops
+    # rebuilds the env). Keyed by the resolved container id, same as the save.
+    preserved = _last_known_cwd_for(task_id)
+    if preserved:
+        return preserved
     return _configured_terminal_cwd()
 
 
@@ -342,10 +362,27 @@ def _is_blocked_device_path(path: str) -> bool:
         ("/fd/0", "/fd/1", "/fd/2")
     ):
         return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
-    # command-line args, and memory layout from the host process (issue #4427)
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
+    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
+    # memory layout (ASLR bypass) from the host process (issue #4427).
+    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
+    # though it requires address knowledge to exploit usefully.
+    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
+    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
+    # virtual->physical translation. Both are blocked alongside the maps family.
+    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
     if normalized.startswith("/proc/") and normalized.endswith(
-        ("/environ", "/cmdline", "/maps")
+        (
+            "/environ",
+            "/cmdline",
+            "/maps",
+            "/smaps",
+            "/smaps_rollup",
+            "/numa_maps",
+            "/mem",
+            "/auxv",
+            "/pagemap",
+        )
     ):
         return True
     return False
@@ -389,6 +426,55 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     if _is_blocked_device_path(resolved):
         return True
     return False
+
+
+def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
+    """Return the read-safety error for a search result path.
+
+    Search backends may return paths relative to the task cwd, while
+    ``get_read_block_error`` expects an already-resolved path when the task cwd
+    can differ from the Python process cwd. Mirror ``read_file_tool``'s path
+    resolution before applying the shared read guard.
+    """
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except (OSError, ValueError, RuntimeError):
+        return get_read_block_error(path)
+    return get_read_block_error(str(resolved))
+
+
+def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
+    """Remove credential/cache/env paths from a SearchResult in-place."""
+    omitted = 0
+
+    if hasattr(result, "matches") and result.matches:
+        allowed_matches = []
+        for match in result.matches:
+            if _search_result_read_block_error(match.path, task_id):
+                omitted += 1
+                continue
+            allowed_matches.append(match)
+        result.matches = allowed_matches
+
+    if hasattr(result, "files") and result.files:
+        allowed_files = []
+        for file_path in result.files:
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_files.append(file_path)
+        result.files = allowed_files
+
+    if hasattr(result, "counts") and result.counts:
+        allowed_counts = {}
+        for file_path, count in result.counts.items():
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_counts[file_path] = count
+        result.counts = allowed_counts
+
+    return omitted
 
 
 # Paths that file tools should refuse to write to without going through the
@@ -555,6 +641,45 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
+# Per-task last-known CWD — preserved across env re-creation so
+# relative-path file writes land in the right directory after the
+# terminal environment is cleaned up and rebuilt (root cause of #26211).
+_last_known_cwd: dict = {}
+
+
+def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
+    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
+
+    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
+    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
+    reaches its stale-cache detection branch, in which case the old cwd is
+    never saved and the rebuilt env falls back to the config default — exactly
+    the silent-misplacement bug. By recording the cwd on every successful live
+    read (which happens on every relative-path file resolution while the env is
+    alive), the durable anchor no longer depends on the cleanup-detection
+    branch firing, so it survives recreation regardless of pop ordering.
+    """
+    if not cwd:
+        return
+    with _file_ops_lock:
+        if _last_known_cwd.get(task_id) != cwd:
+            _last_known_cwd[task_id] = cwd
+
+
+def _last_known_cwd_for(task_id: str = "default") -> str | None:
+    """Read the durable last-known cwd for *task_id*, container-key aware.
+
+    The registry is keyed by the resolved container id (the same key used by
+    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
+    up the resolved key first and fall back to the raw task id.
+    """
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+    with _file_ops_lock:
+        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -773,6 +898,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
+        _is_unusable_container_cwd,
+        _CONTAINER_BACKENDS,
     )
     import time
 
@@ -789,7 +916,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- invalidate stale cache entry
+                # Environment was cleaned up -- preserve the old cwd before
+                # invalidating the stale cache entry (fixes #26211: silent
+                # file-creation failures in long-running conversations).
+                old_cwd = getattr(cached, "cwd", None)
+                if old_cwd:
+                    with _file_ops_lock:
+                        _last_known_cwd[task_id] = old_cwd
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -827,7 +960,27 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or config["cwd"]
+            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
+            # Re-apply the container cwd guard that _get_env_config() already
+            # ran on config["cwd"] (see #50636).  A per-task cwd override
+            # registered by the gateway/TUI/ACP for workspace tracking is a
+            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
+            # C:\\Users\\<me>). On a container backend that reaches
+            # ``docker run -w <host-path>`` and the container starts in a
+            # directory that doesn't exist inside the sandbox, so search_files
+            # and friends silently return empty results (#54447).  Sanitize it
+            # back to the already-validated config["cwd"] so the override can't
+            # bypass the guard.  Valid in-container override paths (RL/benchmark
+            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
+            # non-host paths and pass through untouched.
+            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+                if cwd != config["cwd"]:
+                    logger.info(
+                        "Ignoring host/relative cwd override %r for %s backend "
+                        "(won't exist in sandbox). Using %r instead.",
+                        cwd, env_type, config["cwd"],
+                    )
+                cwd = config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
@@ -956,7 +1109,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         "file_size": result_dict["file_size"],
                     }, ensure_ascii=False)
                 if result_dict["content"]:
-                    result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
+                    result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -1072,7 +1225,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
+            result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1426,8 +1579,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+        def _reject_v4a_traversal(v4a_path: str) -> str | None:
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -1440,9 +1592,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / "
+                    "'*** Delete File:' / '*** Move File:' headers."
                 )
+            return None
+
+        # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser leniency:
+        # it accepts ``***Update File:`` with no space after the asterisks
+        # (patch_parser.py uses ``\*\*\*\s*Update\s+File:``). Requiring a space
+        # here let a no-space header parse + apply while skipping this check.
+        for _m in _re.finditer(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            v4a_path = _m.group(1).strip()
+            _err = _reject_v4a_traversal(v4a_path)
+            if _err:
+                return _err
             _paths_to_check.append(v4a_path)
+        # ``*** Move File: src -> dst`` is a valid V4A op (patch_parser.py:114)
+        # but was never extracted, so a Move targeting /etc/crontab skipped the
+        # sensitive-path pre-check. Check BOTH endpoints, and run them through
+        # the same ``..`` traversal rejection as the other headers.
+        for _m in _re.finditer(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            for v4a_path in (_m.group(1).strip(), _m.group(2).strip()):
+                _err = _reject_v4a_traversal(v4a_path)
+                if _err:
+                    return _err
+                _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -1624,16 +1798,31 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        try:
+            resolved_path = _resolve_path_for_task(path, task_id)
+        except (OSError, ValueError, RuntimeError):
+            resolved_path = None
+        block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
+        if block_error:
+            return json.dumps({"error": block_error}, ensure_ascii=False)
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content, code_file=True)
+                    m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
+
+        if omitted:
+            result_dict["_omitted"] = (
+                f"{omitted} result(s) omitted because they target credential, "
+                "token, cache, or secret-bearing environment files."
+            )
 
         if count >= 3:
             result_dict["_warning"] = (

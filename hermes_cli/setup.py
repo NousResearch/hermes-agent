@@ -93,6 +93,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
+    "vertex": [
+        "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-2.5-pro", "google/gemini-2.5-flash",
+    ],
     "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
@@ -160,7 +165,6 @@ from hermes_cli.cli_output import (  # noqa: E402
     print_warning,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 def is_interactive_stdin() -> bool:
@@ -806,11 +810,11 @@ def _install_neutts_deps() -> bool:
         if prompt_yes_no("Install espeak-ng now?", True):
             try:
                 if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True, creationflags=windows_hide_flags())
+                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True, creationflags=windows_hide_flags())
+                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
                 else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True, creationflags=windows_hide_flags())
+                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
                 print_success("espeak-ng installed")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print_warning(f"Could not install espeak-ng automatically: {e}")
@@ -828,7 +832,6 @@ def _install_neutts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],
             check=True, timeout=300,
-            creationflags=windows_hide_flags(),
         )
         print_success("neutts installed successfully")
         return True
@@ -854,7 +857,6 @@ def _install_kittentts_deps() -> bool:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
             check=True, timeout=300,
-            creationflags=windows_hide_flags(),
         )
         print_success("kittentts installed successfully")
         return True
@@ -1534,10 +1536,11 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
@@ -2174,8 +2177,8 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
-                if supports_systemd:
-                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
+                if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
+                    print_info("  Or as a boot-time service: hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
             from hermes_constants import is_container

@@ -1,6 +1,7 @@
 import base64
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,36 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypatch):
+    entry = SimpleNamespace(
+        provider="nous",
+        source="device_code",
+        runtime_api_key="pool-token",
+        agent_key="pool-token",
+        agent_key_expires_at="2099-01-01T00:00:00+00:00",
+        scope="inference:invoke",
+        runtime_base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return entry
+
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "_agent_key_is_usable", lambda *a, **k: True)
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "pool-token"
+    assert resolved["base_url"] == "https://ai.wildebeest-newton.ts.net/v1"
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -74,6 +105,68 @@ def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkey
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["api_key"] == "pool-token"
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
+
+
+def test_resolve_runtime_provider_anthropic_ignores_stale_aggregator_base_url(monkeypatch):
+    """A leftover OpenRouter base_url under provider: anthropic must not hijack
+    Anthropic OAuth traffic — fall back to the official Anthropic host."""
+
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    for stale in (
+        "https://openrouter.ai/api/v1",
+        "https://api.openai.com/v1",
+    ):
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda stale=stale: {"provider": "anthropic", "base_url": stale},
+        )
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+        assert resolved["provider"] == "anthropic"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["base_url"] == "https://api.anthropic.com", stale
+
+
+def test_resolve_runtime_provider_anthropic_keeps_azure_base_url(monkeypatch):
+    """Azure Foundry Anthropic endpoints are not anthropic.com hosts but are a
+    legitimate override — they must survive the stale-URL guard."""
+
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "anthropic", "base_url": "https://myhost.azure.com/anthropic"},
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+    assert resolved["base_url"] == "https://myhost.azure.com/anthropic"
 
 
 def test_resolve_runtime_provider_anthropic_explicit_override_skips_pool(monkeypatch):
@@ -352,6 +445,32 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     # Saved config base_url wins over env var (standard contract).
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     assert resolved["api_key"] == "dummy-lm-api-key"
+
+
+def test_resolve_runtime_provider_lmstudio_normalizes_native_api_saved_base_url(monkeypatch):
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/api/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
 
 
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
@@ -1156,8 +1275,8 @@ def test_resolve_requested_provider_precedence(monkeypatch):
 # ── api_mode config override tests ──────────────────────────────────────
 
 
-def test_model_config_api_mode(monkeypatch):
-    """model.api_mode in config.yaml should override the default chat_completions."""
+def test_model_config_codex_api_mode_is_ignored_for_plain_custom_relays(monkeypatch):
+    """Plain custom relays should not inherit stale Responses routing."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(
         rp, "_get_model_config",
@@ -1174,8 +1293,30 @@ def test_model_config_api_mode(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
-    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
+def test_model_config_codex_api_mode_still_applies_to_direct_openai_url(monkeypatch):
+    """Direct OpenAI URLs should continue to route through Responses API."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
 
 
 def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):
@@ -1218,6 +1359,42 @@ def test_invalid_api_mode_ignored(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="custom")
 
     assert resolved["api_mode"] == "chat_completions"
+
+
+def test_custom_provider_ignores_stale_codex_responses_api_mode(monkeypatch):
+    """Legacy custom endpoints should not inherit stale Responses routing."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://relay.example.com/v1",
+        "api_key": "sk-relay-key",
+        "api_mode": "codex_responses",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_custom_provider_keeps_configured_non_responses_api_mode(monkeypatch):
+    """Only stale codex_responses should be ignored for plain custom endpoints."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://proxy.example.com/anthropic",
+        "api_key": "sk-proxy-key",
+        "api_mode": "anthropic_messages",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "anthropic_messages"
 
 
 def test_named_custom_provider_api_mode(monkeypatch):
@@ -2893,3 +3070,102 @@ def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(m
     assert resolved["provider"] == "bedrock"
     assert resolved["api_mode"] == "bedrock_converse"
     assert resolved.get("bedrock_anthropic") is not True
+
+
+def test_auto_provider_with_local_base_url_bypasses_anthropic_key(monkeypatch):
+    """provider:auto + base_url:localhost should NOT route to Anthropic even if
+    ANTHROPIC_API_KEY is set in the environment. Regression test for #3846.
+
+    Users running Ollama locally had requests silently sent to Anthropic's API
+    because resolve_provider("auto") picked up ANTHROPIC_API_KEY before the
+    config.yaml base_url was checked.
+    """
+    # ANTHROPIC_API_KEY is present in environment — should be ignored
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "default": "ollama/minimax-m2.7:cloud",
+            "provider": "auto",
+            "base_url": "http://localhost:11434",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Must NOT go to Anthropic's API
+    assert "anthropic.com" not in resolved.get("base_url", ""), (
+        f"Expected custom endpoint, got Anthropic: {resolved}"
+    )
+    assert resolved["base_url"] == "http://localhost:11434"
+    # provider should be custom/openrouter (OpenAI-compat), not anthropic
+    assert resolved["provider"] != "anthropic", (
+        f"Should have routed to custom endpoint, not anthropic: {resolved}"
+    )
+
+
+def test_auto_provider_with_known_cloud_base_url_still_uses_anthropic(monkeypatch):
+    """provider:auto + base_url pointing to Anthropic should still use Anthropic.
+
+    The local-endpoint bypass only applies to non-cloud endpoints; when the
+    configured base_url IS a cloud API root, resolve_provider() must run
+    normally and pick up ANTHROPIC_API_KEY.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "auto",
+            "base_url": "https://api.anthropic.com",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Cloud base_url → bypass does NOT fire → resolve_provider picks anthropic.
+    assert resolved["provider"] == "anthropic", (
+        f"Cloud base_url must not be diverted to the custom resolver: {resolved}"
+    )
+
+
+def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch):
+    """A look-alike host (api.anthropic.com.attacker.test) must be treated as a
+    custom endpoint, NOT mistaken for the real Anthropic cloud.
+
+    Guards the host-match (vs naive substring) check in the local-endpoint
+    bypass: substring matching on "api.anthropic.com" would wrongly classify
+    this attacker-controlled host as cloud and hand it the ANTHROPIC_API_KEY.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    lookalike = "http://api.anthropic.com.attacker.test/v1"
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "auto", "base_url": lookalike},
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    # Host doesn't actually match anthropic.com → bypass fires → custom route,
+    # and the real Anthropic credential is NOT sent there.
+    assert resolved["provider"] != "anthropic", (
+        f"Look-alike host must not be classified as Anthropic cloud: {resolved}"
+    )
+    assert resolved["base_url"] == lookalike

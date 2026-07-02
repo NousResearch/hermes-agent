@@ -394,3 +394,27 @@ def test_unknown_owner_keeps_prior_single_session_behavior(tmp_path, monkeypatch
     )
     assert ft._get_live_tracking_cwd("default") == str(ws)
     assert ft._get_live_tracking_cwd("any-session") == str(ws)
+
+
+def test_preserved_cwd_does_not_override_non_owning_sessions_worktree(
+    _two_worktree_sessions, monkeypatch
+):
+    """#26211 belt-and-suspenders must not break worktree isolation.
+
+    The owner (session B) doing an owned live read mirrors wt_b into the shared
+    _last_known_cwd['default'] registry. Session A — which does NOT own the env
+    but HAS its own registered worktree (wt_a) — must still resolve into wt_a,
+    not inherit B's preserved cwd through the shared-container key. The
+    session-specific registered override must beat the durable shared anchor.
+    """
+    wt_a, wt_b, _main = _two_worktree_sessions
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    # Owner B resolves first — this mirrors wt_b into _last_known_cwd['default'].
+    assert ft._resolve_path_for_task("target.py", task_id="sess-b") == (wt_b / "target.py")
+    assert ft._last_known_cwd.get("default") == str(wt_b)
+
+    # A still routes to its own registered worktree despite the shared anchor.
+    resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
+    assert resolved_a == (wt_a / "target.py")
+    assert not str(resolved_a).startswith(str(wt_b))

@@ -201,6 +201,115 @@ def test_repair_preserves_system_messages():
     assert messages == original
 
 
+# ── Pass 2: close orphaned assistant(tool_calls) turns ─────────────────────
+
+def test_repair_closes_fully_unanswered_trailing_tool_calls():
+    """assistant(tool_calls) as the last message, no tool response at all —
+    e.g. the turn was interrupted before any tool executed. DeepSeek v4 and
+    other strict OpenAI-compatible providers reject an assistant message
+    with 'tool_calls' that isn't immediately followed by its tool results.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "compile llama.cpp"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [
+             {"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+             {"id": "t2", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+         ]},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "tool"]
+    assert {m["tool_call_id"] for m in messages[2:]} == {"t1", "t2"}
+
+
+def test_repair_closes_partially_answered_tool_calls():
+    """Some of an assistant turn's tool_calls have a matching result, some
+    don't — a stub is inserted only for the missing ids.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "compile llama.cpp"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [
+             {"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+             {"id": "t2", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+             {"id": "t3", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    tool_ids = [m["tool_call_id"] for m in messages if m["role"] == "tool"]
+    assert tool_ids == ["t1", "t2", "t3"]
+
+
+def test_repair_closes_orphaned_tool_calls_before_wakeup_message():
+    """Interrupted mid tool-loop, then a wakeup/cron notification lands as a
+    fresh user turn — the orphan is no longer the literal tail, but must
+    still be closed so alternation stays valid for the next API call.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "compile llama.cpp"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "bash", "arguments": "{}"}}]},
+        {"role": "user", "content": "[wakeup notification] resuming previous task"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "user"]
+    assert messages[2]["tool_call_id"] == "t1"
+
+
+def test_repair_orphan_close_is_idempotent():
+    """Running repair twice must not insert duplicate stubs."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "compile llama.cpp"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "bash", "arguments": "{}"}}]},
+    ]
+
+    first = AIAgent._repair_message_sequence(agent, messages)
+    second = AIAgent._repair_message_sequence(agent, messages)
+
+    assert first == 1
+    assert second == 0
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+
+
+def test_repair_still_preserves_complete_pair_before_user_redirect():
+    """Non-regression: a fully-answered assistant(tool_calls)+tool pair
+    followed by a user redirect is the valid 'ongoing dialog' pattern and
+    must not gain any synthetic tool messages.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+        {"role": "user", "content": "Q2"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
 
 from agent.agent_runtime_helpers import repair_message_sequence_with_cursor

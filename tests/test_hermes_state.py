@@ -3153,6 +3153,24 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert sessions[0]["preview"] == ""
 
+    def test_exclude_empty_untitled_placeholders_keeps_resumable_rows(self, db):
+        db.create_session("real", "tui")
+        db.append_message("real", "user", "resume me")
+        db.create_session("titled-zero", "tui")
+        db.set_session_title("titled-zero", "Named draft")
+        db.create_session("ghost", "tui")
+        db.end_session("ghost", "tui_shutdown")
+
+        sessions = db.list_sessions_rich(
+            source="tui",
+            exclude_empty_untitled=True,
+        )
+
+        ids = {s["id"] for s in sessions}
+        assert "real" in ids
+        assert "titled-zero" in ids
+        assert "ghost" not in ids
+
     def test_last_active_from_latest_message(self, db):
         import time
         db.create_session("s1", "cli")

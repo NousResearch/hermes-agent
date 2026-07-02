@@ -5640,6 +5640,55 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_skips_empty_untitled_placeholders(monkeypatch):
+    captured = {}
+
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            captured.update(kwargs)
+            rows = [
+                {
+                    "id": "ghost",
+                    "source": "tui",
+                    "title": "",
+                    "preview": "",
+                    "message_count": 0,
+                    "started_at": 101,
+                },
+                {
+                    "id": "titled-zero",
+                    "source": "tui",
+                    "title": "Named draft",
+                    "preview": "",
+                    "message_count": 0,
+                    "started_at": 100,
+                },
+                {
+                    "id": "real",
+                    "source": "tui",
+                    "title": "",
+                    "preview": "hello",
+                    "message_count": 1,
+                    "started_at": 99,
+                },
+            ]
+            if kwargs.get("exclude_empty_untitled"):
+                rows = [
+                    row
+                    for row in rows
+                    if (row.get("message_count") or 0) > 0
+                    or str(row.get("title") or "").strip()
+                ]
+            return rows
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
+
+    assert captured["exclude_empty_untitled"] is True
+    assert [s["id"] for s in resp["result"]["sessions"]] == ["titled-zero", "real"]
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------
@@ -6317,7 +6366,14 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            exclude_empty_untitled=False,
+        ):
             return [
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
@@ -6334,9 +6390,57 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     assert resp["result"]["source"] == "tui"
 
 
+def test_session_most_recent_skips_empty_untitled_placeholders(monkeypatch):
+    captured = {}
+
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            captured.update(kwargs)
+            rows = [
+                {
+                    "id": "ghost",
+                    "source": "tui",
+                    "title": "",
+                    "started_at": 100,
+                    "message_count": 0,
+                },
+                {
+                    "id": "real",
+                    "source": "tui",
+                    "title": "Real",
+                    "started_at": 99,
+                    "message_count": 1,
+                },
+            ]
+            if kwargs.get("exclude_empty_untitled"):
+                rows = [
+                    row
+                    for row in rows
+                    if (row.get("message_count") or 0) > 0
+                    or str(row.get("title") or "").strip()
+                ]
+            return rows
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert captured["exclude_empty_untitled"] is True
+    assert resp["result"]["session_id"] == "real"
+
+
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            exclude_empty_untitled=False,
+        ):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -6354,7 +6458,14 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            exclude_empty_untitled=False,
+        ):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())

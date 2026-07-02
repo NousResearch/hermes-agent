@@ -2707,6 +2707,7 @@ class SessionDB:
         offset: int = 0,
         include_children: bool = False,
         min_message_count: int = 0,
+        exclude_empty_untitled: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
         include_archived: bool = False,
@@ -2739,6 +2740,10 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        Pass ``exclude_empty_untitled=True`` for user-facing resume/list
+        surfaces that should hide non-conversational placeholder rows while
+        preserving named draft sessions with zero messages.
         """
         where_clauses = []
         params = []
@@ -2775,6 +2780,11 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        if exclude_empty_untitled:
+            where_clauses.append(
+                "(COALESCE(s.message_count, 0) > 0 "
+                "OR LENGTH(TRIM(COALESCE(s.title, ''))) > 0)"
+            )
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:

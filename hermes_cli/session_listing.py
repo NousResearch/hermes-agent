@@ -54,6 +54,7 @@ def query_session_listing(
     rows = session_db.list_sessions_rich(
         source=query_source,
         exclude_sources=exclude_sources,
+        exclude_empty_untitled=True,
         limit=fetch_limit,
     )
     result: list[dict[str, Any]] = []

@@ -252,7 +252,12 @@ class TestSystemPromptActiveProfile:
         src = Path("agent/system_prompt.py").read_text()
         assert "Active Hermes profile" in src
         assert "cross_profile=True" in src
-        assert "~/.hermes/profiles/" in src
+        # The profiles root is platform-aware (~/.hermes on POSIX,
+        # ~/AppData/Local/hermes on native Windows): derived from
+        # get_default_hermes_root(), with the POSIX literal as fallback.
+        assert "get_default_hermes_root" in src
+        assert '"~/.hermes"' in src
+        assert "/profiles/<name>/" in src
         # Both branches present (default and named profile).
         assert "Active Hermes profile: default" in src
         assert "Active Hermes profile: {active_profile}" in src

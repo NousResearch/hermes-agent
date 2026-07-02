@@ -881,7 +881,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 
 
 def _run_xai_oauth_login_from_setup() -> bool:
-    """Run the xAI Grok OAuth loopback login from inside the setup wizard.
+    """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
@@ -892,7 +892,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
             _is_remote_session,
             _save_xai_oauth_tokens,
             _update_config_for_provider,
-            _xai_oauth_loopback_login,
+            _xai_oauth_device_code_login,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -902,12 +902,13 @@ def _run_xai_oauth_login_from_setup() -> bool:
     print()
     print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     try:
-        creds = _xai_oauth_loopback_login(open_browser=open_browser)
+        creds = _xai_oauth_device_code_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
             creds["tokens"],
             discovery=creds.get("discovery"),
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
+            auth_mode="oauth_device_code",
         )
         _update_config_for_provider(
             "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)

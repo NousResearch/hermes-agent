@@ -289,6 +289,23 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
+def _tighten_file_permissions(path: Path) -> None:
+    """Restrict file to owner-only read/write (POSIX 0600).
+
+    On Windows, ``os.chmod`` with Unix permission bits is a no-op — it
+    silently succeeds without changing anything.  NTFS ACLs already restrict
+    newly-created files to the owning user / SYSTEM / Administrators, so
+    the explicit chmod is redundant there.  Skip it to avoid a silent
+    no-op that looks like it worked but didn't (#56923).
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
     hermes_root = get_default_hermes_root()
@@ -600,10 +617,7 @@ def run_import(args) -> None:
                         dst.write(src.read())
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-                        try:
-                            os.chmod(target, 0o600)
-                        except OSError:
-                            pass
+                        _tighten_file_permissions(target)
                     restored += 1
                     restored_external += 1
                 except (PermissionError, OSError) as exc:
@@ -645,7 +659,7 @@ def run_import(args) -> None:
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
                 if target.name in _SECRET_FILE_NAMES:
-                    os.chmod(target, 0o600)
+                    _tighten_file_permissions(target)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")

@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -2467,8 +2468,11 @@ class TestMemoryProviderExternalPaths:
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
-        # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened (POSIX only; Windows NTFS ACLs
+        # already restrict to owner/SYSTEM/Administrators — os.chmod is a
+        # no-op there, so we skip the mode-bit assertion).
+        if sys.platform != "win32":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 

@@ -406,6 +406,26 @@ class TestAutoSsoRedirect:
         assert r.headers["location"].startswith("/login")
         assert "/auth/login" not in r.headers["location"]
 
+    def test_password_provider_skips_auto_sso(self, gated_app):
+        """A password-only provider must NOT be auto-redirected to the OAuth
+        initiation route (/auth/login) — basic auth cannot participate in the
+        OAuth redirect flow and ``start_login`` raises NotImplementedError.
+        Instead, the middleware should fall through to the /login interstitial
+        which renders the password form (POSTing to /auth/password-login)."""
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+
+        class _PasswordStub(StubAuthProvider):
+            name = "password-stub"
+            display_name = "Password Stub"
+            supports_password = True
+
+        clear_providers()
+        register_provider(_PasswordStub())
+        r = gated_app.get("/sessions", follow_redirects=False)
+        # Must NOT redirect to /auth/login (the OAuth route) — that would 500.
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

@@ -254,7 +254,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            # Also applied to MiniMax — the baked-in "helpful" reflex (#16685)
+            # produces permission-seeking, option paralysis, and
+            # re-verification loops; <act_dont_ask> and <tool_persistence>
+            # are the direct countermeasures.
+            if (
+                "gpt" in _model_lower
+                or "codex" in _model_lower
+                or "grok" in _model_lower
+                or "minimax" in _model_lower
+            ):
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])

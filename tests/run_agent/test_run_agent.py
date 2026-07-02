@@ -1269,6 +1269,17 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
 
+    def test_auto_injects_execution_guidance_for_minimax(self):
+        """MiniMax also gets OPENAI_MODEL_EXECUTION_GUIDANCE (act_dont_ask,
+        tool_persistence). Addresses the 'helpful reflex' failure modes from
+        #16685 — permission-seeking, option paralysis, and re-verification
+        loops — the same act-over-describe steer GPT and Grok need.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="MiniMax-M3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
     def test_auto_does_not_inject_execution_guidance_for_claude(self):
         """Sanity: execution guidance stays off for non-targeted families."""
         from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE

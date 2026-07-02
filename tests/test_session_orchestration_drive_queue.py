@@ -29,8 +29,8 @@ Async tests use asyncio.run() following the repo convention.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import MagicMock, patch
@@ -285,7 +285,7 @@ def test_redelivery_fifo_deletes_and_confirms(registry):
 
     adapter = _FakeAdapter(lifecycle=SessionLifecycle.WAITING_USER)
     posts: List[str] = []
-    now = datetime.now(tz=timezone.utc)
+    now = time.time()
 
     with patch(
         "session_orchestration.feed._post_discord_message",
@@ -308,7 +308,7 @@ def test_no_redelivery_when_not_waiting_user(registry):
     registry.enqueue_pending_drive(task_id, "still queued")
 
     adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
-    now = datetime.now(tz=timezone.utc)
+    now = time.time()
 
     _watcher(registry)._drain_pending_drive(
         task_id, row, adapter, SessionLifecycle.RUNNING.value, now
@@ -329,7 +329,7 @@ def test_failed_redelivery_keeps_entry_and_bumps_attempt(registry):
     adapter = _FakeAdapter(
         lifecycle=SessionLifecycle.WAITING_USER, drive_exc=TimeoutError("busy")
     )
-    now = datetime.now(tz=timezone.utc)
+    now = time.time()
 
     _watcher(registry)._drain_pending_drive(
         task_id, row, adapter, SessionLifecycle.WAITING_USER.value, now
@@ -356,8 +356,8 @@ def test_ttl_expires_old_entry_with_notice(registry):
     adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
     posts: List[str] = []
     # Evaluate "now" one hour in the future so the just-enqueued entry is
-    # older than the default 600s TTL.
-    future = datetime.now(tz=timezone.utc) + timedelta(hours=1)
+    # older than the default 600s TTL. (POSIX float, matching self._now_fn.)
+    future = time.time() + 3600
 
     with patch(
         "session_orchestration.feed._post_discord_message",
@@ -380,7 +380,7 @@ def test_ttl_keeps_fresh_entry(registry):
     registry.enqueue_pending_drive(task_id, "fresh reply")
 
     adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
-    now = datetime.now(tz=timezone.utc)  # age ~0 < TTL
+    now = time.time()  # age ~0 < TTL
 
     _watcher(registry)._drain_pending_drive(
         task_id, row, adapter, SessionLifecycle.RUNNING.value, now

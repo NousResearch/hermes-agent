@@ -1954,9 +1954,12 @@ class SessionWatcher:
         row: Dict[str, Any],
         adapter: AgentAdapter,
         new_state: str,
-        now: datetime,
+        now: float,
     ) -> None:
         """Redeliver replies queued while this session was busy.
+
+        ``now`` is a POSIX timestamp (float), matching ``self._now_fn()`` used
+        throughout ``_process_row`` — NOT a ``datetime``.
 
         A reply that arrived while the session was ``RUNNING`` is stored in the
         pending-drive table (``gateway/run.py:_handle_managed_thread_reply``).
@@ -1991,7 +1994,7 @@ class SessionWatcher:
         ttl_secs = _load_drive_queue_ttl_secs_cfg()
         survivors: List[Dict[str, Any]] = []
         if ttl_secs > 0:
-            now_ts = now.timestamp()
+            now_ts = float(now)
             ttl_minutes = max(1, ttl_secs // 60)
             for entry in pending:
                 enq_ts = _parse_marker_ts(entry.get("enqueued_at") or "")

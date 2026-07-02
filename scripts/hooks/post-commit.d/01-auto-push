@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# ============================================================
+# 01-auto-push — Auto-push after commit
+# ============================================================
+# Pushes to origin after every commit.
+# The auto-pr.yml workflow will then create a Draft PR automatically.
+#
+# Only runs if we're on a branch (not detached HEAD).
+# Skips push if the branch is 'main' (keep main pushes explicit).
+# ============================================================
+
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+# Skip if detached HEAD
+if [ -z "$BRANCH" ]; then
+    exit 0
+fi
+
+# Skip if on main — keep main pushes explicit
+if [ "$BRANCH" = "main" ]; then
+    echo "  [auto-push] Skipped: on main branch"
+    exit 0
+fi
+
+echo "  [auto-push] Pushing $BRANCH to origin..."
+if git push -u origin "$BRANCH" 2>&1; then
+    echo "  [auto-push] Pushed successfully"
+else
+    echo "  [auto-push] Push failed (non-blocking)"
+fi

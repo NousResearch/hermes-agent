@@ -48,12 +48,30 @@ def _make_runner():
 
 class _CapturingAgent:
     """Fake agent that records init kwargs for assertions."""
-
     last_init = None
 
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
         self.tools = []
+        self.session_id = kwargs.get("session_id")
+        self.model = kwargs.get("model")
+        self.context_compressor = None
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.is_interrupted = False
+        self._last_compaction_in_place = False
+        self.max_iterations = kwargs.get("max_iterations", 90)
+        self.api_mode = kwargs.get("api_mode")
+        self.provider = kwargs.get("provider")
+        self.tool_progress_callback = None
+        self.tool_start_callback = None
+        self.step_callback = None
+        self.stream_delta_callback = None
+        self.interim_assistant_callback = None
+        self.status_callback = None
+
+    def run(self, user_message, **kwargs):
+        return self.run_conversation(user_message, **kwargs)
 
     def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
         return {
@@ -61,6 +79,21 @@ class _CapturingAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+    def interrupt(self, reason=""):
+        pass
+
+    def steer(self, text):
+        return True
+
+    def get_activity_summary(self):
+        return {"current_tool": None, "api_call_count": 0}
+
+    def close(self):
+        pass
+
+    def shutdown_memory_provider(self, messages=None):
+        pass
 
 
 class TestReasoningCommand:

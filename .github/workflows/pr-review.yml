@@ -1,0 +1,65 @@
+# ============================================================
+# pr-review.yml — Handle PR approve/reject automatically
+# ============================================================
+# Triggers when a PR review is submitted.
+# Approved → squash merge to main + approval record
+# Rejected → close PR + rejection record
+
+name: PR Review Handler
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  handle-review:
+    runs-on: ubuntu-latest
+    if: github.event.review.state == 'approved' || github.event.review.state == 'changes_requested'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Handle approve/reject
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Review state: $REVIEW_STATE"
+          echo "PR #$PR_NUMBER: $PR_TITLE (branch: $PR_BRANCH)"
+
+          if [ "$REVIEW_STATE" = "approved" ]; then
+            echo "=== APPROVED ==="
+
+            # Squash merge to main
+            curl -s -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}/merge" \
+              -d '{"merge_method":"squash"}' \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Merge: {d.get(\"merged\", False)} - {d.get(\"message\", \"ok\")}')"
+
+            echo "PR #$PR_NUMBER merged to main via squash."
+
+          elif [ "$REVIEW_STATE" = "changes_requested" ]; then
+            echo "=== CHANGES REQUESTED ==="
+
+            # Close the PR
+            curl -s -X PATCH \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}" \
+              -d '{"state":"closed"}' \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Closed: {d.get(\"state\", \"?\")}')"
+
+            echo "PR #$PR_NUMBER closed."
+          fi

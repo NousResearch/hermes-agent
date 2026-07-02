@@ -1,0 +1,83 @@
+# ============================================================
+# auto-pr.yml — Automatically create Draft PRs
+# ============================================================
+# Uses GitHub REST API directly (gh CLI has auth issues).
+# Triggers on push to any non-main branch.
+
+name: Auto Draft PR
+
+on:
+  push:
+    branches:
+      - '**'
+      - '!main'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-draft-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create or update Draft PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          REPO="${{ github.repository }}"
+          STATS=$(git diff --stat origin/main...HEAD 2>/dev/null || echo "Unable to compute diff stats")
+          COMMITS=$(git rev-list --count origin/main...HEAD 2>/dev/null || echo "?")
+          LAST_COMMIT=$(git log --oneline -1)
+
+          # Build body
+          BODY=$(cat <<EOF
+          ## Summary
+
+          Automated Draft PR for branch \`${BRANCH}\`.
+
+          **Commits:** ${COMMITS}
+          **Latest:** ${LAST_COMMIT}
+
+          ---
+
+          ### Diff Stats
+
+          \`\`\`
+          ${STATS}
+          \`\`\`
+
+          ---
+
+          **To approve:** Click "Approve" → PR merges automatically.
+          **To reject:** Click "Request changes" → PR closes.
+          EOF
+          )
+
+          # Check for existing PR
+          EXISTING=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
+            | python3 -c "import sys,json; prs=json.load(sys.stdin); print(next((p['number'] for p in prs if p.get('draft')), ''))" 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing Draft PR #$EXISTING"
+            curl -s -X PATCH \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls/${EXISTING}" \
+              -d "{\"title\":\"Draft: ${BRANCH}\",\"body\":$(echo "$BODY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}"
+          else
+            echo "Creating new Draft PR for $BRANCH"
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/pulls" \
+              -d "{\"title\":\"Draft: ${BRANCH}\",\"body\":$(echo "$BODY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"head\":\"${BRANCH}\",\"base\":\"main\",\"draft\":true}"
+          fi

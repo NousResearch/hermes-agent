@@ -12052,7 +12052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
-        from run_agent import AIAgent
+        from gateway.agent_adapter import create_adapter
 
         media_urls = media_urls or []
         media_types = media_types or []
@@ -12110,7 +12110,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
-                agent = AIAgent(
+                agent = create_adapter(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -12140,7 +12140,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     fallback_model=self._fallback_model,
                 )
                 try:
-                    return agent.run_conversation(
+                    return agent.run(
                         user_message=enriched_prompt,
                         task_id=task_id,
                     )
@@ -15381,7 +15381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event_message_id=event_message_id,
             )
 
-        from run_agent import AIAgent
+        from gateway.agent_adapter import create_adapter
         import queue
 
         def _run_still_current() -> bool:
@@ -16498,7 +16498,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = AIAgent(
+                agent = create_adapter(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -17042,7 +17042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                result = agent.run(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

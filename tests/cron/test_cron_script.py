@@ -236,6 +236,14 @@ class TestBuildJobPromptWithScript:
         assert "## Script Output" not in prompt
         assert "Simple job." in prompt
 
+    def test_manual_run_context_injected_without_replacing_stored_prompt(self, cron_env):
+        from cron.scheduler import _build_job_prompt
+
+        job = {"prompt": "Stored instruction."}
+        prompt = _build_job_prompt(job, extra_context="CONTEXT: client=Foo, count=3")
+        assert "## Manual Run Context" in prompt
+        assert "CONTEXT: client=Foo, count=3" in prompt
+        assert "Stored instruction." in prompt
 
 
 class TestCronjobToolScript:

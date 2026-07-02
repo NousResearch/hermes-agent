@@ -601,7 +601,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
+def _execute_job_now(job: Dict[str, Any], *, extra_context: Optional[str] = None) -> Dict[str, Any]:
     """Execute a cron job immediately, outside the scheduler tick.
 
     Atomically claims the job first via ``claim_job_for_fire`` — the same
@@ -628,7 +628,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        processed = run_one_job(job, extra_context=extra_context)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
@@ -830,8 +830,15 @@ def cronjob(
             # next scheduler tick — a manual `run` should actually run, even when
             # no gateway/ticker is active (the #41037 case). The claim inside
             # _execute_job_now advances next_run_at and blocks a concurrent tick
-            # from double-firing.
-            exec_result = _execute_job_now(job)
+            # from double-firing. A prompt supplied on the run call is single-fire
+            # context only: scan it here, pass it through, never persist it.
+            extra_context = None
+            if prompt is not None:
+                scan_error = _scan_cron_prompt(prompt)
+                if scan_error:
+                    return tool_error(scan_error, success=False)
+                extra_context = prompt
+            exec_result = _execute_job_now(job, extra_context=extra_context)
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
@@ -989,7 +996,13 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+                "description": (
+                    "For create/update: the full self-contained prompt. "
+                    "For run/run_now/trigger: optional run-specific context "
+                    "appended for that single manual execution only (not persisted). "
+                    "If skills are also provided on create/update, this becomes "
+                    "the task instruction paired with those skills."
+                )
             },
             "schedule": {
                 "type": "string",

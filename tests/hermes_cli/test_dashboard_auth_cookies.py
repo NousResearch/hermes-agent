@@ -231,3 +231,36 @@ def test_detect_https_via_scheme():
     })
     assert detect_https(http_req) is False
     assert detect_https(https_req) is True
+
+
+def test_detect_https_via_x_forwarded_proto_fallback():
+    """``detect_https`` also checks X-Forwarded-Proto when scheme is HTTP.
+
+    Covers the Tailscale Serve case: Electron hits /auth/login via direct
+    HTTP (scheme=http, no X-Forwarded-Proto) while the callback returns via
+    Tailscale HTTPS (X-Forwarded-Proto=https). The fallback ensures cookies
+    are set with Secure + SameSite=None even when uvicorn's scheme rewriting
+    doesn't fire on the cookie-setting request.
+    """
+    from hermes_cli.dashboard_auth.cookies import detect_https
+    # HTTP scheme but X-Forwarded-Proto: https → should detect HTTPS
+    proxied_req = Request({
+        "type": "http", "method": "GET", "path": "/", "scheme": "http",
+        "headers": [(b"x-forwarded-proto", b"https")],
+        "server": ("x", 80),
+    })
+    assert detect_https(proxied_req) is True
+    # HTTP scheme, no X-Forwarded-Proto → plain HTTP
+    plain_req = Request({
+        "type": "http", "method": "GET", "path": "/", "scheme": "http",
+        "headers": [],
+        "server": ("x", 80),
+    })
+    assert detect_https(plain_req) is False
+    # Comma-separated list (multiple proxies) → first value wins
+    multi_req = Request({
+        "type": "http", "method": "GET", "path": "/", "scheme": "http",
+        "headers": [(b"x-forwarded-proto", b"https,http")],
+        "server": ("x", 80),
+    })
+    assert detect_https(multi_req) is True

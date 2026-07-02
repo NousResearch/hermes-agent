@@ -1685,6 +1685,73 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
     return tui_dir.is_dir()
 
 
+def _is_git_checkout(tui_dir: Path) -> bool:
+    """Return True iff the parent of ``tui_dir`` looks like a git checkout.
+
+    Used by the TUI launch path to distinguish a recoverable checkout
+    (where ``git restore -- ui-tui`` is a real remediation) from a packaged
+    install (homebrew / pip / curl) where the source tree lives in
+    ``site-packages`` and the ``git restore`` hint is impossible to follow.
+    """
+    return (tui_dir.parent / ".git").is_dir()
+
+
+def _print_tui_workspace_missing_error(tui_dir: Path) -> None:
+    """Print the missing-``ui-tui/`` error and exit 1.
+
+    The message is shaped by the install method: a true git checkout gets
+    the existing ``git restore -- ui-tui`` recovery (preserved for #49145);
+    a packaged install (homebrew / pip / curl / docker — anything without
+    a ``.git`` next to the source) gets the install-method-specific update
+    command, because the checkout-shaped recovery is impossible to execute
+    on a wheel (#57031).
+    """
+    if _is_git_checkout(tui_dir):
+        print(
+            "Error: the TUI workspace is missing from this Hermes checkout.\n"
+            f"Expected directory: {tui_dir}\n"
+            "This usually means `hermes update` left tracked ui-tui files deleted.\n"
+            "Recovery:\n"
+            "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
+            "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+            "  3. Retry `hermes --tui`\n"
+            "If the checkout is still inconsistent, run `hermes update --force`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+        return
+
+    # Packaged install — give an actionable hint tied to how the user installed.
+    try:
+        from hermes_cli.config import detect_install_method, recommended_update_command
+
+        method = detect_install_method()
+        update_cmd = recommended_update_command()
+    except Exception:
+        method, update_cmd = "pip", "pip install --upgrade hermes-agent"
+
+    method_label = {
+        "homebrew": "Homebrew / Linuxbrew",
+        "pip": "pip",
+        "docker": "Docker",
+        "nixos": "NixOS",
+        "git": "git checkout",
+    }.get(method, method)
+
+    print(
+        "Error: the TUI workspace is missing from this Hermes install.\n"
+        f"Expected directory: {tui_dir}\n"
+        f"This Hermes install was detected as: {method_label}.\n"
+        f"The TUI is not bundled in the {method_label} package; reinstall\n"
+        f"or upgrade to refresh the bundled TUI assets:\n"
+        f"  {update_cmd}\n"
+        "If the issue persists after upgrade, please open an issue at\n"
+        "  https://github.com/NousResearch/hermes-agent/issues",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _ensure_tui_workspace(tui_dir: Path) -> None:
     """Ensure ``ui-tui/`` exists before any npm/node subprocess uses it as cwd.
 
@@ -1692,7 +1759,8 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     cwd=<missing ui-tui>)``, which crashes with ``NotADirectoryError``
     (``WinError 267`` on Windows) instead of a usable message (#49145). We
     first try to self-heal via ``git restore``; only if that can't recover the
-    directory do we abort with concrete manual-recovery steps.
+    directory do we abort with a checkout- or install-method-specific message
+    (see ``_print_tui_workspace_missing_error`` for #57031).
     """
     if tui_dir.is_dir():
         return
@@ -1702,18 +1770,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
             print(f"Restored missing TUI workspace: {tui_dir}")
         return
 
-    print(
-        "Error: the TUI workspace is missing from this Hermes checkout.\n"
-        f"Expected directory: {tui_dir}\n"
-        "This usually means `hermes update` left tracked ui-tui files deleted.\n"
-        "Recovery:\n"
-        "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
-        "  3. Retry `hermes --tui`\n"
-        "If the checkout is still inconsistent, run `hermes update --force`.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    _print_tui_workspace_missing_error(tui_dir)
 
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
@@ -1748,6 +1805,19 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Packaged-install shortcut: when running from a wheel / homebrew / curl
+    # install, ``ui-tui/`` does not live next to the Python source (it sits in
+    # ``site-packages``), so the source-tree workspace guard cannot apply. If
+    # the wheel bundles a prebuilt TUI (``tui_dist/entry.js``), use it
+    # directly — that is the intended launch path for packaged installs and
+    # avoids the spurious "TUI workspace is missing" error reported in #57031.
+    # A true git checkout still gets the workspace restore + recovery path.
+    if not ext_dir and not tui_dev and not _is_git_checkout(tui_dir):
+        bundled = _find_bundled_tui()
+        if bundled is not None:
+            node = _node_bin("node")
+            return [node, "--expose-gc", str(bundled)], bundled.parent
 
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)

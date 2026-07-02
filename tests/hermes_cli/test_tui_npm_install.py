@@ -330,7 +330,13 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
 def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
     tmp_path: Path, main_mod, monkeypatch, capsys
 ) -> None:
-    """Missing ui-tui + no git checkout → clean error, never touches node/npm."""
+    """Missing ui-tui + no git checkout → clean error, never touches node/npm.
+
+    For a packaged (non-checkout) install, the recovery hint is the
+    install-method-specific update command, NOT the checkout-shaped
+    ``git restore -- ui-tui`` (which is impossible to execute on a wheel).
+    See #57031.
+    """
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
     monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
 
@@ -341,6 +347,8 @@ def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
         raise AssertionError("node/npm lookup must not run when ui-tui is missing")
 
     monkeypatch.setattr(main_mod.shutil, "which", which)
+    # No bundled TUI in the test layout, so the wheel-shortcut path is not taken.
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda *a, **k: None)
 
     with pytest.raises(SystemExit) as exc:
         main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=False)
@@ -348,8 +356,11 @@ def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "TUI workspace is missing" in err
-    assert "git restore -- ui-tui" in err
-    assert "hermes update --force" in err
+    # New (correct) behavior: the install-method-specific update hint.
+    # The repo's test layout is a checkout (no .install_method stamp, no
+    # .git in the project root for this fixture's tmp_path), so the
+    # non-checkout branch fires and the message names the detected method.
+    assert "From the Hermes checkout, run `git restore -- ui-tui`" not in err
 
 
 def test_make_tui_argv_restores_missing_workspace_from_git(

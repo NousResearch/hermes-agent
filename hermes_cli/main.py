@@ -1749,10 +1749,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
-
     # 1. Prebuilt bundle (nix / packaged release): just run it.
+    #    These paths need no ``ui-tui/`` source workspace, so check them BEFORE
+    #    requiring one — a pip/uv wheel ships the prebuilt bundle but has no
+    #    ``ui-tui/`` dir and isn't a git checkout, so calling
+    #    _ensure_tui_workspace() first would abort with a bogus "git restore"
+    #    message and never reach the bundle it actually shipped.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1771,6 +1773,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     #    Existing desktop behaviour runs npm from the workspace root.  Termux
     #    scopes the install to ui-tui so launch does not pull desktop/web
     #    dependencies into the hot path.
+    #    This is the only path that builds from the ``ui-tui/`` source tree, so
+    #    the workspace guard belongs here (skipped when HERMES_TUI_DIR points at
+    #    an external checkout, matching the prior behaviour).
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
     did_install = False
     termux_startup = _is_termux_startup_environment()
     termux_need_rebuild = False

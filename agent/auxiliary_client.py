@@ -4948,6 +4948,13 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        # Preserve a known (non-auto, non-empty) provider so each provider
+        # resolves credentials from its own env vars (e.g. DASHSCOPE_API_KEY
+        # for alibaba, OPENROUTER_API_KEY for openrouter).  Without this,
+        # base_url forces "custom" which reads OPENAI_API_KEY — wrong key
+        # for every non-OpenAI provider.
+        if provider and provider not in {"auto", ""}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode

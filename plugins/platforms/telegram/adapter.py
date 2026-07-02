@@ -685,10 +685,24 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from: when set, it is the sole authority.
+        # Adapter-level allow_from: when set, it is the sole authority — for
+        # ALL chat types (backward compat: a DM-only allow_from historically
+        # also gated groups, and several tests encode that). Group/forum
+        # chats additionally union in group_allow_from when configured, so
+        # groups can be opened up without touching the DM allowlist
+        # (mirroring gateway/authz_mixin.py's TELEGRAM_GROUP_ALLOWED_USERS ∪
+        # TELEGRAM_ALLOWED_USERS union). Previously group_allow_from was never
+        # consulted here at all, silently dropping group senders it was meant
+        # to cover.
         adapter_allow_from = self.config.extra.get("allow_from")
-        if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+        adapter_group_allow_from = self.config.extra.get("group_allow_from")
+        is_group = source.chat_type in ("group", "forum")
+        if adapter_allow_from is not None or (is_group and adapter_group_allow_from is not None):
+            allowed = set()
+            if adapter_allow_from is not None:
+                allowed |= {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            if is_group and adapter_group_allow_from is not None:
+                allowed |= {str(u).strip() for u in adapter_group_allow_from if str(u).strip()}
             return user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named

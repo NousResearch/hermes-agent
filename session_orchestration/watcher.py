@@ -190,6 +190,58 @@ def _load_drive_queue_ttl_secs_cfg() -> int:
         return 600
 
 
+def _load_auto_checkpoint_resume_cfg() -> bool:
+    """Return auto_checkpoint_resume from config (default True).
+
+    When True, the watcher auto-drives /clear + resume on a handoff_continue
+    marker; when False it only announces. Fail-safe default True on any error.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+        return load_session_orchestration_config().auto_checkpoint_resume
+    except Exception:  # config load must never crash the watcher
+        return True
+
+
+def _read_handoff_next_step(row: Dict[str, Any]) -> str:
+    """Best-effort fallback: read handoff.json `next_step` from the workdir.
+
+    The resume command normally rides in the handoff_continue marker's
+    `handoff_text`; this covers the plan-less fallback location where
+    `/z-handoff` writes handoff.json (`<workdir>/handoff.json`). Returns "" on
+    any miss — never raises.
+    """
+    workdir = row.get("workdir") or ""
+    if not workdir:
+        return ""
+    try:
+        import json as _json
+        with open(f"{workdir}/handoff.json", encoding="utf-8") as fh:
+            return str(_json.load(fh).get("next_step") or "")
+    except Exception:
+        return ""
+
+
+def _post_auto_resume_notice(thread_id: str, resume_cmd: str, *, resumed: bool = True) -> None:
+    """Announce a handoff_continue auto-resume (or pending checkpoint) to the thread."""
+    if not thread_id:
+        return
+    cmd = resume_cmd.strip() or "(resume command unspecified)"
+    if resumed:
+        content = f"Auto-resumed after a z-harness checkpoint — ran `/clear` + `{cmd}`."
+    else:
+        content = (
+            "z-harness reached a checkpoint. Auto-resume is disabled "
+            f"(`so.auto_checkpoint_resume`); resume manually with `{cmd}`."
+        )
+    try:
+        from session_orchestration.feed import _post_discord_message
+
+        _post_discord_message(thread_id, content)
+    except Exception as exc:
+        logger.debug("watcher._post_auto_resume_notice: post failed: %s", exc)
+
+
 def _load_renudge_after_seconds_cfg() -> int:
     """Return renudge_after_seconds from config (default 1800 = 30 min).
 
@@ -1639,15 +1691,37 @@ class SessionWatcher:
             # ------------------------------------------------------------------
             if latest_marker_kind == "handoff_continue":
                 handle = _build_handle_from_row(row)
-                try:
-                    # Pane mutation runs under per-session lock (avoids race with relay's PAUSED_HANDOFF resume)
-                    adapter.resume(handle, "")  # autonomous /clear+resume, no user reply
-                    new_lifecycle = SessionLifecycle.RUNNING  # override PAUSED_HANDOFF
-                except Exception as exc:
-                    logger.error(
-                        "watcher._process_row: handoff_continue resume failed: %s", exc
+                # Resume command: z-harness puts the next_step in the marker's
+                # handoff_text; fall back to handoff.json in the workdir.
+                resume_cmd = ""
+                if isinstance(latest_marker_payload, dict):
+                    resume_cmd = str(latest_marker_payload.get("handoff_text") or "")
+                if not resume_cmd:
+                    resume_cmd = _read_handoff_next_step(row)
+                thread_id = str(row.get("discord_thread_id") or "")
+                if _load_auto_checkpoint_resume_cfg():
+                    try:
+                        # Pane mutation runs under per-session lock (avoids race with
+                        # relay's PAUSED_HANDOFF resume). force=True: the marker is
+                        # authoritative, so skip the adapter's detect gate.
+                        adapter.resume(handle, resume_cmd, force=True)
+                        new_lifecycle = SessionLifecycle.RUNNING  # override PAUSED_HANDOFF
+                        # Auto, but announced (T003).
+                        if thread_id:
+                            _post_auto_resume_notice(thread_id, resume_cmd)
+                    except Exception as exc:
+                        logger.error(
+                            "watcher._process_row: handoff_continue resume failed: %s", exc
+                        )
+                        # new_lifecycle stays as marker-derived value on failure
+                else:
+                    # Autonomy disabled: announce the pending checkpoint, leave paused.
+                    logger.info(
+                        "watcher._process_row: auto_checkpoint_resume disabled for task_id=%s; "
+                        "announcing pending checkpoint", task_id,
                     )
-                    # new_lifecycle stays as marker-derived value on failure
+                    if thread_id:
+                        _post_auto_resume_notice(thread_id, resume_cmd, resumed=False)
 
         finally:
             # Always release — crash-safe because relay reclaims after TTL

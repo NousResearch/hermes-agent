@@ -10976,7 +10976,7 @@ class GatewayRunner:
         returned as error strings so the Discord user gets feedback.
         """
         try:
-            from session_orchestration.adapters.base import AgentAdapter
+            from session_orchestration.adapters.base import AgentAdapter, TuiNotReadyError
             from session_orchestration.menu_parse import resolve_menu_answer
             from session_orchestration.registry import SessionOrchestrationRegistry
             from session_orchestration.relay import LockConflictError, SessionRelay
@@ -11011,6 +11011,14 @@ class GatewayRunner:
                 task_id,
             )
             return None
+
+        # Interrupt prefix: a leading '!' means interrupt-and-send — stop the
+        # current turn (Esc) before delivering. Strip it from the text.
+        interrupt = message_text.startswith("!")
+        if interrupt:
+            message_text = message_text[1:].strip()
+            if not message_text:
+                return "Nothing to send after `!`."
 
         # Reconstruct the SessionHandle from the registry row.  Use the BARE
         # tmux_session as the pane target (matching the watcher's
@@ -11048,63 +11056,74 @@ class GatewayRunner:
         # number into an Escape (cancel the menu) + a natural-language
         # selection; every other reply passes through unchanged.
         drive_text, drive_pre_keys = resolve_menu_answer(matched_row, message_text)
+        is_menu = bool(drive_pre_keys) or matched_row.get("last_input_kind") == "menu"
 
         logger.info(
-            "drive_loop: routing thread reply to task_id=%s agent=%s len=%d menu_select=%s",
-            task_id, agent_name, len(drive_text), bool(drive_pre_keys),
+            "drive_loop: routing thread reply to task_id=%s agent=%s len=%d menu=%s interrupt=%s",
+            task_id, agent_name, len(drive_text), is_menu, interrupt,
         )
 
-        # Queued-reply acknowledgement, shared by the busy pre-check and the
-        # send-timeout fallback below.
         queued_ack = (
             "Session's busy — queued your message, it'll deliver when it's ready."
         )
 
-        def _enqueue_pending() -> None:
-            registry.enqueue_pending_drive(task_id, drive_text, pre_keys=drive_pre_keys)
+        def _enqueue(pre_keys) -> None:
+            registry.enqueue_pending_drive(task_id, drive_text, pre_keys=pre_keys)
 
-        # Busy pre-check: if the session is actively working, a synchronous
-        # drive would block on _wait_for_ready and time out after 30s, dropping
-        # the reply. Instead, enqueue it now for the watcher to redeliver when
-        # the session next becomes idle (WAITING_USER).
+        # Detect state — gates the interrupt (Esc only when RUNNING).
         try:
             lifecycle = await asyncio.to_thread(adapter.detect, handle)
         except Exception as exc:
-            logger.debug(
-                "drive_loop: detect() failed for task_id=%s (%s); attempting direct drive",
-                task_id, exc,
-            )
+            logger.debug("drive_loop: detect() failed for task_id=%s (%s)", task_id, exc)
             lifecycle = None
-        if lifecycle == SessionLifecycle.RUNNING:
-            logger.info(
-                "drive_loop: task_id=%s is RUNNING; queuing reply for redelivery", task_id
-            )
-            await asyncio.to_thread(_enqueue_pending)
-            return queued_ack
+
+        # Menu answer: keep the existing menu path (Escape + NL selection via the
+        # relay). No type-ahead, no interrupt.
+        if is_menu:
+            try:
+                await asyncio.to_thread(
+                    relay.send_message, task_id, handle, drive_text,
+                    pre_keys=drive_pre_keys,
+                )
+            except LockConflictError:
+                return "Session is busy — try again in a moment."
+            except TimeoutError as exc:
+                logger.warning("drive_loop: menu send timeout task_id=%s: %s; queuing", task_id, exc)
+                await asyncio.to_thread(_enqueue, drive_pre_keys)
+                return queued_ack
+            except Exception as exc:
+                logger.exception("drive_loop: menu send error task_id=%s", task_id)
+                return f"Drive error: {exc}"
+            return ""
+
+        # Free-text: type-ahead — deliver into the composer immediately even
+        # while the agent works (it queues the turn). A leading '!' interrupt
+        # sends Esc first, but only when the session is actually RUNNING.
+        pre_keys = list(drive_pre_keys or [])
+        if interrupt and lifecycle == SessionLifecycle.RUNNING:
+            pre_keys = ["Escape", *pre_keys]
+        pre_keys_arg = pre_keys or None
 
         try:
             await asyncio.to_thread(
-                relay.send_message, task_id, handle, drive_text,
-                pre_keys=drive_pre_keys,
+                lambda: relay.send_message(
+                    task_id, handle, drive_text,
+                    pre_keys=pre_keys_arg, type_ahead=True,
+                )
             )
-        except LockConflictError as exc:
-            logger.warning(
-                "drive_loop: lock conflict for task_id=%s: %s", task_id, exc
-            )
+        except TuiNotReadyError as exc:
+            # Composer not present (booting/dead pane) — fall back to the queue.
+            logger.info("drive_loop: TUI not ready task_id=%s (%s); queuing reply", task_id, exc)
+            await asyncio.to_thread(_enqueue, pre_keys)
+            return queued_ack
+        except LockConflictError:
             return "Session is busy — try again in a moment."
         except TimeoutError as exc:
-            # The pane never became ready (session busy past the readiness
-            # window). Don't drop the reply — queue it for redelivery.
-            logger.warning(
-                "drive_loop: pane-readiness timeout for task_id=%s: %s; queuing reply",
-                task_id, exc,
-            )
-            await asyncio.to_thread(_enqueue_pending)
+            logger.warning("drive_loop: drive timeout task_id=%s: %s; queuing reply", task_id, exc)
+            await asyncio.to_thread(_enqueue, pre_keys)
             return queued_ack
         except Exception as exc:
-            logger.exception(
-                "drive_loop: unexpected error for task_id=%s", task_id
-            )
+            logger.exception("drive_loop: unexpected error for task_id=%s", task_id)
             return f"Drive error: {exc}"
 
         return ""  # Empty string = success; adapter/watcher will emit the agent reply.

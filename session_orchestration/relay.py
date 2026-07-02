@@ -125,6 +125,7 @@ class SessionRelay:
         *,
         retry_on_conflict: bool = False,
         pre_keys: list[str] | None = None,
+        type_ahead: bool = False,
     ) -> None:
         """Send ``message`` to the session identified by ``task_id``/``handle``.
 
@@ -178,12 +179,15 @@ class SessionRelay:
                     task_id,
                 )
                 self._adapter.resume(handle, message)
-            elif pre_keys:
-                # Only thread pre_keys when present so adapters/fakes with the
-                # 2-arg drive() signature keep working on the common path.
-                self._adapter.drive(handle, message, pre_keys=pre_keys)
             else:
-                self._adapter.drive(handle, message)
+                # Only thread kwargs when set so adapters/fakes with a 2-arg
+                # drive() signature keep working on the common path.
+                drive_kwargs: dict = {}
+                if pre_keys:
+                    drive_kwargs["pre_keys"] = pre_keys
+                if type_ahead:
+                    drive_kwargs["type_ahead"] = True
+                self._adapter.drive(handle, message, **drive_kwargs)
         finally:
             self._registry.release_lock(task_id, holder)
             logger.debug(

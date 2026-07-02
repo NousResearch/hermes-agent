@@ -52,6 +52,17 @@ def test_defaults_from_empty_dict() -> None:
     assert cfg.external_runs_channel_id is None
     assert cfg.hang_stale_seconds == 300
     assert cfg.hang_idle_ticks == 3
+    assert cfg.drive_queue_ttl_seconds == 600
+    assert cfg.auto_checkpoint_resume is True
+
+
+def test_auto_checkpoint_resume_knob_parses() -> None:
+    """auto_checkpoint_resume + drive_queue_ttl_seconds round-trip from the dict."""
+    cfg = SessionOrchestrationConfig.from_dict(
+        {"auto_checkpoint_resume": False, "drive_queue_ttl_seconds": 3600}
+    )
+    assert cfg.auto_checkpoint_resume is False
+    assert cfg.drive_queue_ttl_seconds == 3600
 
 
 def test_defaults_from_missing_section() -> None:

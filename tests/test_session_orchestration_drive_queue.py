@@ -170,15 +170,8 @@ def test_pending_drive_is_scoped_by_task_id(registry):
 from gateway.run import GatewayRunner as _GW  # noqa: E402
 
 
-def test_running_session_enqueues_reply_and_acks(registry):
-    """A RUNNING session enqueues the reply instead of driving it."""
-    task_id = str(uuid.uuid4())
-    thread_id = "discord-thread-busy"
-    _seed_row(registry, task_id, discord_thread_id=thread_id)
-
-    adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
-    relay_mock = MagicMock()
-    event = _make_event("reply while busy", thread_id=thread_id)
+def _drive_reply(registry, adapter, relay_mock, text, thread_id):
+    event = _make_event(text, thread_id=thread_id)
 
     async def _run():
         with (
@@ -193,14 +186,78 @@ def test_running_session_enqueues_reply_and_acks(registry):
             stub.config = {}
             return await _GW._handle_managed_thread_reply(stub, event, thread_id)
 
-    result = asyncio.run(_run())
+    return asyncio.run(_run())
 
-    # User is told it was queued; relay was NOT driven.
+
+def test_running_session_type_aheads_not_queued(registry):
+    """A RUNNING session with a live composer is delivered immediately (type-ahead),
+    NOT held in the queue — the composer queues the turn itself."""
+    task_id = str(uuid.uuid4())
+    thread_id = "discord-thread-busy"
+    _seed_row(registry, task_id, discord_thread_id=thread_id)
+
+    adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
+    relay_mock = MagicMock()
+    result = _drive_reply(registry, adapter, relay_mock, "reply while busy", thread_id)
+
+    # Delivered (empty success sentinel), not the "queued" ack.
+    assert result == "" or result is None
+    relay_mock.send_message.assert_called_once()
+    _, kwargs = relay_mock.send_message.call_args
+    assert kwargs.get("type_ahead") is True
+    # NOT queued.
+    assert registry.list_pending_drive(task_id) == []
+
+
+def test_tui_not_ready_falls_back_to_queue(registry):
+    """When the composer isn't present (TuiNotReadyError), fall back to the queue."""
+    from session_orchestration.adapters.base import TuiNotReadyError
+
+    task_id = str(uuid.uuid4())
+    thread_id = "discord-thread-boot"
+    _seed_row(registry, task_id, discord_thread_id=thread_id)
+
+    adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
+    relay_mock = MagicMock()
+    relay_mock.send_message.side_effect = TuiNotReadyError("no TUI")
+    result = _drive_reply(registry, adapter, relay_mock, "reply while booting", thread_id)
+
     assert result is not None and "queued" in result.lower()
-    relay_mock.send_message.assert_not_called()
-    # The reply is persisted for redelivery.
-    entries = registry.list_pending_drive(task_id)
-    assert [e["message"] for e in entries] == ["reply while busy"]
+    assert [e["message"] for e in registry.list_pending_drive(task_id)] == ["reply while booting"]
+
+
+def test_interrupt_prefix_sends_escape_when_running(registry):
+    """A leading '!' interrupts (Esc pre-key) when the session is RUNNING."""
+    task_id = str(uuid.uuid4())
+    thread_id = "discord-thread-int"
+    _seed_row(registry, task_id, discord_thread_id=thread_id)
+
+    adapter = _FakeAdapter(lifecycle=SessionLifecycle.RUNNING)
+    relay_mock = MagicMock()
+    result = _drive_reply(registry, adapter, relay_mock, "!stop and do this", thread_id)
+
+    assert result == "" or result is None
+    _, kwargs = relay_mock.send_message.call_args
+    assert kwargs.get("type_ahead") is True
+    assert "Escape" in (kwargs.get("pre_keys") or [])
+    # The '!' is stripped from the delivered text.
+    args, _ = relay_mock.send_message.call_args
+    assert args[2] == "stop and do this"
+
+
+def test_interrupt_prefix_no_escape_when_idle(registry):
+    """'!' at an idle (WAITING_USER) session delivers without Esc."""
+    task_id = str(uuid.uuid4())
+    thread_id = "discord-thread-int2"
+    _seed_row(registry, task_id, discord_thread_id=thread_id)
+
+    adapter = _FakeAdapter(lifecycle=SessionLifecycle.WAITING_USER)
+    relay_mock = MagicMock()
+    result = _drive_reply(registry, adapter, relay_mock, "!go", thread_id)
+
+    assert result == "" or result is None
+    _, kwargs = relay_mock.send_message.call_args
+    assert "Escape" not in (kwargs.get("pre_keys") or [])
 
 
 def test_send_timeout_enqueues_instead_of_dropping(registry):

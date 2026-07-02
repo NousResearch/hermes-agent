@@ -79,7 +79,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Protocol
 
-from session_orchestration.adapters.base import AgentAdapter
+from session_orchestration.adapters.base import AgentAdapter, TuiNotReadyError
 from session_orchestration.markers import MARKER_DONE, MARKER_HEARTBEAT, MARKER_NEEDS_INPUT, MARKER_STATUS, append_marker
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
@@ -95,6 +95,10 @@ _POLL_INTERVAL: float = 0.5
 
 #: Maximum seconds to wait for omp prompt after launching.
 _LAUNCH_READY_TIMEOUT: float = 30.0
+#: Short window to confirm the TUI composer is present for a type-ahead drive.
+#: If the box isn't drawn within this, the pane is booting/dead → fall back to
+#: the pending-drive queue rather than blocking.
+_TYPE_AHEAD_READY_TIMEOUT: float = 6.0
 
 #: Maximum seconds to wait for omp's TUI to first render on COLD start. Larger
 #: than _LAUNCH_READY_TIMEOUT because a cold start does an update check + MCP
@@ -767,6 +771,7 @@ class OmpAdapter(AgentAdapter):
         message: str,
         *,
         pre_keys: list[str] | None = None,
+        type_ahead: bool = False,
     ) -> None:
         """Deliver ``message`` to the running omp session via load-buffer/paste-buffer.
 
@@ -795,7 +800,13 @@ class OmpAdapter(AgentAdapter):
         """
         for key in pre_keys or []:
             self._tmux.run(["send-keys", "-t", handle.pane, key])
-        self._wait_for_ready(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
+        if type_ahead:
+            # Type-ahead: deliver as soon as the composer is drawn, even while
+            # omp is busy — omp queues the turn. Raises TuiNotReadyError if no
+            # TUI (booting/dead) so the caller falls back to the queue.
+            self._wait_for_tui_present(handle.pane, timeout=_TYPE_AHEAD_READY_TIMEOUT)
+        else:
+            self._wait_for_ready(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
 
         buf_name = f"hermes-omp-{handle.session_id[:8]}"
         self._load_buffer(buf_name, message)
@@ -839,8 +850,13 @@ class OmpAdapter(AgentAdapter):
     # resume()  [testable with stubbed TmuxRunner + OmpRunner]
     # ------------------------------------------------------------------
 
-    def resume(self, handle: SessionHandle, prompt: str) -> None:
+    def resume(self, handle: SessionHandle, prompt: str, *, force: bool = False) -> None:
         """Re-attach a paused omp session and inject a new prompt.
+
+        With ``force`` (watcher acting on a ``handoff_continue`` marker) the
+        agent is still running: send ``/clear`` then drive the resume command,
+        skipping the detect gate. Without ``force`` (relay PAUSED_HANDOFF path)
+        the behaviour is unchanged (``omp -c`` continue).
 
         Idempotent: if ``detect()`` does not return ``PAUSED_HANDOFF``,
         logs a warning and returns without action.
@@ -857,6 +873,20 @@ class OmpAdapter(AgentAdapter):
         prompt:
             Prompt to inject after re-attaching.
         """
+        if force:
+            # handoff_continue marker path: the agent is STILL RUNNING at a
+            # prompt (z-harness printed "Run /clear, then re-invoke" and yielded).
+            # Send the /clear slash-command into the pinned pane, then drive the
+            # resume command. This mirrors the ClaudeCodeAdapter handoff resume;
+            # the marker is authoritative, so no detect() gate.
+            self._tmux.run(["send-keys", "-t", handle.pane, "/clear", "Enter"])
+            if prompt:
+                # drive() waits for the composer to be ready before pasting.
+                self.drive(handle, prompt)
+            return
+
+        # Non-force (relay PAUSED_HANDOFF) path — unchanged: continue the
+        # previous omp session in this pane via `omp -c`.
         current = self.detect(handle)
         if current != SessionLifecycle.PAUSED_HANDOFF:
             import logging
@@ -977,6 +1007,27 @@ class OmpAdapter(AgentAdapter):
             time.sleep(_POLL_INTERVAL)
         raise TimeoutError(
             f"omp not ready for input in pane {pane!r} after {timeout:.0f}s"
+        )
+
+    def _wait_for_tui_present(self, pane: str, timeout: float) -> None:
+        """Wait until omp's TUI composer is drawn (box borders), regardless of
+        whether it is busy — for type-ahead delivery. omp's composer accepts a
+        pasted turn while it works.
+
+        Raises
+        ------
+        TuiNotReadyError
+            If no TUI box appears within ``timeout`` (booting or dead pane) — the
+            caller falls back to the persistent pending-drive queue.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            text = self._capture_pane(pane)
+            if text is not None and any(ch in text for ch in ("╭", "╰")):
+                return
+            time.sleep(_POLL_INTERVAL)
+        raise TuiNotReadyError(
+            f"omp TUI composer not present in pane {pane!r} after {timeout:.0f}s"
         )
 
     def _load_buffer(self, buf_name: str, content: str) -> None:

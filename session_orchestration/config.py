@@ -44,6 +44,7 @@ _DEFAULT_DEAD_TMUX_REAP: bool = True    # reap sessions whose tmux pane died wit
 _DEFAULT_GC_AFTER_SECONDS: int = 86400  # 24 h retention for terminal rows
 _DEFAULT_RENUDGE_AFTER_SECONDS: int = 1800  # 30 min before re-surfacing an unacted attention item
 _DEFAULT_DRIVE_QUEUE_TTL_SECONDS: int = 600  # 10 min before a queued busy-session reply is dropped
+_DEFAULT_AUTO_CHECKPOINT_RESUME: bool = True  # auto /clear+resume on a z-harness handoff_continue marker
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,11 @@ class SessionOrchestrationConfig:
     # reply older than this and notifies the user, so a queued reply can never
     # rot invisibly. Set to 0 (or any value <= 0) to disable expiry. Default: 600.
     drive_queue_ttl_seconds: int = _DEFAULT_DRIVE_QUEUE_TTL_SECONDS
+    # When True (default), the watcher auto-drives /clear + the resume command on
+    # a z-harness `handoff_continue` marker (auto, but announced to the thread).
+    # When False, it announces the pending checkpoint and leaves the session
+    # paused instead of resuming.
+    auto_checkpoint_resume: bool = _DEFAULT_AUTO_CHECKPOINT_RESUME
     # Manual repo alias overrides for the repo registry (alias → path or dict).
     # Stored as the raw config dict so repo_registry.build_repo_registry() can
     # parse it without the config module importing the registry module.
@@ -117,6 +123,9 @@ class SessionOrchestrationConfig:
         drive_queue_ttl_seconds = _coerce_int(
             data.get("drive_queue_ttl_seconds"), _DEFAULT_DRIVE_QUEUE_TTL_SECONDS
         )
+        auto_checkpoint_resume = _coerce_bool(
+            data.get("auto_checkpoint_resume"), _DEFAULT_AUTO_CHECKPOINT_RESUME
+        )
         repos = data.get("repos")
         repos = repos if isinstance(repos, dict) else {}
 
@@ -130,6 +139,7 @@ class SessionOrchestrationConfig:
             gc_after_seconds=gc_after_seconds,
             renudge_after_seconds=renudge_after_seconds,
             drive_queue_ttl_seconds=drive_queue_ttl_seconds,
+            auto_checkpoint_resume=auto_checkpoint_resume,
             repos=repos,
         )
 

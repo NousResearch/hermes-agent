@@ -36,6 +36,15 @@ from abc import ABC, abstractmethod
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
 
+class TuiNotReadyError(RuntimeError):
+    """Raised by ``drive(type_ahead=True)`` when the TUI composer is not present.
+
+    Signals the caller (the Discord-drive path) that a type-ahead delivery could
+    not land — the pane is booting or dead — so it should fall back to the
+    persistent pending-drive queue instead of dropping the message.
+    """
+
+
 class AgentAdapter(ABC):
     """Abstract base for all session-orchestration agent adapters.
 
@@ -87,6 +96,7 @@ class AgentAdapter(ABC):
         message: str,
         *,
         pre_keys: list[str] | None = None,
+        type_ahead: bool = False,
     ) -> None:
         """Deliver ``message`` to the running session.
 
@@ -105,6 +115,13 @@ class AgentAdapter(ABC):
             Optional tmux key names (e.g. ``["Escape"]``) to send before the
             readiness check + paste. Used to cancel a selection menu so a
             natural-language answer can be pasted into the freed composer.
+        type_ahead:
+            When True, deliver as soon as the TUI composer is present, WITHOUT
+            waiting for the agent to be idle — the composer queues the turn
+            while the agent works. If the composer/TUI is not present at all
+            (booting / dead pane), raise :class:`TuiNotReadyError` so the caller
+            can fall back to the persistent queue. When False (default), the
+            strict "ready and not busy" readiness gate applies.
         """
 
     @abstractmethod
@@ -129,19 +146,25 @@ class AgentAdapter(ABC):
         """
 
     @abstractmethod
-    def resume(self, handle: SessionHandle, prompt: str) -> None:
+    def resume(self, handle: SessionHandle, prompt: str, *, force: bool = False) -> None:
         """Perform a ``/clear``+re-inject cycle for a handoff session.
 
-        Called only when ``detect()`` returns ``PAUSED_HANDOFF``.  Must
-        be idempotent: calling on a session that is NOT in handoff state
-        must be a safe no-op (log a warning; do not raise).
+        Called by the relay when ``detect()`` returns ``PAUSED_HANDOFF``, and by
+        the watcher when a ``handoff_continue`` marker fires (``force=True``).
+        Must be idempotent: without ``force``, calling on a session that is NOT
+        in handoff state is a safe no-op (log a warning; do not raise).
 
         Parameters
         ----------
         handle:
             The ``SessionHandle`` for the session to resume.
         prompt:
-            The prompt to inject after clearing.
+            The resume command / prompt to inject after clearing. When empty,
+            only ``/clear`` is sent (no follow-up drive).
+        force:
+            When True, skip the ``detect()==PAUSED_HANDOFF`` gate — the caller
+            (the watcher, acting on an authoritative ``handoff_continue`` marker)
+            has already decided a resume is due, independent of pane state.
         """
 
     @abstractmethod

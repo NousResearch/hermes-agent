@@ -728,6 +728,36 @@ class TestResume:
 
         mock_wait.assert_not_called()
 
+    def test_resume_force_clears_and_drives(self):
+        """force=True: send /clear then drive the resume command, bypassing the
+        PAUSED_HANDOFF detect gate — even when the pane is busy."""
+        fake_tmux = FakeTmuxRunner(capture_output="⠋ Working...\n")  # busy, NOT handoff
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
+        handle = _make_handle()
+
+        with patch.object(adapter, "drive") as mock_drive:
+            adapter.resume(handle, "/z-execute my-slug", force=True)
+
+        # /clear was sent as a slash-command.
+        send_key_calls = [c for c in fake_tmux.calls if c[0] == "send-keys"]
+        assert any("/clear" in " ".join(str(x) for x in c) for c in send_key_calls)
+        # drive() was called with the resume command (no omp -c continue).
+        mock_drive.assert_called_once()
+        assert mock_drive.call_args[0][1] == "/z-execute my-slug"
+
+    def test_resume_force_empty_prompt_only_clears(self):
+        """force=True with an empty resume command sends /clear but does not drive."""
+        fake_tmux = FakeTmuxRunner(capture_output="⠋ Working...\n")
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
+        handle = _make_handle()
+
+        with patch.object(adapter, "drive") as mock_drive:
+            adapter.resume(handle, "", force=True)
+
+        mock_drive.assert_not_called()
+        send_key_calls = [c for c in fake_tmux.calls if c[0] == "send-keys"]
+        assert any("/clear" in " ".join(str(x) for x in c) for c in send_key_calls)
+
 
 # ---------------------------------------------------------------------------
 # launch() — marker-file injection (stubbed tmux + mocked prompt wait)

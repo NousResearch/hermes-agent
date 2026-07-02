@@ -61,7 +61,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
-from session_orchestration.adapters.base import AgentAdapter
+from session_orchestration.adapters.base import AgentAdapter, TuiNotReadyError
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
 # ---------------------------------------------------------------------------
@@ -290,6 +290,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         message: str,
         *,
         pre_keys: list[str] | None = None,
+        type_ahead: bool = False,
     ) -> None:
         """Deliver ``message`` to the Claude Code session via load-buffer/paste-buffer.
 
@@ -318,7 +319,16 @@ class ClaudeCodeAdapter(AgentAdapter):
         """
         for key in pre_keys or []:
             self._tmux.run(["send-keys", "-t", handle.pane, key])
-        self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
+        # Claude's ❯ composer is present while it works, so _wait_for_prompt is
+        # already a "composer present" check. For type_ahead, a timeout means the
+        # composer never appeared (booting/dead) — surface it as TuiNotReadyError
+        # so the caller falls back to the queue instead of dropping the message.
+        try:
+            self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
+        except TimeoutError as exc:
+            if type_ahead:
+                raise TuiNotReadyError(str(exc)) from exc
+            raise
 
         buf_name = f"hermes-{handle.session_id[:8]}"
         # Write message into a named tmux buffer via subprocess stdin pipe.
@@ -367,41 +377,37 @@ class ClaudeCodeAdapter(AgentAdapter):
     # resume()  [testable with stubbed TmuxRunner]
     # ------------------------------------------------------------------
 
-    def resume(self, handle: SessionHandle, prompt: str) -> None:
+    def resume(self, handle: SessionHandle, prompt: str, *, force: bool = False) -> None:
         """Perform a ``/clear`` + re-inject cycle for a handoff session.
 
-        This method is idempotent: if the session is NOT in ``PAUSED_HANDOFF``
-        state (i.e., ``detect()`` does not return ``PAUSED_HANDOFF``), it logs
-        a warning and returns without taking action.
+        Without ``force`` this is idempotent: if the session is NOT in
+        ``PAUSED_HANDOFF`` state it logs a warning and returns. With ``force``
+        (watcher acting on a ``handoff_continue`` marker) the detect gate is
+        skipped — the marker is authoritative.
 
         Sequence
         --------
-        1. Call ``detect()``.  If not ``PAUSED_HANDOFF``, warn and return.
-        2. Send ``/clear`` + Enter via ``send-keys`` (slash-command, safe with send-keys).
+        1. Unless ``force``, call ``detect()``; if not ``PAUSED_HANDOFF``, no-op.
+        2. Send ``/clear`` + Enter via ``send-keys`` (slash-command, safe).
         3. Wait for the ❯ prompt to reappear.
-        4. Call ``drive()`` with the new prompt.
-
-        Parameters
-        ----------
-        handle:
-            The ``SessionHandle`` for the session to resume.
-        prompt:
-            Prompt to inject after clearing.
+        4. If ``prompt`` is non-empty, ``drive()`` it (the resume command).
         """
-        current = self.detect(handle)
-        if current != SessionLifecycle.PAUSED_HANDOFF:
-            import logging
-            logging.getLogger(__name__).warning(
-                "resume() called on session %s in state %s (expected PAUSED_HANDOFF); no-op.",
-                handle.session_id,
-                current.value,
-            )
-            return
+        if not force:
+            current = self.detect(handle)
+            if current != SessionLifecycle.PAUSED_HANDOFF:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "resume() called on session %s in state %s (expected PAUSED_HANDOFF); no-op.",
+                    handle.session_id,
+                    current.value,
+                )
+                return
 
         # /clear is a slash-command; send-keys is safe here (single token, no metacharacters).
         self._tmux.run(["send-keys", "-t", handle.pane, "/clear", "Enter"])
         self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
-        self.drive(handle, prompt)
+        if prompt:
+            self.drive(handle, prompt)
 
     # ------------------------------------------------------------------
     # terminate()  [testable with stubbed TmuxRunner]

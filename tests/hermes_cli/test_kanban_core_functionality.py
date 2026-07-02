@@ -2815,6 +2815,82 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_default_spawn_uses_query_file_for_worker_prompt(kanban_home, monkeypatch):
+    """Dispatcher workers must not pass prompt text through argv.
+
+    Windows launchers and Start-Process wrappers are fragile when long or
+    slash-prefixed prompts travel as a single ``-q`` argument. The worker
+    prompt is tiny today, but this guards the safer contract: write it to a
+    UTF-8 file and pass only the file path in argv.
+    """
+    captured = {}
+
+    class FakeProc:
+        pid = 10001
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_STARTUP_CHECK_SECONDS", "0")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="prompt file worker", assignee="ops")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    assert "-q" not in cmd
+    assert "--query-file" in cmd
+    prompt_path = Path(cmd[cmd.index("--query-file") + 1])
+    assert prompt_path.exists()
+    assert prompt_path.read_text(encoding="utf-8") == f"work kanban task {tid}\n"
+
+
+def test_default_spawn_reports_immediate_worker_startup_failure(
+    kanban_home,
+    monkeypatch,
+):
+    """A child that dies on argparse/startup should fail the spawn tick now."""
+    captured = {}
+
+    class FakeProc:
+        pid = 10002
+
+        def poll(self):
+            return 2
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        log_f = kwargs["stdout"]
+        log_f.write(b"usage: hermes chat [options]\nunrecognized arguments: --oops\n")
+        log_f.flush()
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_STARTUP_CHECK_SECONDS", "0")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="bad launch", assignee="ops")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        with pytest.raises(RuntimeError, match="exited during startup"):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert "--query-file" in captured["cmd"]
+
+
 def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
     """A task runtime cap should raise the worker's terminal default.
 

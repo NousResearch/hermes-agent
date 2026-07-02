@@ -279,14 +279,14 @@ class _SlashWorker:
 
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_cli.subprocess_text import popen_text_kwargs
 
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            **popen_text_kwargs(bufsize=1),
             cwd=os.getcwd(),
             # slash_worker runs the Hermes agent → needs provider credentials.
             # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
@@ -2563,6 +2563,18 @@ def _persist_model_switch(result) -> None:
     # rewriting the whole `model:` block. A full-block rewrite via save_config()
     # destroys sibling keys the user set under `model:` — `model_slots`,
     # `model_fallback`, etc. — when switching models from the TUI (#48305).
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_policy import check_fixed_model_policy
+
+        _model_policy_check = check_fixed_model_policy(
+            load_config(), result.new_model, action="requested"
+        )
+    except Exception:
+        _model_policy_check = None
+    if _model_policy_check is not None and not _model_policy_check.allowed:
+        raise ValueError(_model_policy_check.message)
+
     from cli import save_config_value
 
     save_config_value("model.default", result.new_model)
@@ -9206,7 +9218,8 @@ def _(rid, params: dict) -> dict:
 
         try:
             res = subprocess.run(
-                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=120, stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
@@ -11233,6 +11246,8 @@ def _(rid, params: dict) -> dict:
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
@@ -11298,6 +11313,8 @@ def _(rid, params: dict) -> dict:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,
             )
@@ -13639,7 +13656,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

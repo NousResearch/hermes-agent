@@ -2,9 +2,11 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import fnmatch
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.path_translation import normalize_windows_host_path
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -130,7 +133,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = _expand_tilde(raw)
+    expanded = normalize_windows_host_path(_expand_tilde(raw))
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -308,7 +311,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(_expand_tilde(filepath))
+    p = Path(normalize_windows_host_path(_expand_tilde(filepath)))
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -1015,6 +1018,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        try:
+            from hermes_cli.usage_guard import read_request_denial_after_warning
+
+            usage_denial = read_request_denial_after_warning(
+                path=path,
+                offset=offset,
+                limit=limit,
+                task_id=task_id,
+            )
+        except Exception:
+            usage_denial = None
+        if usage_denial:
+            return json.dumps(usage_denial, ensure_ascii=False)
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1708,6 +1724,94 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+def _matches_file_glob(path: Path, file_glob: str | None) -> bool:
+    if not file_glob:
+        return True
+    text = str(path)
+    return (
+        fnmatch.fnmatch(path.name, file_glob)
+        or fnmatch.fnmatch(text, file_glob)
+        or fnmatch.fnmatch(text.replace("\\", "/"), file_glob)
+    )
+
+
+def _matches_file_pattern(path: Path, pattern: str) -> bool:
+    pat = str(pattern or "*").strip() or "*"
+    text = str(path)
+    return (
+        fnmatch.fnmatch(path.name, pat)
+        or fnmatch.fnmatch(text, pat)
+        or fnmatch.fnmatch(text.replace("\\", "/"), pat)
+    )
+
+
+def _exact_file_search_fallback(
+    *,
+    pattern: str,
+    target: str,
+    path: str,
+    file_glob: str | None,
+    limit: int,
+    offset: int,
+    output_mode: str,
+    task_id: str,
+) -> dict | None:
+    """Bounded one-file search for exact local paths."""
+
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except Exception:
+        return None
+    if not resolved.is_file():
+        return None
+
+    resolved_text = str(resolved)
+    if target == "files":
+        matched = _matches_file_pattern(resolved, pattern)
+        files = [resolved_text] if matched and offset == 0 and limit > 0 else []
+        result: dict[str, object] = {"total_count": 1 if matched else 0}
+        if files:
+            result["files"] = files
+        if matched and offset > 0:
+            result["truncated"] = True
+        return result
+
+    if target != "content":
+        return None
+    if not _matches_file_glob(resolved, file_glob):
+        return {"total_count": 0}
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return {"error": f"Invalid regex pattern for exact-file search: {exc}", "total_count": 0}
+
+    try:
+        lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {"error": f"Could not read exact file path: {exc}", "total_count": 0}
+
+    matches = [
+        {"path": resolved_text, "line": line_number, "content": line}
+        for line_number, line in enumerate(lines, start=1)
+        if regex.search(line)
+    ]
+    total_count = len(matches)
+    paged = matches[offset: offset + limit]
+    result = {"total_count": total_count}
+    if output_mode == "count":
+        if total_count:
+            result["counts"] = {resolved_text: total_count}
+    elif output_mode == "files_only":
+        if paged:
+            result["files"] = [resolved_text]
+    elif paged:
+        result["matches"] = paged
+    if offset + limit < total_count:
+        result["truncated"] = True
+    return result
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1715,6 +1819,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+        try:
+            from hermes_cli.usage_guard import search_request_denial_after_warning
+
+            usage_denial = search_request_denial_after_warning(
+                pattern=pattern,
+                target=target,
+                path=path,
+                file_glob=file_glob,
+                limit=limit,
+                task_id=task_id,
+            )
+        except Exception:
+            usage_denial = None
+        if usage_denial:
+            return json.dumps(usage_denial, ensure_ascii=False)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
@@ -1749,6 +1868,19 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "pattern": pattern,
                 "already_searched": count,
             }, ensure_ascii=False)
+
+        exact_result = _exact_file_search_fallback(
+            pattern=pattern,
+            target=target,
+            path=path,
+            file_glob=file_glob,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            task_id=task_id,
+        )
+        if exact_result is not None:
+            return json.dumps(exact_result, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(

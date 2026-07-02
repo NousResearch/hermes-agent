@@ -1133,7 +1133,17 @@ class GoalManager:
             return f"⊙ Goal (active, {meta}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
+            closure = ""
+            if s.paused_reason and "budget" in s.paused_reason.lower():
+                try:
+                    from hermes_cli.closure_artifacts import latest_closure_artifact
+
+                    artifact = latest_closure_artifact(session_id=self.session_id)
+                    if artifact and artifact.get("artifact_path"):
+                        closure = f" — closure artifact: {artifact['artifact_path']}"
+                except Exception:
+                    closure = ""
+            return f"⏸ Goal (paused, {meta}{extra}{closure}): {s.goal}"
         if s.status == "done":
             return f"✓ Goal done ({meta}): {s.goal}"
         return f"Goal ({s.status}, {meta}): {s.goal}"
@@ -1182,11 +1192,12 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
-    def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
+    def resume(self, *, reset_budget: bool = True, reason: str = "user-resumed") -> Optional[GoalState]:
         if not self._state:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        self._state.last_reason = (reason or "").strip() or "user-resumed"
         # Resuming starts fresh — clear any stale barrier.
         self._state.waiting_on_pid = None
         self._state.waiting_on_session = None
@@ -1198,10 +1209,11 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
-    def clear(self) -> None:
+    def clear(self, reason: str = "user-cleared") -> None:
         if self._state is None:
             return
         self._state.status = "cleared"
+        self._state.last_reason = (reason or "").strip() or "user-cleared"
         save_goal(self.session_id, self._state)
         self._state = None
 
@@ -1529,6 +1541,35 @@ class GoalManager:
         if state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+            try:
+                from hermes_cli.closure_artifacts import write_closure_artifact
+
+                remaining = list(state.subgoals or [])
+                if state.has_contract():
+                    contract_block = state.contract.render_block()
+                    if contract_block:
+                        remaining.append(contract_block)
+                if not remaining:
+                    remaining.append(f"Continue goal: {state.goal}")
+                write_closure_artifact(
+                    session_id=self.session_id,
+                    task_id="",
+                    status="goal_turn_budget_exhausted",
+                    last_completed_step=last_response,
+                    changed_files=[],
+                    tests_run=[],
+                    test_results={},
+                    failing_tests=[],
+                    remaining_checklist=remaining,
+                    exact_resume_prompt=(
+                        "Resume this /goal from the compact closure artifact only. "
+                        f"Goal: {state.goal}. Continue with narrow verification and "
+                        "avoid replaying old conversation history."
+                    ),
+                    active_session_lease_released=False,
+                )
+            except Exception:
+                logger.debug("GoalManager: failed to write budget closure artifact", exc_info=True)
             save_goal(self.session_id, state)
             return {
                 "status": "paused",

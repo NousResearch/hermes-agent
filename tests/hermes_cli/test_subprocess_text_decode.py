@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+
+
+POLISH_TEXT = "Za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144"
+
+
+def test_run_text_subprocess_replaces_non_utf8_output(tmp_path):
+    from hermes_cli.subprocess_text import run_text_subprocess
+
+    script = tmp_path / "emit_cp1250.py"
+    payload = POLISH_TEXT.encode("cp1250")
+    script.write_bytes(
+        b"import sys\n"
+        b"sys.stdout.buffer.write(b'out: ' + " + repr(payload).encode("ascii") + b")\n"
+        b"sys.stderr.buffer.write(b'err: ' + " + repr(payload).encode("ascii") + b")\n"
+    )
+
+    result = run_text_subprocess(
+        [sys.executable, str(script)],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "out:" in result.stdout
+    assert "err:" in result.stderr
+    assert "\ufffd" in result.stdout
+    assert "\ufffd" in result.stderr
+
+
+def test_popen_text_kwargs_force_lossy_utf8_text_mode():
+    from hermes_cli.subprocess_text import popen_text_kwargs
+
+    kwargs = popen_text_kwargs(bufsize=1)
+
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["bufsize"] == 1
+
+
+def test_tui_slash_worker_uses_lossy_utf8_popen(monkeypatch):
+    from tui_gateway import server
+
+    captured = {}
+
+    class Proc:
+        stdin = None
+        stdout = []
+        stderr = []
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        return Proc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    worker = server._SlashWorker("session-key", "gpt-5.5")
+    worker.close()
+
+    assert captured["text"] is True
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"

@@ -172,6 +172,18 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    if task.worker_pid is not None and task.status in {
+        "done",
+        "blocked",
+        "triage",
+        "todo",
+        "archived",
+    }:
+        d["worker_process_state"] = {
+            "state": "terminal_task_with_live_process",
+            "status": task.status,
+            "worker_pid": task.worker_pid,
+        }
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -1933,17 +1945,25 @@ def get_task_log(
         conn.close()
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    content = kanban_db.read_worker_log(task_id, tail_bytes=tail, board=board)
+    log_status = kanban_db.read_worker_log_status(task_id, tail_bytes=tail, board=board)
     log_path = kanban_db.worker_log_path(task_id, board=board)
     size = log_path.stat().st_size if log_path.exists() else 0
     return {
         "task_id": task_id,
         "path": str(log_path),
-        "exists": content is not None,
+        "exists": log_status is not None,
         "size_bytes": size,
-        "content": content or "",
+        "bytes_read": log_status.bytes_read if log_status is not None else 0,
+        "content": log_status.content if log_status is not None else "",
         # Truncated when the on-disk file was larger than the tail cap.
-        "truncated": bool(tail and size > tail),
+        "truncated": log_status.truncated if log_status is not None else False,
+        "encoding": log_status.encoding if log_status is not None else None,
+        "encoding_fallback": (
+            log_status.used_fallback if log_status is not None else False
+        ),
+        "encoding_had_replacement": (
+            log_status.had_replacement if log_status is not None else False
+        ),
     }
 
 

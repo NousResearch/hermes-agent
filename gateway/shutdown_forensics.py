@@ -368,7 +368,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
-                capture_output=True, text=True, timeout=2.0,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue

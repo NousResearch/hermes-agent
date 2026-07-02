@@ -21,6 +21,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
     if (!sessionId) {
       setBreakdown(null)
       setLoading(false)
+
       return
     }
 
@@ -51,6 +52,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
 
   const contextMax = breakdown?.context_max ?? currentUsage.context_max ?? 0
   const contextUsed = breakdown?.context_used ?? currentUsage.context_used ?? 0
+
   const contextPercent = Math.max(
     0,
     Math.min(100, Math.round(breakdown?.context_percent ?? currentUsage.context_percent ?? 0))
@@ -62,7 +64,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
         ...category,
         label: copy.categories[category.id as keyof typeof copy.categories] ?? category.label
       })),
-    [breakdown?.categories, copy.categories]
+    [breakdown?.categories, copy]
   )
 
   const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1

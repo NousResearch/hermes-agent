@@ -488,6 +488,8 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             return
         path.mkdir(parents=False, exist_ok=False)
         path.chmod(mode)
+        if not hasattr(os, "chown"):
+            return
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
         except PermissionError:
@@ -516,8 +518,13 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     # invocation context.
     control = supervise / "control"
     if not control.exists():
-        os.mkfifo(control, 0o660)
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(control, 0o660)
+        else:
+            control.touch()
         control.chmod(0o660)
+        if not hasattr(os, "chown"):
+            return
         try:
             os.chown(control, _HERMES_UID, _HERMES_GID)
         except PermissionError:

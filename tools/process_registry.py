@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -86,6 +87,222 @@ def format_uptime_short(seconds: int) -> str:
     hours, mins = divmod(mins, 60)
     return f"{hours}h {mins}m"
 
+
+MEDIA_COMMAND_NAMES = ("yt-dlp", "yt_dlp", "ffmpeg", "ffprobe")
+_MEDIA_OPTIONS_WITH_ARGS = {
+    "-i", "-o", "--output", "--paths", "--download-archive", "--cookies",
+    "--merge-output-format", "--audio-format", "--audio-quality", "-f", "--format",
+    "-map", "-metadata", "-c", "-codec", "-c:a", "-c:v", "-b:a", "-b:v",
+    "-vf", "-af", "-ss", "-to", "-t", "-threads", "-loglevel",
+}
+def _argv_from_command(command: Optional[str]) -> list[str]:
+    if not command:
+        return []
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        try:
+            return shlex.split(command, posix=False)
+        except ValueError:
+            return command.split()
+
+
+def _media_token_name(token: str) -> Optional[str]:
+    normalized = Path(str(token).strip('"\'')).name.lower().replace(".exe", "")
+    for name in MEDIA_COMMAND_NAMES:
+        if normalized == name or normalized.startswith(f"{name}."):
+            return name.replace("_", "-")
+    return None
+
+
+def _find_media_command(argv: list[str]) -> tuple[Optional[str], list[str]]:
+    for idx, token in enumerate(argv):
+        name = _media_token_name(token)
+        if name:
+            return name, argv[idx:]
+    # Fake/process-wrapped test commands often pass the desired executable as a
+    # later argv token (e.g. python -c 'sleep' yt-dlp -o file). Treat any token
+    # containing the marker as the command boundary, but only after exact-name
+    # matching failed.
+    for idx, token in enumerate(argv):
+        lower = str(token).lower()
+        for name in MEDIA_COMMAND_NAMES:
+            if name in lower:
+                nested = _argv_from_command(str(token))
+                if nested and nested != [token]:
+                    nested_name, nested_argv = _find_media_command(nested)
+                    if nested_name:
+                        return nested_name, nested_argv
+                return name.replace("_", "-"), argv[idx:]
+    return None, argv
+
+
+def _resolve_media_output_candidate(candidate: str, cwd: Optional[str]) -> Optional[Path]:
+    if not candidate or "%(" in candidate or candidate == "-":
+        return None
+    raw = candidate.strip('"\'')
+    path = Path(raw)
+    if not path.is_absolute() and cwd:
+        path = Path(cwd) / path
+    variants = [path, Path(str(path) + ".part")]
+    # yt-dlp may write foo.part when the final template is foo, and tests use
+    # this shape to model a stalled partial download.
+    for variant in variants:
+        if variant.exists():
+            return variant
+    return path
+
+
+def _infer_media_output_path(argv: list[str], command_name: Optional[str], cwd: Optional[str]) -> Optional[Path]:
+    if not argv:
+        return None
+    if command_name == "yt-dlp":
+        for idx, token in enumerate(argv):
+            if token in {"-o", "--output"} and idx + 1 < len(argv):
+                return _resolve_media_output_candidate(argv[idx + 1], cwd)
+            if token.startswith("--output="):
+                return _resolve_media_output_candidate(token.split("=", 1)[1], cwd)
+        return None
+    if command_name in {"ffmpeg", "ffprobe"}:
+        positional: list[str] = []
+        idx = 1 if _media_token_name(argv[0]) else 0
+        while idx < len(argv):
+            token = argv[idx]
+            if token == "--":
+                positional.extend(argv[idx + 1:])
+                break
+            if token.startswith("-"):
+                if "=" not in token and token in _MEDIA_OPTIONS_WITH_ARGS and idx + 1 < len(argv):
+                    idx += 2
+                    continue
+                idx += 1
+                continue
+            positional.append(token)
+            idx += 1
+        if positional:
+            return _resolve_media_output_candidate(positional[-1], cwd)
+    return None
+
+
+def _file_snapshot(path: Optional[Path], now: int, idle_threshold_seconds: int) -> dict[str, Any]:
+    if path is None:
+        return {
+            "output_path": None,
+            "output_exists": False,
+            "output_size_bytes": None,
+            "output_mtime": None,
+            "output_mtime_age_seconds": None,
+            "is_idle": False,
+        }
+    info: dict[str, Any] = {"output_path": str(path), "output_exists": path.exists()}
+    if not path.exists():
+        info.update({
+            "output_size_bytes": None,
+            "output_mtime": None,
+            "output_mtime_age_seconds": None,
+            "is_idle": False,
+        })
+        return info
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        info.update({"output_error": str(exc), "is_idle": False})
+        return info
+    age = max(0, now - int(stat.st_mtime))
+    info.update({
+        "output_size_bytes": int(stat.st_size),
+        "output_mtime": int(stat.st_mtime),
+        "output_mtime_age_seconds": age,
+        "is_idle": age >= idle_threshold_seconds,
+    })
+    return info
+
+
+def external_media_process_evidence(
+    pid: Optional[int],
+    *,
+    command: Optional[str] = None,
+    cwd: Optional[str] = None,
+    now: Optional[int] = None,
+    idle_threshold_seconds: int = 300,
+) -> list[dict[str, Any]]:
+    """Return read-only evidence for yt-dlp/ffmpeg descendants under pid.
+
+    This deliberately does not terminate or signal anything. Terminal-owned
+    media subprocesses remain under operator/worker control; callers only get
+    enough evidence to decide whether a lane is idle, still productive, or needs
+    a narrow prompt/action.
+    """
+    if not pid:
+        return []
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return []
+    now_i = int(time.time() if now is None else now)
+    try:
+        root = psutil.Process(int(pid))
+        procs = [root] + root.children(recursive=True)
+    except Exception:
+        return []
+    command_argv = _argv_from_command(command)
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for proc in procs:
+        try:
+            proc_pid = int(proc.pid)
+            if proc_pid in seen:
+                continue
+            seen.add(proc_pid)
+            try:
+                argv = list(proc.cmdline())
+            except Exception:
+                argv = []
+            name, media_argv = _find_media_command(argv)
+            # When the shell wrapper owns the PID, the stored terminal command
+            # can still tell us this is a media lane. Attach that fallback only
+            # to the root process so random shell descendants aren't mislabeled.
+            if name is None and proc_pid == int(pid) and command_argv:
+                name, media_argv = _find_media_command(command_argv)
+            if name is None:
+                continue
+            children = []
+            try:
+                children = [int(child.pid) for child in proc.children(recursive=True)]
+            except Exception:
+                children = []
+            try:
+                cpu_percent = proc.cpu_percent(interval=None)
+            except Exception:
+                cpu_percent = None
+            try:
+                status = proc.status()
+            except Exception:
+                status = None
+            try:
+                create_time = float(proc.create_time())
+            except Exception:
+                create_time = None
+            output_path = _infer_media_output_path(media_argv, name, cwd)
+            file_info = _file_snapshot(output_path, now_i, idle_threshold_seconds)
+            out.append({
+                "command_name": name,
+                "pid": proc_pid,
+                "child_pids": children,
+                "cmdline": argv or command_argv,
+                "output_path": file_info["output_path"],
+                "output_exists": file_info["output_exists"],
+                "output_size_bytes": file_info.get("output_size_bytes"),
+                "output_mtime": file_info.get("output_mtime"),
+                "output_mtime_age_seconds": file_info.get("output_mtime_age_seconds"),
+                "elapsed_seconds": None if create_time is None else max(0, now_i - int(create_time)),
+                "cpu_percent": cpu_percent,
+                "status": status,
+                "is_idle": bool(file_info.get("is_idle")) and (cpu_percent is None or float(cpu_percent) <= 5.0),
+            })
+        except Exception:
+            continue
+    return out
 
 @dataclass
 class ProcessSession:
@@ -1272,6 +1489,13 @@ class ProcessRegistry:
             "uptime_seconds": int(time.time() - session.started_at),
             "output_preview": output_preview,
         }
+        media = external_media_process_evidence(
+            session.pid,
+            command=session.command,
+            cwd=session.cwd,
+        ) if session.pid_scope == "host" else []
+        if media:
+            result["external_media_processes"] = media
         if session.exited:
             result["exit_code"] = session.exit_code
             result["completion_reason"] = session.completion_reason

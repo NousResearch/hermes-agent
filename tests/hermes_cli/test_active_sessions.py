@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import subprocess
@@ -105,6 +106,110 @@ def test_active_session_tracks_lease_even_when_limit_disabled(tmp_path, monkeypa
     assert active_sessions.active_session_registry_snapshot() == []
 
 
+def test_release_active_sessions_for_current_process_skips_other_pid(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: True)
+
+    current_start = active_sessions._process_start_time(os.getpid())
+    now = time.time()
+    active_sessions._write_entries(
+        active_sessions._state_path(),
+        [
+            {
+                "lease_id": "ours",
+                "session_id": "worker-session",
+                "surface": "kanban-worker",
+                "pid": os.getpid(),
+                "process_start_time": current_start,
+                "updated_at": now,
+            },
+            {
+                "lease_id": "other-pid",
+                "session_id": "worker-session",
+                "surface": "kanban-worker",
+                "pid": os.getpid() + 100_000,
+                "process_start_time": current_start,
+                "updated_at": now,
+            },
+            {
+                "lease_id": "other-session",
+                "session_id": "other-session",
+                "surface": "kanban-worker",
+                "pid": os.getpid(),
+                "process_start_time": current_start,
+                "updated_at": now,
+            },
+        ],
+    )
+
+    released = active_sessions.release_active_sessions_for_current_process(
+        session_id="worker-session",
+        surface="kanban-worker",
+    )
+
+    assert released == 1
+    assert [
+        entry["lease_id"]
+        for entry in active_sessions.active_session_registry_snapshot()
+    ] == ["other-pid", "other-session"]
+
+
+def test_active_session_lease_metadata_has_value_free_owner_summary(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    workspace = tmp_path / "secret workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(workspace)
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="agent:main:telegram:dm:secret-chat",
+        surface="gateway:telegram",
+        config={},
+        metadata={
+            "chat_id": "secret-chat",
+            "user_id": "private-user",
+            "current_tool": "terminal",
+        },
+    )
+
+    assert message is None
+    assert lease is not None
+
+    [entry] = active_sessions.active_session_registry_snapshot()
+    assert entry["session_id"] == "agent:main:telegram:dm:secret-chat"
+    assert entry["session_key"] == "agent:main:telegram:dm:secret-chat"
+    assert entry["owner_kind"] == "gateway"
+    assert entry["created_at"] == entry["started_at"]
+    assert entry["updated_at"] == entry["started_at"]
+    assert isinstance(entry["cwd_fingerprint"], str)
+    assert isinstance(entry["command_line_fingerprint"], str)
+    assert len(entry["cwd_fingerprint"]) == 16
+    assert len(entry["command_line_fingerprint"]) == 16
+    assert entry["owner_summary"] == {
+        "pid": os.getpid(),
+        "session_id_fingerprint": entry["owner_summary"]["session_id_fingerprint"],
+        "session_key_fingerprint": entry["owner_summary"]["session_key_fingerprint"],
+        "surface": "gateway:telegram",
+        "owner_kind": "gateway",
+        "cwd_fingerprint": entry["cwd_fingerprint"],
+        "command_line_fingerprint": entry["command_line_fingerprint"],
+    }
+    assert len(entry["owner_summary"]["session_id_fingerprint"]) == 16
+    assert len(entry["owner_summary"]["session_key_fingerprint"]) == 16
+    assert "secret workspace" not in str(entry["owner_summary"])
+    assert "secret-chat" not in str(entry["owner_summary"])
+    assert "private-user" not in str(entry["owner_summary"])
+
+    lease.release()
+
+
 def test_update_active_session_metadata_keeps_runtime_status_value_free(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -151,6 +256,43 @@ def test_update_active_session_metadata_keeps_runtime_status_value_free(tmp_path
 
     lease.release()
     assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_update_active_session_metadata_keeps_model_policy_status_value_free(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="policy-status",
+        surface="cli",
+        config={},
+    )
+
+    assert message is None
+    assert lease is not None
+
+    updated = active_sessions.update_active_session_metadata(
+        session_id="policy-status",
+        metadata={
+            "model_policy_violation": True,
+            "required_model": "gpt-5.5",
+            "model_policy_recommended_action": "interrupt_and_restore_fixed_model",
+            "provider_payload": "do not persist provider payload",
+            "raw_prompt": "do not persist prompt text",
+        },
+    )
+
+    assert updated == 1
+    [entry] = active_sessions.active_session_registry_snapshot()
+    assert entry["metadata"] == {
+        "model_policy_violation": True,
+        "required_model": "gpt-5.5",
+        "model_policy_recommended_action": "interrupt_and_restore_fixed_model",
+    }
+    assert "provider_payload" not in str(entry)
+    assert "prompt text" not in str(entry)
+
+    lease.release()
 
 
 def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
@@ -202,6 +344,9 @@ def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch)
 
     assert message is None
     assert lease is not None
+    [before] = active_sessions.active_session_registry_snapshot()
+    previous_owner_summary = before["owner_summary"]
+
     assert active_sessions.transfer_active_session(
         lease,
         session_id="session-new",
@@ -212,7 +357,11 @@ def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch)
     assert lease.session_id == "session-new"
     assert len(snapshot) == 1
     assert snapshot[0]["session_id"] == "session-new"
+    assert snapshot[0]["session_key"] == "session-new"
     assert snapshot[0]["metadata"] == {"live_session_id": "ui-1"}
+    assert snapshot[0]["previous_owner_summary"] == previous_owner_summary
+    assert snapshot[0]["owner_summary"]["session_id"] == "session-new"
+    assert snapshot[0]["owner_summary"]["session_key"] == "session-new"
     lease.release()
 
 
@@ -632,3 +781,148 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def test_windows_directory_lock_reclaims_stale_owner_and_writes_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions.os, "name", "nt", raising=False)
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: False)
+
+    lock_path = active_sessions._lock_path()
+    lock_dir = lock_path.with_name(f"{lock_path.name}.d")
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "owner.json").write_text(
+        json.dumps(
+            {
+                "pid": 99999999,
+                "process_start_time": 1.0,
+                "session_id": "stale-session",
+                "created_at": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with active_sessions._FileLock(
+        lock_path,
+        owner_metadata={
+            "session_id": "new-session",
+            "surface": "cli",
+            "owner_kind": "test",
+        },
+    ):
+        owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
+        assert owner["pid"] == os.getpid()
+        assert owner["session_id"] == "new-session"
+        assert owner["surface"] == "cli"
+        assert owner["owner_kind"] == "test"
+        assert isinstance(owner["created_at"], float)
+        assert "process_start_time" in owner
+
+    assert not lock_dir.exists()
+
+
+def test_live_windows_directory_lock_owner_returns_safe_busy_message(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions.os, "name", "nt", raising=False)
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: True)
+    monkeypatch.setattr(active_sessions.time, "sleep", lambda _seconds: None)
+
+    time_values = iter([1.0, 100.0, 131.0])
+    monkeypatch.setattr(
+        active_sessions.time,
+        "time",
+        lambda: next(time_values, 131.0),
+    )
+
+    lock_path = active_sessions._lock_path()
+    lock_dir = lock_path.with_name(f"{lock_path.name}.d")
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "owner.json").write_text(
+        json.dumps(
+            {
+                "pid": 12345,
+                "process_start_time": 456.0,
+                "session_id": "live-session",
+                "surface": "tui",
+                "owner_kind": "try_acquire",
+                "cwd": "C:/Users/Admin/secret folder",
+                "command_line_fingerprint": "cmd:fingerprint",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-session",
+        surface="cli",
+        config={"max_concurrent_sessions": 5},
+    )
+
+    assert lease is None
+    assert message == (
+        "Hermes active session registry is busy; owner "
+        "pid=12345 session_id=live-session surface=tui owner_kind=try_acquire "
+        "command_line_fingerprint=cmd:fingerprint. "
+        "Try again shortly or run `hermes runtime active-sessions status`."
+    )
+    assert not active_sessions._state_path().exists()
+    assert "secret folder" not in message
+
+
+def test_repeated_active_session_lock_busy_logs_one_deduped_alert(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        active_sessions,
+        "_LOCK_BUSY_ALERT_STATE",
+        {"window_start": 0.0, "count": 0, "alerted": False},
+        raising=False,
+    )
+
+    owner = {
+        "pid": 12345,
+        "session_id": "live-session",
+        "surface": "tui",
+        "owner_kind": "try_acquire",
+        "cwd": "C:/Users/Admin/secret folder",
+    }
+
+    def raise_busy(_self):
+        raise active_sessions.ActiveSessionLockBusyError(owner)
+
+    monkeypatch.setattr(active_sessions._FileLock, "__enter__", raise_busy)
+    caplog.set_level(logging.WARNING, logger="hermes_cli.active_sessions")
+
+    messages = []
+    for _attempt in range(4):
+        lease, message = active_sessions.try_acquire_active_session(
+            session_id="new-session",
+            surface="cli",
+            config={"max_concurrent_sessions": 5},
+        )
+        assert lease is None
+        messages.append(message)
+
+    assert all("live-session" in message for message in messages)
+    alerts = [
+        record.message
+        for record in caplog.records
+        if "Repeated active session registry lock timeouts" in record.message
+    ]
+    assert len(alerts) == 1
+    assert "count=3" in alerts[0]
+    assert "live-session" in alerts[0]
+    assert "secret folder" not in alerts[0]

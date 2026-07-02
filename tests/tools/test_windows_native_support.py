@@ -50,9 +50,10 @@ class TestConfigureWindowsStdio:
         yield
         sys.modules.pop("hermes_cli.stdio", None)
 
-    def test_no_op_on_posix(self):
+    def test_no_op_on_posix(self, monkeypatch):
         from hermes_cli import stdio
 
+        monkeypatch.setattr(stdio, "is_windows", lambda: False)
         assert stdio.is_windows() is False
         result = stdio.configure_windows_stdio()
         assert result is False
@@ -287,8 +288,12 @@ class TestSigkillFallback:
 
     def test_getattr_fallback_prefers_sigkill_when_present(self):
         """On POSIX the fallback is a no-op: real SIGKILL wins."""
-        result = getattr(signal, "SIGKILL", signal.SIGTERM)
-        assert result == signal.SIGKILL
+        fake_signal = MagicMock()
+        fake_signal.SIGKILL = 9
+        fake_signal.SIGTERM = 15
+
+        result = getattr(fake_signal, "SIGKILL", fake_signal.SIGTERM)
+        assert result == 9
 
     @pytest.mark.parametrize(
         "module_path, line_pattern",
@@ -459,6 +464,45 @@ class TestReadmeNoLongerSaysWindowsUnsupported:
         assert "install.ps1" in source, (
             "README.md must point at scripts/install.ps1 for Windows users"
         )
+
+
+class TestWindowsQueryFileLaunchRunbook:
+    """Long noninteractive prompts on Windows should use argv arrays."""
+
+    def test_query_file_runbook_uses_safe_powershell_patterns(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (
+            root / "docs" / "kanban" / "windows-query-file-launch.md"
+        ).read_text(encoding="utf-8")
+
+        assert "--query-file" in source
+        assert "--stdin-query" in source
+        assert '--slash "/goal resume"' in source
+        assert "& $exe @moduleArgs" in source
+        assert "Start-Process `" in source
+        assert "-FilePath $exe" in source
+        assert "-ArgumentList $moduleArgs" in source
+        assert "unrecognized arguments" in source
+
+
+class TestWindowsTestRunnerPaths:
+    """Focused test runners should work from this Windows checkout."""
+
+    def test_bash_runner_detects_windows_venv_scripts_python(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
+
+        assert "Scripts/python.exe" in source
+        assert "bin/python" in source
+
+    def test_powershell_runner_uses_venv_python_and_parallel_runner(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "run_tests.ps1").read_text(encoding="utf-8")
+
+        assert "venv\\Scripts\\python.exe" in source
+        assert "run_tests_parallel.py" in source
+        assert "PYTHONHASHSEED" in source
+        assert "@PytestArgs" in source
 
 
 # ---------------------------------------------------------------------------

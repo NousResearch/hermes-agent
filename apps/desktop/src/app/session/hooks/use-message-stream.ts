@@ -2,8 +2,8 @@ import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
-import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,

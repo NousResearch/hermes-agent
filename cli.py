@@ -3318,12 +3318,53 @@ def _looks_like_slash_command(text: str) -> bool:
     the two so that pasted paths are sent to the agent instead of
     triggering "Unknown command".
     """
-    if not text or not text.startswith("/"):
-        return False
-    first_word = text.split()[0]
-    # After stripping the leading /, a command name has no slashes.
-    # A path like /Users/foo/bar.md always does.
-    return "/" not in first_word[1:]
+    from hermes_cli.slash_dispatch import looks_like_slash_command
+
+    return looks_like_slash_command(text)
+
+
+def _dispatch_noninteractive_slash_query(
+    cli,
+    query: str | None,
+    *,
+    has_images: bool = False,
+    explicit_slash: bool = False,
+) -> tuple[bool, int]:
+    """Dispatch safe slash commands in single-query mode before agent startup."""
+    if not isinstance(query, str):
+        if explicit_slash:
+            print(
+                "Expected a slash command beginning with '/'. Use --query for ordinary text.",
+                file=sys.stderr,
+            )
+            return True, 2
+        return False, 0
+
+    from hermes_cli.slash_dispatch import (
+        classify_slash_text,
+        is_noninteractive_safe_slash,
+        noninteractive_slash_error_message,
+    )
+
+    info = classify_slash_text(query)
+    if not info.looks_like_command:
+        if explicit_slash:
+            print(noninteractive_slash_error_message(info), file=sys.stderr)
+            return True, 2
+        return False, 0
+
+    if has_images:
+        if explicit_slash:
+            print("--slash cannot be combined with --image.", file=sys.stderr)
+            return True, 2
+        return False, 0
+
+    if not is_noninteractive_safe_slash(info):
+        print(noninteractive_slash_error_message(info), file=sys.stderr)
+        return True, 2
+
+    cli.process_command(query)
+    return True, 0
 
 
 # ============================================================================
@@ -3931,7 +3972,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._active_session_lease is not None:
             return True
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import (
+                active_session_acquire_error_message,
+                try_acquire_active_session,
+            )
 
             lease, message = try_acquire_active_session(
                 session_id=self.session_id,
@@ -3940,7 +3984,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
-            return True
+            try:
+                message = active_session_acquire_error_message()
+            except Exception:
+                message = (
+                    "Hermes could not claim an active session slot. "
+                    "Try again shortly or run `hermes runtime active-sessions status`."
+                )
+            if stderr:
+                print(message, file=sys.stderr)
+            else:
+                self._console_print(f"[bold red]{message}[/]")
+            return False
         if message:
             if stderr:
                 print(message, file=sys.stderr)
@@ -8365,6 +8420,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "closure":
+            self._handle_closure_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -15214,6 +15271,9 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 def main(
     query: str = None,
     q: str = None,
+    slash: str = None,
+    query_file: str = None,
+    stdin_query: bool = False,
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
@@ -15242,6 +15302,9 @@ def main(
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
+        slash: Slash command to dispatch locally without starting an agent turn
+        query_file: UTF-8 file containing a single query
+        stdin_query: Read a single query from stdin
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
@@ -15320,8 +15383,22 @@ def main(
     else:
         wt_info = None
     
-    # Handle query shorthand
-    query = query or q
+    # Handle query shorthand, file/stdin input, and explicit slash dispatch.
+    explicit_slash = slash is not None
+    try:
+        from hermes_cli.query_input import resolve_query_input
+
+        query, query_source = resolve_query_input(
+            query=query,
+            q=q,
+            slash=slash,
+            query_file=query_file,
+            stdin_query=stdin_query,
+        )
+    except ValueError:
+        raise
+    if image and query_source in {"query_file", "stdin_query", "slash"}:
+        raise ValueError("--image can only be combined with --query/-q")
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -15484,7 +15561,18 @@ def main(
         pass  # signal handler may fail in restricted environments
     
     # Handle single query mode
-    if query or image:
+    if query is not None or image:
+        handled_slash, slash_exit_code = _dispatch_noninteractive_slash_query(
+            cli,
+            query,
+            has_images=bool(image),
+            explicit_slash=explicit_slash,
+        )
+        if handled_slash:
+            _finalize_single_query(cli)
+            if slash_exit_code:
+                sys.exit(slash_exit_code)
+            return
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

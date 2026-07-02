@@ -257,6 +257,20 @@ def build_top_level_parser():
         "-q", "--query", help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
+        "--query-file",
+        help="Read a single non-interactive query from a UTF-8 text file",
+    )
+    chat_parser.add_argument(
+        "--stdin-query",
+        action="store_true",
+        default=False,
+        help="Read a single non-interactive query from stdin",
+    )
+    chat_parser.add_argument(
+        "--slash",
+        help="Dispatch a slash command non-interactively without starting an agent turn",
+    )
+    chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
     _inherited_flag(

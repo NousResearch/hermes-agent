@@ -2053,6 +2053,19 @@ def terminal_tool(
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
+        if not force:
+            try:
+                from hermes_cli.usage_guard import terminal_command_denial_after_warning
+
+                usage_denial = terminal_command_denial_after_warning(
+                    command,
+                    task_id=effective_task_id,
+                    session_id=session_id,
+                )
+            except Exception:
+                usage_denial = None
+            if usage_denial:
+                return json.dumps(usage_denial, ensure_ascii=False)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2693,6 +2706,18 @@ def terminal_tool(
             # both modes. See issue #43025.
             from agent.redact import redact_terminal_output
             output = redact_terminal_output(output.strip(), command) if output else ""
+            try:
+                from hermes_cli.usage_guard import compact_terminal_output_after_warning
+
+                output = compact_terminal_output_after_warning(
+                    output,
+                    exit_code=returncode,
+                    task_id=effective_task_id,
+                    session_id=session_id,
+                    command=command,
+                )
+            except Exception:
+                pass
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

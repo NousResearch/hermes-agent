@@ -6,6 +6,7 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 """
 
 import json
+import os
 import stat
 import time
 from pathlib import Path
@@ -142,8 +143,9 @@ def test_save_qwen_cli_tokens_permissions(qwen_env):
     mode = saved_path.stat().st_mode
     assert mode & stat.S_IRUSR  # owner read
     assert mode & stat.S_IWUSR  # owner write
-    assert not (mode & stat.S_IRGRP)  # no group read
-    assert not (mode & stat.S_IROTH)  # no other read
+    if os.name != "nt":
+        assert not (mode & stat.S_IRGRP)  # no group read
+        assert not (mode & stat.S_IROTH)  # no other read
 
 
 # ---------------------------------------------------------------------------

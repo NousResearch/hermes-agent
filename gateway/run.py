@@ -2653,6 +2653,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
+        self._active_session_claim_backoff: Dict[str, tuple[float, str]] = {}
+        self._active_session_claim_backoff_seconds = 2.0
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -4577,11 +4579,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         local_limit_message = self._active_session_limit_message(session_key)
         if local_limit_message is not None:
             return None, local_limit_message
+        now = time.time()
+        backoff = getattr(self, "_active_session_claim_backoff", None)
+        if backoff is None:
+            backoff = {}
+            self._active_session_claim_backoff = backoff
+        cached = backoff.get(session_key)
+        if cached is not None:
+            retry_at, cached_message = cached
+            if retry_at > now:
+                return None, cached_message
+            backoff.pop(session_key, None)
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import (
+                active_session_acquire_error_message,
+                try_acquire_active_session,
+            )
 
             platform = source.platform.value if source and source.platform else "gateway"
-            return try_acquire_active_session(
+            lease, message = try_acquire_active_session(
                 session_id=session_key,
                 surface=f"gateway:{platform}",
                 config=getattr(self, "config", None),
@@ -4591,9 +4607,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "user_id": getattr(source, "user_id", "") or "",
                 },
             )
+            if message is None:
+                backoff.pop(session_key, None)
+            elif self._is_active_session_claim_backoff_message(message):
+                self._remember_active_session_claim_backoff(session_key, message)
+            return lease, message
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
-            return None, None
+            try:
+                message = active_session_acquire_error_message()
+            except Exception:
+                message = (
+                    "Hermes could not claim an active session slot. "
+                    "Try again shortly or run `hermes runtime active-sessions status`."
+                )
+            self._remember_active_session_claim_backoff(session_key, message)
+            return None, message
+
+    @staticmethod
+    def _is_active_session_claim_backoff_message(message: str) -> bool:
+        return message.startswith(
+            (
+                "Hermes active session registry is busy",
+                "Hermes could not claim an active session slot",
+            )
+        )
+
+    def _remember_active_session_claim_backoff(
+        self,
+        session_key: str,
+        message: str,
+    ) -> None:
+        seconds = float(
+            getattr(self, "_active_session_claim_backoff_seconds", 2.0) or 0.0
+        )
+        if seconds <= 0.0:
+            return
+        backoff = getattr(self, "_active_session_claim_backoff", None)
+        if backoff is None:
+            backoff = {}
+            self._active_session_claim_backoff = backoff
+        backoff[session_key] = (time.time() + seconds, message)
 
     @staticmethod
     def _agent_has_active_subagents(running_agent: Any) -> bool:

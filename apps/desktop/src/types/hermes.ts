@@ -370,6 +370,15 @@ export interface SessionInfo {
   last_tool_runtime_event?: null | unknown
   last_activity_age_seconds?: null | number
   queued_steer_count?: null | number
+  model_policy_recommended_action?: null | string
+  model_policy_violation?: boolean
+  model_request_high_context?: boolean
+  model_request_queued_steer_count?: null | number
+  model_request_status?: null | string
+  model_request_steer_queued?: boolean
+  required_model?: null | string
+  steer_boundary?: null | string
+  terminal_recovery_needed?: boolean
   compression_tip_session_id?: null | string
   status_evidence_source?: string[]
 }
@@ -708,6 +717,15 @@ export interface SessionSearchResult {
   last_tool_runtime_event?: null | unknown
   last_activity_age_seconds?: null | number
   queued_steer_count?: null | number
+  model_policy_recommended_action?: null | string
+  model_policy_violation?: boolean
+  model_request_high_context?: boolean
+  model_request_queued_steer_count?: null | number
+  model_request_status?: null | string
+  model_request_steer_queued?: boolean
+  required_model?: null | string
+  steer_boundary?: null | string
+  terminal_recovery_needed?: boolean
   compression_tip_session_id?: null | string
   status_evidence_source?: string[]
 }

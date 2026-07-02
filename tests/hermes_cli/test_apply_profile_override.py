@@ -17,6 +17,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def _patch_profile_roots(monkeypatch, hermes_root: Path) -> None:
+    import hermes_constants
+    import hermes_cli.profiles as profiles_mod
+
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: hermes_root)
+    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: hermes_root)
+    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: hermes_root / "profiles")
+
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
@@ -29,6 +37,7 @@ def _run_apply_profile_override(
     """
     hermes_root = tmp_path / ".hermes"
     hermes_root.mkdir(parents=True, exist_ok=True)
+    _patch_profile_roots(monkeypatch, hermes_root)
 
     if active_profile is not None:
         (hermes_root / "active_profile").write_text(active_profile)
@@ -97,6 +106,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         hermes_root = tmp_path / ".hermes"
         profile_dir = hermes_root / "profiles" / "coder"
         profile_dir.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, hermes_root)
 
         (hermes_root / "active_profile").write_text("other")
 
@@ -129,9 +139,11 @@ class TestApplyProfileOverrideHermesHomeGuard:
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
         root_home = tmp_path / "root"
         user_home = tmp_path / "home" / "hermes"
+        root_hermes = root_home / ".hermes"
         profile_dir = user_home / ".hermes" / "profiles" / "elias"
         profile_dir.mkdir(parents=True, exist_ok=True)
-        (root_home / ".hermes").mkdir(parents=True, exist_ok=True)
+        root_hermes.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, root_hermes)
 
         monkeypatch.setattr(Path, "home", lambda: root_home)
         monkeypatch.setenv("SUDO_USER", "hermes")
@@ -139,9 +151,11 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", "gateway", "install", "--system"])
 
-        import pwd
-
-        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
+        monkeypatch.setitem(
+            sys.modules,
+            "pwd",
+            SimpleNamespace(getpwnam=lambda name: SimpleNamespace(pw_dir=str(user_home))),
+        )
 
         from hermes_cli.main import _apply_profile_override
         _apply_profile_override()
@@ -153,6 +167,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         """active_profile=default must not redirect HERMES_HOME."""
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, hermes_root)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -174,6 +189,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         """
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, hermes_root)
         argv = [
             "hermes",
             "mcp",
@@ -267,6 +283,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         """
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, hermes_root)
         (hermes_root / "active_profile").write_text("briefer")
         (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
 
@@ -307,6 +324,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         active_profile fallback, never an explicit flag)."""
         hermes_root = tmp_path / ".hermes"
         hermes_root.mkdir(parents=True, exist_ok=True)
+        _patch_profile_roots(monkeypatch, hermes_root)
         (hermes_root / "active_profile").write_text("briefer")
         (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
         (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
@@ -322,4 +340,3 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
-

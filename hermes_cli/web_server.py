@@ -2276,6 +2276,45 @@ async def get_status(profile: Optional[str] = None):
             status_scope.__exit__(*sys.exc_info())
 
 
+@app.get("/api/control-plane/status")
+async def get_control_plane_status(
+    session_id: Optional[str] = None,
+    ws_probe: bool = False,
+):
+    from hermes_cli.control_plane import (
+        build_control_plane_status,
+        count_close_wait_sockets,
+        probe_websocket_url,
+    )
+
+    loop = asyncio.get_running_loop()
+    close_wait_count = await loop.run_in_executor(None, count_close_wait_sockets)
+    try:
+        from tui_gateway.ws import get_ws_transport_health
+
+        ws_health = get_ws_transport_health(close_wait_count=close_wait_count)
+    except Exception:
+        ws_health = None
+
+    probe_result = None
+    if ws_probe:
+        ws_url = _build_gateway_ws_url()
+        if ws_url:
+            probe_result = await loop.run_in_executor(
+                None,
+                lambda: probe_websocket_url(ws_url),
+            )
+        else:
+            probe_result = {"ok": None, "status": "not_configured"}
+
+    return build_control_plane_status(
+        session_id=session_id,
+        ws_probe=probe_result,
+        ws_health=ws_health,
+        close_wait_count=close_wait_count,
+    )
+
+
 _WINDOWS_11_MIN_BUILD = 22000
 
 
@@ -3379,6 +3418,36 @@ def _safe_count(value: Any) -> Optional[int]:
 
 
 _RUNNING_TOOL_ACTIVITY_KINDS = {"concurrent_tools_running", "tool_running"}
+_ACTIVE_OWNER_SUMMARY_STRING_KEYS = {
+    "session_id",
+    "session_id_fingerprint",
+    "session_key",
+    "session_key_fingerprint",
+    "surface",
+    "owner_kind",
+    "cwd_fingerprint",
+    "command_line_fingerprint",
+}
+
+
+def _registry_active_owner_summary(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+    summary = entry.get("owner_summary")
+    if not isinstance(summary, dict):
+        return None
+    safe: Dict[str, Any] = {}
+    pid = _safe_count(summary.get("pid"))
+    if pid and pid > 0:
+        safe["pid"] = pid
+    for key in _ACTIVE_OWNER_SUMMARY_STRING_KEYS:
+        value = summary.get(key)
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", value):
+            safe[key] = value
+    return safe or None
 
 
 def _registry_last_tool_runtime_event(entry: Any) -> Optional[str]:
@@ -3399,6 +3468,133 @@ def _registry_last_tool_runtime_event(entry: Any) -> Optional[str]:
         if current_tool and not activity_kind:
             return "tool_running"
     return None
+
+
+_MODEL_REQUEST_STATUS_STRING_KEYS = {
+    "model_request_id_fingerprint",
+    "model_request_model",
+    "model_request_provider",
+    "model_request_status",
+    "model_request_status_message",
+}
+_MODEL_REQUEST_STATUS_NUMBER_KEYS = {
+    "model_request_api_call_count",
+    "model_request_estimated_context_tokens",
+    "model_request_last_byte_at",
+    "model_request_last_event_at",
+    "model_request_queued_steer_count",
+    "model_request_seconds_since_event",
+    "model_request_started_at",
+}
+_MODEL_REQUEST_STATUS_BOOL_KEYS = {
+    "model_request_high_context",
+    "model_request_steer_queued",
+}
+_SAFE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
+_MODEL_POLICY_RECOMMENDED_ACTION = "interrupt_and_restore_fixed_model"
+
+
+def _safe_model_id_for_policy(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and _SAFE_MODEL_ID_RE.fullmatch(text):
+        return text
+    return ""
+
+
+def _model_policy_status_fields(*candidate_models: Any) -> Dict[str, Any]:
+    try:
+        from hermes_cli.model_policy import (
+            check_fixed_model_policy,
+            fixed_model_from_config,
+        )
+    except Exception:
+        return {}
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+    config = config if isinstance(config, dict) else {}
+    required = _safe_model_id_for_policy(fixed_model_from_config(config))
+    if not required:
+        return {}
+    for candidate in candidate_models:
+        safe_candidate = _safe_model_id_for_policy(candidate)
+        if not safe_candidate:
+            continue
+        check = check_fixed_model_policy(config, safe_candidate, action="reported")
+        if not check.allowed:
+            return {
+                "model_policy_violation": True,
+                "required_model": required,
+                "model_policy_recommended_action": _MODEL_POLICY_RECOMMENDED_ACTION,
+            }
+    return {}
+
+
+def _safe_model_request_status_text(
+    key: str,
+    value: Any,
+    limit: int = 240,
+) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    if key == "model_request_status_message":
+        if len(text) > limit:
+            return None
+        if not text.startswith("active model request "):
+            return None
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,;:()_-")
+        if any(ch not in allowed for ch in text):
+            return None
+        return text
+    if len(text) > 80:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", text):
+        return None
+    if len(text) > limit:
+        return text[: max(0, limit - 15)].rstrip() + " ...[truncated]"
+    return text
+
+
+def _registry_model_request_status(entry: Any) -> Dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    candidates: List[Dict[str, Any]] = [entry]
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.insert(0, metadata)
+
+    safe: Dict[str, Any] = {}
+    for candidate in candidates:
+        for key in _MODEL_REQUEST_STATUS_STRING_KEYS:
+            if key in safe or key not in candidate:
+                continue
+            value = _safe_model_request_status_text(key, candidate.get(key))
+            if value is not None:
+                safe[key] = value
+        for key in _MODEL_REQUEST_STATUS_NUMBER_KEYS:
+            if key in safe or key not in candidate:
+                continue
+            value = candidate.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed < 0:
+                parsed = 0.0
+            safe[key] = int(parsed) if parsed.is_integer() else parsed
+        for key in _MODEL_REQUEST_STATUS_BOOL_KEYS:
+            if key in safe or key not in candidate:
+                continue
+            value = candidate.get(key)
+            if isinstance(value, bool):
+                safe[key] = value
+    return safe
 
 
 def _row_has_monitor_blocked_evidence(row: Dict[str, Any]) -> bool:
@@ -3474,6 +3670,12 @@ def _active_session_registry_by_session() -> Dict[str, Dict[str, Any]]:
         last_tool_event = _registry_last_tool_runtime_event(entry)
         if last_tool_event:
             aggregate["_last_tool_runtime_event"] = last_tool_event
+        model_request_status = _registry_model_request_status(entry)
+        if model_request_status:
+            aggregate.update(model_request_status)
+        owner_summary = _registry_active_owner_summary(entry)
+        if owner_summary:
+            aggregate["active_owner_summary"] = owner_summary
     return by_session
 
 
@@ -3563,9 +3765,23 @@ def _attach_session_status_evidence(
         queued_steer_count = count
 
     row["last_tool_runtime_event"] = _registry_last_tool_runtime_event(registry_entry)
+    model_request_status = _registry_model_request_status(registry_entry)
+    if model_request_status:
+        row.update(model_request_status)
+    model_policy_fields = _model_policy_status_fields(
+        row.get("model"),
+        model_request_status.get("model_request_model"),
+        registry_entry.get("model") if isinstance(registry_entry, dict) else None,
+    )
+    if model_policy_fields:
+        row.update(model_policy_fields)
     row["last_activity_age_seconds"] = last_activity_age_seconds
     row["queued_steer_count"] = queued_steer_count
     row["compression_tip_session_id"] = tip_id
+    if registry_entry is not None:
+        owner_summary = registry_entry.get("active_owner_summary")
+        if isinstance(owner_summary, dict):
+            row["active_session_owner_summary"] = owner_summary
     add_source("unavailable")
     row["status_evidence_source"] = sources or ["unavailable"]
     return row

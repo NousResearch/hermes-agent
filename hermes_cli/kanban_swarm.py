@@ -192,9 +192,20 @@ def create_swarm(
         skills=["requesting-code-review"],
     )
 
+    try:
+        from hermes_cli.usage_guard import synthesizer_mode_instruction
+
+        synthesizer_guidance = synthesizer_mode_instruction()
+    except Exception:
+        synthesizer_guidance = (
+            "Synthesizer evidence-first mode: use curated parent summaries, "
+            "explicit artifacts, and capped worker logs before any narrow "
+            "follow-up; emit a missing-evidence request when proof is absent."
+        )
     synthesizer_body = (
         "Synthesize the verified worker outputs into the final deliverable. "
-        "Do not start until the verifier has passed the gate."
+        "Do not start until the verifier has passed the gate. "
+        f"{synthesizer_guidance}"
         + context_suffix
     )
     synthesizer = kb.create_task(
@@ -208,7 +219,7 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["humanizer"],
+        skills=["humanizer", "kanban-synthesizer"],
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

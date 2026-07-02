@@ -201,7 +201,11 @@ class TestProviderListFlag:
     def test_oauth_provider_reports_false(self):
         clear_providers()
         register_provider(StubAuthProvider())
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         prev = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         web_server.app.state.auth_required = True
         try:
             client = TestClient(
@@ -212,6 +216,8 @@ class TestProviderListFlag:
             assert prov["stub"]["supports_password"] is False
         finally:
             clear_providers()
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
             web_server.app.state.auth_required = prev
 
 
@@ -286,7 +292,11 @@ class TestPasswordLoginRoute:
         clear_providers()
         register_provider(StubAuthProvider())
         _reset_password_rate_limit()
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         prev = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         web_server.app.state.auth_required = True
         try:
             client = TestClient(
@@ -300,6 +310,8 @@ class TestPasswordLoginRoute:
         finally:
             clear_providers()
             _reset_password_rate_limit()
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
             web_server.app.state.auth_required = prev
 
     def test_provider_unreachable_returns_503(self, gated_app, pw_provider):
@@ -348,7 +360,11 @@ class TestPasswordSessionRefresh:
         provider = PasswordProvider(ttl=0)
         register_provider(provider)
         _reset_password_rate_limit()
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
         prev = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
         web_server.app.state.auth_required = True
         try:
             client = TestClient(
@@ -367,6 +383,8 @@ class TestPasswordSessionRefresh:
         finally:
             clear_providers()
             _reset_password_rate_limit()
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.bound_port = prev_port
             web_server.app.state.auth_required = prev
 
 

@@ -4442,6 +4442,15 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        try:
+            from agent.request_watchdog import mark_request_watchdog_event
+
+            mark_request_watchdog_event(
+                getattr(self, "_active_request_watchdog_record", None),
+                byte_count=len(text or ""),
+            )
+        except Exception:
+            pass
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking

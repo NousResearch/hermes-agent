@@ -249,6 +249,36 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_control_plane_status_endpoint(self, monkeypatch):
+        import hermes_cli.control_plane as control_plane
+
+        monkeypatch.setattr(control_plane, "count_close_wait_sockets", lambda: 4)
+        monkeypatch.setattr(
+            control_plane,
+            "build_control_plane_status",
+            lambda **_kwargs: {
+                "status": "degraded",
+                "listener_alive": True,
+                "websocket": {
+                    "probe_status": "not_run",
+                    "probe_ok": None,
+                    "stale_closed_clients": 2,
+                },
+                "close_wait_count": 4,
+                "active_worker_progress": True,
+                "restart_guidance": "defer_restart_active_worker_progress",
+                "sessions": [],
+            },
+        )
+
+        resp = self.client.get("/api/control-plane/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "degraded"
+        assert data["restart_guidance"] == "defer_restart_active_worker_progress"
+        assert data["websocket"]["stale_closed_clients"] == 2
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 
@@ -756,6 +786,71 @@ class TestWebServerEndpoints:
         assert "do not expose this top-level queued text" not in json.dumps(row)
         assert "do not expose duplicate queued text" not in json.dumps(row)
         assert "do not expose invalid-first text" not in json.dumps(row)
+
+    def test_get_sessions_status_evidence_flags_model_policy_violation_without_payload(self, monkeypatch):
+        import hermes_cli.active_sessions as active_sessions
+        import hermes_cli.web_server as web_server
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "policy-session",
+                        "source": "cli",
+                        "model": "gpt-5.4-mini",
+                        "started_at": 10,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model_policy": {
+                    "fixed_model": "gpt-5.5",
+                    "forbid_lower_fallback": True,
+                }
+            },
+        )
+        monkeypatch.setattr(
+            active_sessions,
+            "active_session_registry_snapshot",
+            lambda: {
+                "sessions": [
+                    {
+                        "session_id": "policy-session",
+                        "metadata": {
+                            "model_request_model": "gpt-5.4-mini",
+                            "queued_steer_text": "do not expose policy queued text",
+                            "provider_payload": "do not expose provider payload",
+                        },
+                    }
+                ]
+            },
+        )
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0")
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+
+        assert row["model_policy_violation"] is True
+        assert row["required_model"] == "gpt-5.5"
+        assert row["model_policy_recommended_action"] == "interrupt_and_restore_fixed_model"
+        dumped = json.dumps(row)
+        assert "policy queued text" not in dumped
+        assert "provider payload" not in dumped
 
     def test_get_sessions_status_evidence_marks_registry_entry_without_queued_count(self, monkeypatch):
         """A live registry entry is runtime-active evidence even with no queued steer."""

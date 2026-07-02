@@ -186,3 +186,43 @@ def test_desktop_session_search_ages_compressed_hit_from_surfaced_tip(monkeypatc
             }
         ]
     }
+
+
+def test_session_status_evidence_surfaces_value_free_active_owner_summary(monkeypatch):
+    from hermes_cli import active_sessions
+
+    monkeypatch.setattr(
+        active_sessions,
+        "active_session_registry_snapshot",
+        lambda: [
+            {
+                "session_id": "session-1",
+                "owner_summary": {
+                    "pid": 12345,
+                    "session_id": "session-1",
+                    "surface": "gateway:telegram",
+                    "owner_kind": "gateway",
+                    "cwd_fingerprint": "abc123def4567890",
+                    "private_url": "https://secret.invalid",
+                },
+            }
+        ],
+    )
+
+    registry = web_server._active_session_registry_by_session()
+    row = {"id": "session-1", "started_at": 100}
+
+    web_server._attach_session_status_evidence(
+        row,
+        now=105,
+        registry_by_session=registry,
+    )
+
+    assert row["active_session_owner_summary"] == {
+        "pid": 12345,
+        "session_id": "session-1",
+        "surface": "gateway:telegram",
+        "owner_kind": "gateway",
+        "cwd_fingerprint": "abc123def4567890",
+    }
+    assert "secret.invalid" not in str(row["active_session_owner_summary"])

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
+from tools import path_translation
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -54,6 +55,14 @@ WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+
+
+def _is_local_windows_shell_env(env: Any) -> bool:
+    return (
+        path_translation.is_windows_host()
+        and env is not None
+        and env.__class__.__module__ == "tools.environments.local"
+    )
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:
@@ -910,6 +919,7 @@ class ShellFileOperations(FileOperations):
         """
         if not path:
             return path
+        original_path = path
         
         # Handle ~ and ~user
         if path.startswith('~'):
@@ -934,8 +944,12 @@ class ShellFileOperations(FileOperations):
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
+                        path = user_home + suffix
         
+        if _is_local_windows_shell_env(self.env):
+            return path_translation.windows_path_to_git_bash_path(path)
+        if original_path != path:
+            return path
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
@@ -1062,6 +1076,7 @@ class ShellFileOperations(FileOperations):
         Returns:
             ReadResult with content, metadata, or error info
         """
+        original_path = path
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
@@ -1999,7 +2014,11 @@ class ShellFileOperations(FileOperations):
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
-            hint_parts = [f"Path not found: {path}"]
+            normalized_host_path = path_translation.normalize_windows_host_path(original_path)
+            if normalized_host_path != str(original_path):
+                hint_parts = [path_translation.missing_path_hint(original_path, normalized_host_path)]
+            else:
+                hint_parts = [f"Path not found: {path}"]
             # Check if parent directory exists and list similar entries
             parent_check = self._exec(
                 f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"

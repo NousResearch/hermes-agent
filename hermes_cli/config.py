@@ -7402,6 +7402,19 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
+    # Enforce config-driven fixed-model policy before mutating model keys.
+    # This is value-free: it compares only the requested model id against the
+    # configured fixed model and never inspects credentials or provider payloads.
+    try:
+        from hermes_cli.model_policy import check_config_set_model_policy
+
+        _model_policy_check = check_config_set_model_policy(user_config, key, value)
+    except Exception:
+        _model_policy_check = None
+    if _model_policy_check is not None and not _model_policy_check.allowed:
+        print(_model_policy_check.message, file=sys.stderr)
+        sys.exit(1)
+
     # Convert value to appropriate type
     if value.lower() in {'true', 'yes', 'on'}:
         value = True

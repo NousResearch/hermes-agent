@@ -1155,6 +1155,15 @@ def run_conversation(
                 # support it.
                 def _stop_spinner():
                     nonlocal thinking_spinner
+                    try:
+                        from agent.request_watchdog import mark_request_watchdog_event
+
+                        mark_request_watchdog_event(
+                            getattr(agent, "_active_request_watchdog_record", None),
+                            byte_count=1,
+                        )
+                    except Exception:
+                        pass
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
@@ -1194,22 +1203,44 @@ def run_conversation(
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
-                response = run_llm_execution_middleware(
-                    api_kwargs,
-                    _perform_api_call,
-                    original_request=_original_api_kwargs,
-                    task_id=effective_task_id,
-                    turn_id=turn_id,
-                    api_request_id=api_request_id,
-                    session_id=agent.session_id or "",
-                    platform=agent.platform or "",
-                    model=agent.model,
-                    provider=agent.provider,
-                    base_url=agent.base_url,
-                    api_mode=agent.api_mode,
-                    api_call_count=api_call_count,
-                    middleware_trace=list(_llm_middleware_trace),
-                )
+                request_watchdog_record = None
+                finish_request_watchdog = None
+                try:
+                    from agent.request_watchdog import (
+                        finish_request_watchdog,
+                        start_request_watchdog,
+                    )
+
+                    request_watchdog_record = start_request_watchdog(
+                        agent,
+                        request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        estimated_context_tokens=approx_request_tokens,
+                    )
+                except Exception:
+                    request_watchdog_record = None
+                    finish_request_watchdog = None
+
+                try:
+                    response = run_llm_execution_middleware(
+                        api_kwargs,
+                        _perform_api_call,
+                        original_request=_original_api_kwargs,
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        middleware_trace=list(_llm_middleware_trace),
+                    )
+                finally:
+                    if finish_request_watchdog is not None:
+                        finish_request_watchdog(request_watchdog_record, agent=agent)
                 
                 api_duration = time.time() - api_start_time
                 
@@ -4416,6 +4447,36 @@ def run_conversation(
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
+                    _usage_guard_instruction = None
+                    try:
+                        from hermes_cli.usage_guard import (
+                            activate_usage_guard_after_warning,
+                            compact_instruction_after_code_patch,
+                        )
+
+                        _touched_files = sorted(
+                            getattr(agent, "_turn_file_mutation_paths", set()) or []
+                        )
+                        activate_usage_guard_after_warning(
+                            task_id=effective_task_id,
+                            session_id=agent.session_id,
+                            reason="post_tool_context_compression",
+                        )
+                        if (
+                            _touched_files
+                            and not getattr(
+                                agent,
+                                "_usage_guard_compact_instruction_emitted",
+                                False,
+                            )
+                        ):
+                            _usage_guard_instruction = compact_instruction_after_code_patch(
+                                task_id=effective_task_id,
+                                touched_files=_touched_files,
+                            )
+                            agent._usage_guard_compact_instruction_emitted = True
+                    except Exception:
+                        logger.debug("usage guard post-tool activation failed", exc_info=True)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
@@ -4424,6 +4485,11 @@ def run_conversation(
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
+                    if _usage_guard_instruction:
+                        messages.append({
+                            "role": "user",
+                            "content": _usage_guard_instruction,
+                        })
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

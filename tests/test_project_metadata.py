@@ -135,6 +135,21 @@ def test_pyproject_aiohttp_pins_match_lazy_slack_pin():
     )
 
 
+def test_whatsapp_extra_matches_lazy_dep():
+    """WhatsApp must be explicit-installable and lazy-installable on first use."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+
+    assert "platform.whatsapp" in LAZY_DEPS
+    assert "whatsapp" in optional_dependencies
+    assert (
+        _exact_pins(optional_dependencies["whatsapp"])
+        == _exact_pins(LAZY_DEPS["platform.whatsapp"])
+        == {"aiohttp": "3.14.1"}
+    )
+
+
 def test_pyproject_pins_match_lazy_deps_pins():
     """Generalize #31817 to the whole pin surface, not just aiohttp.
 

@@ -9,6 +9,7 @@ Covers:
 
 from unittest.mock import patch
 
+import pytest
 
 from gateway.config import Platform, PlatformConfig
 
@@ -103,6 +104,38 @@ class TestAdapterInit:
         config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == ""
+
+
+@pytest.mark.asyncio
+async def test_connect_ensures_whatsapp_lazy_deps_after_pairing(tmp_path, monkeypatch):
+    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text("// test bridge\n")
+    session_path = tmp_path / "session"
+    session_path.mkdir()
+    (session_path / "creds.json").write_text("{}\n")
+
+    calls = []
+
+    def fake_ensure(feature: str, *, prompt: bool) -> None:
+        calls.append((feature, prompt))
+
+    monkeypatch.setattr(whatsapp_adapter, "check_whatsapp_requirements", lambda: True)
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+
+    config = PlatformConfig(
+        enabled=True,
+        extra={
+            "bridge_script": str(bridge_script),
+            "session_path": str(session_path),
+        },
+    )
+    adapter = whatsapp_adapter.WhatsAppAdapter(config)
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args: False)
+
+    assert await adapter.connect() is False
+    assert calls == [("platform.whatsapp", False)]
 
 
 # ---------------------------------------------------------------------------

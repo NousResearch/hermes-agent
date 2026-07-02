@@ -507,6 +507,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return False
 
+        try:
+            from tools.lazy_deps import ensure
+
+            ensure("platform.whatsapp", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning("[%s] Failed to install WhatsApp Python dependencies: %s", self.name, e)
+
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
         # Acquire scoped lock to prevent duplicate sessions

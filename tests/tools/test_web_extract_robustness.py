@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 import tools.web_tools as wt
 
 
@@ -52,3 +54,54 @@ def test_small_page_not_truncated_no_footer(tmp_path, monkeypatch):
     assert not truncated
     assert model_text == content
     assert "[TRUNCATED]" not in model_text
+
+
+@pytest.mark.asyncio
+async def test_extract_timeout_returns_error_results(monkeypatch, tmp_path):
+    """When a provider hangs past _DEFAULT_EXTRACT_TIMEOUT_S, the wrapper
+    should cancel the coroutine and return per-URL error results instead of
+    blocking the event loop indefinitely (#57155)."""
+    import asyncio
+    import json
+    import sys
+    import types
+
+    import tools.web_tools as wt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    async def _slow_extract(self, urls, **_kw):
+        """Simulates a provider that hangs forever."""
+        await asyncio.sleep(9999)
+        return [{"url": u, "content": "never"} for u in urls]
+
+    # Patch the timeout to 0.3s so the test is fast.
+    monkeypatch.setattr(wt, "_DEFAULT_EXTRACT_TIMEOUT_S", 0.3)
+
+    # Patch the SSRF check and backend resolution so only the dispatch runs.
+    async def _safe(url):
+        return True
+    monkeypatch.setattr(wt, "async_is_safe_url", _safe)
+
+    class _FakeProvider:
+        name = "fake"
+        def supports_extract(self):
+            return True
+        extract = _slow_extract  # async
+
+    monkeypatch.setattr(wt, "_get_extract_backend", lambda: "fake")
+    monkeypatch.setattr(wt, "_ensure_web_plugins_loaded", lambda: None)
+
+    # The import-mock for the registry inside web_extract_tool
+    fake_registry = types.ModuleType("agent.web_search_registry")
+    fake_registry.get_active_extract_provider = lambda: _FakeProvider()
+    fake_registry.get_provider = lambda _: _FakeProvider()
+    monkeypatch.setitem(sys.modules, "agent.web_search_registry", fake_registry)
+
+    result_json = await wt.web_extract_tool(["https://example.com/slow"])
+    result = json.loads(result_json)
+    assert "results" in result
+    assert len(result["results"]) == 1
+    entry = result["results"][0]
+    assert "timed out" in entry.get("error", "").lower()
+    assert entry["url"] == "https://example.com/slow"

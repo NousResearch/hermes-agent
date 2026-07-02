@@ -21,12 +21,14 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -36,6 +38,19 @@ import pytest
 # so concurrent invocations of the suite don't clobber each other.
 _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
+
+
+def _load_runner_module() -> ModuleType:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location(
+        "_hermes_run_tests_parallel", runner
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _handoff_path_for(nonce: str) -> Path:
@@ -259,6 +274,55 @@ def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
     proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
     assert proc.returncode == 0, proc.stdout
     assert "unrecognized arguments" not in proc.stdout
+
+
+def test_path_list_preserves_windows_drive_letters(monkeypatch) -> None:
+    """Windows absolute paths are not split at the drive separator."""
+    runner = _load_runner_module()
+    monkeypatch.setattr(runner.os, "pathsep", ";")
+
+    assert runner._split_path_list(r"C:\Users\me\repo\tests") == [
+        r"C:\Users\me\repo\tests"
+    ]
+    assert runner._split_path_list(r"C:\repo\tests;D:\other\tests") == [
+        r"C:\repo\tests",
+        r"D:\other\tests",
+    ]
+
+
+def test_path_list_keeps_ci_colon_joined_relative_files(monkeypatch) -> None:
+    """CI-generated repo-relative ``:`` lists keep working on every platform."""
+    runner = _load_runner_module()
+    monkeypatch.setattr(runner.os, "pathsep", ";")
+
+    assert runner._split_path_list("tests/a.py:tests/b.py") == [
+        "tests/a.py",
+        "tests/b.py",
+    ]
+
+
+def test_progress_print_replaces_unencodable_glyphs() -> None:
+    """Legacy Windows pipes should not drop progress callbacks."""
+    runner = _load_runner_module()
+
+    class LegacyPipe:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.output = ""
+
+        def write(self, text: str) -> int:
+            text.encode(self.encoding)
+            self.output += text
+            return len(text)
+
+        def flush(self) -> None:
+            pass
+
+    pipe = LegacyPipe()
+    runner._print_line("1✓", file=pipe)
+
+    assert pipe.output == "1?\n"
 
 
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:

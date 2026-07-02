@@ -32,7 +32,7 @@ Usage:
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
-    HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
+    HERMES_TEST_PATHS    Override discovery roots (path-list, default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
@@ -364,6 +364,52 @@ def _format_file(file: Path, repo_root: Path) -> str:
         return str(file)
 
 
+def _split_path_list(value: str | None) -> list[str]:
+    """Split a test path-list without shredding Windows drive letters.
+
+    CI still passes repo-relative ``:``-joined paths, so keep supporting
+    colon as the portable generated format. On Windows, user-entered absolute
+    paths should use ``os.pathsep`` (``;``), and a single ``C:\\...`` path must
+    not split at the drive separator.
+    """
+    if not value:
+        return []
+
+    if os.pathsep != ":" and os.pathsep in value:
+        return [part.strip() for part in value.split(os.pathsep) if part.strip()]
+
+    parts: list[str] = []
+    start = 0
+    for idx, char in enumerate(value):
+        if char != ":":
+            continue
+        is_windows_drive = (
+            idx == 1
+            and value[0].isalpha()
+            and idx + 1 < len(value)
+            and value[idx + 1] in {"\\", "/"}
+        )
+        if is_windows_drive:
+            continue
+        parts.append(value[start:idx])
+        start = idx + 1
+    parts.append(value[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _print_line(msg: str = "", *, file=None) -> None:
+    """Print one line, replacing unencodable glyphs on legacy Windows pipes."""
+    stream = sys.stdout if file is None else file
+    try:
+        print(msg, file=stream, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        safe = msg.encode(encoding, errors="replace").decode(
+            encoding, errors="replace"
+        )
+        print(safe, file=stream, flush=True)
+
+
 def _print_progress(
     tests_done: int,
     approx_total_tests: int,
@@ -434,7 +480,7 @@ def _print_progress(
             msg = msg[: cols - 1] + "…"
     except OSError:
         pass
-    print(msg, flush=True)
+    _print_line(msg)
 
 
 def _print_inline_failure(
@@ -606,7 +652,7 @@ def main() -> int:
     parser.add_argument(
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
-        help="Colon-separated discovery roots (default: 'tests')",
+        help="Path-list discovery roots (default: 'tests')",
     )
     parser.add_argument(
         "--include-integration",
@@ -652,7 +698,7 @@ def main() -> int:
         "--files",
         metavar="LIST",
         help=(
-            "Explicit colon-separated list of test files to run. Bypasses "
+            "Explicit path-list of test files to run. Bypasses "
             "discovery entirely — used by CI matrix jobs that receive their "
             "file list from the generate job."
         ),
@@ -749,7 +795,7 @@ def main() -> int:
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        files = [repo_root / f for f in _split_path_list(args.files)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -757,7 +803,7 @@ def main() -> int:
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
         else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+            roots = [repo_root / p for p in _split_path_list(args.paths)]
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.

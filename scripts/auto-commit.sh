@@ -89,4 +89,3 @@ log "Commit message: $(echo "$COMMIT_MSG" | head -1)"
 log "Commit created successfully on branch: $CURRENT_BRANCH"
 log "Post-commit hook will push to GitHub."
 log "GitHub Actions will create a Draft PR."
-# test automation

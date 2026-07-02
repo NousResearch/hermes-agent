@@ -3083,21 +3083,12 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
-            agent_runtime_kwargs = dict(runtime_kwargs)
-            for _identity_key in (
-                "model",
-                "platform",
-                "user_id",
-                "user_id_alt",
-                "user_name",
-                "chat_id",
-                "chat_name",
-                "chat_type",
-                "thread_id",
-                "gateway_session_key",
-                "session_db",
-            ):
-                agent_runtime_kwargs.pop(_identity_key, None)
+            turn_route = self._resolve_turn_agent_config(
+                "manual /compress",
+                model,
+                runtime_kwargs,
+            )
+            agent_runtime_kwargs = dict(turn_route.get("runtime") or {})
 
             tmp_agent = AIAgent(
                 **agent_runtime_kwargs,

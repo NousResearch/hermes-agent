@@ -236,6 +236,57 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_video_generate_json_path(self):
+        """video_generate returns a local path in JSON and should deliver it."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a short video"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_video", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_video",
+                "content": '{"success": true, "video": "/tmp/gen/waves.mp4", "public_url": "https://vidgen.x.ai/waves.mp4"}',
+            },
+            {"role": "assistant", "content": "Here's your video."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/waves.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_video_generate_failure_and_url_ignored(self):
+        """Failed video generations and remote URLs are not auto-delivered."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        def _video_msgs(content):
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "c", "function": {"name": "video_generate"}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c", "content": content},
+            ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            _video_msgs('{"success": false, "video": null, "error": "boom"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+        tags, _ = _collect_auto_append_media_tags(
+            _video_msgs('{"success": true, "video": "https://vidgen.x.ai/out.mp4"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
     def test_gateway_auto_append_image_generate_dedupes_history(self):
         """A generated image path already in history is not re-sent."""
         from gateway.run import _collect_auto_append_media_tags
@@ -289,6 +340,25 @@ caption
         paths = _collect_history_media_paths(history)
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
+
+    def test_collect_history_media_paths_includes_video_generate_json(self):
+        """Generated video paths in tool JSON should not be re-sent later."""
+        from gateway.run import _collect_history_media_paths
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "video_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "video": "/tmp/gen/waves.mp4"}',
+            },
+        ]
+
+        paths = _collect_history_media_paths(history)
+        assert "/tmp/gen/waves.mp4" in paths
 
     def test_image_generate_not_reemitted_after_compression(self):
         """End-to-end of the #46627 fix: collect history paths, then the

@@ -11,9 +11,9 @@ Authentication: xAI Grok OAuth tokens (preferred — billed against the
 user's SuperGrok or X Premium+ subscription) or ``XAI_API_KEY``. Both routes are
 resolved through ``tools.xai_http.resolve_xai_http_credentials`` so a
 single login covers chat + TTS + image gen + video gen + transcription.
-When xAI storage is enabled, the primary ``video`` / ``public_url`` fields are the
-stored files-cdn HTTPS link. Pass that public MP4 URL as ``video_url`` for
-edit/extend; it is sent to xAI as ``video.url``.
+Completed generation outputs are downloaded to the local Hermes video cache
+for the primary ``video`` field, while ``public_url`` keeps the public MP4 URL
+for edit/extend chaining.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import httpx
 from agent.video_gen_provider import (
     VideoGenProvider,
     error_response,
+    save_bytes_video,
     success_response,
 )
 
@@ -49,7 +50,7 @@ DEFAULT_MODEL = DEFAULT_TEXT_TO_VIDEO_MODEL
 DEFAULT_DURATION = 8
 DEFAULT_ASPECT_RATIO = "16:9"
 DEFAULT_RESOLUTION = "720p"
-DEFAULT_TIMEOUT_SECONDS = 240
+DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
 
@@ -818,59 +819,77 @@ async def _submit_xai_video_payload(
             poll_interval=DEFAULT_POLL_INTERVAL_SECONDS,
         )
 
-    status = poll_result["status"]
-    body = poll_result["body"]
+        status = poll_result["status"]
+        body = poll_result["body"]
 
-    if status == "done":
-        video = body.get("video") or {}
-        if not isinstance(video, dict):
-            video = {}
-        file_output = video.get("file_output") if isinstance(video.get("file_output"), dict) else {}
-        file_output = file_output or {}
-        public_video_url, temporary_url, stored_public_url = _xai_video_output_urls(video)
-        if not public_video_url:
-            return error_response(
-                error="xAI video request completed without a video URL",
-                error_type="empty_response",
-                provider="xai",
+        if status == "done":
+            video = body.get("video") or {}
+            if not isinstance(video, dict):
+                video = {}
+            file_output = video.get("file_output") if isinstance(video.get("file_output"), dict) else {}
+            file_output = file_output or {}
+            public_video_url, temporary_url, _stored_public_url = _xai_video_output_urls(video)
+            if not public_video_url:
+                return error_response(
+                    error="xAI video request completed without a video URL",
+                    error_type="empty_response",
+                    provider="xai",
+                    model=body.get("model") or resolved_model,
+                    prompt=prompt,
+                )
+            extra: Dict[str, Any] = {
+                "request_id": request_id,
+                "operation": operation,
+                "storage_enabled": bool(storage_cfg.get("enabled")),
+                "public_url": public_video_url,
+            }
+            if resolution:
+                extra["resolution"] = resolution
+            if storage_notice:
+                extra["storage_notice"] = storage_notice
+            if temporary_url:
+                extra["temporary_url"] = temporary_url
+            if file_output:
+                for key in (
+                    "filename",
+                    "expires_at",
+                    "public_url_expires_at",
+                    "public_url_error",
+                    "storage_error",
+                ):
+                    if key in file_output:
+                        extra[key] = file_output[key]
+            if body.get("usage"):
+                extra["usage"] = body["usage"]
+
+            video_output = public_video_url
+            try:
+                download_response = await client.get(public_video_url, timeout=120)
+                download_response.raise_for_status()
+                video_output = str(
+                    save_bytes_video(
+                        download_response.content,
+                        prefix="xai_video",
+                        extension="mp4",
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to cache xAI video output locally: %s", exc)
+                extra["download_error"] = str(exc)
+
+            return success_response(
+                video=video_output,
                 model=body.get("model") or resolved_model,
                 prompt=prompt,
+                modality=modality,
+                aspect_ratio=aspect_ratio,
+                duration=video.get("duration") or duration,
+                provider="xai",
+                extra=extra,
             )
-        extra: Dict[str, Any] = {
-            "request_id": request_id,
-            "operation": operation,
-            "storage_enabled": bool(storage_cfg.get("enabled")),
-        }
-        if resolution:
-            extra["resolution"] = resolution
-        if storage_notice:
-            extra["storage_notice"] = storage_notice
-        if stored_public_url:
-            extra["public_url"] = stored_public_url
-        if temporary_url:
-            extra["temporary_url"] = temporary_url
-        if file_output:
-            for key in (
-                "filename",
-                "expires_at",
-                "public_url_expires_at",
-                "public_url_error",
-                "storage_error",
-            ):
-                if key in file_output:
-                    extra[key] = file_output[key]
-        if body.get("usage"):
-            extra["usage"] = body["usage"]
-        return success_response(
-            video=public_video_url,
-            model=body.get("model") or resolved_model,
-            prompt=prompt,
-            modality=modality,
-            aspect_ratio=aspect_ratio,
-            duration=video.get("duration") or duration,
-            provider="xai",
-            extra=extra,
-        )
+
+    status = poll_result["status"]
+    body = poll_result["body"]
 
     if status == "timeout":
         return error_response(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -24,10 +25,16 @@ def _reset_registry():
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        status: int = 200,
+        payload: Optional[Dict[str, Any]] = None,
+        content: bytes = b"",
+    ):
         self.status_code = status
         self._payload = payload or {}
         self.text = json.dumps(self._payload)
+        self.content = content
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -41,6 +48,7 @@ class _FakeResponse:
 class _FakeAsyncClient:
     def __init__(self):
         self.posts: List[Dict[str, Any]] = []
+        self.gets: List[str] = []
 
     async def __aenter__(self):
         return self
@@ -53,6 +61,9 @@ class _FakeAsyncClient:
         return _FakeResponse(200, {"request_id": "req-123"})
 
     async def get(self, url, headers=None, timeout=None):
+        self.gets.append(url)
+        if url == "https://xai-cdn/out.mp4":
+            return _FakeResponse(200, content=b"fake-mp4-bytes")
         return _FakeResponse(200, {
             "status": "done",
             "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
@@ -61,8 +72,9 @@ class _FakeAsyncClient:
 
 
 @pytest.fixture
-def xai_provider(monkeypatch):
+def xai_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("XAI_API_KEY", "test-key")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
     import plugins.video_gen.xai as xai_plugin
 
@@ -96,6 +108,17 @@ class TestXAIEndpoint:
         assert result["success"] is True
         assert _last_post(captured)["url"].endswith("/videos/generations")
         assert result["modality"] == "text"
+
+    def test_completed_generation_downloads_video_to_local_cache(self, xai_provider):
+        provider, _ = xai_provider
+        result = provider.generate("a dog on a skateboard")
+
+        assert result["success"] is True
+        assert result["public_url"] == "https://xai-cdn/out.mp4"
+        video_path = Path(result["video"])
+        assert video_path.suffix == ".mp4"
+        assert video_path.is_file()
+        assert video_path.read_bytes() == b"fake-mp4-bytes"
 
     def test_image_to_video_hits_generations(self, xai_provider):
         provider, captured = xai_provider
@@ -194,6 +217,11 @@ class TestXAIValidation:
 
 
 class TestXAIClamping:
+    def test_default_timeout_allows_slow_xai_renders(self):
+        import plugins.video_gen.xai as xai_plugin
+
+        assert xai_plugin.DEFAULT_TIMEOUT_SECONDS == 600
+
     def test_duration_clamped_to_15(self, xai_provider):
         provider, captured = xai_provider
         provider.generate("x", duration=30)

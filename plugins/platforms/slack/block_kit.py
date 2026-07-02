@@ -451,10 +451,22 @@ def render_blocks(
                         indent, ordered, txt = items[-1]
                         items[-1] = (indent, ordered, txt + " " + lines[i].strip())
                         i += 1
-                    elif not lines[i].strip():
-                        # blank line — soft separator within a list run;
-                        # skip so that ordered items stay in one rich_text_list.
-                        i += 1
+                    elif not lines[i].strip() and items:
+                        # Blank line inside a list run. LLM-authored ordered
+                        # lists commonly separate items with a blank line; if
+                        # the next non-blank line is another list item, treat
+                        # the blank(s) as a soft separator and keep the run
+                        # going so the items stay in one rich_text_list (Slack
+                        # numbers each list independently, so splitting would
+                        # restart every item at "1."). Otherwise the blank
+                        # ends the list.
+                        j = i + 1
+                        while j < n and not lines[j].strip():
+                            j += 1
+                        if j < n and (_BULLET_RE.match(lines[j]) or _ORDERED_RE.match(lines[j])):
+                            i = j
+                        else:
+                            break
                     else:
                         break
                 blocks.append(_list_block(items))

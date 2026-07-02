@@ -106,6 +106,31 @@ class TestInlineFormatting:
         items = lists[0]["elements"]
         assert len(items) == 3
 
+    def test_blank_separated_mixed_list_matches_contiguous_layout(self):
+        """A blank line between different list kinds must render like the
+        contiguous form: one rich_text block whose sub-lists split only on
+        (indent, ordered) changes — not a separate block per item.
+        """
+        rich = [b for b in render_blocks("1. a\n\n- b") if b["type"] == "rich_text"]
+        # Single rich_text block (matches contiguous "1. a\n- b"), two sub-lists
+        assert len(rich) == 1
+        styles = [e["style"] for e in rich[0]["elements"] if e["type"] == "rich_text_list"]
+        assert styles == ["ordered", "bullet"]
+
+    def test_blank_line_before_paragraph_ends_the_list(self):
+        """A blank line followed by non-list content must still end the run,
+        so a list → paragraph → list sequence stays three separate blocks.
+        """
+        blocks = render_blocks("1. a\n\nsome paragraph text\n\n1. b")
+        lists = [
+            e
+            for b in blocks
+            for e in b.get("elements", [])
+            if e.get("type") == "rich_text_list"
+        ]
+        # Two independent single-item lists, not one merged three-item list
+        assert [len(e["elements"]) for e in lists] == [1, 1]
+
 
 class TestTables:
     def test_pipe_table_renders_native_table_block(self):

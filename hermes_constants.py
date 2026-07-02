@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 import shutil
+import stat
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -229,16 +230,25 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Existing installs that already have the old path (e.g. ``image_cache``)
     keep using it — no migration required.
 
+    A bare empty ``<old_name>/`` directory does **not** count as "the
+    legacy install is in use" — install scaffolds, manual ``mkdir`` work,
+    and cleared-then-abandoned locations all create empty stubs that
+    would otherwise silently shadow real data populated at
+    ``<new_subpath>/``. See #27602 for the pairing-store regression where
+    a dormant empty ``pairing/`` orphaned approved-user data in
+    ``platforms/pairing/``.
+
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
-        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+        Absolute ``Path`` — legacy location if it exists with content,
+        otherwise the new location.
     """
     home = get_hermes_home()
     old_path = home / old_name
-    if old_path.exists():
+    if _legacy_path_has_content(old_path):
         return old_path
     return home / new_subpath
 
@@ -277,26 +287,235 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
+_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_managed_node_heal_attempted = False
+_NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
+
+
+def node_tool_runnable(path: str | None) -> bool:
+    """Return True only when *path* is a Node/npm/npx binary that actually runs.
+
+    Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
+    ``HERMES_HOME``). A partial upgrade or interrupted install can leave
+    ``bin/npm`` behind while ``lib/cli.js`` is missing — the wrapper exists but
+    immediately throws ``MODULE_NOT_FOUND``. ``find_hermes_node_executable``
+    used to trust file presence alone, so ``hermes update`` would pick that
+    broken npm and fail the Node refresh / web UI build.
+
+    Probe with ``--version`` (same pattern as :func:`agent_browser_runnable`) so
+    broken managed wrappers are detected before use.
+    """
+    if not path:
+        return False
+    candidate = Path(path)
+    if sys.platform == "win32":
+        if not candidate.is_file():
+            return False
+    elif not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+
+    import subprocess
+
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
+
+
+def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
+    """Return True when any Hermes-managed node/npm/npx shim exists on disk."""
+    names = set()
+    for command in ("node", "npm", "npx"):
+        names.update(_candidate_node_command_names(command))
+    for directory in iter_hermes_node_dirs(home):
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                return True
+    return False
+
+
+def _heal_managed_node_windows() -> bool:
+    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows."""
+    import re
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
+    if arch in ("amd64", "x86_64"):
+        node_arch = "x64"
+    elif arch == "arm64":
+        node_arch = "arm64"
+    elif arch in ("x86",):
+        node_arch = "x86"
+    else:
+        return False
+
+    home = get_hermes_home()
+    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
+    try:
+        with urllib.request.urlopen(index_url, timeout=60) as response:
+            index_html = response.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+
+    match = re.search(
+        rf"node-v{_HERMES_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip",
+        index_html,
+    )
+    if not match:
+        return False
+
+    zip_name = match.group(0)
+    download_url = f"{index_url}{zip_name}"
+    try:
+        with urllib.request.urlopen(download_url, timeout=300) as response:
+            zip_bytes = response.read()
+    except OSError:
+        return False
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            zip_path = tmp_path / zip_name
+            zip_path.write_bytes(zip_bytes)
+            extract_dir = tmp_path / "extract"
+            extract_dir.mkdir()
+            with zipfile.ZipFile(zip_path) as archive:
+                archive.extractall(extract_dir)
+            extracted = next(extract_dir.glob("node-v*"), None)
+            if extracted is None or not extracted.is_dir():
+                return False
+            target = home / "node"
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.move(str(extracted), str(target))
+    except OSError:
+        return False
+
+    return node_tool_runnable(str(target / "node.exe"))
+
+
+def heal_hermes_managed_node() -> bool:
+    """Redownload Hermes-managed Node when the tree exists but is broken.
+
+    Runs at most once per process. POSIX installs shell out to
+    ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
+    downloads the portable zip directly (same source as ``install.ps1``).
+    """
+    global _managed_node_heal_attempted
+    if _managed_node_heal_attempted:
+        return False
+    if not hermes_managed_node_tree_present():
+        return False
+    _managed_node_heal_attempted = True
+
+    if sys.platform == "win32":
+        return _heal_managed_node_windows()
+
+    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
+        return False
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "{_NODE_BOOTSTRAP_SCRIPT}" && heal_managed_node',
+            ],
+            env={**os.environ, "HERMES_HOME": str(get_hermes_home())},
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm executable path, if installed."""
+    """Return a Hermes-managed Node/npm executable path, healing broken trees."""
     names = _candidate_node_command_names(command)
+    broken_present = False
     for directory in iter_hermes_node_dirs():
         for name in names:
             candidate = directory / name
             if candidate.is_file() and (
                 sys.platform == "win32" or os.access(candidate, os.X_OK)
             ):
+                resolved = str(candidate)
+                if node_tool_runnable(resolved):
+                    return resolved
+                broken_present = True
+    if broken_present and heal_hermes_managed_node():
+        for directory in iter_hermes_node_dirs():
+            for name in names:
+                candidate = directory / name
+                if candidate.is_file() and (
+                    sys.platform == "win32" or os.access(candidate, os.X_OK)
+                ):
+                    resolved = str(candidate)
+                    if node_tool_runnable(resolved):
+                        return resolved
+    return None
+
+
+def find_node_executable_on_path(command: str) -> str | None:
+    """Return a Node/npm executable from PATH with Windows shim ordering.
+
+    ``shutil.which("npm")`` can resolve an extensionless npm shim before the
+    ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
+    directly, so prefer the launchable variants explicitly for Hermes-owned
+    subprocesses.
+    """
+    if sys.platform != "win32":
+        return shutil.which(command)
+
+    command_str = str(command)
+    has_path_separator = any(
+        sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
+    )
+    if has_path_separator:
+        return command_str if Path(command_str).is_file() else None
+
+    for name in _candidate_node_command_names(command_str):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = Path(directory) / name
+            if candidate.is_file():
                 return str(candidate)
     return None
 
 
 def find_node_executable(command: str) -> str | None:
-    """Resolve a Node.js command, preferring Hermes-managed installs.
+    """Resolve a Node.js command, preferring healthy Hermes-managed installs.
 
     This is for Hermes-owned subprocesses that should not be broken by a bad,
-    missing, or elevation-triggering system Node/npm on PATH.
+    missing, or elevation-triggering system Node/npm on PATH. When a managed
+    tree exists but cannot be healed, returns ``None`` instead of falling back
+    to system npm on PATH.
     """
-    return find_hermes_node_executable(command) or shutil.which(command)
+    managed = find_hermes_node_executable(command)
+    if managed:
+        return managed
+    if hermes_managed_node_tree_present():
+        return None
+    return find_node_executable_on_path(command)
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -310,6 +529,103 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
             parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)
     return merged
+
+
+def agent_browser_runnable(path: str | None) -> bool:
+    """Return True only when *path* is an agent-browser CLI that actually runs.
+
+    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
+    agent-browser's npm ``postinstall`` re-points a *global* install symlink
+    (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
+    ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
+    next ``hermes update`` — leaving a **dangling symlink** that ``which`` still
+    reports but exec fails on with exit 127 (issue #48521). Callers that trust
+    such a path silently break every browser tool.
+
+    This validates the candidate by resolving it to a real, executable file and
+    running ``--version`` with a short timeout. Returns True only on a clean
+    (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
+    can fall through to the next resolution candidate.
+
+    Special cases:
+      * ``None`` / empty → False.
+      * The ``"npx agent-browser"`` fallback form (contains a space, not a real
+        file) → True; npx resolves and validates the package at run time, so
+        there is nothing to stat here.
+    """
+    if not path:
+        return False
+    # The npx fallback is a two-token command string, not a filesystem path.
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    # exists() follows symlinks — a dangling link returns False here, so we
+    # never even spawn a subprocess for the broken-link case.
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+    import subprocess
+
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
+
+
+def _legacy_path_has_content(path: Path) -> bool:
+    """Return ``True`` iff ``path`` exists and has content worth honouring.
+
+    A populated *directory* (any entry inside) counts. A non-directory
+    file at ``path`` also counts — the consumer presumably wrote it.
+    An empty directory does **not** count, so a stale empty
+    legacy stub falls through to the new layout. If the path cannot be
+    inspected (``PermissionError`` on ``stat``/``iterdir``, or any other
+    ``OSError`` short of "not found"), assume occupied so we don't
+    accidentally orphan legacy data. Only a genuine
+    ``FileNotFoundError`` counts as absent.
+
+    Symlinks are resolved before judging content: a symlink pointing at a
+    populated directory (or any existing non-directory target) counts, but
+    a **dangling** symlink (broken target) does **not** — it must not be
+    allowed to shadow populated new-layout data, matching the old
+    ``exists()`` gate's behaviour for broken links.
+    """
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # PermissionError on a parent, or any other inspection failure:
+        # treat as occupied rather than silently orphaning legacy data.
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        # Resolve the link's target. A dangling symlink has no content and
+        # must not shadow the new layout; a valid one is judged on its target.
+        try:
+            target_st = path.stat()  # follows the link
+        except FileNotFoundError:
+            return False  # dangling symlink → fall through to new layout
+        except OSError:
+            return True  # can't resolve → assume occupied, don't orphan data
+        if not stat.S_ISDIR(target_st.st_mode):
+            return True
+        # target is a directory — fall through to the iterdir() emptiness check
+    elif not stat.S_ISDIR(st.st_mode):
+        return True
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def display_hermes_home() -> str:

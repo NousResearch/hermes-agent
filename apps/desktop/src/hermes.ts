@@ -8,6 +8,7 @@ import type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseStatus,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -18,9 +19,11 @@ import type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -38,6 +41,7 @@ import type {
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -45,6 +49,15 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// prompt.submit is effectively fire-and-forget: turn completion is signaled by
+// stream / message.complete events, NOT by the RPC return. A long turn (MoA
+// presets running references + aggregator in series, deep reasoning, large tool
+// chains) can legitimately take minutes to ACK, so bounding the ack by the
+// generic 30s default surfaces a false "request timed out" toast while the turn
+// is still running and will succeed (issue #55024). Match the backend's
+// agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
+// ever fires when the turn itself would have been abandoned server-side.
+export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export type {
   ActionResponse,
@@ -59,6 +72,9 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseCheck,
+  ComputerUsePermissionSource,
+  ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -73,12 +89,15 @@ export type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
+  MoaModelSlot,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -90,6 +109,9 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  ProjectFolder,
+  ProjectInfo,
+  ProjectsPayload,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -101,6 +123,7 @@ export type {
   SessionSearchResult,
   SkillInfo,
   StaleAuxAssignment,
+  StarmapGraph,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -141,7 +164,9 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path:
+      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -268,6 +293,7 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
 
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
+    ...profileScoped(),
     path: '/api/status'
   })
 }
@@ -347,10 +373,7 @@ export function getMemoryProviderConfig(provider: string): Promise<MemoryProvide
   })
 }
 
-export function saveMemoryProviderConfig(
-  provider: string,
-  values: Record<string, string>
-): Promise<{ ok: boolean }> {
+export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
@@ -453,10 +476,68 @@ export function cancelOAuthSession(sessionId: string): Promise<{ ok: boolean }> 
   })
 }
 
+// Memory-provider OAuth connect (provider-keyed; 404s for providers without an
+// OAuth flow). Profile-scoped: the grant lands in the active profile's config.
+export function startMemoryProviderOAuth(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
+    method: 'POST'
+  })
+}
+
+export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
+  })
+}
+
 export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...profileScoped(),
     path: '/api/skills'
+  })
+}
+
+export function getStarmapGraph(): Promise<StarmapGraph> {
+  return window.hermesDesktop.api<StarmapGraph>({
+    ...profileScoped(),
+    // Backend REST contract — stays /api/learning even though the UI feature is
+    // now "star map". Renaming this would break against an un-upgraded backend.
+    path: '/api/learning/graph'
+  })
+}
+
+export interface LearningNodeDetail {
+  content: string
+  kind: 'memory' | 'skill'
+  label: string
+  ok: boolean
+}
+
+export function getLearningNode(id: string): Promise<LearningNodeDetail> {
+  return window.hermesDesktop.api<LearningNodeDetail>({
+    ...profileScoped(),
+    path: `/api/learning/node?id=${encodeURIComponent(id)}`
+  })
+}
+
+export function deleteLearningNode(id: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'DELETE',
+    body: { id }
+  })
+}
+
+export function editLearningNode(id: string, content: string): Promise<{ message: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ message: string; ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/learning/node',
+    method: 'PUT',
+    body: { content, id }
   })
 }
 
@@ -513,6 +594,21 @@ export function runToolsetPostSetup(name: string, key: string): Promise<ActionRe
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
     method: 'POST',
     body: { key }
+  })
+}
+
+export function getComputerUseStatus(): Promise<ComputerUseStatus> {
+  return window.hermesDesktop.api<ComputerUseStatus>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/status'
+  })
+}
+
+export function grantComputerUsePermissions(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/permissions/grant',
+    method: 'POST'
   })
 }
 
@@ -707,6 +803,22 @@ export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   })
 }
 
+export function getMoaModels(): Promise<MoaConfigResponse> {
+  return window.hermesDesktop.api<MoaConfigResponse>({
+    ...profileScoped(),
+    path: '/api/model/moa'
+  })
+}
+
+export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigResponse & { ok: boolean }> {
+  return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/moa',
+    method: 'PUT',
+    body
+  })
+}
+
 export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelAssignmentResponse> {
   return window.hermesDesktop.api<ModelAssignmentResponse>({
     ...profileScoped(),
@@ -718,6 +830,7 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
 
 export function restartGateway(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -725,6 +838,7 @@ export function restartGateway(): Promise<ActionResponse> {
 
 export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
     path: '/api/hermes/update',
     method: 'POST'
   })
@@ -735,12 +849,14 @@ export function updateHermes(): Promise<ActionResponse> {
  *  distinct from the Electron client clone's git state. */
 export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
   return window.hermesDesktop.api<BackendUpdateCheckResponse>({
+    ...profileScoped(),
     path: `/api/hermes/update/check${force ? '?force=true' : ''}`
   })
 }
 
 export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
+    ...profileScoped(),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
 }

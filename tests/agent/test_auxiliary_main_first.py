@@ -51,6 +51,66 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
 
+    def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
+        """MoA main user → aux runs on the aggregator slot, NOT the preset name.
+
+        provider='moa'/model='opus-gpt' would otherwise send the preset name
+        'opus-gpt' as the model id and 400 ("not a valid model ID"). Aux tasks
+        don't need the reference fan-out — they use the aggregator (the preset's
+        acting model). The virtual moa://local base_url + placeholder key must
+        be dropped so the aggregator resolves via its own provider credentials.
+        """
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "opus-gpt",
+                        "presets": {
+                            "opus-gpt": {
+                                "enabled": True,
+                                "reference_models": [{"provider": "openrouter", "model": "openai/gpt-5.5"}],
+                                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ):
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "moa",
+                    "model": "opus-gpt",
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                },
+                task="title_generation",
+            )
+
+        assert client is mock_client
+        # Resolved to the aggregator's real provider+model, not the preset name.
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.args[1] == "anthropic/claude-opus-4.8"
+        # The virtual moa://local endpoint must not be forwarded as the
+        # aggregator's base_url.
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
+
     def test_nous_main_uses_main_model_for_aux(self, monkeypatch):
         """Nous Portal main user → aux uses their picked Nous model, not free-tier MiMo."""
         # No OPENROUTER_API_KEY → ensures if main failed we'd fall to chain

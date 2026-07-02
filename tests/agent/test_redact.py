@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +40,12 @@ class TestKnownPrefixes:
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
+
+    def test_slack_app_token(self):
+        token = "xapp-1-A1234567890-B1234567890-C1234567890"
+        result = redact_sensitive_text(token)
+        assert "A1234567890-B1234567890-C1234567890" not in result
+        assert "xapp-1" in result
 
     def test_google_api_key(self):
         result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
@@ -886,3 +892,67 @@ class TestFileReadNonReusableRedaction:
         out = redact_sensitive_text(f"key: {self.SK}", force=True, file_read=True)
         assert "«redacted:sk-…»" in out
         assert self.SK not in out
+
+
+class TestFireworksToken:
+    KEY = "fw_" + "A" * 40
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "fw_AA" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"FIREWORKS_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "fw_tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("fw_AA")
+
+
+class TestRedactCdpUrl:
+    """redact_cdp_url() is the single chokepoint for CDP endpoint log redaction.
+
+    Unlike the global pass (which deliberately lets web-URL query params and
+    userinfo through for OAuth/magic-link workflows), CDP endpoint credentials
+    are pure secrets and must always be masked. Both the browser tool's
+    session/discovery logs and the supervisor's attach-timeout error route
+    through this helper.
+    """
+
+    def test_masks_query_string_token(self):
+        url = "wss://cdp.example/devtools/browser/abc?token=super-secret-999"
+        out = redact_cdp_url(url)
+        assert "super-secret-999" not in out
+        assert "token=***" in out
+
+    def test_masks_multiple_query_credentials(self):
+        url = "wss://provider.example/session?token=aaa-secret&apikey=bbb-secret"
+        out = redact_cdp_url(url)
+        assert "aaa-secret" not in out
+        assert "bbb-secret" not in out
+
+    def test_masks_userinfo_password(self):
+        url = "wss://user:p4ssw0rd@cdp.example/devtools/browser/x"
+        out = redact_cdp_url(url)
+        assert "p4ssw0rd" not in out
+        assert "user:***@" in out
+
+    def test_plain_url_passes_through(self):
+        url = "ws://localhost:9222/devtools/browser/abc123"
+        assert redact_cdp_url(url) == url
+
+    def test_non_string_input_coerced(self):
+        # Exceptions and other objects are stringified, not crashed on.
+        exc = RuntimeError("connect failed: wss://h/x?token=leak-me")
+        out = redact_cdp_url(exc)
+        assert "leak-me" not in out
+
+    def test_none_returns_empty(self):
+        assert redact_cdp_url(None) == ""

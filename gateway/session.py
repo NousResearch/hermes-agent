@@ -27,6 +27,35 @@ def _now() -> datetime:
     return datetime.now()
 
 
+# Default auto-continue freshness window in seconds (1 hour).  A session
+# interrupted by a restart is only auto-resumed — and only returned by
+# ``get_or_create_session`` — while it stays within this window of when
+# ``resume_pending`` was marked.  ``gateway/run.py`` bridges
+# ``config.yaml`` ``agent.gateway_auto_continue_freshness`` into
+# ``HERMES_AUTO_CONTINUE_FRESHNESS`` at startup.
+_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+
+
+def auto_continue_freshness_window() -> float:
+    """Return the configured auto-continue freshness window in seconds.
+
+    Single source of truth for both the resume scheduler (``gateway/run.py``)
+    and the routing-time zombie gate in ``get_or_create_session``.  Reads
+    ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    ``agent.gateway_auto_continue_freshness`` at gateway startup) and falls
+    back to the module default when unset or malformed.  A non-positive value
+    disables the freshness gate (restores the pre-fix "always fresh" behaviour
+    for users who want to opt out).
+    """
+    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+    if raw is None or raw == "":
+        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
+
+
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
@@ -451,7 +480,17 @@ def build_session_context_prompt(
             else:
                 id_lines.append(f"  - Channel: `{src.chat_id}`")
             if src.message_id:
-                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+                # The triggering message id is volatile (changes every turn).
+                # Keep it OUT of this cached system-prompt block — including it
+                # here changes build_session_context_prompt() output per turn,
+                # which busts the gateway agent-cache signature and forces an
+                # AIAgent rebuild on every Discord message. The actual id is
+                # injected per-turn into the user message instead (see the
+                # "Triggering message id" note in run.py).
+                id_lines.append(
+                    "  - Triggering message: provided per-turn in the incoming "
+                    "user message (use it as `message_id` for reply/react/pin)"
+                )
             lines.extend(id_lines)
         else:
             lines.append("")
@@ -941,11 +980,11 @@ class SessionStore:
         # in state.db. A hard gateway crash (exit code 1) skips the graceful
         # shutdown path, so sessions.json is never cleared and is left pointing
         # at ended sessions. On the next startup those stale entries act as live
-        # routing keys, but get_or_create_session() reuses them as long as the
-        # time/policy reset checks pass — it never consults end_reason — so every
-        # incoming message is silently routed into a closed session. Pruning here
-        # (lock already held) is cheap: one lookup per routing key, once at
-        # startup, and self-heals into a fresh session on the next message.
+        # routing keys. get_or_create_session() only consulted end_reason at
+        # startup (here) until #54878 added a routing-time guard for the
+        # live-gateway case; this startup prune still self-heals crash-left
+        # entries before the first message arrives. Pruning here (lock already
+        # held) is cheap: one lookup per routing key, once at startup.
         self._prune_stale_sessions_locked()
 
     def _prune_stale_sessions_locked(self) -> None:
@@ -962,6 +1001,7 @@ class SessionStore:
             return
 
         stale_keys: list = []
+        recovered_keys = 0
         try:
             for key, entry in self._entries.items():
                 row = db.get_session(entry.session_id)
@@ -969,6 +1009,43 @@ class SessionStore:
                 # end_reason is None  -> session alive — keep
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
+                    recovered_entry = None
+                    if entry.origin is not None:
+                        try:
+                            recovered_entry = self._recover_session_from_db(
+                                session_key=key,
+                                source=entry.origin,
+                                now=_now(),
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "gateway.session: recovery lookup failed for stale "
+                                "sessions.json entry %r -> %s: %s",
+                                key,
+                                entry.session_id,
+                                exc,
+                            )
+
+                    # If the stale entry points at a compression-ended parent but
+                    # a newer live child session exists for the exact same gateway
+                    # peer, repoint the routing index instead of dropping it. A
+                    # hard restart between compression rotation and the next clean
+                    # save otherwise leaves Telegram with no resumable mapping, so
+                    # queued/resume-pending work disappears until the user sends a
+                    # fresh message.
+                    if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
+                        logger.warning(
+                            "gateway.session: repointing stale sessions.json entry "
+                            "%r from ended %s (end_reason=%r) to recovered %s",
+                            key,
+                            entry.session_id,
+                            row["end_reason"],
+                            recovered_entry.session_id,
+                        )
+                        self._entries[key] = recovered_entry
+                        recovered_keys += 1
+                        continue
+
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",
@@ -985,7 +1062,7 @@ class SessionStore:
         for key in stale_keys:
             del self._entries[key]
 
-        if stale_keys:
+        if stale_keys or recovered_keys:
             self._save()
 
     def _save(self) -> None:
@@ -1206,6 +1283,32 @@ class SessionStore:
 
         return False
 
+    def _is_session_ended_in_db(self, session_id: str) -> bool:
+        """Return True iff state.db has this session with a non-null end_reason.
+
+        Mirrors the staleness test in ``_prune_stale_sessions_locked``:
+          - no DB handle / no session_id -> False (can't tell — keep)
+          - row absent (legacy / not yet persisted) -> False (keep)
+          - end_reason is None -> False (alive — keep)
+          - end_reason not None -> True (ended — stale)
+
+        Used by ``get_or_create_session`` to self-heal at routing time:
+        ``_prune_stale_sessions_locked`` only runs at startup, so a session
+        ended in the DB while the gateway stays alive (any path that finalizes
+        the row without clearing sessions.json) would otherwise be reused as a
+        live routing key and silently swallow every subsequent message until
+        the next restart (#54878 — the live-gateway variant of #52804/FM9).
+        DB errors are non-fatal — never block routing on a failed lookup.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not session_id:
+            return False
+        try:
+            row = db.get_session(session_id)
+        except Exception:
+            return False
+        return bool(row is not None and row.get("end_reason") is not None)
+
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
         """
         Check if a session should be reset based on policy.
@@ -1316,39 +1419,89 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                # Auto-reset sessions marked as suspended (e.g. after /stop
-                # broke a stuck loop — #7536).  ``suspended`` is the hard
-                # forced-wipe signal and always wins over ``resume_pending``,
-                # so repeated interrupted restarts that escalate via the
-                # existing ``.restart_failure_counts`` stuck-loop counter
-                # still converge to a clean slate.
-                if entry.suspended:
-                    reset_reason = "suspended"
-                elif entry.resume_pending:
-                    # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript reloads
-                    # intact, but still honour normal daily/idle reset policy.
-                    reset_reason = self._should_reset(entry, source)
+                # Self-heal stale routing: if this session_key still points at
+                # a session that has ALREADY been ended in state.db (end_reason
+                # set), the in-memory sessions.json entry is stale.  Reusing it
+                # would route every incoming message into a closed session and
+                # silently drop it — with no log, no error, no response — until
+                # the gateway restarts and _prune_stale_sessions_locked() clears
+                # it (#54878 — the live-gateway variant of #52804/FM9, which
+                # only the startup prune previously caught).
+                #
+                # Drop the stale entry and fall through to the recovery path
+                # below.  Leaving db_end_session_id None routes us into
+                # _recover_session_from_db, whose finder
+                # (hermes_state.find_latest_gateway_session_for_peer) selects
+                # rows WHERE `ended_at IS NULL OR end_reason = 'agent_close'`
+                # — so it REOPENS gateway-cleanup-ended ('agent_close') rows and
+                # resumes the SAME session_id (transcript preserved), but returns
+                # None for any other end_reason (e.g. /new), which then correctly
+                # starts a fresh session.
+                if self._is_session_ended_in_db(entry.session_id):
+                    logger.warning(
+                        "gateway.session: routing key %r -> %s is ended in "
+                        "state.db but still live in sessions.json; dropping "
+                        "stale entry and recovering/recreating the session "
+                        "(#54878)",
+                        session_key, entry.session_id,
+                    )
+                    self._entries.pop(session_key, None)
+                    was_auto_reset = False
+                    auto_reset_reason = None
+                    reset_had_activity = False
+                    # Fall through to the recovery/create path below; the
+                    # stale entry is gone so we must NOT consult its
+                    # suspended/resume/reset state.
+                else:
+                    # Auto-reset sessions marked as suspended (e.g. after /stop
+                    # broke a stuck loop — #7536).  ``suspended`` is the hard
+                    # forced-wipe signal and always wins over ``resume_pending``,
+                    # so repeated interrupted restarts that escalate via the
+                    # existing ``.restart_failure_counts`` stuck-loop counter
+                    # still converge to a clean slate.
+                    if entry.suspended:
+                        reset_reason = "suspended"
+                    elif entry.resume_pending:
+                        # Restart-interrupted session: preserve the session_id
+                        # and return the existing entry so the transcript reloads
+                        # intact, but still honour normal daily/idle reset policy.
+                        #
+                        # Freshness gate (#46934): the idle/daily policy checks
+                        # ``updated_at``, which is bumped to ``now`` on every
+                        # message — so a zombie session that keeps receiving
+                        # messages never trips it and would resume stale context
+                        # forever.  ``last_resume_marked_at`` is set once when
+                        # resume was marked and never bumped per-message, so it
+                        # correctly measures how long resume has been pending.
+                        # If that exceeds the auto-continue freshness window, the
+                        # recovery turn either never ran or failed — treat the
+                        # session as a zombie and fall through to auto-reset.
+                        reset_reason = self._should_reset(entry, source)
+                        if not reset_reason:
+                            _fw = auto_continue_freshness_window()
+                            _ref_time = entry.last_resume_marked_at or entry.updated_at
+                            if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                                reset_reason = "resume_pending_expired"
+                            else:
+                                entry.updated_at = now
+                                self._save()
+                                return entry
+                    else:
+                        reset_reason = self._should_reset(entry, source)
                     if not reset_reason:
                         entry.updated_at = now
                         self._save()
                         return entry
-                else:
-                    reset_reason = self._should_reset(entry, source)
-                if not reset_reason:
-                    entry.updated_at = now
-                    self._save()
-                    return entry
-                else:
-                    # Session is being auto-reset.
-                    was_auto_reset = True
-                    auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation.
-                    # total_tokens is never written (token counts migrated to
-                    # agent-direct persistence) so it is always 0 — use
-                    # last_prompt_tokens, which is updated on every turn.
-                    reset_had_activity = entry.last_prompt_tokens > 0
-                    db_end_session_id = entry.session_id
+                    else:
+                        # Session is being auto-reset.
+                        was_auto_reset = True
+                        auto_reset_reason = reset_reason
+                        # Track whether the expired session had any real
+                        # conversation.  total_tokens is never written (token
+                        # counts migrated to agent-direct persistence) so it is
+                        # always 0 — use last_prompt_tokens, updated every turn.
+                        reset_had_activity = entry.last_prompt_tokens > 0
+                        db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
@@ -1792,17 +1945,27 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
         """Replace the entire transcript for a session with new messages.
 
         Used by /retry, /undo, and /compress to persist modified conversation
         history. state.db is the canonical store.
+
+        Returns ``True`` when the write lands (or there is no DB to write to)
+        and ``False`` when the canonical write fails. Most callers can ignore
+        the result, but callers that would otherwise commit a destructive state
+        change on top of a failed write — e.g. /compress repointing the live
+        session onto a fresh session_id — must check it so they can surface an
+        error instead of silently dropping the conversation.
         """
-        if self._db:
-            try:
-                self._db.replace_messages(session_id, messages)
-            except Exception as e:
-                logger.debug("Failed to rewrite transcript in DB: %s", e)
+        if not self._db:
+            return True
+        try:
+            self._db.replace_messages(session_id, messages)
+            return True
+        except Exception as e:
+            logger.debug("Failed to rewrite transcript in DB: %s", e)
+            return False
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.

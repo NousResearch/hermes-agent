@@ -42,6 +42,24 @@ def _coerce_int(value: Any, default: int) -> int:
             return default
 
 
+def _coerce_int_or_none(value: Any) -> int | None:
+    """Coerce to a positive int, or None when unset/blank/invalid/non-positive.
+
+    Used for optional caps (e.g. reference_max_tokens) where None means
+    'no cap' — the safe default that preserves prior uncapped behavior.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return n if n > 0 else None
+
+
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
@@ -66,6 +84,7 @@ def _default_preset() -> dict[str, Any]:
         "reference_temperature": 0.6,
         "aggregator_temperature": 0.4,
         "max_tokens": 4096,
+        "reference_max_tokens": None,
         "enabled": True,
     }
 
@@ -94,6 +113,15 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Optional cap on how much each reference ADVISOR may generate per turn.
+        # None (default) = uncapped: advisors write full-length advice, matching
+        # prior behavior so existing presets are unchanged. Set a value (e.g.
+        # 600) to make advisors give concise advice — the dominant MoA latency
+        # is advisor generation (turn latency correlates ~0.88 with output
+        # tokens), and the aggregator only needs the gist of each advisor's
+        # judgement, so capping roughly halves per-turn wall time. Does NOT cap
+        # the acting aggregator (its output is the user-visible answer).
+        "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
     }
 
 
@@ -139,6 +167,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active.get("reference_max_tokens"),
         "enabled": active["enabled"],
     }
 
@@ -158,11 +187,26 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:

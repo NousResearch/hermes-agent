@@ -23,7 +23,7 @@ class TestHermesApiServerToolset:
     def test_toolset_includes_core_tools(self):
         tools = resolve_toolset("hermes-api-server")
         expected = [
-            "terminal", "process",
+            "terminal", "process", "read_terminal", "close_terminal",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze", "image_generate",
             "execute_code", "delegate_task",
@@ -31,6 +31,25 @@ class TestHermesApiServerToolset:
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
+
+    def test_terminal_toolset_is_subset_of_composite(self):
+        """Regression #56732: registry-merged terminal tools must appear in the
+        composite list or _get_platform_tools drops the whole terminal toolset."""
+        from model_tools import get_tool_definitions  # noqa: F401 — register tools
+
+        terminal_tools = set(resolve_toolset("terminal"))
+        api_server_tools = set(resolve_toolset("hermes-api-server"))
+        assert terminal_tools.issubset(api_server_tools), (
+            f"hermes-api-server missing terminal members: {terminal_tools - api_server_tools}"
+        )
+
+    def test_api_server_platform_enables_terminal_toolset(self):
+        """Default api_server platform config must enable the terminal toolset."""
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import load_config
+
+        enabled = _get_platform_tools(load_config(), "api_server")
+        assert "terminal" in enabled
 
     def test_toolset_includes_browser_tools(self):
         tools = resolve_toolset("hermes-api-server")

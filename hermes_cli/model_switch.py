@@ -744,6 +744,59 @@ def _configured_provider_matches(
     return matches
 
 
+def _authenticated_exact_catalog_match(
+    model_name: str,
+    current_provider: str,
+    user_providers: Optional[dict],
+    custom_providers: Optional[list],
+) -> Optional[tuple[str, str]]:
+    """Prefer a single authenticated exact match over static provider guesses."""
+    name = (model_name or "").strip()
+    if not name:
+        return None
+
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+    except Exception:
+        return None
+
+    target = name.lower()
+    static_matches: dict[str, str] = {}
+    for provider, catalog in _PROVIDER_MODELS.items():
+        for candidate in catalog:
+            if candidate.lower() == target:
+                static_matches[provider] = candidate
+                break
+
+    if len(static_matches) < 2:
+        return None
+
+    authed = get_authenticated_provider_slugs(
+        current_provider=current_provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+    if not authed:
+        return None
+
+    matches = [
+        (provider, static_matches[provider])
+        for provider in authed
+        if provider in static_matches
+    ]
+    if not matches:
+        return None
+
+    current = (current_provider or "").strip().lower()
+    for provider, candidate in matches:
+        if provider == current:
+            return provider, candidate
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -1097,7 +1150,14 @@ def switch_model(
             and not resolved_in_current_catalog
             and not config_routed
         ):
-            detected = detect_provider_for_model(new_model, current_provider)
+            detected = _authenticated_exact_catalog_match(
+                new_model,
+                current_provider,
+                user_providers,
+                custom_providers,
+            )
+            if not detected:
+                detected = detect_provider_for_model(new_model, current_provider)
             if detected:
                 target_provider, new_model = detected
 

@@ -37,6 +37,74 @@ def test_load_corrupt_state_fails_open(tmp_path: Path) -> None:
     assert state["load_error"]
 
 
+def test_load_supported_schema_keeps_existing_state(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "updated_at": _iso(),
+            "sent_messages": {
+                "msg-1": {"sent_at": _iso(), "kind": "text", "space_id": "space"}
+            },
+            "last_inbound_by_chat": {},
+            "reactions": {},
+            "audit": [],
+        }),
+        encoding="utf-8",
+    )
+    store = PhotonStateStore(path)
+
+    state = store.load()
+
+    assert state["load_error"] is None
+    assert state["sent_messages"]["msg-1"]["space_id"] == "space"
+
+
+def test_load_future_schema_warns_but_preserves_known_state(
+    tmp_path: Path, caplog
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({
+            "schema_version": 2,
+            "updated_at": _iso(),
+            "sent_messages": {
+                "msg-1": {"sent_at": _iso(), "kind": "text", "space_id": "space"}
+            },
+            "last_inbound_by_chat": {},
+            "reactions": {},
+            "audit": [],
+        }),
+        encoding="utf-8",
+    )
+    store = PhotonStateStore(path)
+
+    state = store.load()
+
+    assert state["load_error"] is None
+    assert state["sent_messages"]["msg-1"]["space_id"] == "space"
+    assert "newer Photon state schema" in caplog.text
+
+
+def test_load_invalid_schema_still_fails_open(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({
+            "schema_version": 0,
+            "sent_messages": {
+                "msg-1": {"sent_at": _iso(), "kind": "text", "space_id": "space"}
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = PhotonStateStore(path)
+
+    state = store.load()
+
+    assert state["sent_messages"] == {}
+    assert state["load_error"] == "unsupported schema version"
+
+
 def test_record_methods_create_private_atomic_snapshot(tmp_path: Path) -> None:
     path = tmp_path / "plugins" / "photon" / "state.json"
     store = PhotonStateStore(path)
@@ -158,3 +226,47 @@ def test_write_failure_is_fail_open(tmp_path: Path, monkeypatch) -> None:
 
     assert store.write_error == "disk full"
     assert store.snapshot()["sent_messages"]["msg-1"]["space_id"] == "space"
+
+
+def test_write_failure_is_visible_to_fresh_store(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "state.json"
+    store = PhotonStateStore(path)
+    store.load()
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("plugins.platforms.photon.state.atomic_json_write", boom)
+
+    store.record_sent_message("msg-1", chat_key="+1", space_id="space")
+
+    fresh = PhotonStateStore(path)
+    fresh.load()
+
+    assert fresh.health()["write_error"] == "disk full"
+    assert stat.S_IMODE(path.with_name("state.json.write_error").stat().st_mode) == 0o600
+
+
+def test_successful_write_clears_persisted_write_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "state.json"
+    store = PhotonStateStore(path)
+    store.load()
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr("plugins.platforms.photon.state.atomic_json_write", boom)
+        store.record_sent_message("msg-1", chat_key="+1", space_id="space")
+
+    recovered = PhotonStateStore(path)
+    recovered.load()
+    recovered.record_sent_message("msg-2", chat_key="+1", space_id="space")
+
+    fresh = PhotonStateStore(path)
+    fresh.load()
+
+    assert fresh.health()["write_error"] is None
+    assert store.load()["write_error"] is None

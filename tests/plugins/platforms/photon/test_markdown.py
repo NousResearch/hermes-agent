@@ -131,3 +131,55 @@ async def test_standalone_send_includes_markdown_format(
     state = PhotonStateStore().load()
     assert state["sent_messages"]["m-9"]["chat_key"] == "+15551234567"
     assert state["sent_messages"]["m-9"]["kind"] == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_uses_shared_state_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    adapter = _make_adapter(monkeypatch)
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {"ok": True, "messageId": "m-10"}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(
+        cfg,
+        "+15551234567",
+        _MD,
+    )
+
+    assert result.get("success") is True
+    adapter._photon_state.record_audit(
+        action="react", status="succeeded", chat_key="+15551234567"
+    )
+    state = PhotonStateStore().load()
+    assert state["sent_messages"]["m-10"]["chat_key"] == "+15551234567"
+    assert [item["action"] for item in state["audit"]] == ["send", "send", "react"]
+    assert [item["status"] for item in state["audit"]] == [
+        "started",
+        "succeeded",
+        "succeeded",
+    ]

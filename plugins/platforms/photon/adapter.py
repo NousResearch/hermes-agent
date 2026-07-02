@@ -64,7 +64,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import strip_markdown
 
 from .auth import load_project_credentials
-from .state import PhotonStateStore
+from .state import PhotonStateStore, photon_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,18 @@ _DEFAULT_MENTION_PATTERNS = [
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
+
+_shared_state_store: Optional[PhotonStateStore] = None
+
+
+def _get_shared_state_store() -> PhotonStateStore:
+    global _shared_state_store
+    expected_path = photon_state_path()
+    if _shared_state_store is None or _shared_state_store.path != expected_path:
+        _shared_state_store = PhotonStateStore(expected_path)
+        _shared_state_store.load()
+    return _shared_state_store
+
 
 def _coerce_port(value: Any, default: int) -> int:
     try:
@@ -264,7 +276,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # react action default to "the message that triggered me" without
         # requiring the model to thread message ids through tool calls.
         self._last_inbound_by_chat: Dict[str, str] = {}
-        self._photon_state = PhotonStateStore()
+        self._photon_state = _get_shared_state_store()
         self._hydrate_persistent_state()
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
@@ -1768,8 +1780,7 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}
-    state = PhotonStateStore()
-    state.load()
+    state = _get_shared_state_store()
     chat_key = PhotonAdapter._normalize_chat_key(chat_id) if chat_id else chat_id
 
     def _audit(

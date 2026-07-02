@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,17 +89,20 @@ class PhotonStateStore:
 
     def load(self) -> Dict[str, Any]:
         self.load_error = None
+        self.write_error = None
         if not self.path.exists():
             self._state = self._empty_state()
+            self.write_error = self._load_write_error()
             return self.snapshot()
         try:
             raw = self.path.read_text(encoding="utf-8")
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise ValueError("state root is not an object")
-            if payload.get("schema_version") != SCHEMA_VERSION:
-                raise ValueError("unsupported schema version")
+            self._validate_schema_version(payload.get("schema_version"))
+            payload_write_error = _string_or_none(payload.get("write_error"))
             self._state = self._normalize(payload)
+            self.write_error = self._load_write_error() or payload_write_error
         except Exception as exc:
             self.load_error = str(exc)
             logger.warning(
@@ -107,6 +111,7 @@ class PhotonStateStore:
                 exc,
             )
             self._state = self._empty_state()
+            self.write_error = self._load_write_error()
         return self.snapshot()
 
     def snapshot(self) -> Dict[str, Any]:
@@ -262,9 +267,65 @@ class PhotonStateStore:
                 mode=0o600,
                 sort_keys=True,
             )
+            self._clear_write_error()
         except Exception as exc:
             self.write_error = str(exc)
+            self._record_write_error(self.write_error)
             logger.warning("[photon] failed to persist state at %s: %s", self.path, exc)
+
+    def _validate_schema_version(self, value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("unsupported schema version")
+        if value > SCHEMA_VERSION:
+            logger.warning(
+                "[photon] loading newer Photon state schema v%s with v%s reader",
+                value,
+                SCHEMA_VERSION,
+            )
+        return value
+
+    def _write_error_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.write_error")
+
+    def _load_write_error(self) -> Optional[str]:
+        marker = self._write_error_path()
+        try:
+            return _short_error(marker.read_text(encoding="utf-8").strip())
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[photon] failed to read state write-error marker at %s: %s",
+                marker,
+                exc,
+            )
+        return None
+
+    def _record_write_error(self, error: str) -> None:
+        marker = self._write_error_path()
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(_short_error(error) or "")
+        except Exception as exc:
+            logger.warning(
+                "[photon] failed to persist state write-error marker at %s: %s",
+                marker,
+                exc,
+            )
+
+    def _clear_write_error(self) -> None:
+        marker = self._write_error_path()
+        try:
+            marker.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning(
+                "[photon] failed to clear state write-error marker at %s: %s",
+                marker,
+                exc,
+            )
 
     def _normalize(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         now = time.time()

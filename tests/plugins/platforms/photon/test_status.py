@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from plugins.platforms.photon import cli
+from plugins.platforms.photon import state as photon_state
 from plugins.platforms.photon.state import PhotonStateStore
 
 
@@ -38,6 +39,27 @@ def test_status_handles_corrupt_state(tmp_path: Path, monkeypatch) -> None:
     cli._print_state_summary(rendered.append)
 
     assert any("unavailable/corrupt" in line for line in rendered)
+
+
+def test_status_prints_persisted_write_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    store = PhotonStateStore()
+    store.load()
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(photon_state, "atomic_json_write", boom)
+        store.record_sent_message("msg-1", chat_key="+1", space_id="space")
+    rendered: list[str] = []
+
+    cli._print_state_summary(rendered.append)
+
+    assert "state write failure : disk full" in "\n".join(rendered)
 
 
 def test_status_does_not_print_stored_message_text(tmp_path: Path, monkeypatch) -> None:

@@ -16,7 +16,13 @@ import pytest
 
 from agent.process_bootstrap import build_keepalive_http_client
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
+_CA_ENV_VARS = (
+    "HERMES_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "HTTPS_PROXY",
+)
 
 
 @pytest.fixture
@@ -41,6 +47,35 @@ def test_build_keepalive_http_client_verify_false_disables_hostname_check(clean_
 def test_build_keepalive_http_client_default_verify_true(clean_tls_env):
     client = build_keepalive_http_client("https://ollama.example.com/v1")
     assert isinstance(client, httpx.Client)
+
+
+def test_build_keepalive_http_client_proxied_traffic_honors_verify(clean_tls_env, monkeypatch):
+    """Behind HTTPS_PROXY, httpx routes matching URLs through an internally
+    built proxy transport (the custom keepalive transport is never consulted
+    for proxied URLs), so the resolved verify must reach that transport too."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    client = build_keepalive_http_client("https://ollama.example.com/v1", verify=ctx)
+    transport = client._transport_for_url(httpx.URL("https://ollama.example.com/v1"))
+    assert transport._pool._ssl_context is ctx
+
+
+def test_build_keepalive_http_client_proxied_verify_false(clean_tls_env, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    client = build_keepalive_http_client("https://ollama.example.com/v1", verify=False)
+    transport = client._transport_for_url(httpx.URL("https://ollama.example.com/v1"))
+    assert transport._pool._ssl_context.check_hostname is False
+
+
+def test_build_keepalive_async_client_proxied_traffic_honors_verify(clean_tls_env, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    client = build_keepalive_http_client(
+        "https://ollama.example.com/v1", verify=ctx, async_mode=True,
+    )
+    assert isinstance(client, httpx.AsyncClient)
+    transport = client._transport_for_url(httpx.URL("https://ollama.example.com/v1"))
+    assert transport._pool._ssl_context is ctx
 
 
 def test_resolve_aux_verify_uses_per_provider_ssl_ca_cert(clean_tls_env, monkeypatch):

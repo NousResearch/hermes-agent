@@ -160,8 +160,10 @@ def build_keepalive_http_client(
     vision, web_extract, title generation, etc.) honor the same per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
     client uses. It is passed on the ``HTTPTransport`` (which owns the SSL
-    context when a custom transport is supplied) and, for the copilot branch
-    that has no custom transport, on the client itself.
+    context for direct traffic when a custom transport is supplied) AND on
+    the client itself — httpx builds the proxy transport for proxied URLs
+    from the client-level ``verify``, and the copilot branch has no custom
+    transport at all.
     """
     try:
         import httpx
@@ -182,11 +184,16 @@ def build_keepalive_http_client(
         proxy = _get_proxy_for_base_url(base_url)
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
-        # verify lives on the transport: httpx ignores the client-level
-        # ``verify`` when a custom ``transport=`` is supplied.
+        # verify must live in BOTH places: the custom transport carries it
+        # for direct traffic (httpx ignores client-level ``verify`` when a
+        # custom ``transport=`` is supplied), while proxied traffic goes
+        # through a separate proxy transport that httpx builds internally
+        # from the client-level ``verify`` — the custom transport is never
+        # consulted for proxied URLs.
         return client_cls(
             transport=transport_cls(socket_options=sock_opts, verify=verify),
             proxy=proxy,
+            verify=verify,
         )
     except Exception:
         return None

@@ -9,7 +9,13 @@ import pytest
 from agent.ssl_verify import resolve_httpx_verify
 from run_agent import AIAgent
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
+_CA_ENV_VARS = (
+    "HERMES_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "HTTPS_PROXY",
+)
 
 
 @pytest.fixture
@@ -44,3 +50,26 @@ def test_build_keepalive_http_client_ssl_verify_false(clean_tls_env):
     )
     assert isinstance(client, httpx.Client)
     assert client._transport._pool._ssl_context.check_hostname is False
+
+
+def test_build_keepalive_http_client_proxied_traffic_honors_verify(clean_tls_env, monkeypatch):
+    """Behind HTTPS_PROXY, httpx routes matching URLs through an internally
+    built proxy transport (the custom keepalive transport is never consulted
+    for proxied URLs), so the resolved verify must reach that transport too."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    verify = resolve_httpx_verify(ca_bundle=certifi.where())
+    client = AIAgent._build_keepalive_http_client(
+        "https://ollama.example.com/v1", verify=verify,
+    )
+    transport = client._transport_for_url(httpx.URL("https://ollama.example.com/v1"))
+    assert transport._pool._ssl_context is verify
+
+
+def test_build_keepalive_http_client_proxied_ssl_verify_false(clean_tls_env, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    verify = resolve_httpx_verify(ssl_verify=False)
+    client = AIAgent._build_keepalive_http_client(
+        "https://ollama.example.com/v1", verify=verify,
+    )
+    transport = client._transport_for_url(httpx.URL("https://ollama.example.com/v1"))
+    assert transport._pool._ssl_context.check_hostname is False

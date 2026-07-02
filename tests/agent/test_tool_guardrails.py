@@ -256,3 +256,26 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_file_mutation_resets_guardrail_failure_counts():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2)
+    )
+    cmd_args = {"command": "python3 -m unittest", "workdir": "/root/project"}
+
+    # 1st failure
+    controller.after_call("terminal", cmd_args, '{"exit_code":1}', failed=True)
+    assert controller.before_call("terminal", cmd_args).action == "allow"
+
+    # 2nd failure (blocks future repeats)
+    controller.after_call("terminal", cmd_args, '{"exit_code":1}', failed=True)
+    assert controller.before_call("terminal", cmd_args).action == "block"
+
+    # Successful file mutation
+    patch_args = {"path": "/root/project/file.py", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # Terminal command should now be allowed again
+    assert controller.before_call("terminal", cmd_args).action == "allow"
+

@@ -1099,6 +1099,10 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
 
+            @self._app.event("app_home_opened")
+            async def handle_app_home_opened(event, say):
+                await self._handle_app_home_opened(event)
+
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
             # doesn't log noisy 404 "unhandled request" warnings.
@@ -2502,11 +2506,64 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
+    def _seed_agent_dm_session(self, metadata: Dict[str, str]) -> None:
+        """Prime the session store when Slack reports a user opened the DM.
+
+        In Slack's Agent messaging experience, ``app_home_opened`` with
+        ``tab == "messages"`` replaces ``assistant_thread_started`` as the
+        "user opened the DM" signal. It is only a lifecycle signal: do not send
+        a welcome message or enter the agent loop from this event.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return
+
+        channel_id = metadata.get("channel_id", "")
+        user_id = metadata.get("user_id", "")
+        if not channel_id or not user_id:
+            return
+
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_id,
+            chat_type="dm",
+            user_id=user_id,
+        )
+
+        try:
+            session_store.get_or_create_session(source)
+        except Exception:
+            logger.debug(
+                "[Slack] Failed to seed agent DM session for %s",
+                channel_id,
+                exc_info=True,
+            )
+
     async def _handle_assistant_thread_lifecycle_event(self, event: dict) -> None:
         """Handle Slack Assistant lifecycle events that carry user/thread identity."""
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+
+    async def _handle_app_home_opened(self, event: dict) -> None:
+        """Handle Slack Agent DM-open lifecycle events without producing replies."""
+        if event.get("tab") != "messages":
+            return
+
+        channel_id = event.get("channel") or event.get("channel_id") or ""
+        user_id = event.get("user") or event.get("user_id") or ""
+        team_id = event.get("team") or event.get("team_id") or ""
+
+        if team_id and channel_id:
+            self._channel_team[str(channel_id)] = str(team_id)
+
+        self._seed_agent_dm_session(
+            {
+                "channel_id": str(channel_id) if channel_id else "",
+                "user_id": str(user_id) if user_id else "",
+                "team_id": str(team_id) if team_id else "",
+            }
+        )
 
     async def _handle_slack_file_shared(self, event: dict) -> None:
         """Fallback for Slack file shares that do not arrive as message.files.

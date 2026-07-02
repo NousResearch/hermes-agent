@@ -238,6 +238,7 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "app_home_opened" in registered_events
         assert "reaction_added" in registered_events
         assert "reaction_removed" in registered_events
         assert "assistant_thread_started" in registered_events
@@ -2914,7 +2915,7 @@ class TestThreadReplyHandling:
 
 
 class TestAssistantThreadLifecycle:
-    """Slack Assistant lifecycle events should seed session/user context."""
+    """Slack AI lifecycle events should seed session/user context."""
 
     @pytest.fixture()
     def mock_session_store(self):
@@ -2967,6 +2968,46 @@ class TestAssistantThreadLifecycle:
         assert source.user_id == "U_USER"
         assert source.thread_id == "171.000"
         assert source.chat_topic == "C_ORIGIN"
+
+    @pytest.mark.asyncio
+    async def test_app_home_messages_tab_seeds_dm_session(
+        self, assistant_adapter, mock_session_store
+    ):
+        event = {
+            "type": "app_home_opened",
+            "tab": "messages",
+            "team": "T_TEAM",
+            "channel": "D123",
+            "user": "U_USER",
+        }
+
+        await assistant_adapter._handle_app_home_opened(event)
+
+        mock_session_store.get_or_create_session.assert_called_once()
+        source = mock_session_store.get_or_create_session.call_args[0][0]
+        assert source.chat_id == "D123"
+        assert source.chat_type == "dm"
+        assert source.user_id == "U_USER"
+        assert source.thread_id is None
+        assert assistant_adapter._channel_team["D123"] == "T_TEAM"
+        assistant_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_app_home_non_messages_tab_is_ignored(
+        self, assistant_adapter, mock_session_store
+    ):
+        event = {
+            "type": "app_home_opened",
+            "tab": "home",
+            "team": "T_TEAM",
+            "channel": "D123",
+            "user": "U_USER",
+        }
+
+        await assistant_adapter._handle_app_home_opened(event)
+
+        mock_session_store.get_or_create_session.assert_not_called()
+        assistant_adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_message_uses_cached_assistant_thread_identity(

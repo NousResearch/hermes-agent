@@ -1,0 +1,4 @@
+{"node":"S1","q":"fetch valid JSON with key ok from the primary network source?","chosen":"alfa","expected":"HTTP 200 + JSON with key ok","verdict":"fail","evidence":"sim: r-alfa → tombstone (primary network source is down)","next":"try->S1b"}
+{"node":"S1b","q":"fetch valid JSON with key ok from the mirror network source?","chosen":"bravo","expected":"HTTP 200 + JSON with key ok","verdict":"fail","evidence":"sim: r-bravo → tombstone (mirror network source is down)","next":"relax->prefer-network"}
+{"node":"S2","q":"read valid JSON with key ok from the local cache?","chosen":"charlie","expected":"cache hit yielding JSON with key ok","verdict":"progress","evidence":"sim: r-charlie → progress (local cache hit)","next":"advance->S3"}
+{"node":"S3","q":"verify cached data is valid JSON with key ok?","chosen":"delta","expected":"validated JSON with top-level key ok","verdict":"success","evidence":"sim: r-delta → success (verified valid JSON with key ok)","next":"SUCCESS"}

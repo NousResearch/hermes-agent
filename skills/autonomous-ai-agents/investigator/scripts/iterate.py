@@ -181,18 +181,19 @@ def _tombstone(q, found, text):
 
 # ── the loop ──────────────────────────────────────────────────────────────────
 
-def iterate(problem, cfg=None, answerer=None, responder=None, progress=None):
+def iterate(problem, cfg=None, answerer=None, responder=None, progress=None, seed_evidence=None):
     cfg = {**DEFAULTS, **(cfg or {})}
     answerer = answerer or grounded_answer
     responder = responder or respond
     progress = progress or (lambda m: None)
     rank_cfg = _rank_cfg()
+    seeds = [s for s in (seed_evidence or []) if s.strip()]  # caller-known facts; never tombstoned
 
     tombstones, answered = [], set()
     rounds, stop_reason, k_capped = 0, None, False
     for rnd in range(cfg["max_rounds"]):
         rounds = rnd + 1
-        evidence = [t["evidence"] for t in tombstones]
+        evidence = seeds + [t["evidence"] for t in tombstones]
         ranked = rank(problem, evidence, rank_cfg)
         above = [r for r in ranked
                  if r.get("value", 0.0) >= cfg["floor"] and r.get("question") not in answered]
@@ -208,12 +209,12 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None):
             found, text = answerer(q, problem, evidence, cfg)
             tombstones.append(_tombstone(q, found, text))
             answered.add(q.get("question"))
-            evidence = [t["evidence"] for t in tombstones]  # context grows immediately
+            evidence = seeds + [t["evidence"] for t in tombstones]  # context grows immediately
             progress(f"  {'✓' if found else '∅'} {q.get('question', '')[:60]}")
     else:
         stop_reason = "max_rounds reached"
 
-    final = responder(problem, [t["evidence"] for t in tombstones], cfg)
+    final = responder(problem, seeds + [t["evidence"] for t in tombstones], cfg)
     artificial_cap = k_capped or stop_reason == "max_rounds reached"
     return {
         "problem": problem, "final": final, "tombstones": tombstones,
@@ -271,8 +272,16 @@ def main(argv=None):
     p.add_argument("--validate", choices=["baseline", "top", "bottom"],
                    help="end-to-end test: respond after answering baseline/top-k/bottom-k.")
     p.add_argument("--dry-run", action="store_true", help="mock answerer/responder (host, no hermes).")
+    p.add_argument("--evidence-file",
+                   help="seed facts, one per line (# comments skipped), folded into evidence before "
+                        "round 1. Ignored by --validate.")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
+
+    seeds = []
+    if args.evidence_file:
+        with open(args.evidence_file, encoding="utf-8") as fh:
+            seeds = [ln.strip() for ln in fh if ln.strip() and not ln.lstrip().startswith("#")]
 
     cfg = apply_capability({"k": args.k, "max_rounds": args.max_rounds, "floor": args.floor},
                            args.capability)
@@ -287,7 +296,7 @@ def main(argv=None):
     if args.validate:
         out = validate_selection(args.problem, args.validate, args.k, cfg, answerer, responder, prog)
     else:
-        out = iterate(args.problem, cfg, answerer, responder, prog)
+        out = iterate(args.problem, cfg, answerer, responder, prog, seed_evidence=seeds)
     out["elapsed_s"] = round(time.time() - t0, 1)
     out["capability"] = args.capability
 

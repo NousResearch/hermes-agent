@@ -1,0 +1,2 @@
+{"node":"S1","q":"can source A return valid dataset?","chosen":"source A","expected":"HTTP 200 + JSON payload assembled to out.json","verdict":"fail","evidence":"sim r-source-a: HTTP 503; no success receipt; sources B-H untried","next":"try->S1b (source B)"}
+{"node":"S1b","q":"can source B return valid dataset?","chosen":"source B","expected":"HTTP 200 + JSON payload assembled to out.json","verdict":"fail","evidence":"sim r-source-b: connection timeout; no success receipt; sources C-H untried","next":"try->S1c (source C)"}

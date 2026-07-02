@@ -133,6 +133,51 @@ class LoopLogic(unittest.TestCase):
         self.assertEqual(top["selected"], ["top1", "top2"])
         self.assertEqual(bot["selected"], ["bot1", "bot2"])  # reversed: worst-first
 
+    # ── seed evidence (relentless-solve prerequisite) ──
+    def test_seed_evidence_reaches_rank_and_responder(self):
+        self._patch([[q("a", .9)], []])
+        captured = {}
+
+        def resp(problem, evidence, cfg):
+            captured["ev"] = list(evidence)
+            return "r"
+        out = iterate.iterate("p", {"k": 1, "max_rounds": 2, "floor": 0.12},
+                              answerer=found_answerer, responder=resp,
+                              seed_evidence=["Tried alfa: failed — 503"])
+        self.assertEqual(self.calls[0], ["Tried alfa: failed — 503"])   # rank round 1 sees seeds
+        self.assertEqual(captured["ev"][0], "Tried alfa: failed — 503")  # responder sees seeds first
+        self.assertEqual(len(out["tombstones"]), 1)                      # seeds are NOT tombstones
+
+    def test_seed_evidence_blank_lines_dropped(self):
+        self._patch([[]])
+        iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": 0.12},
+                        answerer=found_answerer, responder=mock_responder,
+                        seed_evidence=["  ", "", "fact one"])
+        self.assertEqual(self.calls[0], ["fact one"])
+
+    def test_no_seeds_is_backward_compatible(self):
+        self._patch([[q("a", .9)]])
+        iterate.iterate("p", {"k": 1, "max_rounds": 1, "floor": 0.12},
+                        answerer=found_answerer, responder=mock_responder)
+        self.assertEqual(self.calls[0], [])
+
+    def test_evidence_file_flag_seeds_main(self):
+        import contextlib
+        import io
+        import tempfile
+        self._patch([[]])
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write("# a comment\nTried alfa: failed — 503\n\n")
+            path = fh.name
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = iterate.main(["--problem", "p", "--dry-run", "--json",
+                                   "--evidence-file", path])
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.calls[0], ["Tried alfa: failed — 503"])  # comment + blank dropped
+        finally:
+            os.unlink(path)
+
     # ── capability ladder ──
     def test_capability_act_is_full_default(self):
         cfg = iterate.apply_capability({}, "act")

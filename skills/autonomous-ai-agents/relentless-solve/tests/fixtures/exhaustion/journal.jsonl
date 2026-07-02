@@ -1,0 +1,1 @@
+{"node":"S1","q":"obtain data from the only available source (alfa)?","chosen":"alfa","expected":"data returned from alfa source","verdict":"fail","evidence":"sim: r-alfa → tombstone (the sole source is unreachable)","next":"EXHAUSTION"}

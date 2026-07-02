@@ -1,0 +1,1 @@
+{"node":"S1c","q":"can source C return valid dataset?","chosen":"source C","expected":"HTTP 200 + JSON payload assembled to out.json","verdict":"fail","evidence":"sim r-source-c: connection refused; no success receipt; sources D-H untried","next":"GUARD-HALT: branch budget (3/3) exhausted; 5 branches remain"}

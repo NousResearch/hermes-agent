@@ -181,6 +181,23 @@ def test_repeated_failures_below_threshold_silent():
     assert kd.compute_task_diagnostics(task, [], []) == []
 
 
+def test_repeated_failures_clears_when_task_completed_with_failure_counter():
+    """A completed task is not operator-actionable even if its persisted
+    unified failure counter was not reset by the completion path.
+    """
+    task = _task(
+        status="done",
+        consecutive_failures=4,
+        last_failure_error="pid 222 not alive",
+    )
+    runs = [
+        _run(outcome="crashed", run_id=1, error="pid 111 not alive"),
+        _run(outcome="crashed", run_id=2, error="pid 222 not alive"),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert [d for d in diags if d.kind == "repeated_failures"] == []
+
+
 def test_repeated_failures_default_matches_dispatcher_failure_limit():
     """Default dispatcher auto-blocks at 2 failures, so diagnostics must
     also surface at 2 instead of waiting for the stale threshold of 3.
@@ -263,6 +280,27 @@ def test_repeated_crashes_breaks_on_recent_success():
         _run(outcome="completed", run_id=3),
     ]
     assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
+def test_repeated_crashes_clears_when_task_completed_after_crashed_runs():
+    """Manual task completion after dispatcher crash attempts resolves the
+    operator-visible crash-loop. A done task must not stay in the dashboard's
+    "tasks need attention" strip just because its historical task_runs still
+    end in crashed.
+    """
+    task = _task(status="done", assignee="default")
+    events = [
+        _event("crashed", ts=100),
+        _event("gave_up", ts=101),
+        _event("unblocked", ts=200),
+        _event("completed", ts=201),
+    ]
+    runs = [
+        _run(outcome="crashed", run_id=1, error="pid 111 not alive"),
+        _run(outcome="crashed", run_id=2, error="pid 222 not alive"),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, runs, now=300)
+    assert [d for d in diags if d.kind == "repeated_crashes"] == []
 
 
 def test_repeated_crashes_escalates_on_many_crashes():
@@ -369,7 +407,7 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 def test_diagnostics_sorted_critical_first():
     """A task with both a critical (many spawn failures) and a warning
     (prose phantoms) diagnostic should list the critical one first."""
-    task = _task(status="done", consecutive_failures=10,
+    task = _task(status="ready", consecutive_failures=10,
                  last_failure_error="nope")
     events = [
         _event("completed", ts=100, summary="referenced t_missing"),

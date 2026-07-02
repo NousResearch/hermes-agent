@@ -225,6 +225,79 @@ class TestJudgeGoal:
         assert reason == "not yet"
 
 
+    def test_long_horizon_remains_open_phase_closure_forces_continue(self, monkeypatch):
+        """Project/goal-loop closure reports can legitimately say a bounded
+        phase is complete while the standing goal remains open. That explicit
+        structured state must not be delegated to the generic judge, whose
+        completion rubric treats blocked/no-next-step language as DONE.
+        """
+        import sys
+        import types
+        import agent
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"verdict": "done", "reason": "phase closed"}')
+                )
+            ]
+        )
+        response = """
+        phase_closure: complete
+        standing_goal_state: remains_open
+        current_runtime_state: no_live_kanban_work
+        next_task_materialization: no_safe_candidate
+        """
+        fake_aux = types.SimpleNamespace(
+            get_text_auxiliary_client=lambda task: (fake_client, "judge-model"),
+            get_auxiliary_extra_body=lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "agent.auxiliary_client", fake_aux)
+        monkeypatch.setattr(agent, "auxiliary_client", fake_aux, raising=False)
+        verdict, reason, parse_failed, wait = goals.judge_goal(
+            "Maintain the long-horizon Kanban-driven project loop",
+            response,
+        )
+        assert verdict == "continue"
+        assert parse_failed is False
+        assert wait is None
+        assert "standing_goal_state=remains_open" in reason
+        fake_client.chat.completions.create.assert_not_called()
+
+    def test_long_horizon_override_ignores_unstructured_quoted_marker(self, monkeypatch):
+        """Quoting the marker in ordinary prose is not enough to bypass the
+        judge; the override requires a line-structured phase closure report.
+        """
+        import sys
+        import types
+        import agent
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"verdict": "done", "reason": "ordinary done"}')
+                )
+            ]
+        )
+        response = "The document mentions `standing_goal_state: remains_open`, but the task is done."
+        fake_aux = types.SimpleNamespace(
+            get_text_auxiliary_client=lambda task: (fake_client, "judge-model"),
+            get_auxiliary_extra_body=lambda: None,
+        )
+        monkeypatch.setitem(sys.modules, "agent.auxiliary_client", fake_aux)
+        monkeypatch.setattr(agent, "auxiliary_client", fake_aux, raising=False)
+        verdict, reason, parse_failed, wait = goals.judge_goal("goal", response)
+        assert verdict == "done"
+        assert reason == "ordinary done"
+        assert parse_failed is False
+        assert wait is None
+        fake_client.chat.completions.create.assert_called_once()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence
 # ──────────────────────────────────────────────────────────────────────

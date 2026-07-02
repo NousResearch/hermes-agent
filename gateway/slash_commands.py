@@ -38,7 +38,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials, render_personality_prompt
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -2044,34 +2044,30 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
-
         if args in {"none", "default", "neutral"}:
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
+                if "display" not in config or not isinstance(config.get("display"), dict):
+                    config["display"] = {}
                 config["agent"]["system_prompt"] = ""
+                config["display"]["personality"] = ""
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
             self._ephemeral_system_prompt = ""
             return t("gateway.personality.cleared")
         elif args in personalities:
-            new_prompt = _resolve_prompt(personalities[args])
+            new_prompt = render_personality_prompt(personalities[args])
 
             # Write to config.yaml, same pattern as CLI save_config_value.
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
+                if "display" not in config or not isinstance(config.get("display"), dict):
+                    config["display"] = {}
                 config["agent"]["system_prompt"] = new_prompt
+                config["display"]["personality"] = args
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))

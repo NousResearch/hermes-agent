@@ -6255,6 +6255,62 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+_NEUTRAL_PERSONALITIES = {"", "none", "default", "neutral"}
+
+
+def _prompt_text(value: Any) -> str:
+    """Normalize config prompt values from YAML before handing them to AIAgent."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(str(item).strip() for item in value if str(item).strip())
+    return str(value).strip()
+
+
+def render_personality_prompt(value: Any) -> str:
+    """Render a string or structured personality definition to a prompt."""
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(str(part).strip() for part in parts if str(part).strip())
+    return _prompt_text(value)
+
+
+def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -> str:
+    """Resolve the agent prompt overlay from config.yaml.
+
+    ``display.personality`` is the selected named personality.  A non-empty
+    ``agent.system_prompt`` still wins when it is a custom prompt, but if it
+    equals one of the known personality prompts it is treated as legacy cached
+    state and the selected ``display.personality`` is authoritative.
+    """
+    explicit = _prompt_text(cfg_get(cfg, "agent", "system_prompt", default=""))
+
+    name = str(cfg_get(cfg, "display", "personality", default="") or "").strip().lower()
+    personalities = cfg_get(cfg, "agent", "personalities", default={}) or {}
+    if (
+        name not in _NEUTRAL_PERSONALITIES
+        and isinstance(personalities, dict)
+        and name in personalities
+    ):
+        selected_prompt = render_personality_prompt(personalities[name])
+        known_prompts = {
+            render_personality_prompt(value)
+            for value in personalities.values()
+        }
+        # If agent.system_prompt is empty or just a stale copy of another named
+        # personality, honor the explicit display.personality selection.  If it
+        # is a custom prompt, preserve the user's custom overlay instead.
+        if not explicit or explicit in known_prompts:
+            return selected_prompt
+
+    return explicit
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.

@@ -1013,7 +1013,11 @@ class CLICommandsMixin:
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
+                saved = (
+                    save_config_value("agent.system_prompt", "")
+                    and save_config_value("display.personality", "")
+                )
+                if saved:
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
                     print("(^_^) Personality cleared (session only)")
@@ -1021,7 +1025,11 @@ class CLICommandsMixin:
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
+                saved = (
+                    save_config_value("agent.system_prompt", self.system_prompt)
+                    and save_config_value("display.personality", personality_name)
+                )
+                if saved:
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")

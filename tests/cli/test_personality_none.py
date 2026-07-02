@@ -48,7 +48,17 @@ class TestCLIPersonalityNone:
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True) as mock_save:
             cli._handle_personality_command("/personality none")
-        mock_save.assert_called_once_with("agent.system_prompt", "")
+        mock_save.assert_any_call("agent.system_prompt", "")
+        mock_save.assert_any_call("display.personality", "")
+        assert mock_save.call_count == 2
+
+    def test_known_personality_saves_display_personality(self):
+        cli = self._make_cli()
+        with patch("cli.save_config_value", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality helpful")
+        mock_save.assert_any_call("agent.system_prompt", "You are helpful.")
+        mock_save.assert_any_call("display.personality", "helpful")
+        assert mock_save.call_count == 2
 
     def test_known_personality_still_works(self):
         cli = self._make_cli()

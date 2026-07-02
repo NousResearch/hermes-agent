@@ -2827,7 +2827,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     pool = load_pool("xai-oauth")
     selected = pool.select()
     assert selected is not None
-    assert selected.source == "loopback_pkce"
+    assert selected.source == "device_code"
 
     # Add a manual API-key entry that must survive the quarantine.
     pool.add_entry(PooledCredential.from_dict("xai-oauth", {
@@ -2868,7 +2868,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert [entry["id"] for entry in auth_payload["credential_pool"]["xai-oauth"]] == ["manual-key"]
 
     # A second try_refresh_current must not call refresh_xai_oauth_pure again
-    # (pool is now empty of loopback entries and current is None).
+    # (pool is now empty of device-code entries and current is None).
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 

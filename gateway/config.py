@@ -558,6 +558,8 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    session_key_aliases: Dict[str, str] = field(default_factory=dict)  # Map platform-derived keys onto shared logical keys
+    session_id_overrides: Dict[str, str] = field(default_factory=dict)  # Force selected session keys to stable SessionDB IDs
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
@@ -679,6 +681,8 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "session_key_aliases": self.session_key_aliases,
+            "session_id_overrides": self.session_id_overrides,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -742,6 +746,23 @@ class GatewayConfig:
             max_concurrent_raw,
             max_concurrent_key,
         )
+        session_key_aliases_raw = data.get("session_key_aliases")
+        if session_key_aliases_raw is None:
+            session_key_aliases_raw = nested_gateway.get("session_key_aliases")
+        session_key_aliases = (
+            {str(k): str(v) for k, v in session_key_aliases_raw.items()}
+            if isinstance(session_key_aliases_raw, dict)
+            else {}
+        )
+
+        session_id_overrides_raw = data.get("session_id_overrides")
+        if session_id_overrides_raw is None:
+            session_id_overrides_raw = nested_gateway.get("session_id_overrides")
+        session_id_overrides = (
+            {str(k): str(v) for k, v in session_id_overrides_raw.items()}
+            if isinstance(session_id_overrides_raw, dict)
+            else {}
+        )
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -768,6 +789,8 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            session_key_aliases=session_key_aliases,
+            session_id_overrides=session_id_overrides,
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,

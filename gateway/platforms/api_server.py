@@ -800,6 +800,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        self._session_fanout_handler = None
+        self._session_run_handler = None
+        self._session_control_handler = None
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -810,6 +813,75 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+
+    def set_session_fanout_handler(self, handler) -> None:
+        self._session_fanout_handler = handler
+
+    def set_session_run_handler(self, handler) -> None:
+        self._session_run_handler = handler
+
+    def set_session_control_handler(self, handler) -> None:
+        self._session_control_handler = handler
+
+    @staticmethod
+    def _stringify_user_message_for_fanout(user_message: Any) -> str:
+        if isinstance(user_message, str):
+            return user_message
+        if isinstance(user_message, list):
+            parts = []
+            for item in user_message:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(p for p in parts if p)
+        return str(user_message or "")
+
+    async def _notify_session_fanout(
+        self,
+        *,
+        gateway_session_key: Optional[str],
+        session_id: Optional[str],
+        user_message: Any,
+        assistant_response: str = "",
+        run_id: Optional[str] = None,
+        message_kind: str = "turn",
+    ) -> None:
+        handler = self._session_fanout_handler
+        if handler is None:
+            return
+        result = handler(
+            origin_platform="api_server",
+            session_key=gateway_session_key or "",
+            session_id=session_id or "",
+            user_message=self._stringify_user_message_for_fanout(user_message),
+            assistant_response=assistant_response,
+            run_id=run_id,
+            message_kind=message_kind,
+        )
+        if asyncio.iscoroutine(result):
+            await result
+
+    def _notify_session_run_lifecycle(
+        self,
+        event: str,
+        *,
+        gateway_session_key: Optional[str],
+        session_id: Optional[str],
+        run_id: Optional[str],
+        agent: Any = None,
+    ) -> None:
+        handler = self._session_run_handler
+        if handler is None:
+            return
+        handler(
+            event=event,
+            origin_platform="api_server",
+            session_key=gateway_session_key or "",
+            session_id=session_id or "",
+            run_id=run_id or "",
+            agent=agent,
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1069,6 +1141,37 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent creation helper
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _surface_context_from_session_key(session_key: Optional[str], user_config: Optional[dict] = None) -> dict:
+        """Map a stable gateway session key to the platform context it represents.
+
+        API-server mobile clients use X-Hermes-Session-Key to select a real
+        Telegram/Discord surface. Treating those turns as plain api_server
+        scoped memory correctly but lost platform toolsets and channel prompts.
+        This resolver keeps delivery stateless while letting agent construction
+        inherit the selected surface's tools and prompt.
+        """
+        raw = str(session_key or "").strip()
+        parts = raw.split(":")
+        out = {"platform_key": "api_server", "platform": "api_server", "chat_id": "", "thread_id": "", "channel_prompt": None}
+        if len(parts) < 5 or parts[0] != "agent":
+            return out
+        platform = parts[2]
+        chat_type = parts[3]
+        chat_id = parts[4] if len(parts) > 4 else ""
+        thread_id = parts[5] if chat_type == "thread" and len(parts) > 5 else ""
+        if platform not in {"discord", "telegram"}:
+            return out
+        out.update({"platform_key": platform, "platform": platform, "chat_id": chat_id, "thread_id": thread_id})
+        cfg = user_config if isinstance(user_config, dict) else {}
+        platform_cfg = cfg.get(platform) if isinstance(cfg.get(platform), dict) else {}
+        prompts = platform_cfg.get("channel_prompts") if isinstance(platform_cfg, dict) else {}
+        if isinstance(prompts, dict):
+            prompt = prompts.get(str(chat_id))
+            if isinstance(prompt, str) and prompt.strip():
+                out["channel_prompt"] = prompt.strip()
+        return out
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -1121,7 +1224,16 @@ class APIServerAdapter(BasePlatformAdapter):
             model = runtime_model
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        surface_context = self._surface_context_from_session_key(gateway_session_key, user_config)
+        platform_key = surface_context["platform_key"]
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        surface_prompt = surface_context.get("channel_prompt")
+        if surface_prompt:
+            ephemeral_system_prompt = (
+                (surface_prompt + "\n\n" + ephemeral_system_prompt)
+                if ephemeral_system_prompt
+                else surface_prompt
+            )
 
         max_iterations = _current_max_iterations()
 
@@ -1138,7 +1250,10 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=surface_context.get("platform") or "api_server",
+            chat_id=surface_context.get("chat_id") or None,
+            chat_type="group" if surface_context.get("platform") == "discord" else ("dm" if surface_context.get("platform") == "telegram" else None),
+            thread_id=surface_context.get("thread_id") or None,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1645,6 +1760,42 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
+    async def _handle_session_key_current(self, request: "web.Request") -> "web.Response":
+        """GET /api/session-key/current — return the active session_id for X-Hermes-Session-Key."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if not gateway_session_key:
+            return web.json_response(_openai_error("X-Hermes-Session-Key is required", code="missing_session_key"), status=400)
+        handler = self._session_control_handler
+        if handler is None:
+            return web.json_response(_openai_error("Session key control is unavailable", code="session_control_unavailable"), status=503)
+        result = handler(action="current", session_key=gateway_session_key)
+        if result is None:
+            return web.json_response(_openai_error("Session key not found", code="session_key_not_found"), status=404)
+        return web.json_response({"object": "hermes.session_key", **result})
+
+    async def _handle_session_key_reset(self, request: "web.Request") -> "web.Response":
+        """POST /api/session-key/reset — rotate the session_id for X-Hermes-Session-Key."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if not gateway_session_key:
+            return web.json_response(_openai_error("X-Hermes-Session-Key is required", code="missing_session_key"), status=400)
+        handler = self._session_control_handler
+        if handler is None:
+            return web.json_response(_openai_error("Session key control is unavailable", code="session_control_unavailable"), status=503)
+        result = handler(action="reset", session_key=gateway_session_key)
+        if result is None:
+            return web.json_response(_openai_error("Session key not found", code="session_key_not_found"), status=404)
+        return web.json_response({"object": "hermes.session_key", **result})
+
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
         auth_err = self._check_auth(request)
@@ -1676,6 +1827,13 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+        await self._notify_session_fanout(
+            gateway_session_key=gateway_session_key,
+            session_id=effective_session_id or session_id,
+            user_message=user_message,
+            assistant_response=final_response,
+            message_kind="turn",
+        )
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -1768,6 +1926,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                await self._notify_session_fanout(
+                    gateway_session_key=gateway_session_key,
+                    session_id=effective_session_id or session_id,
+                    user_message=user_message,
+                    assistant_response=final_response,
+                    run_id=run_id,
+                    message_kind="turn",
+                )
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -3942,11 +4108,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
         raw_input = body.get("input")
-        if not raw_input:
+        if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
+        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) and raw_input and isinstance(raw_input[-1], dict) else "")
+        if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         instructions = body.get("instructions")
@@ -4531,6 +4697,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_get("/api/session-key/current", self._handle_session_key_current)
+            self._app.router.add_post("/api/session-key/reset", self._handle_session_key_reset)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

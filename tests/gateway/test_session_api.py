@@ -438,3 +438,154 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_invokes_session_fanout_hook(auth_adapter, session_db):
+    session_id = session_db.create_session("fanout-chat-session", "api_server")
+
+    async def fake_run(**kwargs):
+        return {"final_response": "reply from api", "session_id": "effective-session"}, {"total_tokens": 3}
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run), \
+        patch.object(auth_adapter, "_notify_session_fanout", new_callable=AsyncMock) as fanout:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "agent:main:discord:group:channel:user",
+                },
+                json={"message": "from phone"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    assert fanout.await_count == 1
+    only = fanout.await_args_list[0].kwargs
+    assert only == {
+        "gateway_session_key": "agent:main:discord:group:channel:user",
+        "session_id": "effective-session",
+        "user_message": "from phone",
+        "assistant_response": "reply from api",
+        "message_kind": "turn",
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_invokes_session_fanout_hook(auth_adapter, session_db):
+    session_id = session_db.create_session("fanout-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("reply")
+        return {"final_response": "stream reply", "session_id": "effective-stream-session"}, {"total_tokens": 4}
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run), \
+        patch.object(auth_adapter, "_notify_session_fanout", new_callable=AsyncMock) as fanout:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "agent:main:discord:group:channel:user",
+                },
+                json={"message": "stream from phone"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert fanout.await_count == 1
+    only = fanout.await_args_list[0].kwargs
+    assert only["gateway_session_key"] == "agent:main:discord:group:channel:user"
+    assert only["session_id"] == "effective-stream-session"
+    assert only["user_message"] == "stream from phone"
+    assert only["assistant_response"] == "stream reply"
+    assert only["message_kind"] == "turn"
+    assert isinstance(only["run_id"], str) and only["run_id"].startswith("run_")
+
+
+@pytest.mark.asyncio
+async def test_session_chat_invokes_registered_fanout_handler(auth_adapter, session_db):
+    """End-to-end: POST /api/sessions/{id}/chat must deliver the turn to a
+    handler registered via set_session_fanout_handler with the gateway session
+    key from X-Hermes-Session-Key, the effective session_id, the user message,
+    and the assistant response."""
+    session_id = session_db.create_session("reg-fanout-chat", "api_server")
+
+    async def fake_run(**kwargs):
+        return {"final_response": "registered reply", "session_id": "eff-reg-session"}, {"total_tokens": 2}
+
+    handler_calls = []
+
+    async def fanout_handler(**kwargs):
+        handler_calls.append(kwargs)
+
+    auth_adapter.set_session_fanout_handler(fanout_handler)
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "agent:main:discord:group:ch:user",
+                },
+                json={"message": "from tablet"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    assert len(handler_calls) == 1
+    assert handler_calls[0]["origin_platform"] == "api_server"
+    assert handler_calls[0]["session_key"] == "agent:main:discord:group:ch:user"
+    assert handler_calls[0]["session_id"] == "eff-reg-session"
+    assert handler_calls[0]["user_message"] == "from tablet"
+    assert handler_calls[0]["assistant_response"] == "registered reply"
+    assert handler_calls[0]["message_kind"] == "turn"
+    assert handler_calls[0]["run_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_invokes_registered_fanout_handler_with_run_id(auth_adapter, session_db):
+    """End-to-end: POST /api/sessions/{id}/chat/stream must deliver the turn to
+    a handler registered via set_session_fanout_handler after the final response,
+    including a run_id."""
+    session_id = session_db.create_session("reg-fanout-stream", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("registered stream")
+        return {"final_response": "registered stream reply", "session_id": "eff-reg-stream"}, {"total_tokens": 5}
+
+    handler_calls = []
+
+    async def fanout_handler(**kwargs):
+        handler_calls.append(kwargs)
+
+    auth_adapter.set_session_fanout_handler(fanout_handler)
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "agent:main:telegram:dm:123",
+                },
+                json={"message": "stream from tablet"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert len(handler_calls) == 1
+    only = handler_calls[0]
+    assert only["origin_platform"] == "api_server"
+    assert only["session_key"] == "agent:main:telegram:dm:123"
+    assert only["session_id"] == "eff-reg-stream"
+    assert only["user_message"] == "stream from tablet"
+    assert only["assistant_response"] == "registered stream reply"
+    assert only["message_kind"] == "turn"
+    assert isinstance(only["run_id"], str) and only["run_id"].startswith("run_")

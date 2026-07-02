@@ -1051,12 +1051,14 @@ class SessionStore:
 
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(
+        session_key = build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source),
         )
+        aliases = getattr(self.config, "session_key_aliases", {}) or {}
+        return str(aliases.get(session_key, session_key))
 
     def _create_entry_from_recovered_row(
         self,
@@ -1408,7 +1410,8 @@ class SessionStore:
                     return recovered_entry
 
             # Create new session
-            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            overrides = getattr(self.config, "session_id_overrides", {}) or {}
+            session_id = str(overrides.get(session_key) or f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}")
 
             entry = SessionEntry(
                 session_key=session_key,

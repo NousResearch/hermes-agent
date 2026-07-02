@@ -153,6 +153,23 @@ class TestStartRun:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"input": "   \n\t  "},
+            {"input": [{"role": "user", "content": "   "}]},
+            {"input": [{"role": "user", "content": []}]},
+        ],
+    )
+    async def test_start_blank_visible_payload_returns_400(self, adapter, payload):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json=payload)
+        assert resp.status == 400
+        assert adapter._run_statuses == {}
+        assert adapter._run_streams == {}
+
+    @pytest.mark.asyncio
     async def test_start_invalid_history_does_not_allocate_run(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

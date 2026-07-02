@@ -43,7 +43,9 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+import traceback
+import uuid
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -3288,7 +3290,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 session_key = self.session_store._generate_session_key(source)
                 if isinstance(session_key, str) and session_key:
-                    return session_key
+                    aliases = getattr(getattr(self, "config", None), "session_key_aliases", {}) or {}
+                    return str(aliases.get(session_key, session_key))
             except Exception:
                 pass
         config = getattr(self, "config", None)
@@ -3305,12 +3308,234 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
-        return build_session_key(
+        session_key = build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
             profile=_profile,
         )
+        aliases = getattr(config, "session_key_aliases", {}) or {}
+        return str(aliases.get(session_key, session_key))
+
+    def _canonical_api_session_key(self, session_key: str = "", session_id: str = "") -> str:
+        """Resolve an API session key/session_id onto the shared gateway key."""
+        config = getattr(self, "config", None)
+        aliases = getattr(config, "session_key_aliases", {}) or {}
+        overrides = getattr(config, "session_id_overrides", {}) or {}
+        if session_key:
+            return str(aliases.get(session_key, session_key))
+        if session_id:
+            for key, value in overrides.items():
+                if str(value) == str(session_id):
+                    return str(aliases.get(key, key))
+            store = getattr(self, "session_store", None)
+            if store is not None:
+                try:
+                    with store._lock:
+                        store._ensure_loaded_locked()
+                        for entry_key, entry in store._entries.items():
+                            if str(getattr(entry, "session_id", "")) == str(session_id):
+                                return str(aliases.get(entry_key, entry_key))
+                except Exception:
+                    logger.debug(
+                        "API session fanout could not resolve session_id %s via SessionStore",
+                        session_id,
+                        exc_info=True,
+                    )
+        return str(session_key or "")
+
+    def _fanout_targets_for_session_key(self, session_key: str, session_id: str = "") -> list[tuple[Platform, str, str]]:
+        """Return chat targets whose configured session alias maps to this canonical key."""
+        canonical = self._canonical_api_session_key(session_key, session_id)
+        if not canonical and session_id:
+            canonical = self._canonical_api_session_key("", session_id)
+        aliases = getattr(getattr(self, "config", None), "session_key_aliases", {}) or {}
+        seen: set[tuple[Platform, str, str]] = set()
+        targets: list[tuple[Platform, str, str]] = []
+        candidate_keys = []
+        for raw_key, target_key in aliases.items():
+            if str(target_key) != canonical and str(raw_key) != canonical:
+                continue
+            candidate_keys.append(str(raw_key))
+        # If the canonical key is already a concrete platform session key
+        # (agent:main:discord:group:<channel>:<user>, etc.), route it
+        # directly even when config has no alias entry for it. Mobile/API
+        # clients can resume existing SessionDB lanes by session_id/header and
+        # still need live fanout to the selected surface.
+        candidate_keys.append(canonical)
+
+        for raw_key in candidate_keys:
+            parts = raw_key.split(":")
+            if len(parts) < 5:
+                continue
+            platform_name = parts[2]
+            chat_type = parts[3]
+            chat_id = parts[4]
+            # Only real thread/topic session keys carry fanout thread metadata.
+            # For Discord group/channel sessions, the suffix is usually the
+            # per-user isolation segment, not a Discord thread.
+            # Passing that user id as metadata.thread_id makes Discord reject
+            # the send with Unknown Channel.
+            thread_id = parts[5] if chat_type == "thread" and len(parts) > 5 else ""
+            try:
+                platform = Platform(platform_name)
+            except ValueError:
+                continue
+            item = (platform, chat_id, thread_id)
+            if item not in seen:
+                seen.add(item)
+                targets.append(item)
+        return targets
+
+    async def _fanout_api_session_turn(
+        self,
+        *,
+        origin_platform: str,
+        session_key: str,
+        session_id: str,
+        user_message: Any,
+        assistant_response: str,
+        run_id: str | None = None,
+        message_kind: str = "turn",
+    ) -> None:
+        if origin_platform != "api_server":
+            return
+        canonical = self._canonical_api_session_key(session_key, session_id)
+        if not canonical:
+            logger.info(
+                "API session fanout skipped: unresolved session key session_id=%s kind=%s has_header=%s",
+                session_id,
+                message_kind,
+                bool(session_key),
+            )
+            return
+        user_text = self._stringify_api_user_message(user_message).strip()
+        assistant_text = str(assistant_response or "").strip()
+        kind = str(message_kind or "turn")
+        if kind == "user":
+            # Do not mirror pre-run mobile/API user turns into Discord/Telegram.
+            # That local experiment created extra platform events while an agent
+            # was active and made control-plane/verifier payloads visible as chat
+            # traffic. Fan out only completed turns or final assistant messages.
+            return
+        if kind == "assistant":
+            if not assistant_text:
+                return
+            content = assistant_text
+        else:
+            if not user_text and not assistant_text:
+                return
+            content = f"📱 Mobile: {user_text}\n\n{assistant_text}" if user_text and assistant_text else (user_text or assistant_text)
+        targets = self._fanout_targets_for_session_key(canonical, session_id)
+        if not targets:
+            logger.info(
+                "API session fanout skipped: no targets canonical=%s session_id=%s kind=%s",
+                canonical,
+                session_id,
+                kind,
+            )
+            return
+        for platform, chat_id, thread_id in targets:
+            adapter = getattr(self, "adapters", {}).get(platform)
+            if adapter is None:
+                logger.info(
+                    "API session fanout skipped: no adapter platform=%s chat=%s thread=%s canonical=%s kind=%s",
+                    platform.value if hasattr(platform, "value") else platform,
+                    chat_id,
+                    thread_id,
+                    canonical,
+                    kind,
+                )
+                continue
+            metadata = {"thread_id": thread_id} if thread_id else None
+            result = await adapter.send(chat_id, content, reply_to=None, metadata=metadata)
+            logger.info(
+                "API session fanout sent: platform=%s chat=%s thread=%s canonical=%s kind=%s success=%s error=%s message_id=%s",
+                platform.value if hasattr(platform, "value") else platform,
+                chat_id,
+                thread_id,
+                canonical,
+                kind,
+                getattr(result, "success", None),
+                getattr(result, "error", None),
+                getattr(result, "message_id", None),
+            )
+
+    @staticmethod
+    def _stringify_api_user_message(user_message: Any) -> str:
+        if isinstance(user_message, str):
+            return user_message
+        if isinstance(user_message, list):
+            parts = []
+            for item in user_message:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(p for p in parts if p)
+        return str(user_message or "")
+
+    def _handle_api_session_run_lifecycle(
+        self,
+        *,
+        event: str,
+        origin_platform: str,
+        session_key: str,
+        session_id: str,
+        run_id: str,
+        agent: Any = None,
+    ) -> None:
+        if origin_platform != "api_server":
+            return
+        canonical = self._canonical_api_session_key(session_key, session_id)
+        if not canonical:
+            return
+        if event == "started" and agent is not None:
+            self._running_agents[canonical] = agent
+            self._running_agents_ts[canonical] = time.time()
+            return
+        if event in {"completed", "failed", "cancelled", "stopped"}:
+            current = self._running_agents.get(canonical)
+            if agent is None or current is agent:
+                self._running_agents.pop(canonical, None)
+                self._running_agents_ts.pop(canonical, None)
+            # Drain one pending platform follow-up now that the API-owned run is done.
+            for platform, _chat_id, _thread_id in self._fanout_targets_for_session_key(canonical, session_id):
+                adapter = getattr(self, "adapters", {}).get(platform)
+                if adapter is None:
+                    continue
+                if hasattr(adapter, "get_pending_message"):
+                    pending = _dequeue_pending_event(adapter, canonical)
+                else:
+                    pending = getattr(adapter, "_pending_messages", {}).pop(canonical, None)
+                if pending is not None and hasattr(adapter, "_start_session_processing"):
+                    adapter._start_session_processing(pending, canonical)
+                    break
+
+    def _api_session_key_control(self, *, action: str, session_key: str) -> Optional[dict]:
+        if not session_key:
+            return None
+        canonical = self._canonical_api_session_key(session_key, "")
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return None
+        from gateway.session import SessionEntry
+        now = datetime.now()
+        with store._lock:
+            store._ensure_loaded_locked()
+            entry = store._entries.get(canonical)
+            if entry is None:
+                session_id = (getattr(getattr(self, "config", None), "session_id_overrides", {}) or {}).get(canonical)
+                if not session_id:
+                    session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                entry = SessionEntry(session_key=canonical, session_id=str(session_id), created_at=now, updated_at=now)
+                store._entries[canonical] = entry
+                store._save()
+            if action == "reset":
+                entry.session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                entry.updated_at = now
+                store._save()
+            return {"session_key": canonical, "session_id": entry.session_id}
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -6626,6 +6851,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            if hasattr(adapter, "set_session_fanout_handler"):
+                adapter.set_session_fanout_handler(self._fanout_api_session_turn)
+            if hasattr(adapter, "set_session_run_handler"):
+                adapter.set_session_run_handler(self._handle_api_session_run_lifecycle)
+            if hasattr(adapter, "set_session_control_handler"):
+                adapter.set_session_control_handler(self._api_session_key_control)
             adapter._busy_text_mode = self._busy_text_mode
             
             # Try to connect
@@ -8126,6 +8357,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            if hasattr(adapter, "set_session_fanout_handler"):
+                adapter.set_session_fanout_handler(self._fanout_api_session_turn)
+            if hasattr(adapter, "set_session_run_handler"):
+                adapter.set_session_run_handler(self._handle_api_session_run_lifecycle)
+            if hasattr(adapter, "set_session_control_handler"):
+                adapter.set_session_control_handler(self._api_session_key_control)
             adapter._busy_text_mode = self._busy_text_mode
 
             try:

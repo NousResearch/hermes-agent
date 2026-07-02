@@ -7705,6 +7705,30 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
+    elif value.lstrip()[:1] in ('[', '{'):
+        # List/mapping literals — e.g.
+        #   hermes config set platform_toolsets.line '["file","web"]'
+        # Before this branch such values were stored as a raw STRING, and every
+        # reader that gates on isinstance(..., list) (``_get_platform_tools``,
+        # ``_get_enabled_set``, ...) silently ignored them and fell back to its
+        # default — the setting looked saved but never took effect.
+        try:
+            parsed = yaml.safe_load(value)
+            if isinstance(parsed, (list, dict)):
+                value = parsed
+            else:
+                print(
+                    f"Warning: value for '{key}' looks like a list/mapping but "
+                    f"parsed as {type(parsed).__name__}; storing as string.",
+                    file=sys.stderr,
+                )
+        except yaml.YAMLError:
+            print(
+                f"Warning: value for '{key}' looks like a list/mapping but is "
+                f"not valid YAML/JSON; storing as string. Most isinstance-gated "
+                f"readers will ignore a string here.",
+                file=sys.stderr,
+            )
 
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),

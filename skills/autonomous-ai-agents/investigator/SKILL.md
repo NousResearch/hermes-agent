@@ -9,7 +9,7 @@ description: >
   (act) by default; `--capability experiment|read` down-scopes for caution. Best where a clarification
   SHAPES the work (build/spec) or the answer is researchable. Triggers: "figure out what I'm missing
   and just do it", "investigate and answer", "resolve the unknowns then respond".
-version: 0.1.0
+version: 1.0.1
 author: agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -55,6 +55,33 @@ final = respond(problem, evidence)           # best response over the enriched c
 
 Each round conditions on the *entire* accumulated context, so the model's implicit posterior sharpens
 as facts accrue — which is why we **always append** and keep tombstones clean, high-signal facts.
+
+## When to Use
+
+**Use it** when the task's unknowns are *researchable* and a clarification would *shape the work* —
+vague build/spec/integration tasks against a real project ("set up CI for this repo", "add export
+to the reports page"), where the answerer can go read the codebase/environment and the final
+response should be grounded in what it finds.
+
+**Don't use it** for well-specified tasks (the ranker will converge immediately — wasted rounds),
+for questions only the user can answer (it surfaces those as clarifying questions rather than
+guessing — but if *most* unknowns are user-only, just run `information-gain` and ask), or when a
+capable agent would naturally self-investigate anyway (the A/B showed the loop is redundant there —
+its distinctive value is systematic coverage + user-only constraint surfacing).
+
+### Example (abridged)
+
+```
+$ python3 scripts/iterate.py --problem "Set up CI for this repository." --k 2 --max-rounds 2
+
+round 1: rank -> 2 questions worth researching
+  ? Which test suites/commands must CI run?        -> ANSWERED: pytest via tests/run.py (README)
+  ? Target platform — GitHub Actions or other CI?  -> ANSWERED: GitHub repo, no existing workflows
+round 2: rank (with 2 facts folded in) -> top value 0.21 < floor -> stop: converged
+
+FINAL RESPONSE: a .github/workflows/ci.yml running `python3 tests/run.py` on push/PR ...
+TOMBSTONES: 2 ANSWERED, 0 NOT_FOUND   stop_reason: converged (natural)
+```
 
 ## How to run
 

@@ -9,7 +9,7 @@ description: >
   recommendations (pre-answer / assume-default) using role-specialized local Ollama models. Reports
   only — it does not ask the user or answer the questions itself. Triggers: "what should I clarify",
   "what questions matter here", "is this spec complete", "what am I missing before I start".
-version: 1.0.0
+version: 1.0.1
 author: agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -114,6 +114,30 @@ its chance of being wrong), plus the recommendation (**PRE_ANSWER** ≥ 0.60 /
 **ASSUME_DEFAULT** ≥ 0.30). A detailed numeric table is included below the list. If nothing clears the
 bar, it says so — the prompt is already specified well enough for a good response. See
 `references/design-decisions.md` for the model.
+
+### Example (abridged)
+
+```
+$ python3 scripts/infogain.py "Add authentication to my web app."
+
+Key questions, ranked by how much answering them improves the response:
+
+1. (0.74, PRE_ANSWER) What kind of users authenticate — your own customers, or do you
+   need social/enterprise SSO (Google, SAML)?    [family: Auth strategy]
+   Without it I'd assume email+password sessions; ~60% chance that's not what you need,
+   and the choice reshapes the whole design.
+2. (0.66, PRE_ANSWER) What is the app's stack (framework, existing user table/DB)?
+   [family: Stack & integration points]
+   I'd otherwise pick a generic middleware answer that may not drop into your codebase.
+3. (0.48, ASSUME_DEFAULT) Buy vs build — is a hosted provider (Auth0/Clerk/Cognito)
+   acceptable, or must this be self-hosted?    [family: Should we build this? — contrarian]
+   Default: self-hosted library; flag if compliance or pricing forces the other path.
+...
+(numeric U / EVSI / value table follows)
+```
+
+Answer one of these (yourself or via research), re-run with `--evidence "stack -> Django,
+existing users table"`, and the resolved question drops out while the next-best surfaces.
 
 ## How it works (4 stages, looped)
 

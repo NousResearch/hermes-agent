@@ -1094,6 +1094,8 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+_STATUS_REMOTE_HEALTH_TIMEOUT = 1.0
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -2170,9 +2172,18 @@ async def get_status(profile: Optional[str] = None):
 
         if not gateway_running and _GATEWAY_HEALTH_URL:
             loop = asyncio.get_running_loop()
-            alive, remote_health_body = await loop.run_in_executor(
-                None, _probe_gateway_health
-            )
+            try:
+                alive, remote_health_body = await asyncio.wait_for(
+                    loop.run_in_executor(None, _probe_gateway_health),
+                    timeout=_STATUS_REMOTE_HEALTH_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                _log.warning(
+                    "Gateway health probe timed out after %.1fs while serving /api/status",
+                    _STATUS_REMOTE_HEALTH_TIMEOUT,
+                )
+                alive = False
+                remote_health_body = None
             if alive:
                 gateway_running = True
                 # PID from the remote container (display only — not locally valid)

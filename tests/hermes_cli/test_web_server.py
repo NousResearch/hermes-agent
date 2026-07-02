@@ -5,6 +5,7 @@ import os
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -4721,6 +4722,32 @@ class TestStatusRemoteGateway:
         data = resp.json()
         assert data["gateway_running"] is False
         assert data["gateway_health_url"] is None
+
+    def test_status_remote_probe_timeout_ignores_late_success(self, monkeypatch, caplog):
+        """A timed-out remote gateway probe must not report a stale success."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_STATUS_REMOTE_HEALTH_TIMEOUT", 0.01, raising=False)
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (False, None))
+        assert self.client.get("/api/status").status_code == 200
+
+        def slow_probe():
+            time.sleep(0.25)
+            return True, {"status": "ok", "pid": 999}
+
+        monkeypatch.setattr(ws, "_probe_gateway_health", slow_probe)
+
+        with caplog.at_level("WARNING", logger="hermes_cli.web_server"):
+            resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_health_url"] == "http://gw:8642"
+        assert "Gateway health probe timed out" in caplog.text
 
     def test_status_remote_running_null_pid(self, monkeypatch):
         """Remote gateway running but PID not in response — pid should be None."""

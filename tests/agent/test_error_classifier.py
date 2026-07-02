@@ -1881,3 +1881,77 @@ class TestOpenRouterUpstreamRateLimit:
         # Overload disambiguation runs first; the outer message is the overload
         # phrase, so this is an overload, not an upstream rate-limit.
         assert result.reason == FailoverReason.overloaded
+
+
+# ── HTTP 408 request timeout ────────────────────────────────────────────
+
+class Test408RequestTimeout:
+    """HTTP 408 must never fall through to the non-retryable 'other 4xx'
+    bucket (that abort persists an empty assistant turn — the "disappeared
+    conversation" / blank-bubble symptom). ALL 408s are classified as a transient
+    ``timeout``: retryable, and explicitly NOT should_compress.
+
+    Design decision (field 2026-07-02): even the GitHub Copilot
+    ``user_request_timeout`` / "Timed out reading request body ... use a
+    smaller request size" case is a plain retry, NOT auto-compression. Real
+    data showed the 408 is probabilistic jitter well below the hard prompt
+    ceiling — the same ~785k-token request that 408'd once succeeded on the
+    next attempt at ~786k — so retrying the same body usually works, and
+    auto-compaction would silently delete conversation history for a merely
+    transient timeout. Genuine over-window prompts surface as 413 /
+    context_overflow (their own compression path); users compact 408-prone
+    long sessions deliberately via ``/compress``.
+    """
+
+    def test_copilot_oversized_body_408_retries_as_timeout_not_compress(self):
+        # The exact shape GitHub Copilot returns on a long session. It must
+        # retry (timeout), and must NOT auto-compress.
+        e = MockAPIError(
+            "Error code: 408 - {'error': {'message': 'Timed out reading "
+            "request body. Try again, or use a smaller request size.', "
+            "'code': 'user_request_timeout'}}",
+            status_code=408,
+            body={"error": {"message": "Timed out reading request body. "
+                            "Try again, or use a smaller request size.",
+                            "code": "user_request_timeout"}},
+        )
+        result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_408_never_auto_compresses(self):
+        # Hard guard on the user's explicit preference: a 408 must NEVER
+        # trigger auto-compaction (which would delete history unprompted).
+        # This must FAIL if anyone re-routes 408 to payload_too_large.
+        for msg, body in [
+            ("Timed out reading request body. Use a smaller request size.", {}),
+            ("Request timed out.", {"error": {"code": "user_request_timeout"}}),
+            ("Request Timeout", {}),
+        ]:
+            e = MockAPIError(msg, status_code=408, body=body)
+            result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+            assert result.should_compress is False, msg
+            assert result.reason != FailoverReason.payload_too_large, msg
+
+    def test_oversized_body_408_is_not_non_retryable_format_error(self):
+        # Falsification guard: if the 408 branch is removed, this 408 would
+        # be classified as a non-retryable format_error and the turn would
+        # abort into a blank bubble. This assertion must FAIL on buggy code.
+        e = MockAPIError(
+            "Timed out reading request body. Try again, or use a smaller "
+            "request size.",
+            status_code=408,
+        )
+        result = classify_api_error(e, provider="copilot", model="claude-opus-4.8")
+        assert result.retryable is True
+        assert result.reason != FailoverReason.format_error
+
+    def test_plain_408_is_transient_timeout(self):
+        # A generic gateway/request timeout must retry as a transport timeout.
+        e = MockAPIError("Request Timeout", status_code=408)
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+        assert result.should_compress is False
+

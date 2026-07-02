@@ -899,6 +899,41 @@ def _classify_by_status(
             should_compress=True,
         )
 
+    if status_code == 408:
+        # HTTP 408 is a timeout, NOT a permanent client error. Without this
+        # branch it falls through to the generic "other 4xx -> non-retryable
+        # format_error" catch-all at the bottom of this function, which aborts
+        # the turn and persists an empty assistant bubble (the "disappeared
+        # conversation" / blank-turn symptom).
+        #
+        # We classify ALL 408s as a transient ``timeout`` (retryable, NO
+        # compression). This deliberately covers the GitHub Copilot
+        # ``user_request_timeout`` / "Timed out reading request body ... use a
+        # smaller request size" case too, even though that one is nominally
+        # about request SIZE. Field evidence (long copilot/opus-4.8 session,
+        # 2026-07-02): the 408 is PROBABILISTIC/jitter in a wide band well
+        # BELOW the hard prompt ceiling — the same ~785k-token request that
+        # 408'd once succeeded on the very next attempt at ~786k. The edge
+        # occasionally reads the large body too slowly and times out; it is
+        # not a hard "body exceeds the limit" rejection until the prompt
+        # actually approaches the ceiling (~936k for opus-4.8). So the correct,
+        # least-destructive recovery is a plain retry (the SAME body usually
+        # succeeds on the next attempt), NOT auto-compression.
+        #
+        # We intentionally do NOT set should_compress here: auto-compaction on
+        # a 408 would silently delete conversation history the moment a request
+        # merely jitters, which is a heavy, surprising, user-visible side
+        # effect for a transient timeout. Genuine "prompt too large for the
+        # window" is a SEPARATE signal (413 / context_overflow) and stays on
+        # its own compression path. When retries here are exhausted the loop
+        # falls back to another provider (transport-failure eager-fallback
+        # after 2 attempts); the user can always compact deliberately with
+        # ``/compress`` if a long session keeps timing out.
+        return result_fn(
+            FailoverReason.timeout,
+            retryable=True,
+        )
+
     if status_code == 429:
         # Already checked long_context_tier above. Some providers (notably
         # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status

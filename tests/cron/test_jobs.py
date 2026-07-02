@@ -402,6 +402,71 @@ class TestUpdateJob:
         assert updated["schedule"]["kind"] == "once"
         assert updated["next_run_at"] is not None
 
+    def test_resaving_same_past_oneshot_is_still_rejected(self, tmp_cron_dir, monkeypatch):
+        now = [datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)]
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now[0])
+        schedule = (now[0] + timedelta(minutes=1)).isoformat()
+        job = create_job(prompt="One shot", schedule=schedule, deliver="local")
+
+        now[0] += timedelta(minutes=10)
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(
+                job["id"],
+                {
+                    "name": "Renamed one shot",
+                    "schedule": job["schedule"],
+                    "schedule_display": job["schedule_display"],
+                },
+            )
+
+        fetched = get_job(job["id"])
+        assert fetched["name"] == job["name"]
+        assert fetched["schedule"] == job["schedule"]
+
+    def test_resaving_same_interval_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 6, 29, 14, 0, 10, tzinfo=timezone.utc)
+        due_run = datetime(2026, 6, 29, 13, 0, 0, tzinfo=timezone.utc).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Hourly report", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_run
+        save_jobs(jobs)
+
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Renamed hourly report",
+                "schedule": job["schedule"],
+                "schedule_display": job["schedule_display"],
+            },
+        )
+
+        assert updated["next_run_at"] == due_run
+        assert get_job(job["id"])["next_run_at"] == due_run
+
+    def test_resaving_same_cron_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 6, 29, 14, 0, 10, tzinfo=timezone.utc)
+        due_run = datetime(2026, 6, 29, 13, 0, 0, tzinfo=timezone.utc).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Hourly cron report", schedule="0 * * * *")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_run
+        save_jobs(jobs)
+
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Renamed cron report",
+                "schedule": job["schedule"],
+                "schedule_display": job["schedule_display"],
+            },
+        )
+
+        assert updated["next_run_at"] == due_run
+        assert get_job(job["id"])["next_run_at"] == due_run
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True

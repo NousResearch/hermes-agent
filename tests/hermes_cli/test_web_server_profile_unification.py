@@ -283,6 +283,36 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is False
+        assert calls[-1]["include_unconfigured"] is False
+
+        resp = client.get("/api/model/options", params={"explicit_only": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is True
+
+        resp = client.get("/api/model/options", params={"include_unconfigured": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["include_unconfigured"] is True
+
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
         with empty model info ("no model set" — silently wrong)."""

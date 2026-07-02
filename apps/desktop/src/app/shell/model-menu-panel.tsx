@@ -84,7 +84,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     queryKey: ['model-options', activeSessionId || 'global'],
     queryFn: (): Promise<ModelOptionsResponse> => {
       if (gateway && activeSessionId) {
-        return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
+        return gateway.request<ModelOptionsResponse>('model.options', {
+          session_id: activeSessionId,
+          explicit_only: true
+        })
       }
 
       return getGlobalModelOptions()
@@ -140,6 +143,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         gateway && activeSessionId
           ? await gateway.request<ModelOptionsResponse>('model.options', {
               session_id: activeSessionId,
+              explicit_only: true,
               refresh: true
             })
           : await getGlobalModelOptions({ refresh: true })

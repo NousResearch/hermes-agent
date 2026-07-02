@@ -57,7 +57,8 @@ export function ModelPickerDialog({
     queryFn: () => {
       if (gw && sessionId) {
         return gw.request<ModelOptionsResponse>('model.options', {
-          session_id: sessionId
+          session_id: sessionId,
+          explicit_only: true
         })
       }
 

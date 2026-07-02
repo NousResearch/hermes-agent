@@ -1493,6 +1493,26 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             if has_usable_secret(os.getenv(env_var, "")):
                 return True
 
+    # 4. Check persisted credential-pool entries that came from EXPLICIT flows
+    # the user initiated inside Hermes (manual add / device-code / PKCE), plus
+    # env-backed pool entries. This intentionally excludes ambient borrowed
+    # sources like gh_cli / claude_code / qwen-cli.
+    try:
+        for entry in read_credential_pool(normalized):
+            if not isinstance(entry, dict):
+                continue
+            source = str(entry.get("source") or "").strip().lower()
+            if not source:
+                continue
+            if (
+                source.startswith("env:")
+                or source in {"device_code", "loopback_pkce", "hermes_pkce", "manual"}
+                or source.startswith("manual:")
+            ):
+                return True
+    except Exception:
+        pass
+
     return False
 
 

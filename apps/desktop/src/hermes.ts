@@ -756,10 +756,28 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
-export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<ModelOptionsResponse> {
+export function getGlobalModelOptions(opts?: {
+  refresh?: boolean
+  includeUnconfigured?: boolean
+  explicitOnly?: boolean
+}): Promise<ModelOptionsResponse> {
+  const params = new URLSearchParams()
+
+  if (opts?.refresh) {
+    params.set('refresh', '1')
+  }
+
+  if (opts?.includeUnconfigured) {
+    params.set('include_unconfigured', '1')
+  }
+
+  if (opts?.explicitOnly !== false) {
+    params.set('explicit_only', '1')
+  }
+
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options'
+    path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options'
   })
 }
 

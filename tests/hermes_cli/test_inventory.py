@@ -321,6 +321,44 @@ def test_include_unconfigured_skips_already_present_slugs():
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
 
 
+def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
+    rows = [
+        {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "gemini", "name": "Gemini", "models": ["gemini-2.5-pro"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "nous", "name": "Nous", "models": ["anthropic/claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "custom:lab", "name": "Lab", "models": ["lab-1"],
+         "total_models": 1, "is_current": False, "is_user_defined": True,
+         "source": "user-config"},
+        {"slug": "moa", "name": "MoA", "models": ["default"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "virtual"},
+    ]
+    ctx = _empty_ctx(provider="openai-codex", model="gpt-5.4")
+    with (
+        _list_auth_returning(rows),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            side_effect=lambda slug: slug == "gemini",
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [row["slug"] for row in payload["providers"]] == [
+        "openai-codex",
+        "gemini",
+        "custom:lab",
+    ]
+
+
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

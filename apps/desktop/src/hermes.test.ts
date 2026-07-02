@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getGlobalModelOptions, getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -56,5 +56,25 @@ describe('Hermes REST session helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('defaults model options to configured providers only', async () => {
+    await getGlobalModelOptions()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
+
+  it('can opt into unconfigured providers for onboarding flows', async () => {
+    await getGlobalModelOptions({ includeUnconfigured: true, refresh: true, explicitOnly: false })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
   })
 })

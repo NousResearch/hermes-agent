@@ -5865,6 +5865,52 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "catalog blew up" in resp["error"]["message"]
 
 
+def test_model_options_hides_unconfigured_providers_by_default(monkeypatch):
+    from hermes_cli.inventory import ConfigContext
+
+    calls = []
+
+    monkeypatch.setattr(server, "_resolve_model", lambda: "")
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="",
+            current_model="",
+            current_base_url="",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+
+    def _fake_build_models_payload(_ctx, **kwargs):
+        calls.append(kwargs)
+        return {"providers": [], "model": "", "provider": ""}
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        _fake_build_models_payload,
+    )
+
+    resp = server._methods["model.options"](99, {"session_id": ""})
+    assert "result" in resp, resp
+    assert calls[-1]["explicit_only"] is False
+    assert calls[-1]["include_unconfigured"] is False
+
+    resp = server._methods["model.options"](
+        100,
+        {"session_id": "", "explicit_only": True},
+    )
+    assert "result" in resp, resp
+    assert calls[-1]["explicit_only"] is True
+
+    resp = server._methods["model.options"](
+        101,
+        {"session_id": "", "include_unconfigured": True},
+    )
+    assert "result" in resp, resp
+    assert calls[-1]["include_unconfigured"] is True
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------

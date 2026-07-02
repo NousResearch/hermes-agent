@@ -4162,7 +4162,12 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(profile: Optional[str] = None, refresh: bool = False):
+def get_model_options(
+    profile: Optional[str] = None,
+    refresh: bool = False,
+    include_unconfigured: bool = False,
+    explicit_only: bool = False,
+):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
@@ -4181,18 +4186,15 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        # include_unconfigured + picker_hints + canonical_order mirror the
-        # tui_gateway `model.options` JSON-RPC handler exactly, so every GUI
-        # surface fed by this endpoint (Settings → Model, the first-run
-        # onboarding picker) sees the SAME full provider universe `hermes model`
-        # exposes — not just the authenticated subset. Unconfigured providers
-        # come back as skeleton rows carrying `authenticated=False` +
-        # `auth_type`/`key_env`/`warning` so the GUI can render a setup
-        # affordance instead of hiding the provider entirely.
+        # Most desktop surfaces should only list providers the user has already
+        # configured. Onboarding opts into the full provider universe via
+        # include_unconfigured=1 so it can still render setup affordances for
+        # providers that are not yet authenticated.
         with _profile_scope(profile):
             return build_models_payload(
                 load_picker_context(),
-                include_unconfigured=True,
+                explicit_only=bool(explicit_only),
+                include_unconfigured=bool(include_unconfigured),
                 picker_hints=True,
                 canonical_order=True,
                 pricing=True,

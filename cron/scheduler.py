@@ -199,6 +199,19 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_should_skip_memory(enabled_toolsets: list[str] | None) -> bool:
+    """Return whether a cron agent should suppress built-in memory setup.
+
+    Cron historically passed ``skip_memory=True`` to keep routine scheduled jobs
+    from passively absorbing or rewriting the user's memory. That also made the
+    explicit ``memory`` tool unusable for jobs that intentionally opt into the
+    memory toolset: the handler receives no ``MemoryStore`` and returns
+    "Memory is not available." Keep the default quiet behavior, but honor an
+    explicit/platform-resolved ``memory`` toolset by initializing the store.
+    """
+    return not bool(enabled_toolsets and "memory" in enabled_toolsets)
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -2797,6 +2810,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        _cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -2815,7 +2829,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_cron_enabled_toolsets,
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -2824,7 +2838,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Routine cron jobs skip passive memory injection/writeback, but a
+            # job that explicitly enables the memory toolset needs a live
+            # MemoryStore or the memory tool always reports unavailable.
+            skip_memory=_cron_should_skip_memory(_cron_enabled_toolsets),
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

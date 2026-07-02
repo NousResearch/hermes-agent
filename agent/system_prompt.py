@@ -110,6 +110,33 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     return base
 
 
+def _load_yesterday_context_pack(max_chars: int = 8000) -> str:
+    """Load an optional profile-local fresh-session bootstrap pack.
+
+    The pack is generated under HERMES_HOME by local maintenance jobs. It is
+    loaded only when present, capped, and placed in the volatile tier so existing
+    long-lived sessions keep their cached prompt while fresh sessions receive a
+    compact handoff to yesterday's evidence paths.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "company_context" / "_shared" / "yesterday_context_pack.md"
+    except Exception:
+        return ""
+    try:
+        if not path.exists() or not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        footer = f"\n\n[TRUNCATED: inspect {path} for the full yesterday context pack.]"
+        text = text[: max(0, max_chars - len(footer))] + footer
+    return "YESTERDAY CONTEXT PACK (profile-local bootstrap; verify evidence paths before acting):\n" + text
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -442,6 +469,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 volatile_parts.append(_ext_mem_block)
         except Exception:
             pass
+
+    _yesterday_pack = _load_yesterday_context_pack()
+    if _yesterday_pack:
+        volatile_parts.append(_yesterday_pack)
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()

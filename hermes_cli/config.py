@@ -2367,6 +2367,19 @@ DEFAULT_CONFIG = {
         "extra": {
             "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
             "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
+            "secretary": {              # Generic Telegram Business ingestion. Disabled by default; inbound audit/owner triage only.
+                "enabled": False,
+                "mode": "off",          # off|audit_only|read_only
+                "display_name": "Hermes",
+                "owner_chat_id": "",    # Owner chat receiving read_only triage cards
+                "topics": {
+                    "inbox": "",        # optional message_thread_id for inbound triage cards
+                },
+                "allowed_business_connections": [],
+                "allowed_chats": [],
+                "redact_secrets": True,
+                "audit_path": "",        # blank => $HERMES_HOME/gateway/telegram_business_ingestion.jsonl
+            },
         },
     },
 

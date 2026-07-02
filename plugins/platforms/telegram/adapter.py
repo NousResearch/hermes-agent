@@ -31,6 +31,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        BaseHandler,
         ContextTypes,
         filters,
     )
@@ -49,6 +50,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    BaseHandler = object
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -91,6 +93,12 @@ from plugins.platforms.telegram.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from plugins.platforms.telegram.secretary import (
+    SecretaryAuditStore,
+    SecretaryPolicy,
+    normalize_secretary_update,
+    render_owner_summary,
+)
 from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -120,7 +128,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler, BaseHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -139,7 +147,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
-            MessageHandler as _MH,
+            MessageHandler as _MH, BaseHandler as _BH,
             ContextTypes as _CT, filters as _filters,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
@@ -156,6 +164,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    BaseHandler = _BH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -276,6 +285,33 @@ def _rich_normalize_linebreaks(text: str) -> str:
     tail = text[pos:]
     out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
     return ''.join(out)
+
+
+class TelegramSecretaryUpdateHandler(BaseHandler):
+    """PTB handler that matches only Telegram Business update variants."""
+
+    def __init__(self, callback: Any) -> None:
+        super().__init__(callback, block=True)
+
+    def check_update(self, update: object) -> bool:
+        return any(
+            getattr(update, attr, None) is not None
+            for attr in (
+                "business_connection",
+                "business_message",
+                "edited_business_message",
+                "deleted_business_messages",
+            )
+        )
+
+    async def handle_update(
+        self,
+        update: object,
+        application: object,
+        check_result: object,
+        context: object,
+    ) -> object:
+        return await self.callback(update, context)
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -504,6 +540,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+        # Telegram Business ingestion is opt-in and inbound-only. It audits
+        # Bot API Business updates and may mirror summaries to an owner topic;
+        # it never sends as the user or invokes the agent conversation path.
+        self._secretary_policy = SecretaryPolicy.from_config(
+            self.config.extra.get("secretary") if getattr(self.config, "extra", None) else None
+        )
+        self._secretary_audit_store = SecretaryAuditStore(self._secretary_policy.audit_path)
+        self._secretary_business_connections: Dict[str, Dict[str, Any]] = {}
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
@@ -1406,6 +1450,152 @@ class TelegramAdapter(BasePlatformAdapter):
             if not thread_kwargs.get("direct_messages_topic_id"):
                 return None
         return reply_to_id, thread_kwargs
+
+    def _default_business_connection_id(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Best-effort default Business connection for Business-only methods."""
+        if metadata and metadata.get("business_connection_id"):
+            return str(metadata.get("business_connection_id") or "").strip() or None
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        secretary_cfg = extra.get("secretary") if isinstance(extra.get("secretary"), dict) else {}
+        configured = secretary_cfg.get("default_business_connection_id") or extra.get("default_business_connection_id")
+        if configured:
+            return str(configured).strip() or None
+        allowed = secretary_cfg.get("allowed_business_connections") or []
+        if len(allowed) == 1:
+            return str(allowed[0]).strip() or None
+        live = getattr(self, "_secretary_business_connections", {}) or {}
+        if len(live) == 1:
+            return str(next(iter(live.keys()))).strip() or None
+        return None
+
+    @staticmethod
+    def _input_checklist(
+        title: str,
+        tasks: List[Any],
+        *,
+        others_can_add_tasks: bool = False,
+        others_can_mark_tasks_as_done: bool = True,
+    ) -> Dict[str, Any]:
+        """Build a Bot API InputChecklist payload with local validation."""
+        title = str(title or "").strip()
+        if not title:
+            raise ValueError("checklist title is required")
+        if utf16_len(title) > 255:
+            raise ValueError("checklist title is too long (max 255 UTF-16 units)")
+        input_tasks: List[Dict[str, Any]] = []
+        for idx, item in enumerate(tasks or [], start=1):
+            if isinstance(item, dict):
+                task_id = int(item.get("id") or idx)
+                text = str(item.get("text") or "").strip()
+            else:
+                task_id = idx
+                text = str(item or "").strip()
+            if not text:
+                continue
+            if task_id <= 0:
+                raise ValueError("checklist task ids must be positive")
+            if utf16_len(text) > 100:
+                raise ValueError("checklist task text is too long (max 100 UTF-16 units)")
+            input_tasks.append({"id": task_id, "text": text})
+        if not input_tasks:
+            raise ValueError("at least one checklist task is required")
+        if len(input_tasks) > 30:
+            raise ValueError("Telegram checklists support at most 30 tasks")
+        if len({task["id"] for task in input_tasks}) != len(input_tasks):
+            raise ValueError("checklist task ids must be unique")
+        checklist: Dict[str, Any] = {"title": title, "tasks": input_tasks}
+        if others_can_add_tasks:
+            checklist["others_can_add_tasks"] = True
+        if others_can_mark_tasks_as_done:
+            checklist["others_can_mark_tasks_as_done"] = True
+        return checklist
+
+    async def send_checklist(
+        self,
+        chat_id: str,
+        title: str,
+        tasks: List[Any],
+        *,
+        business_connection_id: Optional[str] = None,
+        pin: bool = False,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        others_can_add_tasks: bool = False,
+        others_can_mark_tasks_as_done: bool = True,
+    ) -> SendResult:
+        """Send a native Telegram checklist via Bot API sendChecklist."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not self._bot_supports_rich():
+            return SendResult(success=False, error="Telegram bot client does not expose raw Bot API requests", retryable=False)
+        bc_id = (business_connection_id or self._default_business_connection_id(metadata) or "").strip()
+        if not bc_id:
+            return SendResult(success=False, error="business_connection_id_required_for_telegram_checklist", retryable=False)
+        try:
+            payload: Dict[str, Any] = {
+                "business_connection_id": bc_id,
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "checklist": self._input_checklist(
+                    title,
+                    tasks,
+                    others_can_add_tasks=others_can_add_tasks,
+                    others_can_mark_tasks_as_done=others_can_mark_tasks_as_done,
+                ),
+            }
+            payload.update(self._notification_kwargs(metadata))
+            if reply_to:
+                payload["reply_parameters"] = {"message_id": int(reply_to)}
+            msg = await self._bot.do_api_request("sendChecklist", api_kwargs=payload)
+            message_id = None
+            if isinstance(msg, dict):
+                message_id = msg.get("message_id") or (msg.get("result") or {}).get("message_id")
+            else:
+                message_id = getattr(msg, "message_id", None)
+            if pin and message_id is not None and hasattr(self._bot, "pin_chat_message"):
+                await self._bot.pin_chat_message(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    disable_notification=True,
+                )
+            return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=not self._is_bad_request_error(exc), error_kind=classify_send_error(exc))
+
+    async def send_business_text(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        business_connection_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send text through Telegram Business Bot API only; no legacy fallback."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not self._bot_supports_rich():
+            return SendResult(success=False, error="Telegram bot client does not expose raw Bot API requests", retryable=False)
+        payload: Dict[str, Any] = {
+            "business_connection_id": str(business_connection_id),
+            "chat_id": normalize_telegram_chat_id(chat_id),
+            "text": content,
+        }
+        payload.update(self._notification_kwargs(metadata))
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": int(reply_to)}
+        try:
+            msg = await self._bot.do_api_request("sendMessage", api_kwargs=payload)
+            message_id = None
+            if isinstance(msg, dict):
+                message_id = msg.get("message_id") or (msg.get("result") or {}).get("message_id")
+            else:
+                message_id = getattr(msg, "message_id", None)
+            return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=not self._is_bad_request_error(exc), error_kind=classify_send_error(exc))
 
     async def _try_send_rich(
         self,
@@ -2891,6 +3081,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            if self._get_secretary_policy().active:
+                # Business updates are audit/triage events, not normal turns.
+                self._app.add_handler(TelegramSecretaryUpdateHandler(self._handle_secretary_update))
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -3257,7 +3450,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -7012,6 +7205,84 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
+
+    def _get_secretary_policy(self) -> SecretaryPolicy:
+        policy = getattr(self, "_secretary_policy", None)
+        if policy is None:
+            policy = SecretaryPolicy.from_config(
+                getattr(getattr(self, "config", None), "extra", {}).get("secretary")
+            )
+            self._secretary_policy = policy
+        return policy
+
+    def _get_secretary_audit_store(self) -> SecretaryAuditStore:
+        store = getattr(self, "_secretary_audit_store", None)
+        if store is None:
+            store = SecretaryAuditStore(self._get_secretary_policy().audit_path)
+            self._secretary_audit_store = store
+        return store
+
+    def _remember_secretary_connection(self, event: Any) -> None:
+        connection_id = getattr(event, "business_connection_id", None)
+        if not connection_id:
+            return
+        self._secretary_business_connections[str(connection_id)] = dict(getattr(event, "rights", {}) or {})
+
+    async def _send_secretary_owner_card(
+        self,
+        policy: SecretaryPolicy,
+        text: str,
+        *,
+        topic_id: Optional[str],
+    ) -> SendResult:
+        if not policy.owner_chat_id:
+            return SendResult(success=False, error="secretary_owner_chat_not_configured", retryable=False)
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        kwargs: Dict[str, Any] = {
+            "chat_id": normalize_telegram_chat_id(policy.owner_chat_id),
+            "text": text,
+            "parse_mode": ParseMode.HTML,
+            **self._link_preview_kwargs(),
+        }
+        if topic_id:
+            kwargs["message_thread_id"] = int(topic_id)
+        try:
+            msg = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "") or ""))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=not self._is_bad_request_error(exc), error_kind=classify_send_error(exc))
+
+    async def _handle_secretary_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        policy = self._get_secretary_policy()
+        if not policy.active:
+            return
+        event = normalize_secretary_update(update)
+        if event is None:
+            return
+        if event.event_type == "business_connection" and event.business_connection_id:
+            self._remember_secretary_connection(event)
+        elif event.business_connection_id:
+            cached = getattr(self, "_secretary_business_connections", {}).get(event.business_connection_id, {})
+            if cached and not event.rights.get("can_reply"):
+                event = dataclasses.replace(event, rights={**event.rights, **cached})
+        if not policy.allows_business_connection(event.business_connection_id):
+            event = event.ignored("business_connection_not_allowed")
+        elif not policy.allows_chat(event.chat_id):
+            event = event.ignored("chat_not_allowed")
+        audit_event = event.redacted() if policy.redact_secrets else event
+        try:
+            self._get_secretary_audit_store().append(audit_event)
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to append Business audit event: %s", exc, exc_info=True)
+        if event.ignored_reason:
+            return
+        if policy.reports_to_owner:
+            card = render_owner_summary(audit_event, assistant_name=policy.display_name)
+            topic_id = policy.topics.get("inbox") or None
+            result = await self._send_secretary_owner_card(policy, card, topic_id=topic_id)
+            if not result.success:
+                logger.warning("[Telegram] Business owner summary send failed: %s", result.error)
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.

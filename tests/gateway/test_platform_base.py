@@ -6,10 +6,12 @@ from unittest.mock import patch
 
 import pytest
 
+from gateway.config import Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    _auto_tts_tool_kwargs,
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
@@ -19,6 +21,18 @@ from gateway.platforms.base import (
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestAutoTTSOutputPath:
+    def test_telegram_requests_ogg_for_voice_bubble(self):
+        kwargs = _auto_tts_tool_kwargs(Platform.TELEGRAM, "hello")
+
+        assert kwargs["text"] == "hello"
+        assert kwargs["output_path"].endswith(".ogg")
+        assert "auto_tts_" in kwargs["output_path"]
+
+    def test_non_telegram_uses_tts_tool_default(self):
+        assert _auto_tts_tool_kwargs(Platform.DISCORD, "hello") == {"text": "hello"}
 
 
 class TestInboundMediaSizeCap:

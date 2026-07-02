@@ -816,6 +816,15 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 
+def _auto_tts_tool_kwargs(platform, speech_text: str) -> dict:
+    """Build kwargs for auto-TTS generation in the base adapter."""
+    kwargs = {"text": speech_text}
+    if _platform_name(platform) == "telegram":
+        AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        kwargs["output_path"] = str(AUDIO_CACHE_DIR / f"auto_tts_{uuid.uuid4().hex}.ogg")
+    return kwargs
+
+
 def get_audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if it doesn't exist."""
     d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
@@ -4965,8 +4974,9 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            tts_kwargs = _auto_tts_tool_kwargs(self.platform, speech_text)
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool, **tts_kwargs
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")

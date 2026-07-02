@@ -1,0 +1,119 @@
+diff --git a/src/harbor/agents/installed/hermes.py b/src/harbor/agents/installed/hermes.py
+index 5f16cbd5..bb1a5b80 100644
+--- a/src/harbor/agents/installed/hermes.py
++++ b/src/harbor/agents/installed/hermes.py
+@@ -86,10 +86,26 @@ class Hermes(BaseInstalledAgent):
+     # ------------------------------------------------------------------
+ 
+     @staticmethod
+-    def _build_config_yaml(model: str) -> str:
++    def _build_config_yaml(
++        model: str,
++        *,
++        custom_base_url: str | None = None,
++        custom_api_key: str | None = None,
++    ) -> str:
+         """Generate a hermes config.yaml with full capabilities enabled."""
++        model_config: str | dict[str, str]
++        if custom_base_url:
++            model_config = {
++                "default": model,
++                "provider": "custom",
++                "base_url": custom_base_url,
++                "api_key": custom_api_key or "",
++            }
++        else:
++            model_config = model
++
+         config: dict[str, Any] = {
+-            "model": model,
++            "model": model_config,
+             "provider": "auto",
+             "toolsets": ["hermes-cli"],
+             "agent": {"max_turns": 90},
+@@ -351,6 +367,8 @@ class Hermes(BaseInstalledAgent):
+ 
+         # Try native provider key first, fall back to OpenRouter.
+         hermes_provider_flag: str | None = None
++        custom_base_url: str | None = None
++        custom_api_key: str | None = None
+         use_native = False
+ 
+         if provider in _NATIVE_PROVIDERS:
+@@ -359,7 +377,13 @@ class Hermes(BaseInstalledAgent):
+                 key_val = os.environ.get(key_name)
+                 if key_val:
+                     env[key_name] = key_val
+-                    hermes_provider_flag = native_flag
++                    # Hermes Agent v0.18 treats OpenAI-compatible non-OpenAI
++                    # endpoints as custom providers configured in config.yaml.
++                    if provider == "openai" and os.environ.get("OPENAI_BASE_URL"):
++                        custom_base_url = os.environ["OPENAI_BASE_URL"]
++                        custom_api_key = key_val
++                    else:
++                        hermes_provider_flag = native_flag
+                     use_native = True
+                     break
+             # Forward OPENAI_BASE_URL when using native OpenAI key
+@@ -380,10 +404,14 @@ class Hermes(BaseInstalledAgent):
+                 raise ValueError("No API key found. Set OPENROUTER_API_KEY.")
+             env["OPENROUTER_API_KEY"] = openrouter_key
+ 
+-        # Native providers with --provider flag use just the model name;
+-        # everything else (OpenRouter, openai direct) uses provider/model.
+-        cli_model = model if hermes_provider_flag else self.model_name
+-        config_yaml = self._build_config_yaml(cli_model)
++        # Native providers with --provider flag and custom endpoints use just
++        # the model name; OpenRouter/direct OpenAI keep provider/model.
++        cli_model = model if hermes_provider_flag or custom_base_url else self.model_name
++        config_yaml = self._build_config_yaml(
++            cli_model,
++            custom_base_url=custom_base_url,
++            custom_api_key=custom_api_key,
++        )
+ 
+         # Pass instruction via env var (safe from shell escaping issues)
+         env["HARBOR_INSTRUCTION"] = instruction
+diff --git a/tests/unit/agents/installed/test_hermes_cli.py b/tests/unit/agents/installed/test_hermes_cli.py
+index 0b78678b..ab73f4f7 100644
+--- a/tests/unit/agents/installed/test_hermes_cli.py
++++ b/tests/unit/agents/installed/test_hermes_cli.py
+@@ -52,6 +52,7 @@ class TestHermesRunCommands:
+     async def test_openai_native_provider(self, temp_dir, monkeypatch):
+         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+         monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
++        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+         agent = Hermes(logs_dir=temp_dir, model_name="openai/gpt-4o")
+         mock_env = AsyncMock()
+         mock_env.exec.return_value = AsyncMock(return_code=0, stdout="", stderr="")
+@@ -61,6 +62,30 @@ class TestHermesRunCommands:
+         assert "--provider" not in run_call.kwargs["command"]
+         assert run_call.kwargs["env"]["OPENAI_API_KEY"] == "openai-key"
+ 
++    @pytest.mark.asyncio
++    async def test_openai_base_url_uses_custom_provider(self, temp_dir, monkeypatch):
++        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
++        monkeypatch.setenv("OPENAI_API_KEY", "dummy")
++        monkeypatch.setenv("OPENAI_BASE_URL", "http://host.docker.internal:30090/v1")
++        agent = Hermes(logs_dir=temp_dir, model_name="openai/hermes-large")
++        mock_env = AsyncMock()
++        mock_env.exec.return_value = AsyncMock(return_code=0, stdout="", stderr="")
++        await agent.run("do something", mock_env, AsyncMock())
++        config_call = mock_env.exec.call_args_list[0]
++        config_yaml = config_call.kwargs["command"].split("<< 'EOF'\n", 1)[1].rsplit(
++            "\nEOF", 1
++        )[0]
++        config = yaml.safe_load(config_yaml)
++        assert config["model"] == {
++            "default": "hermes-large",
++            "provider": "custom",
++            "base_url": "http://host.docker.internal:30090/v1",
++            "api_key": "dummy",
++        }
++        run_call = self._get_run_call(mock_env.exec.call_args_list)
++        assert "--model hermes-large" in run_call.kwargs["command"]
++        assert "--provider" not in run_call.kwargs["command"]
++
+     @pytest.mark.asyncio
+     async def test_openrouter_fallback(self, temp_dir, monkeypatch):
+         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

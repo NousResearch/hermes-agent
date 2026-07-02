@@ -320,3 +320,67 @@ def test_client_wraps_invalid_grant_as_spotify_auth_required_error(
     )
     with pytest.raises(spotify_mod.SpotifyAuthRequiredError, match="expired or was revoked"):
         spotify_mod.SpotifyClient()
+
+
+# ── Regression tests for Spotify URI normalization ───────────────────────────
+# Bare IDs from search results must keep working in queue/add paths, while
+# explicit expected_type callers still get canonical spotify:<type>:<id> URIs.
+
+
+def test_normalize_spotify_uri_bare_id_passthrough_when_no_expected_type() -> None:
+    result = spotify_mod.normalize_spotify_uri("7ouMYWpwJ422jRcDASZB7P", None)
+    assert result == "7ouMYWpwJ422jRcDASZB7P"
+
+
+def test_normalize_spotify_uri_bare_id_prefixes_expected_type() -> None:
+    result = spotify_mod.normalize_spotify_uri("7ouMYWpwJ422jRcDASZB7P", "track")
+    assert result == "spotify:track:7ouMYWpwJ422jRcDASZB7P"
+
+
+def test_normalize_spotify_uri_open_url_with_no_expected_type_passthrough() -> None:
+    url = "https://open.spotify.com/track/7ouMYWpwJ422jRcDASZB7P?si=abc"
+    result = spotify_mod.normalize_spotify_uri(url, None)
+    assert result == url
+
+
+def test_normalize_spotify_uri_returns_native_uri_unchanged() -> None:
+    uri = "spotify:album:0sNOF9WDwhWunNAHPD3Baj"
+    result = spotify_mod.normalize_spotify_uri(uri, "album")
+    assert result == uri
+
+
+def test_normalize_spotify_uri_rejects_type_mismatch() -> None:
+    with pytest.raises(spotify_mod.SpotifyError, match="Expected a Spotify track"):
+        spotify_mod.normalize_spotify_uri("spotify:album:abc", "track")
+
+
+def test_normalize_spotify_uri_empty_string_raises() -> None:
+    with pytest.raises(spotify_mod.SpotifyError, match="Spotify URI/url/id is required"):
+        spotify_mod.normalize_spotify_uri("", None)
+
+
+def test_normalize_spotify_uri_none_raises() -> None:
+    with pytest.raises(spotify_mod.SpotifyError, match="Spotify URI/url/id is required"):
+        spotify_mod.normalize_spotify_uri(None, None)  # type: ignore[arg-type]
+
+
+def test_handle_spotify_queue_add_with_bare_id_and_device_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_uris: list[str] = []
+
+    class _QueueStub:
+        def add_to_queue(self, *, uri, device_id=None):
+            seen_uris.append(uri)
+            return {"snapshot_id": "snap-1"}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _QueueStub())
+    response = json.loads(
+        spotify_tool._handle_spotify_queue(
+            {"action": "add", "uri": "search-result-bare-id", "device_id": "dev-1"}
+        )
+    )
+    assert response["success"] is True
+    assert response["action"] == "add"
+    assert response["uri"] == "search-result-bare-id"
+    assert seen_uris == ["search-result-bare-id"]

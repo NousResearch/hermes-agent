@@ -259,7 +259,7 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     lang
         Explicit language override.  Takes precedence over env + config.
     **format_kwargs
-        ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
+        ``str.format`` substitution arguments (``t("gateway.draining", count=3)``
         expects a catalog entry with a ``{count}`` placeholder).
 
     Returns

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -227,3 +229,148 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# Code-usage contract -- every t() key referenced in source must exist in the
+# English catalog.  The parity tests above compare catalogs to each other, so
+# they cannot catch a key that is missing from EVERY catalog: the t() call
+# ships anyway and users see the raw dotted key path (t() falls back to the
+# key by design).  That is exactly how gateway.verbose.mode_log slipped
+# through and had to be backfilled into all 16 catalogs by hand.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = LOCALES_DIR.parent
+_SCAN_EXCLUDE_DIRS = {
+    ".git", "node_modules", "tests", "web", "website", "apps", "ui-tui",
+    "docs", "assets",
+}
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+def _iter_t_calls():
+    """Yield ``(relpath, lineno, key, kwarg_names, has_star_kwargs)`` for every
+    statically-analyzable ``t("dotted.key", ...)`` call in the repo.
+
+    Only calls whose first argument is a string literal are yielded; dynamic
+    keys (f-strings, variables) cannot be checked statically and are skipped.
+    Recognizes ``from agent.i18n import t`` (with or without an ``as`` alias),
+    ``from agent import i18n`` + ``i18n.t(...)``, and ``import agent.i18n as
+    <alias>`` + ``<alias>.t(...)``, including imports nested inside functions.
+    """
+    for path in sorted(REPO_ROOT.rglob("*.py")):
+        rel = path.relative_to(REPO_ROOT)
+        if any(part in _SCAN_EXCLUDE_DIRS for part in rel.parts):
+            continue
+        try:
+            src = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        # Cheap pre-filter before paying for a full parse.
+        if "agent.i18n" not in src and "from agent import i18n" not in src:
+            continue
+        try:
+            tree = ast.parse(src, filename=str(path))
+        except SyntaxError:
+            continue
+
+        t_names = set()
+        module_aliases = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "agent.i18n":
+                    for alias in node.names:
+                        if alias.name == "t":
+                            t_names.add(alias.asname or "t")
+                elif node.module == "agent":
+                    for alias in node.names:
+                        if alias.name == "i18n":
+                            module_aliases.add(alias.asname or "i18n")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "agent.i18n" and alias.asname:
+                        module_aliases.add(alias.asname)
+        if not t_names and not module_aliases:
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            is_t_call = (
+                isinstance(func, ast.Name) and func.id in t_names
+            ) or (
+                isinstance(func, ast.Attribute)
+                and func.attr == "t"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in module_aliases
+            )
+            if not is_t_call:
+                continue
+            if (
+                not node.args
+                or not isinstance(node.args[0], ast.Constant)
+                or not isinstance(node.args[0].value, str)
+            ):
+                continue
+            kwarg_names = {kw.arg for kw in node.keywords}
+            yield (
+                str(rel),
+                node.lineno,
+                node.args[0].value,
+                kwarg_names - {None},
+                None in kwarg_names,  # **kwargs present
+            )
+
+
+def test_code_t_keys_exist_in_english_catalog():
+    """Every string-literal t() key in source must resolve in en.yaml.
+
+    A miss here means the message ships as the raw dotted key path in every
+    language.  Fix by adding the key to locales/en.yaml AND every other
+    catalog (the parity tests then hold you to the rest).
+    """
+    en_keys = set(_flatten(_load_raw("en")).keys())
+    calls = list(_iter_t_calls())
+    # If the scanner ever goes blind (import-pattern drift), fail loudly
+    # instead of green-lighting everything.  Main has 300+ static calls.
+    assert len(calls) > 50, (
+        f"t() usage scan found only {len(calls)} calls — scanner is likely "
+        "no longer recognizing the import pattern; update _iter_t_calls()."
+    )
+    missing = sorted(
+        f"{path}:{lineno}: t({key!r})"
+        for path, lineno, key, _, _ in calls
+        if key not in en_keys
+    )
+    assert not missing, (
+        "t() keys referenced in code but missing from locales/en.yaml "
+        "(users would see the raw key path):\n  " + "\n  ".join(missing)
+    )
+
+
+def test_code_t_calls_supply_catalog_placeholders():
+    """Literal t() calls must pass every {placeholder} the English value uses.
+
+    A missing format kwarg does not raise at runtime -- t() logs a warning
+    and returns the raw template, so users see literal ``{count}`` in chat.
+    Calls that forward ``**kwargs`` are skipped (not statically checkable);
+    extra kwargs are fine (str.format ignores them).
+    """
+    en_flat = _flatten(_load_raw("en"))
+    problems = []
+    for path, lineno, key, kwargs, has_star_kwargs in _iter_t_calls():
+        if has_star_kwargs or key not in en_flat:
+            continue
+        needed = set(_PLACEHOLDER_RE.findall(en_flat[key]))
+        supplied = kwargs - {"lang"}
+        gap = needed - supplied
+        if gap:
+            problems.append(
+                f"{path}:{lineno}: t({key!r}) does not supply {sorted(gap)}"
+            )
+    assert not problems, (
+        "t() calls missing format kwargs their catalog entry requires "
+        "(users would see literal {placeholder} text):\n  "
+        + "\n  ".join(sorted(problems))
+    )

@@ -716,7 +716,9 @@ class TestMcpLogin:
         # Probe returns tools even though auth never completed.
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server",
-            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+            lambda name, cfg, connect_timeout=30: [
+                ("search_files", "d"), ("read_file_content", "d"),
+            ],
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -738,7 +740,10 @@ class TestMcpLogin:
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
-        def mock_probe(name, cfg):
+        seen = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]
@@ -754,6 +759,9 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+        # The login path must grant a human enough time to finish the browser
+        # OAuth round-trip — far longer than the 30s probe default.
+        assert seen["connect_timeout"] >= 180
 
 
 # ---------------------------------------------------------------------------

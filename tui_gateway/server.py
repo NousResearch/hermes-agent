@@ -10167,7 +10167,7 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"key": key, "value": nv})
 
-    if key == "compact":
+    if key in ("compact", "compact-ui"):
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
@@ -10833,7 +10833,7 @@ def _(rid, params: dict) -> dict:
             )
             nv = "full" if dm == "expanded" else "collapsed"
         return _ok(rid, {"value": nv})
-    if key == "compact":
+    if key in ("compact", "compact-ui"):
         on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "statusbar":
@@ -11122,7 +11122,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 )
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
-    ("/compact", "Toggle compact display mode", "TUI"),
+    ("/compact-ui", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     (
         "/mouse",
@@ -11189,6 +11189,10 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([c, desc])
 
         for name, desc, cat in _TUI_EXTRA:
+            # Skip TUI-only entries whose name collides with a registered
+            # command or alias (e.g. /compact is now an alias of /compress).
+            if name.lower() in canon:
+                continue
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []
@@ -12200,8 +12204,8 @@ def _(rid, params: dict) -> dict:
         text_lower = text.lower()
         extras = [
             {
-                "text": "/compact",
-                "display": "/compact",
+                "text": "/compact-ui",
+                "display": "/compact-ui",
                 "meta": "Toggle compact display mode",
             },
             {

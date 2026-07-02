@@ -235,6 +235,19 @@ class TestExternalDecision:
         from tools import approval as mod
         assert mod._consume_external_decision("no-such-approval") is None
 
+    def test_valid_response_remains_claimed_until_retraction(self, tmp_path):
+        from tools import approval as mod
+
+        approval_id = "abc123def456"
+        response_path = _responses_dir(tmp_path) / f"{approval_id}.json"
+        _write_response(tmp_path, approval_id, {"decision": "once"})
+
+        assert mod._consume_external_decision(approval_id) == "once"
+        assert response_path.exists()
+
+        mod._retract_pending_approval(approval_id)
+        assert not response_path.exists()
+
 
 class TestStaleSweep:
     def test_publish_sweeps_expired_garbage_and_old_responses(self, tmp_path):

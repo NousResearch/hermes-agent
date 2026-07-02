@@ -25,7 +25,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
 from . import protocol, security
 
@@ -245,7 +245,9 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
 # Tool schemas + registration
 # --------------------------------------------------------------------------
 
-_SCHEMAS: dict[str, dict[str, Any]] = {
+_FunctionSchema = TypedDict("_FunctionSchema", {"name": str, "description": str}, total=False)
+_ToolSchema = TypedDict("_ToolSchema", {"type": str, "function": _FunctionSchema}, total=False)
+_SCHEMAS: dict[str, _ToolSchema] = {
     "a2a_discover": {
         "type": "function",
         "function": {
@@ -310,9 +312,6 @@ def register_tools(ctx) -> None:
             toolset="a2a",
             schema=schema,
             handler=_HANDLERS[name],
-            # ty warning fix: chain indexing on a dict[str, dict] without
-            # an annotation confuses the type checker. The value is
-            # always a string at runtime; assert it.
-            description=str(schema["function"]["description"]),
+            description=schema["function"]["description"],
             emoji="\U0001f9e9",  # puzzle piece
         )

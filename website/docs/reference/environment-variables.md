@@ -405,6 +405,20 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WEIXIN_HOME_CHANNEL` | Weixin chat ID for cron delivery and notifications |
 | `WEIXIN_HOME_CHANNEL_NAME` | Display name for the Weixin home channel |
 | `WEIXIN_ALLOW_ALL_USERS` | Allow all Weixin users without an allowlist (`true`/`false`) |
+| `WECHATY_PUPPET` | Wechaty puppet module (e.g. `wechaty-puppet-wechat4u`, `wechaty-puppet-service`) |
+| `WECHATY_PUPPET_SERVICE_TOKEN` | Token for `wechaty-puppet-service` (PadLocal, WorkPro, etc.) |
+| `WECHATY_TOKEN` | Alias for `WECHATY_PUPPET_SERVICE_TOKEN` |
+| `WECHATY_BOT_NAME` | Wechaty bot display name (default `hermes-wechaty`) |
+| `WECHATY_SIDECAR_PORT` | Loopback port for the Node sidecar (default `8790`) |
+| `WECHATY_SIDECAR_AUTOSTART` | Spawn the Node sidecar on connect (`true`/`false`, default `true`) |
+| `WECHATY_SIDECAR_TOKEN` | Loopback bearer token for the sidecar (auto-generated when unset) |
+| `WECHATY_NODE_BIN` | Path to the `node` binary (default: `node` on PATH) |
+| `WECHATY_REQUIRE_MENTION` | In group chats, only respond when `@`-mentioned (`true`/`false`, default `true`) |
+| `WECHATY_MENTION_PATTERNS` | Group wake-word regexes (JSON list or comma/newline-separated; defaults to Hermes wake words) |
+| `WECHATY_ALLOWED_USERS` | Comma-separated WeChat contact ids allowed to DM the bot |
+| `WECHATY_ALLOW_ALL_USERS` | Allow any sender (`true`/`false`, dev only) |
+| `WECHATY_HOME_CHANNEL` | Default chat id for cron delivery (`contact:ID` or `room:ID`) |
+| `WECHATY_HOME_CHANNEL_NAME` | Display name for the Wechaty home channel |
 | `BLUEBUBBLES_SERVER_URL` | BlueBubbles server URL (e.g. `http://192.168.1.10:1234`) |
 | `BLUEBUBBLES_PASSWORD` | BlueBubbles server password |
 | `BLUEBUBBLES_WEBHOOK_HOST` | Webhook listener bind address (default: `127.0.0.1`) |

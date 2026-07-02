@@ -42,6 +42,9 @@ source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
 node_modules/
+
+# Wechaty login state (written by wechaty memory-card at runtime)
+*.memory-card.json
 browser-use/
 agent-browser/
 # Private keys

@@ -78,7 +78,7 @@ hermes send --list telegram
 
 Any platform Hermes ships adapters for works as a target:
 `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`,
-`mattermost`, `feishu`, `dingtalk`, `wecom`, `weixin`, `email`, and
+`mattermost`, `feishu`, `dingtalk`, `wecom`, `weixin`, `wechaty`, `email`, and
 others.
 
 ### Exit Codes

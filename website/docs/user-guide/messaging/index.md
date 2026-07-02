@@ -520,6 +520,7 @@ Each platform has its own toolset:
 | WeCom | `hermes-wecom` | Full tools including terminal |
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
+| Wechaty | `hermes-wechaty` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
@@ -664,6 +665,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [WeCom Setup](wecom.md)
 - [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
+- [WeChat (Wechaty) Setup](wechaty.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)

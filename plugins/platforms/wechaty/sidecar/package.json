@@ -1,0 +1,20 @@
+{
+  "name": "@hermes-agent/wechaty-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Wechaty bridge for the Hermes Agent Wechaty platform plugin.",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "file-box": "1.5.5",
+    "qrcode-terminal": "0.12.0",
+    "wechaty": "1.20.2",
+    "wechaty-puppet-wechat4u": "1.14.14"
+  }
+}

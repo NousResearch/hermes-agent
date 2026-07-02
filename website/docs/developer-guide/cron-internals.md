@@ -246,6 +246,7 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | SMS | `sms`, `sms:+<E.164>` | `sms:+<E.164 number>` |
 | Email | `email`, `email:<address>` | `email:alerts@example.com` |
 | Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
+| Wechaty | `wechaty`, `wechaty:<chat_id>` | `wechaty:contact:wxid_abc123` |
 | Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
 | Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
 | DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |

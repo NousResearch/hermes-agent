@@ -63,6 +63,17 @@ def _indent_level(spaces: str) -> int:
     return min(width // 2, 5)  # Slack rich_text_list supports up to indent 5
 
 
+def _list_marker(line: str) -> Optional[Tuple[int, bool, str]]:
+    """Return ``(indent, ordered, text)`` for a markdown list item line."""
+    bm = _BULLET_RE.match(line)
+    if bm:
+        return (_indent_level(bm.group(1)), False, bm.group(2))
+    om = _ORDERED_RE.match(line)
+    if om:
+        return (_indent_level(om.group(1)), True, om.group(3))
+    return None
+
+
 # ----------------------------------------------------------------------------
 # Inline markdown → rich_text elements
 # ----------------------------------------------------------------------------
@@ -438,19 +449,28 @@ def render_blocks(
                 flush_para()
                 items: List[Tuple[int, bool, str]] = []
                 while i < n:
-                    bm = _BULLET_RE.match(lines[i])
-                    om = _ORDERED_RE.match(lines[i])
-                    if bm:
-                        items.append((_indent_level(bm.group(1)), False, bm.group(2)))
-                        i += 1
-                    elif om:
-                        items.append((_indent_level(om.group(1)), True, om.group(3)))
+                    marker = _list_marker(lines[i])
+                    if marker is not None:
+                        items.append(marker)
                         i += 1
                     elif lines[i].strip() and lines[i].startswith((" ", "\t")) and items:
                         # continuation line of the previous item
                         indent, ordered, txt = items[-1]
                         items[-1] = (indent, ordered, txt + " " + lines[i].strip())
                         i += 1
+                    elif not lines[i].strip() and items:
+                        j = i + 1
+                        while j < n and not lines[j].strip():
+                            j += 1
+                        next_marker = _list_marker(lines[j]) if j < n else None
+                        prev_indent, prev_ordered, _ = items[-1]
+                        if (
+                            next_marker is not None
+                            and (next_marker[0], next_marker[1]) == (prev_indent, prev_ordered)
+                        ):
+                            i = j
+                        else:
+                            break
                     else:
                         break
                 blocks.append(_list_block(items))

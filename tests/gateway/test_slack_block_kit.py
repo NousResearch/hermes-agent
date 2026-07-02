@@ -71,6 +71,18 @@ class TestNestedLists:
         assert "ordered" in styles
         assert "bullet" in styles
 
+    def test_blank_separated_ordered_items_stay_in_one_list(self):
+        blocks = render_blocks("1. alpha\n\n1. beta\n\n1. gamma")
+        lists = [
+            e
+            for b in blocks
+            for e in b.get("elements", [])
+            if e.get("type") == "rich_text_list"
+        ]
+        assert [(e["style"], e["indent"], len(e["elements"])) for e in lists] == [
+            ("ordered", 0, 3)
+        ]
+
 
 class TestInlineFormatting:
     def test_link_becomes_link_element(self):

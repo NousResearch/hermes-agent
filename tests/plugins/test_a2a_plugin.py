@@ -402,7 +402,11 @@ class TestInboundRoundTrip:
         monkeypatch.setenv("A2A_HOST", "127.0.0.1")
 
         adapter = A2AAdapter(PlatformConfig(enabled=True))
-        adapter._message_handler = object()
+        # ty warning fix: object() doesn't match the expected type. Use a
+        # proper async callable stub that satisfies the interface.
+        async def _stub_handler(event):  # type: ignore[no-untyped-def]
+            return None
+        adapter._message_handler = _stub_handler
 
         async def run():
             assert await adapter.connect() is True
@@ -427,3 +431,48 @@ class TestInboundRoundTrip:
             await adapter.disconnect()
 
         asyncio.run(run())
+
+class TestTyWarningFixes:
+    """Structural tests for PR #53759: ty warnings should be fixed by proper
+    type annotations, not by str()/dict() casts that silence the checker
+    without understanding the types.
+    """
+
+    def test_register_tools_does_not_str_cast_description(self):
+        """The band-aid was description=str(schema["function"]["description"]).
+        The proper fix: TypedDict-narrow the schema so description is typed as str."""
+        from plugins.platforms.a2a import tools as tools_mod
+        import inspect
+
+        source = inspect.getsource(tools_mod.register_tools)
+        # The exact bad pattern from the original (band-aid) commit
+        assert "description=str(schema" not in source, (
+            "register_tools still has 'description=str(schema...)' band-aid cast. "
+            "Replace with TypedDict-narrowed type (see _ToolSchema in tools.py)."
+        )
+
+    def test_schemas_dict_is_typed(self):
+        """The _SCHEMAS dict should be explicitly typed so ty can resolve nested access."""
+        from plugins.platforms.a2a import tools as tools_mod
+        import inspect
+
+        source = inspect.getsource(tools_mod)
+        # The original (unfixed) declaration was:
+        #     _SCHEMAS = {  # no annotation
+        # The fix: dict[str, _ToolSchema] (or similar narrowing)
+        assert "_SCHEMAS: dict[" in source, (
+            "_SCHEMAS should have an explicit type annotation to satisfy ty. "
+            "See _ToolSchema TypedDict in tools.py."
+        )
+
+    def test_schemas_have_typed_dict_shape(self):
+        """A TypedDict for the tool schema shape lets ty verify nested access."""
+        from plugins.platforms.a2a import tools as tools_mod
+
+        # _ToolSchema should be defined in tools_mod
+        assert hasattr(tools_mod, "_ToolSchema"), (
+            "tools.py should define _ToolSchema TypedDict to type-narrow schema values."
+        )
+        assert hasattr(tools_mod, "_FunctionSchema"), (
+            "tools.py should define _FunctionSchema TypedDict for the inner function dict."
+        )

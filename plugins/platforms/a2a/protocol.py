@@ -141,14 +141,18 @@ def extract_text(message_or_params: dict) -> str:
 
 def build_task(task_id: str, context_id: str, state: str, agent_text: str = "") -> dict:
     """Build an A2A Task object for a message/send result."""
+    status: dict[str, Any] = {"state": state, "timestamp": _now_iso()}
     task: dict[str, Any] = {
         "id": task_id,
         "contextId": context_id,
-        "status": {"state": state, "timestamp": _now_iso()},
+        "status": status,
         "kind": "task",
     }
     if agent_text:
-        task["status"]["message"] = text_message("agent", agent_text)
+        # ty warning fix (cleaner than dict() cast): build status as
+        # dict[str, Any] from the start. The original code typed
+        # task["status"] as a literal dict which ty inferred too narrowly.
+        status["message"] = text_message("agent", agent_text)
         task["artifacts"] = [{
             "artifactId": uuid.uuid4().hex,
             "parts": [{"kind": "text", "text": agent_text}],

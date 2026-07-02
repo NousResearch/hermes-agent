@@ -359,6 +359,7 @@ export function DesktopController() {
   }, [])
 
   const {
+    clearAllSessions,
     loadMoreMessagingForPlatform,
     loadMoreSessions,
     loadMoreSessionsForProfile,
@@ -553,6 +554,26 @@ export function DesktopController() {
     syncSessionStateToView,
     updateSessionState
   })
+
+  // "Delete all chats" from the sidebar: tear the open chat down to a fresh
+  // draft first (so the route effect can't resume a session we're deleting),
+  // then clear the scope's history and close the orphaned runtime — the same
+  // teardown removeSession does for a single chat, lifted to the whole list.
+  const clearAllChats = useCallback(async () => {
+    const closingRuntimeId = activeSessionId
+
+    if (selectedStoredSessionId) {
+      startFreshSessionDraft(true)
+    }
+
+    try {
+      await clearAllSessions()
+    } finally {
+      if (closingRuntimeId) {
+        await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+      }
+    }
+  }, [activeSessionId, clearAllSessions, requestGateway, selectedStoredSessionId, startFreshSessionDraft])
 
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
@@ -890,6 +911,7 @@ export function DesktopController() {
       currentView={currentView}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onBranchSession={sessionId => void branchStoredSession(sessionId)}
+      onDeleteAllSessions={clearAllChats}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}

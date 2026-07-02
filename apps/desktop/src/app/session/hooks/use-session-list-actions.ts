@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
+import { BULK_DELETE_MAX_IDS, bulkDeleteSessions, getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -19,6 +19,7 @@ import {
   getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  sessionPinId,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -40,6 +41,12 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+
+// Upper bound on the page-and-delete loop in clearAllSessions. Each pass clears
+// up to BULK_DELETE_MAX_IDS rows, so this caps a single "Delete all" at ~500k
+// chats — far past any real history — while guaranteeing the loop terminates if
+// the backend ever stops actually deleting.
+const SESSION_CLEAR_MAX_PAGES = 1_000
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, the
@@ -198,6 +205,72 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     await refreshSessions()
   }, [refreshSessions])
 
+  // Permanently delete every chat in the active profile scope — the same rows
+  // the recents list shows (non-archived; cron/messaging/subagent excluded).
+  // Pages the scope in <=500-id chunks and deletes each via the bulk endpoint
+  // until it's empty, so it clears the whole history rather than only the
+  // currently-loaded window, with no new backend route. Archived chats live in
+  // Settings and are intentionally left untouched. Returns the number removed.
+  const clearAllSessions = useCallback(async (): Promise<number> => {
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+    let removed = 0
+
+    for (let page = 0; page < SESSION_CLEAR_MAX_PAGES; page++) {
+      const result = await listAllProfileSessions(BULK_DELETE_MAX_IDS, 1, 'exclude', 'recent', sessionProfile, {
+        excludeSources: SIDEBAR_EXCLUDED_SOURCES
+      })
+
+      if (result.sessions.length === 0) {
+        break
+      }
+
+      // Group by owning profile: each profile has its own state.db and the
+      // endpoint scopes to one profile per call, mirroring the single-session
+      // delete which routes by the row's own `profile`.
+      const idsByProfile = new Map<string, string[]>()
+
+      for (const session of result.sessions) {
+        const key = session.profile ?? 'default'
+        const ids = idsByProfile.get(key)
+
+        if (ids) {
+          ids.push(session.id)
+        } else {
+          idsByProfile.set(key, [session.id])
+        }
+      }
+
+      let deletedThisPage = 0
+
+      for (const [profile, ids] of idsByProfile) {
+        const { deleted } = await bulkDeleteSessions(ids, profile)
+        deletedThisPage += deleted
+
+        // Drop the rows + their pins optimistically so the sidebar empties as we
+        // page rather than snapping clear only at the closing refresh.
+        const goneIds = new Set(ids)
+        const gonePins = new Set(result.sessions.filter(s => goneIds.has(s.id)).map(sessionPinId))
+        setSessions(prev => prev.filter(s => !goneIds.has(s.id)))
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => !goneIds.has(id) && !gonePins.has(id)))
+      }
+
+      removed += deletedThisPage
+
+      // Nothing in this page actually deleted (every id was already gone, or the
+      // backend declined) — bail instead of re-fetching the same page forever.
+      if (deletedThisPage === 0) {
+        break
+      }
+    }
+
+    // Re-pull the authoritative list so totals/footer — and any chat created
+    // mid-clear — are accurate.
+    await refreshSessions()
+
+    return removed
+  }, [profileScope, refreshSessions])
+
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
   const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
@@ -221,6 +294,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   }, [])
 
   return {
+    clearAllSessions,
     loadMoreMessagingForPlatform,
     loadMoreSessions,
     loadMoreSessionsForProfile,

@@ -271,6 +271,27 @@ export function deleteSession(id: string, profile?: string | null): Promise<{ ok
   })
 }
 
+// Largest id list the backend accepts per bulk-delete call. The endpoint caps
+// each request to bound the DB-writer hold; callers with more rows batch.
+export const BULK_DELETE_MAX_IDS = 500
+
+// Deletes many sessions in one backend transaction. Backs the desktop
+// "Delete all chats" action and reuses the same `/api/sessions/bulk-delete`
+// endpoint the web dashboard's bulk-select-then-delete flow already calls.
+// Unknown ids are silently skipped server-side, so `deleted` is the count of
+// rows that actually existed and were removed (may be < ids.length).
+export function bulkDeleteSessions(
+  ids: string[],
+  profile?: string | null
+): Promise<{ deleted: number; ok: boolean }> {
+  return window.hermesDesktop.api<{ deleted: number; ok: boolean }>({
+    ...(profile ? { profile } : {}),
+    path: '/api/sessions/bulk-delete',
+    method: 'POST',
+    body: { ids, ...(profile ? { profile } : {}) }
+  })
+}
+
 export function renameSession(
   id: string,
   title: string,

@@ -1238,6 +1238,41 @@ class SlackAdapter(BasePlatformAdapter):
                     len(_plugin_handlers),
                 )
 
+            # Register plugin-provided Slack view-submission (modal) handlers,
+            # mirroring the action-handler wiring above.
+            try:
+                _plugin_view_handlers = list(get_plugin_manager().get_slack_view_handlers())
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("[Slack] Could not load plugin view handlers: %s", e)
+                _plugin_view_handlers = []
+
+            def _make_view_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, view):
+                    try:
+                        await cb(ack, body, view)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.error(
+                            "[Slack] Plugin '%s' view handler raised: %s",
+                            plugin_name, exc, exc_info=True,
+                        )
+                        try:
+                            await ack()
+                        except Exception:
+                            pass
+                return _wrapped
+
+            for _callback_id, _vcb, _vplugin_name in _plugin_view_handlers:
+                self._app.view(_callback_id)(_make_view_wrapper(_vcb, _vplugin_name))
+                logger.debug(
+                    "[Slack] Registered plugin view handler %s (from %s)",
+                    _callback_id, _vplugin_name,
+                )
+            if _plugin_view_handlers:
+                logger.info(
+                    "[Slack] Wired %d plugin view handler(s)",
+                    len(_plugin_view_handlers),
+                )
+
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
             # observes the live task immediately; on any failure here we tear

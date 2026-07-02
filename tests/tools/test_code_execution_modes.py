@@ -220,6 +220,17 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
 
+    def test_project_prefers_registered_task_cwd_override(self):
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as td:
+            task_id = "session-cwd-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": td})
+                    self.assertEqual(_resolve_child_cwd("project", "/tmp/staging", task_id=task_id), td)
+
 
 # ---------------------------------------------------------------------------
 # Schema description
@@ -315,6 +326,28 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
                 os.path.realpath(result["output"].strip()),
                 os.path.realpath(td),
             )
+
+    def test_project_mode_uses_registered_session_cwd_override(self):
+        """Project mode must honor session.cwd.set-style overrides even when
+        TERMINAL_CWD is absent or points elsewhere."""
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as td:
+            task_id = "session-cwd-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": td})
+                    with _mock_mode("project"):
+                        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+                            raw = execute_code(
+                                code="import os; print(os.getcwd())",
+                                task_id=task_id,
+                                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                            )
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(os.path.realpath(result["output"].strip()), os.path.realpath(td))
 
     def test_project_mode_interpreter_is_venv_python(self):
         """Project mode: sys.executable inside the child is the venv's python

@@ -200,6 +200,34 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return any(pattern in cmdline for pattern in patterns)
 
 
+def looks_like_gateway_command_line(command_line: str) -> bool:
+    """Return True when the command line looks like the gateway run process."""
+    if not command_line:
+        return False
+    cmdline = command_line.replace("\\", "/")
+    patterns = (
+        "hermes_cli.main gateway run",
+        "hermes_cli/main.py gateway run",
+        "hermes gateway run",
+        "gateway/run.py",
+    )
+    return any(pattern in cmdline for pattern in patterns)
+
+
+def looks_like_gateway_runtime_command_line(command_line: str) -> bool:
+    """Return True when the command line looks like the gateway daemon/runner."""
+    if not command_line:
+        return False
+    cmdline = command_line.replace("\\", "/")
+    patterns = (
+        "hermes gateway",
+        "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
+    )
+    return any(pattern in cmdline for pattern in patterns)
+
+
+
 def _build_pid_record() -> dict:
     return {
         "pid": os.getpid(),

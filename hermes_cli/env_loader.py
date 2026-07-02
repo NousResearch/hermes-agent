@@ -200,6 +200,13 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
+    # Load master secrets if present to resolve templates correctly
+    secrets_env = Path.home() / ".secrets.env"
+    if secrets_env.exists():
+        _load_dotenv_with_fallback(secrets_env, override=True)
+        if "UNIFIED_GATEWAY_BEARER_TOKEN" not in os.environ and "UNIFIED_GATEWAY_BEARER" in os.environ:
+            os.environ["UNIFIED_GATEWAY_BEARER_TOKEN"] = os.environ["UNIFIED_GATEWAY_BEARER"]
+
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None

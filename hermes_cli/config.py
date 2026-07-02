@@ -4418,6 +4418,34 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def write_platform_config_field(
+    platform_key: str,
+    field_key: str,
+    value: Any,
+    *,
+    raw: bool = False,
+) -> None:
+    """Persist one scalar field under ``platforms.<platform_key>``.
+
+    ``raw=True`` preserves CLI setup flows that intentionally edit only the
+    user's raw config file. Dashboard routes use the default loaded-config path
+    so they retain their existing profile-scoped ``load_config`` behavior.
+    """
+    config = read_raw_config() if raw else load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+
+    platform_config = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[platform_key] = platform_config
+
+    platform_config[field_key] = value
+    save_config(config)
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
@@ -4755,6 +4783,22 @@ def verify_config_integrity(*, locked: bool = False) -> tuple[bool, str, str]:
     return current == sealed, current, sealed
 
 
+def _expand_value_from_environ(val: str) -> str:
+    def repl(match):
+        var_name = match.group(1) or match.group(3)
+        default_val = match.group(2)
+        if default_val is not None:
+            default_val = default_val[2:]
+        val = os.environ.get(var_name)
+        if val is not None:
+            return val
+        if default_val is not None:
+            return default_val
+        return match.group(0)
+        
+    return re.sub(r'\$(?:{([A-Za-z0-9_]+)(:-[^}]+)?}|([A-Za-z0-9_]+))', repl, val)
+
+
 def restore_config(content: "str | dict[str, Any]", *, reason: str = "") -> Path:
     """Safely restore config.yaml from a known-good state.
 
@@ -4850,8 +4894,13 @@ def load_env() -> Dict[str, str]:
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
+                # Strip the bash-compatible ``export `` prefix so lines like
+                # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
+                # stored under the wrong key ``"export API_KEY"`` (#6659).
+                if line.startswith('export '):
+                    line = line[7:]
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
+                env_vars[key.strip()] = _expand_value_from_environ(value.strip().strip('"\''))
 
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))

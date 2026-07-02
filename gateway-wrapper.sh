@@ -11,14 +11,33 @@
 # process is still alive. Reap any pre-existing gateway here before starting,
 # so the new instance always gets a free Slack app token.
 emulate -L zsh
-setopt no_unset
 
+# Source the main secrets file if present, to load raw API keys
+if [[ -f "$HOME/.secrets.env" ]]; then
+  set -a
+  source "$HOME/.secrets.env"
+  set +a
+fi
+
+
+
+# Map UNIFIED_GATEWAY_BEARER to UNIFIED_GATEWAY_BEARER_TOKEN if needed
+if [[ -n "${UNIFIED_GATEWAY_BEARER:-}" ]]; then
+  export UNIFIED_GATEWAY_BEARER_TOKEN="$UNIFIED_GATEWAY_BEARER"
+fi
+
+# Temporarily disable no_unset when sourcing the templated .env file
+# to prevent zsh from aborting on unset parameters.
+setopt no_unset
 ENV_FILE="$HOME/.hermes/.env"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
+  unsetopt no_unset
   source "$ENV_FILE"
+  setopt no_unset
   set +a
 fi
+
 
 # --- Preflight: reap any existing gateway (excluding ourselves) ---
 # Match the exact module invocation so we never touch unrelated python procs.

@@ -1089,6 +1089,15 @@ async def vision_analyze_tool(
         # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
         vision_temperature = 0.1
+        # Read full auxiliary.vision config so the call respects provider,
+        # model, base_url, and api_key. async_call_llm(task="vision") does
+        # internal fallback to the wrong model when these are missing, which
+        # makes user-configured vision providers silently fail with
+        # "unknown model '<chat default>'" from the vision backend.
+        vision_provider = None
+        vision_model_cfg = None
+        vision_base_url = None
+        vision_api_key = None
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
@@ -1099,6 +1108,12 @@ async def vision_analyze_tool(
             _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
+            vision_provider = (_vision_cfg.get("provider") or "").strip() or None
+            vision_model_cfg = (_vision_cfg.get("model") or "").strip() or None
+            vision_base_url = (_vision_cfg.get("base_url") or "").strip() or None
+            _ak = _vision_cfg.get("api_key")
+            if isinstance(_ak, str) and _ak.strip():
+                vision_api_key = _ak.strip()
         except Exception:
             pass
         call_kwargs = {
@@ -1110,6 +1125,14 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        elif vision_model_cfg:
+            call_kwargs["model"] = vision_model_cfg
+        if vision_provider:
+            call_kwargs["provider"] = vision_provider
+        if vision_base_url:
+            call_kwargs["base_url"] = vision_base_url
+        if vision_api_key:
+            call_kwargs["api_key"] = vision_api_key
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)

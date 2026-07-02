@@ -1147,9 +1147,9 @@ class TestPromptBuilderConstants:
             marker in lower for marker in ("do not", "don't", "not use")
         ), "weixin hint should explicitly discourage wide pipe tables"
         # The recommended alternatives must be spelled out.
-        assert (
-            "image" in lower or "table-image-generator" in lower
-        ), "weixin hint should point to image rendering as an alternative"
+        assert "image" in lower, (
+            "weixin hint should point to image rendering as an alternative"
+        )
         assert "key: value" in lower or "key:value" in lower, (
             "weixin hint should point to key:value list format as an alternative"
         )

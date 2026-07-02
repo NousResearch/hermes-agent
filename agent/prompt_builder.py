@@ -791,9 +791,10 @@ PLATFORM_HINTS = {
         "Tables: the WeChat personal client clips the right-hand side of wide pipe-style "
         "Markdown tables — columns beyond the initial viewport stay hidden even when the "
         "user scrolls. Do NOT use pipe tables for 3+ columns or wide data. Instead, either "
-        "(a) render the table as an image (for example via the bundled table-image-generator "
-        "skill) and attach it with MEDIA:/absolute/path/to/table.png, or (b) for simple "
-        "rows, format as a key: value list. Two-column pipe tables render fine and are OK."
+        "(a) render the table as an image using whatever image-generation tool is available "
+        "(or code that produces a table screenshot) and attach it with "
+        "MEDIA:/absolute/path/to/table.png, or (b) for simple rows, format as a key: value "
+        "list. Two-column pipe tables render fine and are OK."
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "

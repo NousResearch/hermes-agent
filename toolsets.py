@@ -876,7 +876,24 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in _get_plugin_toolset_names():
         return True
-    return name in _get_registry_toolset_aliases()
+    if name in _get_registry_toolset_aliases():
+        return True
+    # Plugin platforms expose a dynamic ``hermes-<platform>`` toolset that
+    # ``resolve_toolset`` generates on the fly (core tools + any tool
+    # registered under the platform's name).  Built-in platforms have static
+    # ``hermes-<platform>`` entries in ``TOOLSETS`` and validate above, but
+    # plugin platforms (e.g. teams, google_chat) do not — so without this
+    # branch ``validate_toolset`` returns False for them and callers like
+    # ``model_tools`` drop the toolset as "unknown", silently discarding the
+    # plugin's tools.  Mirror ``resolve_toolset``'s handling here.
+    if name.startswith("hermes-"):
+        try:
+            from gateway.platform_registry import platform_registry
+            if platform_registry.is_registered(name[len("hermes-"):]):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def create_custom_toolset(

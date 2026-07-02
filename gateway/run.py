@@ -540,7 +540,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         depth += 1
         if type(cur).__name__ in _TRANSIENT_NETWORK_ERROR_CLASS_NAMES:
             return True
-        cur = cur.__cause__ or cur.__context__
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
     return False
 
 

@@ -1865,6 +1865,16 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
+def _clarify_timeout_seconds() -> int:
+    """Return the configured clarify timeout for Desktop/TUI prompts."""
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+
+        return max(1, int(get_clarify_timeout()))
+    except Exception:
+        return 3600
+
+
 def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
@@ -3649,6 +3659,7 @@ def _agent_cbs(sid: str) -> dict:
                 "max_selections": kw.get("max_selections"),
                 "allow_other": kw.get("allow_other", True),
             },
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.

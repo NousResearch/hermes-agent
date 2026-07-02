@@ -339,6 +339,26 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
+    # The Python side of the adapter talks to the Node.js bridge over HTTP via
+    # aiohttp. It is not a core dependency, so lazy-install it on first use like
+    # every other messaging platform. Without this the gateway crashed with
+    # ModuleNotFoundError: No module named 'aiohttp' and fell back to cron-only
+    # mode (issue #54217).
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError:
+        try:
+            from tools.lazy_deps import ensure
+
+            ensure("platform.whatsapp", prompt=False)
+            import aiohttp  # noqa: F401
+        except Exception as e:
+            logger.warning(
+                "[whatsapp] aiohttp is required but could not be installed: %s",
+                e,
+            )
+            return False
+
     # Prefer Hermes-managed Node/npm so Windows installs are not broken by a
     # bad or elevation-triggering system Node on PATH.
     _node = find_node_executable("node")

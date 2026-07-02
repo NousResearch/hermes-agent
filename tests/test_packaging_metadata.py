@@ -432,6 +432,7 @@ _REQUIRED_SECURITY_PINS = {
         "platform.slack",
         "platform.matrix",
         "platform.teams",
+        "platform.whatsapp",
     },
 }
 

@@ -200,6 +200,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+    # WhatsApp adapter — the Python side talks to the Node.js bridge over HTTP
+    # via aiohttp. Lazy-installed on demand like every other messaging
+    # platform; without this the gateway crashed with
+    # ModuleNotFoundError: No module named 'aiohttp' and fell back to
+    # cron-only mode (issue #54217).
+    "platform.whatsapp": ("aiohttp==3.14.1",),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

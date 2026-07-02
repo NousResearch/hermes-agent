@@ -185,6 +185,14 @@ def finalize_turn(
         _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
         logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
 
+    # Capture the turn's TRUE tail role before persist-time mutations below
+    # (scaffolding drop, interrupt-close, and the #43849/#44100 assistant-row
+    # append) rewrite the tail. The "ended with a pending tool result" signal
+    # feeds both the turn-exit diagnostic and the ``turn_failed`` hook; reading
+    # ``messages[-1]`` after the append would classify every premature stop
+    # that delivered *any* final_response as a clean assistant exit.
+    _pre_persist_last_role = messages[-1].get("role") if messages else None
+
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
@@ -238,7 +246,12 @@ def finalize_turn(
     # Always logged at INFO so agent.log captures WHY every turn ended.
     # When the last message is a tool result (agent was mid-work), log
     # at WARNING — this is the "just stops" scenario users report.
-    _last_msg_role = messages[-1].get("role") if messages else None
+    # Uses the tail role captured BEFORE persist-time mutations: the
+    # #43849/#44100 assistant-row append above makes ``messages[-1]`` always
+    # "assistant" whenever a final_response was delivered, which would hide
+    # every pending-tool premature stop from this diagnostic and the
+    # ``turn_failed`` hook.
+    _last_msg_role = _pre_persist_last_role
     _last_tool_name = None
     if _last_msg_role == "tool":
         # Walk back to find the assistant message with the tool call

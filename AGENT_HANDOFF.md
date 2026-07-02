@@ -165,3 +165,51 @@ Result: All operations correct. Redaction confirmed (api_key → <<redacted>>).
 - **Clarify resolution** — returned as `not_supported`. Same reason: requires gateway adapter context.
 - **True agent interruption** — `stop_run` transitions status directly to `cancelled` with synthetic events. Actual `agent.interrupt()` requires a live `AIAgent` reference.
 - **HTTP route handlers** — not included in this package. The existing `api_server.py` route handlers (aiohttp) still manage their own state. Integration phase should either add new handlers delegating to `RunManager` or refactor the existing ones.
+
+---
+
+## Phase 9 — Full verification and final implementation report (completed)
+
+### State Before Phase 9
+- **Commit:** `f7cc6c5`
+- **Message:** (prior phase commit)
+
+### Verification Results
+
+#### Agent — Focused verification
+```
+./scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py -v
+Result: 74 passed, 0 failed in 0.7s — PASS
+```
+
+#### Agent — Full test suite
+```
+./scripts/run_tests.sh
+Result: 70 passed in shard scope. 18 failures total across all files —
+  all in pre-existing, unrelated areas:
+  tests/acp/test_auth.py (2), tests/acp/test_edit_approval.py (1),
+  tests/gateway/test_wecom_callback.py (3),
+  tests/tools/test_execute_code_approval_cluster.py (7),
+  tests/tools/test_modal_sandbox_fixes.py (2),
+  tests/tools/test_voice_mode.py (3).
+  Also 9 acp test files with collection/import errors.
+  None related to Phase 4 runtime foundation.
+```
+
+#### Agent — Import/config smoke
+```
+python3 - import gateway.runtime.models, gateway.runtime.run_manager;
+  RunManager smoke run created successfully
+Result: All imports OK. Smoke run: run_id, session_id, status: queued,
+  events_url/status_url/controls all populated. PASS
+```
+
+### Files Updated
+- `AGENT_HANDOFF.md` — Phase 9 section added
+- `IMPLEMENTATION_REPORT.md` — created with full implementation report
+
+### Next task
+
+**Mount `gateway/runtime` route module into live Agent API server, then run live WebUI agent-runs smoke.**

@@ -53,10 +53,21 @@ def git_commit(dotfiles_dir: Path, log_path: Path, message: str) -> bool:
         )
         if result.returncode == 0:
             return True  # Nothing to commit
-        subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=dotfiles_dir, check=True, capture_output=True,
-        )
+        try:
+            subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=dotfiles_dir, check=True, capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # Commit signing can fail unattended (1Password ssh-agent locked —
+            # see git-ssh-sign-local / DAN-1536). An unsigned append-only
+            # commit still anchors the log; leaving it uncommitted would make
+            # every subsequent verify report log tampering (exit 2).
+            subprocess.run(
+                ["git", "commit", "--no-gpg-sign", "-m",
+                 message + " [unsigned: signer unavailable]"],
+                cwd=dotfiles_dir, check=True, capture_output=True,
+            )
         return True
     except subprocess.CalledProcessError as e:
         print(f"WARNING: git commit failed: {e.stderr.decode()}", file=sys.stderr)
@@ -306,19 +317,11 @@ def restore(
 
     append_log_entry(log_path, "restore", restored_hash=new_hash)
 
-    # Commit the updated log
-    try:
-        subprocess.run(
-            ["git", "add", str(log_path.relative_to(dotfiles_dir))],
-            cwd=dotfiles_dir, check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m",
-             f"integrity: restore config.yaml [{new_hash[:12] if new_hash else 'unknown'}]"],
-            cwd=dotfiles_dir, check=True, capture_output=True,
-        )
-    except subprocess.CalledProcessError:
-        pass  # Log written even if git commit fails
+    # Commit the updated log (signed if possible, unsigned fallback)
+    git_commit(
+        dotfiles_dir, log_path,
+        f"integrity: restore config.yaml [{new_hash[:12] if new_hash else 'unknown'}]",
+    )
 
     print("Config restored and re-sealed.")
     return 0

@@ -1697,6 +1697,12 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     if tui_dir.is_dir():
         return
 
+    # Managed installs (Homebrew, NixOS) ship the TUI prebuilt in
+    # ``hermes_cli/tui_dist/`` — there is no ``ui-tui/`` source tree to
+    # restore.  Let the caller fall through to ``_find_bundled_tui()``.
+    if os.environ.get("HERMES_MANAGED", "").strip():
+        return
+
     if _restore_tui_workspace(tui_dir):
         if not os.environ.get("HERMES_QUIET"):
             print(f"Restored missing TUI workspace: {tui_dir}")

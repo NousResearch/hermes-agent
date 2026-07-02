@@ -1492,3 +1492,71 @@ class TestMkdtempOSErrorNoSpace:
             result = _resolve_tirith_path("tirith")
             assert _tirith_mod._resolved_path is _INSTALL_FAILED
             mock_mark.assert_called_once_with("no_space")
+
+
+# ---------------------------------------------------------------------------
+# Platform support surfaces (#57207)
+# ---------------------------------------------------------------------------
+
+class TestIsUnsupportedPlatform:
+    """Issue #57207: Windows / truly-unsupported platforms used to silently
+    run with tirith_fail_open=true-and-stuck. Gate these surfaces so callers
+    (gateway startup warning) can fire the same 'no risk assessor' heads-up
+    that the explicit-disable branch already does.
+    """
+
+    def test_unsupported_platform_when_target_none(self):
+        """No Rust triple for this OS+arch → is_unsupported_platform True."""
+        with patch(
+            "tools.tirith_security._detect_target", return_value=None
+        ), patch("tools.tirith_security._read_failure_reason", return_value=None):
+            assert _tirith_mod.is_unsupported_platform() is True
+
+    def test_supported_platform_with_no_marker_is_not_unsupported(self):
+        """Linux/macOS with no on-disk marker must NOT trip the warning."""
+        with patch(
+            "tools.tirith_security._detect_target",
+            return_value="x86_64-unknown-linux-gnu",
+        ), patch("tools.tirith_security._read_failure_reason", return_value=None):
+            assert _tirith_mod.is_unsupported_platform() is False
+
+    def test_supported_platform_with_transient_marker_is_not_unsupported(self):
+        """Transient reasons (download/cosign/no_space) must not poison the
+        platform signal — the next install attempt should retry normally."""
+        with patch(
+            "tools.tirith_security._detect_target",
+            return_value="aarch64-apple-darwin",
+        ), patch("tools.tirith_security._read_failure_reason",
+                 return_value="download_failed"):
+            assert _tirith_mod.is_unsupported_platform() is False
+
+    def test_supported_platform_with_persistent_marker_counts_as_unsupported(self):
+        """Once a previous run recorded `unsupported_platform` on disk, that
+        is authoritative — the platform gap is structural, not transient.
+        A second run on a freshly-detected-as-supported platform (e.g.
+        tmpdir/HERMES_HOME looped through a Windows marker on a POSIX fs)
+        still surfaces the warning."""
+        with patch(
+            "tools.tirith_security._detect_target",
+            return_value="x86_64-unknown-linux-gnu",
+        ), patch("tools.tirith_security._read_failure_reason",
+                 return_value="unsupported_platform"):
+            assert _tirith_mod.is_unsupported_platform() is True
+
+    def test_install_tirith_persists_unsupported_marker(self, tmp_path):
+        """`_install_tirith()` must write `unsupported_platform` to the
+        marker file so subsequent processes can surface the warning
+        without re-running detection."""
+        with patch("tools.tirith_security._get_hermes_home",
+                   return_value=str(tmp_path)), \
+             patch("tools.tirith_security.platform.system",
+                   return_value="Windows"), \
+             patch("tools.tirith_security.platform.machine",
+                   return_value="AMD64"), \
+             patch.object(_tirith_mod, "_detect_target", return_value=None):
+            installed, reason = _tirith_mod._install_tirith(log_failures=False)
+            assert installed is None
+            assert reason == "unsupported_platform"
+            marker = tmp_path / ".tirith-install-failed"
+            assert marker.exists()
+            assert marker.read_text().strip() == "unsupported_platform"

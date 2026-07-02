@@ -280,6 +280,29 @@ def is_platform_supported() -> bool:
     return _detect_target() is not None
 
 
+def is_unsupported_platform() -> bool:
+    """True when tirith has no binary for this platform and never will.
+
+    Distinct from a transient install failure: this is a *structural* gap
+    that survives process restarts and renders ``tirith_fail_open``
+    permanent on this host. Callers (gateway startup warning, CLI banner,
+    third-party plugins) use it to surface the same 'no automated risk
+    assessor' heads-up that the explicit-disable branch already fires,
+    so operators on Windows / other unsupported OSes see the gap and
+    can decide to ship a build or provision auxiliary.approval (issue
+    #57207 and the install-side discussion there).
+    """
+    if not is_platform_supported():
+        return True
+    # A persistent install marker recorded on a previous run is also
+    # authoritative. Treat it as unsupported-platform-forever iff the
+    # recorded reason is the structural one — transient reasons
+    # (download / cosign / no_space) are not a basis to claim
+    # plat-unsupported and continue retrying on the next process.
+    reason = _read_failure_reason()
+    return reason == "unsupported_platform"
+
+
 def _download_file(url: str, dest: str, timeout: int = 10):
     """Download a URL to a local file."""
     req = urllib.request.Request(url)
@@ -396,6 +419,10 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     if not target:
         logger.info("tirith auto-install: unsupported platform %s/%s",
                      platform.system(), platform.machine())
+        # Persist this on disk so gateway/CLI startup warnings can still
+        # surface it across process restarts (no transient retry, no
+        # per-process timer — the platform gap is permanent, see #57207).
+        _mark_install_failed("unsupported_platform")
         return None, "unsupported_platform"
 
     archive_name = f"tirith-{target}.tar.gz"

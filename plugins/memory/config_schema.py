@@ -132,7 +132,10 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
             spec.loader.exec_module(module)
             schema = getattr(module, "CONFIG_SCHEMA", None)
         except Exception:
+            # A broken schema file must not cache: it would render as a silent
+            # empty panel until process restart even after the file is fixed.
             _log.exception("failed to load config schema for memory provider %r", name)
+            return None
 
     _SCHEMA_CACHE[name] = schema
     return schema

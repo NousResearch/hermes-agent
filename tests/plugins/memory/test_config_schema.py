@@ -1,5 +1,6 @@
 """Tests for config-schema loading from memory provider plugin dirs."""
 
+import plugins.memory.config_schema as config_schema
 from plugins.memory.config_schema import get_provider_config_schema
 
 
@@ -14,3 +15,29 @@ def test_plugin_without_schema_is_none():
 
 def test_schemas_are_cached_per_provider():
     assert get_provider_config_schema("honcho") is get_provider_config_schema("honcho")
+
+
+def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
+    # A load failure must retry on the next request, not pin an empty panel.
+    broken_dir = tmp_path / "broken"
+    broken_dir.mkdir()
+    schema_file = broken_dir / "config_schema.py"
+    schema_file.write_text("this is not python(", encoding="utf-8")
+
+    monkeypatch.setattr(config_schema, "_SCHEMA_CACHE", {})
+    import plugins.memory as memory
+
+    monkeypatch.setattr(memory, "find_provider_dir", lambda name: broken_dir)
+
+    assert get_provider_config_schema("broken") is None
+    assert "broken" not in config_schema._SCHEMA_CACHE
+
+    schema_file.write_text(
+        "from plugins.memory.config_schema import ProviderConfigSchema\n"
+        'CONFIG_SCHEMA = ProviderConfigSchema(name="broken", label="Broken")\n',
+        encoding="utf-8",
+    )
+
+    recovered = get_provider_config_schema("broken")
+    assert recovered is not None
+    assert recovered.label == "Broken"

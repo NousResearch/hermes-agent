@@ -289,3 +289,4 @@ def test_override_retry_skipped_on_unsupported_arch() -> None:
     r = _run_install_fn("ubuntu", "26.04", native_fails=True, arch="riscv64")
     assert len(r["runs"]) == 1, r["runs"]
     assert r["final_rc"] == 1
+

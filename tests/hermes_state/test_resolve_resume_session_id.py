@@ -214,3 +214,4 @@ def test_compression_tip_handles_pre_ended_real_child_and_ws_orphan_sibling(db):
     assert "live_tip" in ids
     assert "real_cont" not in ids
     assert "ws_orphan" not in ids
+

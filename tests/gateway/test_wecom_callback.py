@@ -345,3 +345,5 @@ class TestWecomCallbackBodySizeLimit:
         small = b"<xml><Encrypt>not-real</Encrypt></xml>"
         response = await adapter._handle_callback(self._request(small))
         assert response.status != 413
+
+

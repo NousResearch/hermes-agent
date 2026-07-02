@@ -53,3 +53,4 @@ def test_empty_body_fallback_redacts_secrets(monkeypatch):
     )
     summary = AIAgent._summarize_api_error(err)
     assert "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in summary
+

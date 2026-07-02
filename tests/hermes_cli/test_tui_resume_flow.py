@@ -1050,6 +1050,31 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
 
 
+def test_make_tui_argv_uses_bundled_wheel_tui_without_workspace(
+    monkeypatch, main_mod, tmp_path
+):
+    """Wheel installs ship hermes_cli/tui_dist but not the source ui-tui tree."""
+    missing_tui_dir = tmp_path / "ui-tui"
+    bundled = tmp_path / "hermes_cli" / "tui_dist" / "entry.js"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("console.log('bundled tui')\n", encoding="utf-8")
+
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled)
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+
+    def fail_workspace_check(_tui_dir):
+        raise AssertionError("bundled wheel TUI must not require ui-tui workspace")
+
+    monkeypatch.setattr(main_mod, "_ensure_tui_workspace", fail_workspace_check)
+
+    argv, cwd = main_mod._make_tui_argv(missing_tui_dir, tui_dev=False)
+
+    assert argv == ["/usr/bin/node", "--expose-gc", str(bundled)]
+    assert cwd == bundled.parent
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 

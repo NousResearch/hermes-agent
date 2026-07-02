@@ -4609,11 +4609,9 @@ def _normalize_custom_provider_entry(
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
-    extra_headers = entry.get("extra_headers")
-    if isinstance(extra_headers, dict) and extra_headers:
-        normalized["extra_headers"] = {
-            str(k): str(v) for k, v in extra_headers.items() if v is not None
-        }
+    normalized_headers = normalize_extra_headers(entry.get("extra_headers"))
+    if normalized_headers:
+        normalized["extra_headers"] = normalized_headers
 
     ssl_ca_cert = entry.get("ssl_ca_cert")
     if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
@@ -4796,6 +4794,23 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
+def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
+    """Normalize a raw ``extra_headers`` value into a ``dict[str, str]``.
+
+    Stringifies keys and values and drops entries whose value is ``None``.
+    Returns ``{}`` for non-dict or empty inputs. This is the single shared
+    normalizer for per-provider ``extra_headers`` across config normalization,
+    runtime resolution, client construction, and live ``/models`` discovery.
+
+    SECURITY: header values routinely carry credentials (Cloudflare Access
+    service tokens, proxy auth, custom bearer schemes). Callers must never
+    log the returned values.
+    """
+    if not isinstance(extra_headers, dict) or not extra_headers:
+        return {}
+    return {str(k): str(v) for k, v in extra_headers.items() if v is not None}
+
+
 def get_custom_provider_extra_headers(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
@@ -4827,12 +4842,7 @@ def get_custom_provider_extra_headers(
         entry_url = (entry.get("base_url") or "").rstrip("/").lower()
         if not entry_url or entry_url != target_url:
             continue
-        extra_headers = entry.get("extra_headers")
-        if isinstance(extra_headers, dict) and extra_headers:
-            return {
-                str(k): str(v) for k, v in extra_headers.items() if v is not None
-            }
-        return {}
+        return normalize_extra_headers(entry.get("extra_headers"))
     return {}
 
 

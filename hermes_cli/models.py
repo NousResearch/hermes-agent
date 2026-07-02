@@ -3501,13 +3501,9 @@ def probe_api_models(
     if isinstance(request_headers, dict):
         # Per-provider custom headers can contain auth/proxy secrets. Merge
         # last so endpoint-specific config wins, and never log the values.
-        headers.update(
-            {
-                str(key): str(value)
-                for key, value in request_headers.items()
-                if value is not None
-            }
-        )
+        from hermes_cli.config import normalize_extra_headers
+
+        headers.update(normalize_extra_headers(request_headers))
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"

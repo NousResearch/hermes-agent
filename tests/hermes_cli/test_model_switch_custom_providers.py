@@ -745,6 +745,60 @@ def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
     assert gateway_prov["models"] == ["gateway-model"]
 
 
+def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
+    """Entries sharing (api_url, credential, api_mode) but declaring different
+    extra_headers must NOT collapse into one picker row — each is a distinct
+    header-authenticated endpoint (e.g. per-tenant routing behind one proxy)
+    and must probe /models with its own headers."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs.get("headers")))
+        # Return a per-tenant model list keyed by the routing header so we can
+        # assert each row got its OWN probe rather than a shared one.
+        tenant = (kwargs.get("headers") or {}).get("X-Tenant", "none")
+        return [f"model-{tenant}"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "Proxy Tenant A",
+                "api_key": "shared-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {"X-Tenant": "a"},
+            },
+            {
+                "name": "Proxy Tenant B",
+                "api_key": "shared-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {"X-Tenant": "b"},
+            },
+        ],
+        max_models=50,
+    )
+
+    rows = [
+        p for p in providers if p.get("api_url") == "http://localhost:8081/v1"
+    ]
+    # Two distinct rows, not one collapsed row.
+    assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
+
+    # Each tenant was probed with its OWN header set (order-independent).
+    assert ("shared-key", "http://localhost:8081/v1", {"X-Tenant": "a"}) in calls
+    assert ("shared-key", "http://localhost:8081/v1", {"X-Tenant": "b"}) in calls
+
+    # Each row surfaces the model list its own headers unlocked.
+    models_by_row = {tuple(r["models"]) for r in rows}
+    assert models_by_row == {("model-a",), ("model-b",)}
+
+
 def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatch):
     """Custom providers (section 4) with ``discover_models: false`` must keep
     their explicit ``models:`` subset instead of replacing it with live

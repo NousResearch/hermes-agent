@@ -26,19 +26,20 @@ import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
-import {
-  ARTIFACT_FILTERS,
-  artifactImageSrc,
-  collectArtifactsForSession,
-  type ArtifactFilter,
-  type ArtifactRecord
-} from './artifact-utils'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+
+import {
+  ARTIFACT_FILTERS,
+  type ArtifactFilter,
+  artifactImageSrc,
+  type ArtifactRecord,
+  collectArtifactsForSession
+} from './artifact-utils'
 
 const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',

@@ -111,6 +111,7 @@ describe('downloadGatewayMediaFile', () => {
 
     throw new Error(`unexpected path ${path}`)
   })
+
   let clickSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {

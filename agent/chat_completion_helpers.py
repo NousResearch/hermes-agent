@@ -2126,6 +2126,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # Some OpenAI-compatible providers expose provider-specific
+            # reasoning fields via the SDK's model_extra dict instead of as
+            # direct attributes. Mirror the non-streaming transport fallback.
+            if reasoning_text is None and hasattr(delta, "model_extra"):
+                model_extra = getattr(delta, "model_extra", None)
+                if isinstance(model_extra, dict):
+                    reasoning_text = model_extra.get("reasoning_content") or model_extra.get("reasoning")
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
@@ -2270,6 +2277,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Zero-chunk guard: stream yielded nothing usable — a provider/upstream
         # error or malformed SSE, not a legitimate empty completion. Raise so the
         # retry machinery handles it instead of fabricating a successful turn.
+        # Reasoning-only streams are valid output even when no visible content
+        # arrives; providers may expose that reasoning via delta.model_extra.
         if (
             finish_reason is None
             and not content_parts

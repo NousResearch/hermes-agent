@@ -6912,6 +6912,27 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content is None
         assert resp.choices[0].message.tool_calls is None
 
+    def test_reasoning_content_in_delta_model_extra_counts_as_stream_output(self, agent):
+        """OpenAI-compatible providers may expose reasoning deltas via model_extra."""
+        delta = SimpleNamespace(
+            content=None,
+            tool_calls=None,
+            model_extra={"reasoning_content": "thinking only"},
+        )
+        chunks = [
+            SimpleNamespace(
+                model="openai-compatible/reasoning",
+                choices=[SimpleNamespace(delta=delta, finish_reason=None)],
+            )
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content is None
+        assert resp.choices[0].message.reasoning_content == "thinking only"
+        assert resp.choices[0].finish_reason == "stop"
+
     def test_callback_exception_swallowed(self, agent):
         chunks = [
             _make_chunk(content="Hello"),

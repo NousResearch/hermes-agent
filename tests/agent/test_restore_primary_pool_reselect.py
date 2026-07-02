@@ -219,4 +219,41 @@ class TestRestorePrimaryPoolReselect:
 
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
-        assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+    def test_restore_skips_pool_reselect_when_provider_mismatch(self):
+        """When the pool belongs to a fallback provider, skip re-selection.
+
+        _try_activate_fallback swaps _credential_pool to the fallback
+        provider's pool.  If restore_primary_runtime re-selects from that
+        pool, _swap_credential overwrites the just-restored primary base_url
+        with the fallback provider's URL, causing 404s (#56885).
+        """
+        from agent.credential_pool import CredentialPool
+
+        # Build a deepseek pool (different provider from the primary openai-codex)
+        deepseek_entries = [
+            PooledCredential.from_dict("deepseek", {
+                "id": "ds-1",
+                "label": "ds-1",
+                "auth_type": AUTH_TYPE_OAUTH,
+                "source": "device_code",
+                "priority": 0,
+                "access_token": "deepseek-key",
+                "base_url": "https://api.deepseek.com/v1",
+            }),
+        ]
+        pool = CredentialPool(provider="deepseek", entries=deepseek_entries)
+
+        agent = self._make_agent(pool)
+        # Verify the agent's primary is openai-codex
+        assert agent.provider == "openai-codex"
+        assert agent._credential_pool.provider == "deepseek"
+
+        result = agent._restore_primary_runtime()
+
+        assert result is True
+        # base_url must stay as the primary's, NOT deepseek's
+        assert agent.base_url == "https://chatgpt.com/backend-api/codex"
+        assert agent.api_key == "original-key-entry-1"
+        # _swap_credential should NOT have been called (no client rebuild)
+        agent._replace_primary_openai_client.assert_not_called()

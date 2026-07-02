@@ -1180,24 +1180,40 @@ def restore_primary_runtime(agent) -> bool:
         # the pool for its current best entry and swap the live credential in.
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
+        #
+        # Guard: _try_activate_fallback swaps _credential_pool to the fallback
+        # provider's pool (chat_completion_helpers.py:1365).  If we haven't
+        # restored the primary pool yet, pool.select() returns a fallback
+        # entry whose base_url overwrites the just-restored primary base_url,
+        # causing 404s and bounce-loops (#56885).  Skip re-selection when the
+        # pool belongs to a different provider.
         pool = getattr(agent, "_credential_pool", None)
         if pool is not None and pool.has_available():
-            entry = pool.select()
-            if entry is not None:
-                entry_key = (
-                    getattr(entry, "runtime_api_key", None)
-                    or getattr(entry, "access_token", "")
+            pool_prov = (getattr(pool, "provider", "") or "").strip().lower()
+            primary_prov = (rt.get("provider") or agent.provider or "").strip().lower()
+            if pool_prov and primary_prov and pool_prov != primary_prov:
+                logger.warning(
+                    "Restore: credential pool provider %s != primary %s — "
+                    "skipping pool re-selection to avoid base_url contamination",
+                    pool_prov, primary_prov,
                 )
-                if entry_key:
-                    # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
-                    # reapplies base-url-scoped headers, and carries the
-                    # accumulated base_url / OAuth-detection fixes (#33163).
-                    agent._swap_credential(entry)
-                    logger.info(
-                        "Restore re-selected pool entry %s (%s)",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
+            else:
+                entry = pool.select()
+                if entry is not None:
+                    entry_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
                     )
+                    if entry_key:
+                        # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
+                        # reapplies base-url-scoped headers, and carries the
+                        # accumulated base_url / OAuth-detection fixes (#33163).
+                        agent._swap_credential(entry)
+                        logger.info(
+                            "Restore re-selected pool entry %s (%s)",
+                            getattr(entry, "id", "?"),
+                            getattr(entry, "label", "?"),
+                        )
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False

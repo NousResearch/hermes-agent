@@ -915,11 +915,21 @@ platform_toolsets:
 #
 # tts:
 #   provider: "gemini"
+#   speed: 1.0              # global speed multiplier (provider-specific overrides this)
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#   xai:
+#     voice_id: "eve"       # built-in or custom voice ID from xAI Console
+#     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"
+#     speed: 1.0            # 0.7-1.5 playback speed
+#     auto_speech_tags: false  # insert expressive audio tags via LLM rewrite
+#     text_normalization: false  # normalize numbers/abbreviations/symbols
+#     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
+#     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
+#     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

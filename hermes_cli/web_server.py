@@ -6325,13 +6325,19 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         read_hermes_oauth_credentials = None  # type: ignore
         _HERMES_OAUTH_FILE = None  # type: ignore
 
+    try:
+        from hermes_cli.auth import is_source_suppressed as _is_source_suppressed
+    except ImportError:
+        def _is_source_suppressed(provider_id: str, source: str) -> bool:  # type: ignore[misc]
+            return False
+
     hermes_creds = None
     if read_hermes_oauth_credentials:
         try:
             hermes_creds = read_hermes_oauth_credentials()
         except Exception:
             hermes_creds = None
-    if hermes_creds and hermes_creds.get("accessToken"):
+    if hermes_creds and hermes_creds.get("accessToken") and not _is_source_suppressed("anthropic", "hermes_pkce"):
         return {
             "logged_in": True,
             "source": "hermes_pkce",
@@ -6360,7 +6366,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
 
     for var in env_var_order:
         value = (get_env_value(var) if get_env_value else None) or os.getenv(var)
-        if not value:
+        if not value or _is_source_suppressed("anthropic", f"env:{var}"):
             continue
         suffix = format_secret_source_suffix(var) if format_secret_source_suffix else ""
         return {
@@ -6381,6 +6387,12 @@ def _claude_code_only_status() -> Dict[str, Any]:
     Claude Code subscription tokens are actively flowing into Hermes even
     when they also have a separate Hermes-managed PKCE login.
     """
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        if is_source_suppressed("anthropic", "claude_code"):
+            return {"logged_in": False, "source": None}
+    except Exception:
+        pass
     try:
         from agent.anthropic_adapter import read_claude_code_credentials
         creds = read_claude_code_credentials()
@@ -6639,6 +6651,24 @@ def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, 
     return None
 
 
+def _oauth_provider_hidden_by_suppression(provider_id: str) -> bool:
+    """Return True when the user explicitly suppressed a synthetic Accounts row."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except ImportError:
+        return False
+    if provider_id == "claude-code":
+        return is_source_suppressed("anthropic", "claude_code")
+    if provider_id == "anthropic":
+        return (
+            is_source_suppressed("anthropic", "hermes_pkce")
+            and is_source_suppressed("anthropic", "env:ANTHROPIC_API_KEY")
+            and is_source_suppressed("anthropic", "env:ANTHROPIC_TOKEN")
+            and is_source_suppressed("anthropic", "env:CLAUDE_CODE_OAUTH_TOKEN")
+        )
+    return False
+
+
 def _build_oauth_catalog() -> list[Dict[str, Any]]:
     """Build the Accounts-tab provider list.
 
@@ -6716,6 +6746,8 @@ async def list_oauth_providers(profile: Optional[str] = None):
     with _profile_scope(profile):
         providers = []
         for p in _build_oauth_catalog():
+            if _oauth_provider_hidden_by_suppression(p["id"]):
+                continue
             status = _resolve_provider_status(p["id"], p.get("status_fn"))
             disconnect_hint = _oauth_provider_disconnect_hint(p, status)
             providers.append({

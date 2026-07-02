@@ -293,6 +293,35 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
 def main():
     _install_sidecar_publisher()
 
+    # Discover Python plugins and register declarative shell hooks from
+    # cli-config.yaml.  This process is spawned directly by ui-tui's
+    # gatewayClient (``python -m tui_gateway.entry``, see
+    # ``ui-tui/src/gatewayClient.ts``) rather than going through
+    # ``hermes_cli/main.py``'s ``_prepare_agent_startup``, so neither of
+    # these normally-implicit startup steps has run yet in this process —
+    # mirrors the equivalent calls in ``gateway/run.py``.  ``accept_hooks``
+    # is left ``False`` and resolved from env/config inside
+    # ``register_from_config``; ``_prompt_and_record`` there already no-ops
+    # safely (returns ``False`` without prompting) when stdin isn't a TTY,
+    # which is always true here since stdin is the JSON-RPC pipe to the TUI.
+    # Failures are logged but must never block TUI startup.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception:
+        logger.warning(
+            "plugin discovery failed at TUI gateway startup", exc_info=True,
+        )
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at TUI gateway startup",
+            exc_info=True,
+        )
+
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
     # inline before ``gateway.ready``, which meant any configured-but-down

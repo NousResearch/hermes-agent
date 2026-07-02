@@ -460,7 +460,7 @@ class BaseEnvironment(ABC):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
+    def _wrap_command(self, command: str, cwd: str, transient_env_keys: list[str] | None = None) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
@@ -502,6 +502,10 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
+
+        if transient_env_keys:
+            quoted_keys = " ".join(shlex.quote(k) for k in transient_env_keys)
+            parts.append(f"unset -- {quoted_keys} 2>/dev/null || true")
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never
@@ -893,6 +897,7 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
+        transient_env: dict[str, str] | None = None,
         rewrite_compound_background: bool = True,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
@@ -921,16 +926,31 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        previous_env = None
+        transient_env_keys = None
+        if transient_env:
+            transient_env_keys = list(transient_env)
+            previous_env = {key: self.env.get(key) for key in transient_env}
+            self.env.update(transient_env)
+
+        wrapped = self._wrap_command(exec_command, effective_cwd, transient_env_keys=transient_env_keys)
 
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
-        self._update_cwd(result)
+        try:
+            proc = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+            self._update_cwd(result)
+        finally:
+            if previous_env is not None:
+                for key, old_value in previous_env.items():
+                    if old_value is None:
+                        self.env.pop(key, None)
+                    else:
+                        self.env[key] = old_value
 
         return result
 

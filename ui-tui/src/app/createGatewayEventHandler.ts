@@ -793,7 +793,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'secret.request':
         patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
+          secret: {
+            envVar: ev.payload.env_var,
+            metadata: ev.payload.metadata,
+            prompt: ev.payload.prompt,
+            requestId: ev.payload.request_id
+          }
         })
         setStatus('secret input needed')
 

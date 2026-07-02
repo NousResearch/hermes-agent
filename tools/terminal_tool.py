@@ -1999,6 +1999,8 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    stdin_secret_ref: Optional[str] = None,
+    env_secret_refs: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2014,6 +2016,8 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        stdin_secret_ref: Optional secure-input broker reference to pipe to stdin.
+        env_secret_refs: Optional environment variable to secure-input broker ref mapping.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2118,6 +2122,69 @@ def terminal_tool(
                     "exit_code": -1,
                     "error": guidance,
                     "status": "error",
+                }, ensure_ascii=False)
+
+        stdin_secret_value = None
+        secret_env_values: Dict[str, str] = {}
+        if stdin_secret_ref:
+            if background:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "stdin_secret_ref is only supported for foreground terminal commands.",
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            if env_type in {"modal", "daytona"}:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "stdin_secret_ref is not supported for terminal backends "
+                        "that embed stdin in command text. Use a local, Docker, "
+                        "Singularity, or SSH terminal backend."
+                    ),
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            try:
+                from agent.secure_input_broker import consume_secret
+
+                stdin_secret_value = consume_secret(stdin_secret_ref, consumer="terminal")
+            except Exception as exc:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Invalid stdin_secret_ref: {exc}",
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
+        if env_secret_refs:
+            if env_type in {"modal", "daytona"}:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "env_secret_refs are not supported for terminal backends "
+                        "that may serialize command execution through external APIs. "
+                        "Use a local, Docker, Singularity, or SSH terminal backend."
+                    ),
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            try:
+                from agent.secure_input_broker import consume_secret
+
+                for key, ref in env_secret_refs.items():
+                    key = str(key or "").strip()
+                    if not key:
+                        continue
+                    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                        raise ValueError(f"invalid env var name {key!r}")
+                    secret_env_values[key] = consume_secret(str(ref), consumer="terminal")
+            except Exception as exc:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Invalid env_secret_refs: {exc}",
+                    "status": "blocked",
                 }, ensure_ascii=False)
 
         # Start cleanup thread
@@ -2344,12 +2411,16 @@ def terminal_tool(
             )
             try:
                 if env_type == "local":
+                    spawn_env = env.env if hasattr(env, 'env') else None
+                    if secret_env_values:
+                        spawn_env = dict(spawn_env or {})
+                        spawn_env.update(secret_env_values)
                     proc_session = process_registry.spawn_local(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
+                        env_vars=spawn_env,
                         use_pty=effective_pty,
                     )
                 else:
@@ -2593,6 +2664,10 @@ def terminal_tool(
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
                     }
+                    if stdin_secret_value is not None:
+                        execute_kwargs["stdin_data"] = stdin_secret_value
+                    if secret_env_values:
+                        execute_kwargs["transient_env"] = secret_env_values
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
@@ -2693,6 +2768,13 @@ def terminal_tool(
             # both modes. See issue #43025.
             from agent.redact import redact_terminal_output
             output = redact_terminal_output(output.strip(), command) if output else ""
+            if output:
+                try:
+                    from agent.secure_input_broker import redact_known_secrets
+
+                    output = redact_known_secrets(output)
+                except Exception:
+                    pass
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
@@ -2946,6 +3028,15 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "stdin_secret_ref": {
+                "type": "string",
+                "description": "Opaque secret_ref returned by request_secure_input. The secret is piped to the foreground command's stdin without exposing it to the model or command string. Not supported with background=true."
+            },
+            "env_secret_refs": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Map environment variable names to secret_ref values returned by request_secure_input. Values are injected into the process environment by the runtime and redacted from output."
             }
         },
         "required": ["command"]
@@ -2964,6 +3055,8 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        stdin_secret_ref=args.get("stdin_secret_ref"),
+        env_secret_refs=args.get("env_secret_refs"),
     )
 
 

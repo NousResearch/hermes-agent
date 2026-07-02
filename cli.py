@@ -882,7 +882,7 @@ def get_job(*args, **kwargs):
     return _get_job(*args, **kwargs)
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
-from hermes_cli.callbacks import prompt_for_secret
+from hermes_cli.callbacks import prompt_for_secret, prompt_for_secure_input
 
 
 def _cleanup_all_terminals(*args, **kwargs):
@@ -907,6 +907,12 @@ def set_secret_capture_callback(*args, **kwargs):
     from tools.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
 
     return _set_secret_capture_callback(*args, **kwargs)
+
+
+def set_secure_input_callback(*args, **kwargs):
+    from tools.secure_input_tool import set_secure_input_callback as _set_secure_input_callback
+
+    return _set_secure_input_callback(*args, **kwargs)
 
 
 def _cleanup_all_browsers(*args, **kwargs):
@@ -5983,6 +5989,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
+        set_secure_input_callback(self._secure_input_callback)
         try:
             from tools.computer_use_tool import set_approval_callback as _set_cu_cb
 
@@ -11721,6 +11728,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
 
+    def _secure_input_callback(self, purpose: str, prompt: str, metadata=None) -> str:
+        return prompt_for_secure_input(self, purpose, prompt, metadata)
+
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
         if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
@@ -11835,6 +11845,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
+        set_secure_input_callback(self._secure_input_callback)
 
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip
@@ -12125,6 +12136,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         set_sudo_password_callback(None)
                         set_approval_callback(None)
                         set_secret_capture_callback(None)
+                        set_secure_input_callback(None)
                     except Exception:
                         pass
                     # Release the per-turn approval session key. ``_session_yolo``
@@ -15266,6 +15278,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            set_secure_input_callback(None)
             # Flush any in-memory turn transcript before marking the session
             # closed.  On SIGHUP/SIGTERM/window close the agent thread may not
             # reach its normal run_conversation() persistence path before the

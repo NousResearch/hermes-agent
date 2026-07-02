@@ -188,6 +188,7 @@ export interface SudoReq {
 
 export interface SecretReq {
   envVar: string
+  metadata?: Record<string, unknown>
   prompt: string
   requestId: string
 }

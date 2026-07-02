@@ -2,7 +2,7 @@
 
 > **Audience:** Gateway developers and maintainers
 > **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
-> **Last updated:** 2026-06-16
+> **Last updated:** 2026-07-02
 
 ## Overview
 
@@ -201,6 +201,41 @@ The canonical transcript store is SQLite via `SessionDB` (from `hermes_state`). 
 `sessions.json` file persists the `session_key → session_id` mapping and entry metadata
 (flags, timestamps, token counts). If SQLite is unavailable, the store falls back to
 JSONL, but this is a degradation path.
+
+### Compression Continuation Invariant
+
+`state.db` is the canonical source for compression lineage. `sessions.json` is only the
+live gateway routing index. When compression creates a child session, the gateway must
+publish the child as the current value for the same stable `session_key` and preserve the
+peer metadata needed to recover that route later.
+
+The invariant is:
+
+1. The compression child keeps the same external route: `session_key`, platform, chat,
+   thread/topic, user, and gateway peer metadata.
+2. A run may publish a compression child only if its run generation is still current and
+   the session key still points at the parent that run started from. Late results from an
+   interrupted, queued, or superseded turn must not overwrite `/new`, `/stop`, or another
+   fresh lane.
+3. On startup, a `sessions.json` entry whose `session_id` ended with
+   `end_reason='compression'` is repaired by walking durable peer metadata to the latest
+   live compression descendant before pruning is considered.
+4. Telegram topic bindings that point at a compression parent are advanced to the
+   compression tip on the next inbound message, except explicit `managed_mode='restored'`
+   bindings created by `/topic restore`.
+5. Synthetic background/delegation notifications late-resolve their stored `session_key`
+   through `state.db` immediately before injection so completion messages re-enter the
+   compression child instead of reviving an oversized parent.
+
+The gateway helpers enforcing this are:
+
+- `GatewayRunner._publish_compression_session_split()` — atomically updates the
+  `SessionEntry`, persists `sessions.json`, records gateway peer metadata, and refreshes
+  topic bindings for a live compression rotation.
+- `GatewayRunner._advance_session_entry_to_compression_tip()` — delivery-time repair for
+  synthetic events that may fire long after the spawning turn compressed.
+- `SessionDB.get_compression_tip()` / `SessionDB.is_session_descendant()` — lineage checks
+  against `parent_session_id` in `state.db`.
 
 ---
 

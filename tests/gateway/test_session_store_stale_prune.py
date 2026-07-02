@@ -12,14 +12,14 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
-from gateway.session import SessionEntry, SessionStore
+from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_entry(key: str, session_id: str) -> SessionEntry:
+def _make_entry(key: str, session_id: str, **kwargs) -> SessionEntry:
     now = datetime.now()
     return SessionEntry(
         session_key=key,
@@ -28,6 +28,7 @@ def _make_entry(key: str, session_id: str) -> SessionEntry:
         updated_at=now - timedelta(hours=1),
         platform=Platform.TELEGRAM,
         chat_type="dm",
+        **kwargs,
     )
 
 
@@ -45,6 +46,8 @@ def _db_returning(rows: dict) -> MagicMock:
     """SessionDB mock where get_session maps session_id -> row dict."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
+    db.find_latest_gateway_session_for_peer.return_value = None
+    db.reopen_session.return_value = None
     return db
 
 
@@ -145,6 +148,37 @@ class TestPruneStaleSessionsLocked:
         with patch.object(store, "_save") as mock_save:
             store._prune_stale_sessions_locked()
             mock_save.assert_not_called()
+
+    def test_repairs_compression_parent_to_recovered_child(self, tmp_path):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="123",
+        )
+        key = "agent:main:telegram:dm:123"
+        db = _db_returning({"parent": {"end_reason": "compression", "id": "parent"}})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "child",
+            "started_at": (datetime.now() - timedelta(minutes=5)).timestamp(),
+        }
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry(key, "parent", origin=source)
+
+        with patch.object(store, "_save") as mock_save:
+            store._prune_stale_sessions_locked()
+
+        assert store._entries[key].session_id == "child"
+        db.find_latest_gateway_session_for_peer.assert_called_once_with(
+            source="telegram",
+            user_id="123",
+            session_key=key,
+            chat_id="123",
+            chat_type="dm",
+            thread_id=None,
+        )
+        db.reopen_session.assert_called_once_with("child")
+        mock_save.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

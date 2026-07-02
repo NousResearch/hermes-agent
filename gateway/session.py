@@ -952,30 +952,54 @@ class SessionStore:
         self._prune_stale_sessions_locked()
 
     def _prune_stale_sessions_locked(self) -> None:
-        """Remove sessions.json entries whose session has ended in state.db.
+        """Remove or repair sessions.json entries whose session ended in state.db.
 
         Called once during startup (from ``_ensure_loaded_locked``, lock held).
         A ``session_id`` is stale when state.db reports ``end_reason IS NOT
         NULL`` for it. Sessions absent from the DB (never persisted / pre-SQLite
         legacy) are left alone, and a ``None`` DB handle (SQLite unavailable) is
         a no-op. DB errors are non-fatal — startup must never fail here.
+
+        Compression-ended parents are special: they are not conversation
+        boundaries, they are handoff points.  If the entry still has its peer
+        metadata, first try to recover the live compression descendant for the
+        same route before falling back to pruning the stale parent.
         """
         db = getattr(self, "_db", None)
         if not db or not self._entries:
             return
 
         stale_keys: list = []
+        recovered_entries: dict = {}
         try:
             for key, entry in self._entries.items():
                 row = db.get_session(entry.session_id)
                 # row is None        -> not in DB (legacy / pre-SQLite) — keep
                 # end_reason is None  -> session alive — keep
-                # end_reason not None -> session ended — prune
-                if row is not None and row.get("end_reason") is not None:
+                # end_reason not None -> recover compression child or prune
+                end_reason = row.get("end_reason") if row is not None else None
+                if row is not None and end_reason is not None:
+                    origin = getattr(entry, "origin", None)
+                    if end_reason == "compression" and origin is not None:
+                        recovered = self._recover_session_from_db(
+                            session_key=key,
+                            source=origin,
+                            now=_now(),
+                        )
+                        if recovered is not None and recovered.session_id != entry.session_id:
+                            logger.warning(
+                                "gateway.session: repairing stale compression "
+                                "sessions.json entry %r -> %s as %s",
+                                key,
+                                entry.session_id,
+                                recovered.session_id,
+                            )
+                            recovered_entries[key] = recovered
+                            continue
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",
-                        key, entry.session_id, row["end_reason"],
+                        key, entry.session_id, end_reason,
                     )
                     stale_keys.append(key)
         except Exception as exc:
@@ -985,10 +1009,12 @@ class SessionStore:
             )
             return
 
+        for key, recovered in recovered_entries.items():
+            self._entries[key] = recovered
         for key in stale_keys:
             del self._entries[key]
 
-        if stale_keys:
+        if stale_keys or recovered_entries:
             self._save()
 
     def _save(self) -> None:

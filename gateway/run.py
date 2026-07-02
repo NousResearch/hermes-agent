@@ -1338,7 +1338,7 @@ def _current_max_iterations() -> int:
         return 90
 
 
-from contextlib import contextmanager as _contextmanager
+from contextlib import contextmanager as _contextmanager, nullcontext as _nullcontext
 
 
 # Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
@@ -3454,6 +3454,194 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "telegram topic binding refresh failed (%s)", reason, exc_info=True,
             )
 
+    def _publish_compression_session_split(
+        self,
+        *,
+        session_key: str,
+        source: Optional[SessionSource],
+        previous_session_id: str,
+        new_session_id: str,
+        reason: str,
+        run_generation: Optional[int] = None,
+        sync_topic: bool = True,
+    ):
+        """Publish a compression-created child as the live gateway session.
+
+        Compression is the one sanctioned path that rotates a gateway session's
+        durable row while keeping the same external route.  That route update is
+        only safe if the run that produced the child is still current AND the
+        session key still points at the run's original parent.  Otherwise a
+        stale agent result can overwrite a newer /new, /stop, or queued-turn
+        lane and resurrect the wrong conversation.
+        """
+        session_key = str(session_key or "").strip()
+        previous_session_id = str(previous_session_id or "").strip()
+        new_session_id = str(new_session_id or "").strip()
+        if not session_key or not previous_session_id or not new_session_id:
+            return None
+        if new_session_id == previous_session_id:
+            return None
+
+        if run_generation is not None:
+            try:
+                if not self._is_session_run_current(session_key, run_generation):
+                    logger.info(
+                        "Ignoring compression session split %s -> %s for %s "
+                        "(%s): generation %s is no longer current",
+                        previous_session_id,
+                        new_session_id,
+                        session_key,
+                        reason,
+                        run_generation,
+                    )
+                    return None
+            except Exception:
+                logger.debug(
+                    "compression split generation check failed for %s (%s)",
+                    session_key,
+                    reason,
+                    exc_info=True,
+                )
+                return None
+
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return None
+        try:
+            lock = getattr(store, "_lock", None)
+            lock_ctx = lock if lock is not None else _nullcontext()
+            with lock_ctx:
+                ensure_loaded_locked = getattr(store, "_ensure_loaded_locked", None)
+                ensure_loaded = getattr(store, "_ensure_loaded", None)
+                if callable(ensure_loaded_locked):
+                    ensure_loaded_locked()
+                elif callable(ensure_loaded):
+                    ensure_loaded()
+                entry = getattr(store, "_entries", {}).get(session_key)
+                if entry is None:
+                    logger.info(
+                        "Ignoring compression session split %s -> %s for %s (%s): "
+                        "session key has no active route",
+                        previous_session_id,
+                        new_session_id,
+                        session_key,
+                        reason,
+                    )
+                    return None
+
+                active_session_id = str(getattr(entry, "session_id", "") or "")
+                if active_session_id != previous_session_id:
+                    logger.info(
+                        "Ignoring compression session split %s -> %s for %s (%s): "
+                        "active route is %s",
+                        previous_session_id,
+                        new_session_id,
+                        session_key,
+                        reason,
+                        active_session_id or "<none>",
+                    )
+                    return None
+
+                entry.session_id = new_session_id
+                try:
+                    store._save()
+                except Exception:
+                    entry.session_id = previous_session_id
+                    raise
+        except Exception:
+            logger.debug(
+                "compression split route update failed for %s (%s)",
+                session_key,
+                reason,
+                exc_info=True,
+            )
+            return None
+
+        route_source = source or getattr(entry, "origin", None)
+
+        try:
+            recorder = getattr(store, "_record_gateway_session_peer", None)
+            if callable(recorder):
+                recorder(new_session_id, session_key, route_source)
+        except Exception:
+            logger.debug(
+                "compression split peer record failed for %s (%s)",
+                session_key,
+                reason,
+                exc_info=True,
+            )
+
+        if sync_topic and route_source is not None:
+            self._sync_telegram_topic_binding(route_source, entry, reason=reason)
+        return entry
+
+    def _advance_session_entry_to_compression_tip(
+        self,
+        *,
+        session_key: str,
+        source: Optional[SessionSource] = None,
+        reason: str,
+    ):
+        """Late-resolve a session-store route to its compression tip.
+
+        Background process and delegation notifications can be delivered long
+        after the turn that spawned them.  They capture the stable
+        ``session_key``/peer tuple at spawn time, then this helper resolves that
+        key's current session through ``state.db`` immediately before synthetic
+        event injection.  This keeps stale completions attached to the compressed
+        child instead of reviving an old parent route.
+        """
+        session_key = str(session_key or "").strip()
+        if not session_key:
+            return None
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return None
+        try:
+            ensure_loaded = getattr(store, "_ensure_loaded", None)
+            if callable(ensure_loaded):
+                ensure_loaded()
+            entry = getattr(store, "_entries", {}).get(session_key)
+        except Exception:
+            logger.debug(
+                "process-event compression-tip route lookup failed for %s",
+                session_key,
+                exc_info=True,
+            )
+            return None
+        if entry is None:
+            return None
+
+        current_session_id = str(getattr(entry, "session_id", "") or "")
+        if not current_session_id:
+            return entry
+        db = getattr(self, "_session_db", None)
+        db = getattr(db, "_db", db)
+        tip_finder = getattr(db, "get_compression_tip", None)
+        if not callable(tip_finder):
+            return entry
+        try:
+            tip_session_id = str(tip_finder(current_session_id) or current_session_id)
+        except Exception:
+            logger.debug(
+                "process-event compression-tip lookup failed for %s (%s)",
+                current_session_id,
+                session_key,
+                exc_info=True,
+            )
+            return entry
+        if tip_session_id == current_session_id:
+            return entry
+
+        return self._publish_compression_session_split(
+            session_key=session_key,
+            source=source or getattr(entry, "origin", None),
+            previous_session_id=current_session_id,
+            new_session_id=tip_session_id,
+            reason=reason,
+            sync_topic=True,
+        ) or entry
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
@@ -3698,9 +3886,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         lists, desktop/dashboard details, and follow-up session tooling report the
         backend that actually answered the latest turn.
 
-        Called from the ``run_sync`` closure, which executes off the event loop
-        in the executor thread — so the synchronous ``SessionDB`` (``_db``) is
-        used directly rather than awaiting the AsyncSessionDB forwarder.
+        Called via ``asyncio.to_thread`` from loop-side code — so the
+        synchronous ``SessionDB`` (``_db``) is used directly rather than awaiting
+        the AsyncSessionDB forwarder.
         """
         if not session_id or agent is None or self._session_db is None:
             return
@@ -5046,7 +5234,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             effective_mode = "queue"
         demoted_for_compression = (
             effective_mode == "interrupt"
-            and self._session_has_compression_in_flight(session_key)
+            and await asyncio.to_thread(
+                self._session_has_compression_in_flight,
+                session_key,
+            )
         )
         if demoted_for_compression:
             logger.info(
@@ -10169,17 +10360,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 binding = None
             if binding:
                 bound_session_id = str(binding.get("session_id") or "")
+                binding_is_restored = str(binding.get("managed_mode") or "") == "restored"
                 # Heal bindings that point at a pre-compression parent: walk
                 # the compression-continuation chain forward to its tip so the
                 # next message resumes the compressed child instead of
                 # reloading the oversized parent transcript (#20470/#29712/
-                # #33414). Returns the input unchanged when the session isn't
-                # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
+                # #33414). Explicit /topic restored bindings stay authoritative
+                # until the operator changes them.
+                if bound_session_id and self._session_db is not None and not binding_is_restored:
                     try:
-                        canonical_session_id = await self._session_db.get_compression_tip(
+                        if await self._session_db.is_session_descendant(
                             bound_session_id,
-                        )
+                            session_entry.session_id,
+                        ):
+                            canonical_session_id = session_entry.session_id
+                        else:
+                            canonical_session_id = await self._session_db.get_compression_tip(
+                                bound_session_id,
+                            )
                     except Exception:
                         logger.debug(
                             "compression-tip lookup failed for %s",
@@ -10608,19 +10806,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # a new session_id.  Write compressed messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
+                                    _hyg_old_sid = session_entry.session_id
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    _hyg_rotated = _hyg_new_sid != session_entry.session_id
+                                    _hyg_requested_rotation = _hyg_new_sid != _hyg_old_sid
+                                    _hyg_rotated = False
                                     _hyg_in_place = bool(
                                         getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
-                                    if _hyg_rotated:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
-                                        await asyncio.to_thread(
-                                            self._sync_telegram_topic_binding,
-                                            source, session_entry,
+                                    if _hyg_requested_rotation:
+                                        _hyg_entry = await asyncio.to_thread(
+                                            self._publish_compression_session_split,
+                                            session_key=session_key,
+                                            source=source,
+                                            previous_session_id=_hyg_old_sid,
+                                            new_session_id=_hyg_new_sid,
                                             reason="hygiene-compression",
+                                            run_generation=run_generation,
                                         )
+                                        if _hyg_entry is not None:
+                                            session_entry = _hyg_entry
+                                            _hyg_rotated = True
 
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id OR in-place compaction succeeded.
@@ -10892,12 +11097,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent
+            run_start_session_id = session_entry.session_id
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
                 history=history,
                 source=source,
-                session_id=session_entry.session_id,
+                session_id=run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
@@ -10995,16 +11201,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
-            # in conversation_compression.py; propagate to SessionEntry + _save().
-            # If the agent's session_id changed during compression, update
-            # session_entry so transcript writes below go to the right session.
-            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                session_entry.session_id = agent_result["session_id"]
-                self.session_store._save()
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding,
-                    source, session_entry, reason="agent-result-compression",
+            # in conversation_compression.py; publish any compression child as
+            # the live route before transcript writes below pick a session id.
+            rotated_session_id = str(agent_result.get("session_id") or "")
+            if rotated_session_id and rotated_session_id != session_entry.session_id:
+                published_entry = await asyncio.to_thread(
+                    self._publish_compression_session_split,
+                    session_key=session_key,
+                    source=source,
+                    previous_session_id=run_start_session_id,
+                    new_session_id=rotated_session_id,
+                    reason="agent-result-compression",
+                    run_generation=run_generation,
                 )
+                if published_entry is not None:
+                    session_entry = published_entry
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
@@ -14455,8 +14666,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if session_key:
             try:
-                self.session_store._ensure_loaded()
-                entry = self.session_store._entries.get(session_key)
+                entry = self._advance_session_entry_to_compression_tip(
+                    session_key=session_key,
+                    reason="process-event-compression-tip",
+                )
                 if entry and getattr(entry, "origin", None):
                     return entry.origin
             except Exception as exc:
@@ -14516,7 +14729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
-        source = self._build_process_event_source(evt)
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
@@ -14702,15 +14915,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     })
                     if not synth_text:
                         break
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
+                    source = await asyncio.to_thread(
+                        self._build_process_event_source,
+                        {
+                            "session_id": session_id,
+                            "session_key": session_key,
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                        },
+                    )
                     if not source:
                         logger.warning(
                             "Dropping completion notification with no routing metadata for process %s",
@@ -17708,10 +17924,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Session split detected: %s → %s (compression)",
                     session_id, agent_session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent_session_id
-                    self.session_store._save()
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it
@@ -17744,10 +17956,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to restore thread_id from binding after session split",
                             exc_info=True,
                         )
-                if entry:
-                    self._sync_telegram_topic_binding(
-                        source, entry, reason="agent-run-compression",
-                    )
+                self._publish_compression_session_split(
+                    session_key=session_key,
+                    source=source,
+                    previous_session_id=session_id,
+                    new_session_id=agent_session_id,
+                    reason="agent-run-compression",
+                    run_generation=run_generation,
+                )
 
             effective_session_id = agent_session_id
             self._sync_session_model_from_agent(effective_session_id, agent)

@@ -3054,6 +3054,7 @@ class GatewaySlashCommandsMixin:
             from run_agent import AIAgent
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_request_tokens_rough
+            from gateway.run import _platform_config_key
 
             session_key = self._session_key_for_source(source)
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -3082,14 +3083,39 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
+            agent_runtime_kwargs = dict(runtime_kwargs)
+            for _identity_key in (
+                "model",
+                "platform",
+                "user_id",
+                "user_id_alt",
+                "user_name",
+                "chat_id",
+                "chat_name",
+                "chat_type",
+                "thread_id",
+                "gateway_session_key",
+                "session_db",
+            ):
+                agent_runtime_kwargs.pop(_identity_key, None)
+
             tmp_agent = AIAgent(
-                **runtime_kwargs,
+                **agent_runtime_kwargs,
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                platform=_platform_config_key(source.platform),
+                user_id=source.user_id,
+                user_id_alt=source.user_id_alt,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                gateway_session_key=session_key,
                 session_db=getattr(self._session_db, "_db", self._session_db),
             )
             try:
@@ -3165,12 +3191,20 @@ class GatewaySlashCommandsMixin:
                             f"session {new_session_id}"
                         )
                     if rotated:
-                        session_entry.session_id = new_session_id
-                        self.session_store._save()
-                        await asyncio.to_thread(
-                            self._sync_telegram_topic_binding,
-                            source, session_entry, reason="compress-command",
+                        published_entry = await asyncio.to_thread(
+                            self._publish_compression_session_split,
+                            session_key=session_key,
+                            source=source,
+                            previous_session_id=session_entry.session_id,
+                            new_session_id=new_session_id,
+                            reason="compress-command",
                         )
+                        if published_entry is None:
+                            raise RuntimeError(
+                                f"failed to publish compressed session route "
+                                f"{session_entry.session_id} -> {new_session_id}"
+                            )
+                        session_entry = published_entry
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "

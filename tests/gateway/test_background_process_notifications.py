@@ -9,7 +9,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -281,6 +281,57 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_advances_session_route_to_compression_tip(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from gateway.session import SessionEntry, SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    key = "agent:main:telegram:group:-100:42"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        thread_id="42",
+        user_id="proc_owner",
+        user_name="alice",
+    )
+    entry = SessionEntry(
+        session_key=key,
+        session_id="parent-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+        origin=source,
+    )
+    runner.session_store._entries[key] = entry
+    runner.session_store._record_gateway_session_peer = MagicMock()
+    runner._session_db = SimpleNamespace(
+        _db=SimpleNamespace(
+            get_compression_tip=lambda session_id: (
+                "child-session" if session_id == "parent-session" else session_id
+            )
+        )
+    )
+
+    await runner._inject_watch_notification("[SYSTEM: Background process matched]", {
+        "session_id": "proc_watch",
+        "session_key": key,
+    })
+
+    assert entry.session_id == "child-session"
+    runner.session_store._record_gateway_session_peer.assert_called_once_with(
+        "child-session", key, source
+    )
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "proc_owner"
 
 
 @pytest.mark.asyncio

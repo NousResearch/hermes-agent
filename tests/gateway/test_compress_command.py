@@ -50,10 +50,13 @@ def _make_runner(history: list[dict[str, str]]):
     )
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store._entries = {session_entry.session_key: session_entry}
+    runner.session_store._ensure_loaded = MagicMock()
     runner.session_store.load_transcript.return_value = history
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner.session_store._record_gateway_session_peer = MagicMock()
     runner._session_db = None
     return runner
 
@@ -295,8 +298,15 @@ async def test_compress_command_passes_session_db_and_persists_rotated_session()
 
     assert "Compressed:" in result
     mock_agent_cls.assert_called_once()
-    assert mock_agent_cls.call_args.kwargs["session_db"] is runner._session_db
+    kwargs = mock_agent_cls.call_args.kwargs
+    assert kwargs["session_db"] is runner._session_db
+    assert kwargs["platform"] == "telegram"
+    assert kwargs["gateway_session_key"] == build_session_key(_make_source())
+    assert kwargs["chat_id"] == "c1"
     runner.session_store._save.assert_called_once()
+    runner.session_store._record_gateway_session_peer.assert_called_once_with(
+        "sess-2", build_session_key(_make_source()), _make_source()
+    )
     runner.session_store.rewrite_transcript.assert_called_once_with(
         "sess-2", compressed
     )

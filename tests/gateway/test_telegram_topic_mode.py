@@ -536,6 +536,78 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_restored_topic_binding_does_not_follow_compression_tip(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="restored-parent", source="telegram", user_id="208214988",
+    )
+    session_db.end_session("restored-parent", end_reason="compression")
+    session_db.create_session(
+        session_id="restored-child",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="restored-parent",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="restored-parent",
+        managed_mode="restored",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    captured = {}
+
+    async def fake_run_agent(*args, **kwargs):
+        captured["session_id"] = kwargs.get("session_id")
+        return {
+            "success": True,
+            "final_response": "restored response",
+            "session_id": kwargs.get("session_id"),
+            "messages": [],
+        }
+
+    runner._run_agent = AsyncMock(side_effect=fake_run_agent)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("continue restored", thread_id="17585"))
+
+    assert result == "restored response"
+    assert captured["session_id"] == "restored-parent"
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "restored-parent"
+    assert binding["managed_mode"] == "restored"
+
+
+def test_is_session_descendant_handles_direct_multihop_and_siblings(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="root", source="telegram")
+    db.create_session(session_id="child", source="telegram", parent_session_id="root")
+    db.create_session(session_id="grandchild", source="telegram", parent_session_id="child")
+    db.create_session(session_id="sibling", source="telegram", parent_session_id="root")
+    db.create_session(session_id="unrelated", source="telegram")
+
+    assert db.is_session_descendant("root", "child") is True
+    assert db.is_session_descendant("root", "grandchild") is True
+    assert db.is_session_descendant("child", "grandchild") is True
+    assert db.is_session_descendant("child", "sibling") is False
+    assert db.is_session_descendant("root", "unrelated") is False
+    assert db.is_session_descendant("root", "root") is False
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

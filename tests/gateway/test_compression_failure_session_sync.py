@@ -21,9 +21,16 @@ class _SessionStore:
         )
         self._entries = {SESSION_KEY: self.entry}
         self.save_calls = 0
+        self.peer_records = []
+
+    def _ensure_loaded(self):
+        return None
 
     def _save(self):
         self.save_calls += 1
+
+    def _record_gateway_session_peer(self, session_id, session_key, source):
+        self.peer_records.append((session_id, session_key, source))
 
 
 class _CompressionThenFailureAgent:
@@ -155,6 +162,35 @@ def test_failed_turn_still_syncs_compression_session_split(monkeypatch):
     assert result["history_offset"] == 0
     assert session_store.entry.session_id == "session-after-compression"
     assert session_store.save_calls == 1
+    assert session_store.peer_records == [
+        ("session-after-compression", SESSION_KEY, source)
+    ]
     runner._sync_telegram_topic_binding.assert_called_once_with(
         source, session_store.entry, reason="agent-run-compression"
     )
+
+
+def test_stale_generation_cannot_publish_compression_split():
+    session_store = _SessionStore()
+    runner = _runner(session_store)
+    runner._session_run_generation = {SESSION_KEY: 2}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="user-1",
+    )
+
+    result = runner._publish_compression_session_split(
+        session_key=SESSION_KEY,
+        source=source,
+        previous_session_id="session-before-compression",
+        new_session_id="late-compressed-child",
+        reason="unit-test",
+        run_generation=1,
+    )
+
+    assert result is None
+    assert session_store.entry.session_id == "session-before-compression"
+    assert session_store.save_calls == 0
+    assert session_store.peer_records == []

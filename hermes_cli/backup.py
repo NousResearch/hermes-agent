@@ -26,6 +26,101 @@ from hermes_constants import get_default_hermes_root, get_hermes_home, display_h
 logger = logging.getLogger(__name__)
 
 
+def _restrict_file_permissions(path: "Path") -> None:
+    """Tighten *path* to owner-only read/write.
+
+    On POSIX this is ``chmod 600``.  On Windows the native NTFS DACL is
+    adjusted via :mod:`ctypes` so only the current user and SYSTEM retain
+    access.  Falls back to toggling the read-only bit if the Windows API
+    calls are unavailable (e.g. missing *advapi32* on Wine).
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import ctypes.wintypes as wt
+
+            advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
+            kernel32 = ctypes.windll.kernel32   # type: ignore[attr-defined]
+
+            # SDDL: owner (current user) + SYSTEM — full control; no one else.
+            # O:SYG:SYD:(A;;FA;;;OW) — but we need the *actual* user SID.
+            # Simpler: use ConvertStringSecurityDescriptorToSecurityDescriptorW
+            # with a SDDL that grants FA to the owner only.
+            #
+            # Get current user SID via GetTokenInformation.
+            TOKEN_QUERY = 0x0008
+            TokenUser = 1
+
+            token = wt.HANDLE()
+            if not advapi32.OpenProcessToken(
+                kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)
+            ):
+                raise OSError("OpenProcessToken failed")
+
+            # First call to get required size.
+            size = wt.DWORD(0)
+            advapi32.GetTokenInformation(token, TokenUser, None, 0, ctypes.byref(size))
+
+            buf = ctypes.create_string_buffer(size.value)
+            if not advapi32.GetTokenInformation(
+                token, TokenUser, buf, size, ctypes.byref(size)
+            ):
+                raise OSError("GetTokenInformation failed")
+
+            # TOKEN_USER starts with SID_AND_ATTRIBUTES; SID is at offset 0.
+            class SID_AND_ATTRIBUTES(ctypes.Structure):
+                _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wt.DWORD)]
+
+            sid_ptr = SID_AND_ATTRIBUTES.from_buffer_copy(
+                ctypes.string_at(buf, size.value)
+            ).Sid
+
+            # Convert SID to string.
+            sid_string = wt.LPWSTR()
+            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_string)):
+                raise OSError("ConvertSidToStringSidW failed")
+
+            user_sid = sid_string.value
+            kernel32.LocalFree(sid_string)
+
+            sddl = f"O:{user_sid}G:{user_sid}D:(A;;FA;;;{user_sid})(A;;FA;;;SY)"
+            sd = ctypes.c_void_p()
+            sd_size = wt.DWORD(0)
+            if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl, 1, ctypes.byref(sd), ctypes.byref(sd_size)
+            ):
+                raise OSError("ConvertStringSecurityDescriptorToSecurityDescriptorW failed")
+
+            # Apply to file — DACL_SECURITY_INFORMATION (4) | PROTECTED_DACL (0x80000000).
+            DACL_SECURITY_INFORMATION = 4
+            if not advapi32.SetFileSecurityW(
+                str(path), DACL_SECURITY_INFORMATION, sd
+            ):
+                # SetFileSecurityW is legacy; try SetNamedSecurityInfoW instead.
+                SE_FILE_OBJECT = 1
+                advapi32.SetNamedSecurityInfoW(
+                    str(path), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                    None, None, sd, None,
+                )
+
+            kernel32.LocalFree(sd)
+            return
+        except Exception:
+            # Final fallback: at least clear the world-readable bits.
+            try:
+                import stat
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                pass
+            return
+
+    # POSIX
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Exclusion rules
 # ---------------------------------------------------------------------------
@@ -600,10 +695,7 @@ def run_import(args) -> None:
                         dst.write(src.read())
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-                        try:
-                            os.chmod(target, 0o600)
-                        except OSError:
-                            pass
+                        _restrict_file_permissions(target)
                     restored += 1
                     restored_external += 1
                 except (PermissionError, OSError) as exc:
@@ -645,7 +737,7 @@ def run_import(args) -> None:
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
                 if target.name in _SECRET_FILE_NAMES:
-                    os.chmod(target, 0o600)
+                    _restrict_file_permissions(target)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")

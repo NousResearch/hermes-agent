@@ -52,7 +52,7 @@ Pricing: CoinGecko free API (rate-limited, ~10-30 req/min). Use `--no-prices`
 on the `account` command to skip price lookups when speed matters.
 
 Mirror Node (default):
-- Mainnet: https://mainnet-public.mirrornode.hedera.com
+- Mainnet: https://mainnet.mirrornode.hedera.com/
 - Testnet: https://testnet.mirrornode.hedera.com
 
 Override endpoint: `export HEDERA_MIRROR_URL=https://your-private-mirror.com`
@@ -278,10 +278,10 @@ Output: `contract_id`, `evm_address`, `admin_key` (bool), `auto_renew_account_id
 
 ## Supported Networks
 
-| Key       | Mirror Node                                        | Explorer                        |
-|-----------|----------------------------------------------------|---------------------------------|
-| mainnet   | mainnet-public.mirrornode.hedera.com               | hashscan.io/mainnet             |
-| testnet   | testnet.mirrornode.hedera.com                      | hashscan.io/testnet             |
+| Key       | Mirror Node                                    | Explorer                        |
+|-----------|------------------------------------------------|---------------------------------|
+| mainnet   | mainnet.mirrornode.hedera.com                  | hashscan.io/mainnet             |
+| testnet   | testnet.mirrornode.hedera.com                  | hashscan.io/testnet             |
 
 Override either with `HEDERA_MIRROR_URL` (takes precedence over `--network`).
 

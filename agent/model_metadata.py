@@ -1546,7 +1546,14 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
         return cached[0]
 
     result = _query_local_context_length_uncached(model, base_url, api_key=api_key)
-    _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+    # Cache only positive results. A None/failure (server not up yet,
+    # connection refused, timeout) must NOT be memoized — otherwise a probe
+    # that fails during a startup race would suppress a legit retry seconds
+    # later once the server is reachable. Positive-only caching still fully
+    # bounds the hot-path probe rate (a reachable server returns a value and
+    # gets cached); an unreachable one simply re-probes on the next call.
+    if result:
+        _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
     return result
 
 

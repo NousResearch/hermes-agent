@@ -1721,10 +1721,13 @@ def init_agent(
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
-    # Nous Hermes 3/4 are chat models, not tool-call-tuned — surface the
-    # warning on gateway/TUI. The interactive CLI already warns via
-    # cli.py show_banner() (richer output + /model switch hint), so skip the
-    # CLI platform here to avoid emitting the warning twice per startup.
+    # Nous Hermes 3/4 are chat models, not tool-call-tuned. The interactive
+    # CLI already warns via cli.py show_banner() (richer output + /model hint),
+    # so skip platform=="cli" here to avoid emitting the warning twice per
+    # startup. (Gateway/TUI/cron construct with quiet_mode=True and are already
+    # gated off by the `not agent.quiet_mode` check above; this guard's active
+    # job is the CLI dedup, and it leaves the door open for any non-quiet
+    # non-CLI surface to still surface the warning.)
     if not agent.quiet_mode and (agent.platform or "cli") != "cli":
         try:
             from hermes_cli.model_switch import _check_hermes_model_warning

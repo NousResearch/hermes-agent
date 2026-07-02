@@ -802,3 +802,27 @@ class TestLocalContextProbeTTLCache:
             _query_local_context_length("m2", "http://localhost:11434/v1")
 
         assert detect.call_count == 2
+
+
+    def test_none_result_not_cached(self):
+        """A failed probe (None) must NOT be memoized — a retry within the TTL
+        window must re-probe so a server that comes up mid-startup is caught."""
+        from agent.model_metadata import _query_local_context_length
+
+        # First probe: server unreachable -> detect returns None, all queries miss -> None.
+        fail_resp = self._make_resp(404, {})
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = fail_resp
+        client_mock.get.return_value = fail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None) as detect, \
+             patch("httpx.Client", return_value=client_mock):
+            first = _query_local_context_length("m", "http://localhost:11434/v1")
+            # Retry within TTL must re-probe (None was not cached).
+            second = _query_local_context_length("m", "http://localhost:11434/v1")
+
+        assert first is None
+        assert second is None
+        assert detect.call_count == 2, "None result was wrongly cached; retry did not re-probe"

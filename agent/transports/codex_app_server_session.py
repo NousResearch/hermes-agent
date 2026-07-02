@@ -396,7 +396,10 @@ class CodexAppServerSession:
             # turn re-spawns cleanly.
             result.should_retire = True
             return result
-        assert self._client is not None and self._thread_id is not None
+        if self._client is None or self._thread_id is None:
+            result.error = "codex app-server started but client or thread_id is None"
+            result.should_retire = True
+            return result
         result.thread_id = self._thread_id
 
         self._interrupt_event.clear()

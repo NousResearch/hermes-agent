@@ -347,8 +347,8 @@ class ToolCallGuardrailController:
                     action="halt",
                     code="same_tool_failure_halt",
                     message=(
-                        f"Stopped {tool_name}: it failed {same_count} times this turn. "
-                        "Stop retrying the same failing tool path and choose a different approach."
+                        f"已停止 {tool_name}：本轮已失败 {same_count} 次。"
+                        "不要继续重试同一条失败路径，请改用另一种定位方式。"
                     ),
                     tool_name=tool_name,
                     count=same_count,
@@ -362,9 +362,8 @@ class ToolCallGuardrailController:
                     action="warn",
                     code="repeated_exact_failure_warning",
                     message=(
-                        f"{tool_name} has failed {exact_count} times with identical arguments. "
-                        "This looks like a loop; inspect the error and change strategy "
-                        "instead of retrying it unchanged."
+                        f"{tool_name} 使用相同参数已失败 {exact_count} 次，疑似进入循环。"
+                        "请先检查最新错误并改变策略，不要原样重试。"
                     ),
                     tool_name=tool_name,
                     count=exact_count,
@@ -445,10 +444,9 @@ class ToolCallGuardrailController:
                 action="halt",
                 code="exploratory_no_progress_halt",
                 message=(
-                    f"Stopped diagnostic exploration after {count} consecutive "
-                    "read/search/probe tool calls without a landed repair or state change. "
-                    "Summarize current evidence and ask for a narrower next step instead "
-                    "of continuing to search."
+                    f"连续 {count} 次读取、搜索或探测没有产生可落地修复或状态变化，"
+                    "已停止继续探索。请总结当前证据，只追问一个更窄的缺失事实，"
+                    "不要继续扩大搜索。"
                 ),
                 tool_name=tool_name,
                 count=count,
@@ -462,9 +460,8 @@ class ToolCallGuardrailController:
                 action="warn",
                 code="exploratory_no_progress_warning",
                 message=(
-                    f"{count} consecutive diagnostic tool calls have run without a landed "
-                    "repair or state change. If you have enough evidence, summarize now; "
-                    "otherwise make the next tool call narrowly target the single missing fact."
+                    f"已连续 {count} 次诊断工具调用没有产生可落地修复或状态变化。"
+                    "如果证据足够，请现在收口；如果还缺信息，下一次工具调用只定位一个缺失事实。"
                 ),
                 tool_name=tool_name,
                 count=count,
@@ -489,7 +486,7 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
     """Append runtime guidance to the current tool result content."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
-    label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
+    label = "工具循环已停止" if decision.action == "halt" else "工具循环提醒"
     suffix = (
         f"\n\n[{label}: "
         f"{decision.code}; count={decision.count}; {decision.message}]"
@@ -500,20 +497,18 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
     """Action-oriented guidance for recovering from repeated tool failures."""
     common = (
-        f"{tool_name} has failed {count} times this turn. This looks like a loop. "
-        "Do not switch to text-only replies; keep using tools, but diagnose before retrying. "
-        "First inspect the latest error/output and verify your assumptions. "
+        f"{tool_name} 本轮已失败 {count} 次，疑似进入循环。"
+        "不要改成纯文字猜测；仍然使用工具，但重试前要先诊断。"
+        "先查看最新错误或输出，并校验当前假设。"
     )
     if tool_name == "terminal":
         return common + (
-            "For terminal failures, run a small diagnostic such as `pwd && ls -la` "
-            "in the same tool, then try an absolute path, a simpler command, a different "
-            "working directory, or a different tool such as read_file/write_file/patch."
+            "对于 terminal 失败，可以先在同一工具里运行 `pwd && ls -la` 这类小诊断，"
+            "再尝试绝对路径、更简单的命令、不同工作目录，或改用 read_file/write_file/patch 等工具。"
         )
     return common + (
-        "Try different arguments, a narrower query/path, an absolute path when relevant, "
-        "or a different tool that can make progress. If the blocker is external, report "
-        "the blocker after one diagnostic attempt instead of repeating the same failing path."
+        "请尝试不同参数、更窄的查询或路径、必要时使用绝对路径，或改用能推进状态的工具。"
+        "如果阻塞来自外部系统，做一次诊断后就报告阻塞，不要重复同一条失败路径。"
     )
 
 

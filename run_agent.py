@@ -5629,17 +5629,14 @@ class AIAgent:
         tool = decision.tool_name or "a tool"
         if decision.code == "exploratory_no_progress_halt":
             return (
-                f"I stopped diagnostic exploration after {decision.count} consecutive "
-                "read/search/probe tool calls without a landed repair or state change. "
-                "The next useful step is to summarize the current evidence, name the "
-                "most likely cause, and ask for one narrower missing fact instead of "
-                "continuing to search."
+                f"本轮深诊断已暂停：连续 {decision.count} 次读取、搜索或探测都没有产生可落地修复或状态变化。"
+                "继续扩大搜索只会消耗预算。请先根据当前证据收口：列出已确认事实、最可能原因、"
+                "尚未确认的一项关键信息，以及下一步最小动作。"
             )
         return (
-            f"I stopped retrying {tool} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"我已停止重复调用 {tool}：连续 {decision.count} 次没有取得进展，触发了工具调用保护"
+            f"（{decision.code}）。最后一次工具结果里有阻塞原因；下一步应换一种定位方式，"
+            "不要继续重复同一个调用。"
         )
 
     def _append_guardrail_observation(

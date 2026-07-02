@@ -155,7 +155,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
 
     assert [m["role"] for m in messages] == ["tool"]
     assert messages[0]["tool_call_id"] == "c-warn"
-    assert "Tool loop warning" in messages[0]["content"]
+    assert "工具循环提醒" in messages[0]["content"]
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
@@ -183,11 +183,11 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
 
     content = messages[0]["content"]
     assert "same_tool_failure_warning" in content
-    assert "Do not switch to text-only replies" in content
-    assert "keep using tools" in content
+    assert "不要改成纯文字猜测" in content
+    assert "仍然使用工具" in content
     assert "pwd && ls -la" in content
-    assert "absolute path" in content
-    assert "different tool" in content
+    assert "绝对路径" in content
+    assert "read_file/write_file/patch" in content
 
 
 def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
@@ -301,7 +301,8 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
     assert result["turn_exit_reason"] == "guardrail_halt"
     assert "error" not in result
     assert result["completed"] is True
-    assert "stopped retrying" in result["final_response"]
+    assert "已停止重复调用" in result["final_response"]
+    assert "stopped retrying" not in result["final_response"]
     assert result["guardrail"]["code"] == "repeated_exact_failure_block"
     assert result["guardrail"]["tool_name"] == "web_search"
 
@@ -369,7 +370,8 @@ def test_exploratory_success_streak_halts_varied_probe_loop():
     assert mock_hfc.call_count == 3
     assert result["turn_exit_reason"] == "guardrail_halt"
     assert result["guardrail"]["code"] == "exploratory_no_progress_halt"
-    assert "diagnostic exploration" in result["final_response"]
+    assert "本轮深诊断已暂停" in result["final_response"]
+    assert "diagnostic exploration" not in result["final_response"]
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
@@ -410,7 +412,8 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
 
     assert result["turn_exit_reason"] == "guardrail_halt"
     halt_text = result["final_response"]
-    assert "stopped retrying" in halt_text
+    assert "已停止重复调用" in halt_text
+    assert "stopped retrying" not in halt_text
 
     # The halt message must have been pushed through the callback at least
     # once.  Empty-queue SSE writers were the bug — clients saw no content

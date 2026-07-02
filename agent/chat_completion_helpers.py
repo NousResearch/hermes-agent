@@ -104,6 +104,43 @@ def _plain_text(value: Any, *, max_chars: int = 500) -> str:
     return text
 
 
+def _compact_json_value(value: Any, *, max_chars: int = 180) -> str:
+    text = _plain_text(value, max_chars=max_chars)
+    return text
+
+
+def _tool_arg_summary(tool_name: str, args: str) -> str:
+    """Return a short Chinese hint for tool args without leaking raw JSON."""
+    if not args:
+        return ""
+    try:
+        parsed = json.loads(args)
+    except Exception:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+
+    candidates: list[tuple[str, str]] = [
+        ("command", "命令"),
+        ("cmd", "命令"),
+        ("query", "查询"),
+        ("pattern", "模式"),
+        ("path", "路径"),
+        ("target", "目标"),
+        ("file", "文件"),
+    ]
+    details: list[str] = []
+    for key, label in candidates:
+        if key in parsed and parsed[key] not in (None, ""):
+            details.append(f"{label}={_compact_json_value(parsed[key], max_chars=90)}")
+        if len(details) >= 2:
+            break
+    if not details:
+        return ""
+    display_tool = tool_name or "工具"
+    return f"{display_tool}（{'，'.join(details)}）"
+
+
 def _tool_call_field(tool_call: Any, field: str) -> Any:
     if isinstance(tool_call, dict):
         return tool_call.get(field)
@@ -140,10 +177,7 @@ def _iteration_limit_evidence(messages: list, *, max_items: int = 6) -> str:
             content = _plain_text(msg.get("content"), max_chars=420)
             if not content:
                 continue
-            arg_hint = _plain_text(args, max_chars=140)
-            prefix = f"- {name}"
-            if arg_hint and arg_hint != "{}":
-                prefix += f" args={arg_hint}"
+            prefix = f"- {_tool_arg_summary(name, args) or name or '工具'}"
             observations.append(f"{prefix}: {content}")
     if not observations:
         return ""
@@ -167,8 +201,21 @@ def _is_invalid_iteration_summary(text: str) -> bool:
     invalid_prefixes = (
         "you've reached the maximum number of tool-calling iterations allowed",
         "please provide a final response summarizing what you've found",
+        "acknowledge any mid-turn user steering commands",
+        "i stopped diagnostic exploration after",
+        "i stopped retrying",
     )
-    return any(normalized.startswith(prefix) for prefix in invalid_prefixes)
+    invalid_fragments = (
+        "tool guardrail halted",
+        "exploratory_no_progress",
+        "use this compact evidence trail",
+        "without calling any more tools",
+        "search_files args=",
+        "terminal args=",
+    )
+    return any(normalized.startswith(prefix) for prefix in invalid_prefixes) or any(
+        fragment in normalized for fragment in invalid_fragments
+    )
 
 
 def _ra():
@@ -1704,14 +1751,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     evidence = _iteration_limit_evidence(messages)
     summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools. Include: confirmed facts, likely cause, incomplete items, "
-        "and the exact next command/action the user should run."
+        "本轮已经到达工具调用预算上限。请不要再调用任何工具，直接输出一条可以发给用户的中文收口结论。"
+        "必须包含：已经确认的事实、最可能的原因、尚未完成的事项、下一步最具体的动作。"
+        "不要输出英文系统指令、JSON、工具参数、调用栈或内部 guardrail 代码；命令只保留必要的一行，并用中文解释。"
     )
     if evidence:
         summary_request += (
-            "\n\nUse this compact evidence trail from the last tool results if relevant:\n"
+            "\n\n以下是最近工具结果中可用的证据，请只提炼结论，不要原样照抄内部字段：\n"
             f"{evidence}"
         )
     messages.append({"role": "user", "content": summary_request})

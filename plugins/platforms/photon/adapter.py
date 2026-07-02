@@ -865,6 +865,12 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
+                # Windows: node.exe is a console-subsystem binary, so spawning
+                # it from the windowless gateway (pythonw) allocates a console
+                # that flashes on every sidecar start. Suppress it.
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -883,6 +889,12 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            # Windows: run the persistent sidecar headless — without this it
+            # keeps a visible console window open for the sidecar's lifetime
+            # (or flashes one if it exits early).
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            ),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

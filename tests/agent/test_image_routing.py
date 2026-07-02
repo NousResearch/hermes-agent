@@ -103,6 +103,24 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
 
+    def test_native_first_uses_native_even_with_aux_vision_override(self):
+        cfg = {
+            "agent": {"image_input_mode": "native_first"},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_native_first_uses_text_for_non_vision_model(self):
+        cfg = {"agent": {"image_input_mode": "native_first"}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "qwen/qwen3-235b", cfg) == "text"
+
+    def test_native_first_uses_text_for_unknown_model(self):
+        cfg = {"agent": {"image_input_mode": "native_first"}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("openrouter", "brand-new-slug", cfg) == "text"
+
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"

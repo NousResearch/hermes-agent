@@ -1,6 +1,6 @@
 """Routing helpers for inbound user-attached images.
 
-Two modes:
+Modes:
 
   native  — attach images as OpenAI-style ``image_url`` content parts on the
             user turn. Provider adapters (Anthropic, Gemini, Bedrock, Codex,
@@ -12,9 +12,15 @@ Two modes:
             it only sees a lossy text summary. This is the pre-existing
             behaviour and still the right choice for non-vision models.
 
+  native_first — attach natively when the active model reports vision support;
+            otherwise use the text pipeline. Unlike ``auto``, an explicit
+            auxiliary vision backend is treated as a fallback rather than an
+            override.
+
 The decision is made once per message turn by :func:`decide_image_input_mode`.
 It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
-| ``text``, default ``auto``) and the active model's capability metadata.
+| ``native_first`` | ``text``, default ``auto``) and the active model's
+capability metadata.
 
 In ``auto`` mode:
   - If the user has explicitly configured ``auxiliary.vision.provider``
@@ -45,7 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = frozenset({"auto", "native", "text"})
+_VALID_MODES = frozenset({"auto", "native", "native_first", "text"})
 
 
 # Image extensions used by extract_image_refs(). Kept tight on purpose — we
@@ -424,6 +430,11 @@ def decide_image_input_mode(
     if mode_cfg == "native":
         return "native"
     if mode_cfg == "text":
+        return "text"
+    if mode_cfg == "native_first":
+        supports = _lookup_supports_vision(provider, model, cfg)
+        if supports is True:
+            return "native"
         return "text"
 
     # auto

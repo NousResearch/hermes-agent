@@ -1070,6 +1070,9 @@ DEFAULT_CONFIG = {
         #   "native" — always attach natively; non-vision models will either
         #              error at the provider or get a last-chance text fallback
         #              (see run_agent._prepare_messages_for_api).
+        #   "native_first" — attach natively when the active model reports
+        #              supports_vision=True, even when auxiliary.vision is
+        #              configured; otherwise fall back to text.
         #   "text"   — always pre-analyze with vision_analyze and prepend the
         #              description as text; the main model never sees pixels.
         # Affects gateway platforms, the TUI, and CLI /attach.  vision_analyze

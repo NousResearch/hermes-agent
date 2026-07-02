@@ -1,5 +1,6 @@
 """Tests for browser first-open timeout and timeout diagnostics."""
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -90,6 +91,28 @@ class TestReadCommandOutputFiles:
 
 
 class TestBrowserNavigateOpenTimeout:
+    def _patch_navigation(self, monkeypatch, *, title="t", features=None, is_local=True):
+        features = features if features is not None else {}
+
+        def fake_run(task_id, command, args, timeout=None):
+            if command == "snapshot":
+                return {"success": False, "error": "no snapshot"}
+            return {
+                "success": True,
+                "data": {"title": title, "url": args[0] if args else ""},
+            }
+
+        monkeypatch.setattr(bt, "_get_open_command_timeout", lambda first_open=False: 120 if first_open else 60)
+        monkeypatch.setattr(bt, "_run_browser_command", fake_run)
+        monkeypatch.setattr(bt, "_get_session_info", lambda key: {"_first_nav": True, "features": features})
+        monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(bt, "_is_local_backend", lambda: is_local)
+        monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(bt, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(bt, "_maybe_start_recording", lambda *a, **kw: None)
+        monkeypatch.setattr(bt, "check_website_access", lambda url: None)
+        monkeypatch.setattr(bt, "_is_safe_url", lambda url: True)
+
     def test_first_navigation_uses_first_open_timeout(self, monkeypatch):
         captured: dict = {}
 
@@ -110,3 +133,36 @@ class TestBrowserNavigateOpenTimeout:
 
         bt.browser_navigate("https://example.com", task_id="task-1")
         assert captured["timeout"] == 120
+
+    def test_local_first_navigation_omits_browserbase_proxy_warning(self, monkeypatch):
+        self._patch_navigation(monkeypatch, features={"local": True}, is_local=True)
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert result["stealth_features"] == ["local"]
+        assert "stealth_warning" not in result
+
+    def test_local_bot_detection_warning_omits_browserbase_upsell(self, monkeypatch):
+        self._patch_navigation(
+            monkeypatch,
+            title="Just a moment",
+            features={"local": True},
+            is_local=True,
+        )
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert "bot_detection_warning" in result
+        assert "BROWSERBASE_ADVANCED_STEALTH" not in result["bot_detection_warning"]
+        assert "Scale plan" not in result["bot_detection_warning"]
+
+    def test_cloud_first_navigation_keeps_browserbase_proxy_warning(self, monkeypatch):
+        self._patch_navigation(monkeypatch, features={"proxies": False}, is_local=False)
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert "stealth_warning" in result
+        assert "Browserbase" in result["stealth_warning"]

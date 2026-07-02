@@ -105,16 +105,11 @@ class RunManager:
         session_id: Optional[str] = None,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Optional[RuntimeEvent]:
-        if session_id is None:
-            with self._lock:
-                status = self._runs.get(run_id)
-                if status is None:
-                    return None
-                session_id = status.session_id
-
         with self._lock:
             if run_id not in self._runs:
                 return None
+            if session_id is None:
+                session_id = self._runs[run_id].session_id
             return self._append_event(
                 run_id=run_id,
                 session_id=session_id,

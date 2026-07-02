@@ -192,6 +192,52 @@ HERMES_WEBUI_AGENT_RUNS_API_KEY=test-key \
 - `/v1/health` not available on standalone server (only on full gateway API server)
 - `hermes gateway run` full startup blocked by messaging adapter dependencies
 
+## Phase 11A — PR Review (completed)
+
+### Code Review Findings
+
+Full branch diff: 11 files changed, 2849 insertions, 6 deletions.
+
+**No secrets leaked.** No hardcoded personal paths (test fixtures use `/home/user/workspace` only). No broad exception swallowing (except existing patterns matching api_server.py). No raw tracebacks in API responses. Route mount correctly gated behind `HERMES_USE_RUNTIME_RUNS` flag — default keeps legacy embedded handlers.
+
+### Bugs Found and Fixed
+
+1. **TOCTOU race in `RunManager.append_event()`** (`run_manager.py:100-123`) — Two separate lock acquisitions created a window where a run could be deleted between session_id lookup and event append. Fixed by keeping lock held across both operations.
+
+2. **Array message parsing gap** (`routes.py:95-102`) — Only handled `{"content": "..."}` parts. Now also handles OpenAI-compatible `{"type": "text", "text": "..."}` parts, matching `_normalize_chat_content()` behavior in `api_server.py`.
+
+### Test Results (Phase 11A)
+
+```
+./scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py -v
+
+Result: 105 passed, 0 failed in 0.9s — PASS
+```
+
+**Import smoke:** RunManager.create_run() produces valid run with run_id, status "queued", all URL fields populated. PASS.
+
+### Remaining Risks
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| TOCTOU in append_event | **FIXED** | Single lock acquisition now holds across session_id resolution and event append |
+| Array message parsing | **FIXED** | Now handles `{"type": "text", "text": "..."}` parts |
+| approval not_supported | LOW | Returns 501, documented. Requires gateway adapter context |
+| clarify not_supported | LOW | Returns 501, documented. Requires gateway adapter context |
+| True live interruption | LOW | stop_run transitions status; actual agent.interrupt() requires live AIAgent |
+| Bare `except Exception:` on JSON parse | LOW | Follows existing api_server.py pattern; not regressive |
+
+### PR Readiness
+
+- All 105 focused tests pass with fixes applied
+- Route mount gated and non-default
+- Existing legacy API server tests pass (193 + 23, no regressions)
+- Secret redaction verified in all response paths
+- Merge-ready
+
 ## Rollback
 
 ```bash

@@ -96,10 +96,14 @@ def register_runtime_routes(
             msg_texts = []
             for part in message:
                 if isinstance(part, dict):
-                    msg_texts.append(part.get("content", ""))
+                    part_type = str(part.get("type") or "").strip().lower()
+                    if part_type in {"text", "input_text", "output_text"}:
+                        msg_texts.append(part.get("text", ""))
+                    else:
+                        msg_texts.append(part.get("content", ""))
                 elif isinstance(part, str):
                     msg_texts.append(part)
-            message = " ".join(msg_texts) if msg_texts else None
+            message = " ".join(s for s in msg_texts if s) or None
 
         result = run_manager.create_run(
             session_id=session_id or "default",

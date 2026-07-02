@@ -400,3 +400,57 @@ HERMES_WEBUI_PASSWORD=test-password \
 
 ### Next task
 **PR review / harden approval-clarify live integration**
+
+---
+
+## Phase 11A — PR Review, Security Audit, and Merge-Readiness Package (completed)
+
+### State Before Phase 11A
+- **Commit:** `ab0fd67`
+- **Message:** `Document live runtime runs smoke verification`
+
+### Review Scope
+Full branch diff (`feat/runtime-run-api-contract` vs `main`): 11 files, 2849 insertions, 6 deletions.
+
+### Security Audit
+- No API keys, tokens, passwords, or credentials present in any source file
+- No hardcoded personal paths (test fixtures use generic `/home/user/workspace`)
+- No hardcoded localhost:port outside of test fixtures
+- Route mount correctly gated — `HERMES_USE_RUNTIME_RUNS` must be explicitly set
+- Secret redaction covers 10 key-name variants + `agent.redact.redact_sensitive_text` fallback
+
+### Bugs Found and Fixed
+
+| # | File | Issue | Severity | Fix |
+|---|------|-------|----------|-----|
+| 1 | `gateway/runtime/run_manager.py:100-123` | TOCTOU race: two lock acquisitions allowed run deletion between session_id lookup and event append | MODERATE | Merged into single lock acquisition |
+| 2 | `gateway/runtime/routes.py:95-102` | Array message parsing only handled `content` key, not OpenAI `{"type": "text", "text": "..."}` format | MODERATE | Extended to handle `type`-based text parts |
+
+### Test Results
+
+**Focused tests (post-fix):**
+```
+./scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py -v
+Result: 105 passed, 0 failed (4 files, 16 workers, 0.9s) — PASS
+```
+
+**Import smoke (post-fix):**
+```
+RunManager.create_run(session_id="phase11a", message="review smoke")
+Result: OK, status "queued", all fields populated — PASS
+```
+
+### Remaining Risks
+1. approval/clarify resolution returns 501 `not_supported` — requires gateway adapter context for full integration
+2. True live agent interruption not implemented — `stop_run` transitions status; `agent.interrupt()` needs live `AIAgent`
+3. Bare `except Exception:` on JSON parsing follows existing `api_server.py` pattern, not regressive
+4. `_redact_header_value` untouched — no caller in this codebase
+
+### Files Modified in Phase 11A
+- `gateway/runtime/run_manager.py` — TOCTOU fix
+- `gateway/runtime/routes.py` — array message parsing fix
+
+### Next task
+**Phase 11B — Harden approval/clarify live integration**

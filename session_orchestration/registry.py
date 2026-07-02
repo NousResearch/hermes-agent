@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS session_orchestration (
     task_id                TEXT PRIMARY KEY,
     agent                  TEXT NOT NULL,
     tmux_session           TEXT,
+    -- Stable tmux pane id (e.g. '%12') pinned at launch. Targeting this instead
+    -- of the bare tmux_session is REQUIRED for correctness: `tmux -t <session>`
+    -- resolves to the session's ACTIVE window, so once the session gains extra
+    -- windows (or the user switches away) capture/detect/drive would hit the
+    -- wrong pane — a shell, not the agent. The pane id is immune to that.
+    pane                   TEXT,
     project                TEXT,
     discord_thread_id      TEXT,
     hermes_session_key     TEXT,
@@ -334,6 +340,14 @@ class SessionOrchestrationRegistry:
                 conn.execute(
                     "ALTER TABLE session_orchestration "
                     "ADD COLUMN marker_offset INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN pane TEXT"
                 )
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent

@@ -374,6 +374,27 @@ def test_ttl_expires_old_entry_with_notice(registry):
     assert "expired" in posts[0][1].lower()
 
 
+def test_handle_targets_pinned_pane_not_active_window(registry):
+    """_build_handle_from_row targets the pinned pane id, not the bare session.
+
+    Regression: with only tmux_session, capture/drive resolve to the session's
+    ACTIVE window — a shell once the session gains other windows. The pinned
+    pane id (%N) is immune to that.
+    """
+    from session_orchestration.watcher import _build_handle_from_row
+
+    pinned = _build_handle_from_row(
+        {"task_id": "t1", "tmux_session": "hermes-omp-abc", "pane": "%50"}
+    )
+    assert pinned.pane == "%50"
+
+    # Legacy row without a pinned pane falls back to the session name.
+    legacy = _build_handle_from_row(
+        {"task_id": "t2", "tmux_session": "hermes-omp-xyz", "pane": None}
+    )
+    assert legacy.pane == "hermes-omp-xyz"
+
+
 def test_ttl_keeps_fresh_entry(registry):
     task_id = str(uuid.uuid4())
     row = _seed_row(registry, task_id)

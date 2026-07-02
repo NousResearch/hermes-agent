@@ -301,6 +301,9 @@ def spawn_session(
         run_id=None,  # no z-harness run_id at spawn time; ingest correlates later
         repo=repo,
         tmux_session=handle.tmux_session,
+        # Pin the concrete pane id (%N) so capture/detect/drive target the agent
+        # pane, not the session's active window (which drifts to other windows).
+        pane=handle.pane,
         workdir=request.workdir,
         state="RUNNING",
         last_output_ts=handle.launch_ts.timestamp(),

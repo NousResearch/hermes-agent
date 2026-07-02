@@ -1016,7 +1016,9 @@ def _build_handle_from_row(row: Dict[str, Any]) -> "SessionHandle":
     from datetime import datetime, timezone
 
     tmux_session = row.get("tmux_session") or ""
-    pane = tmux_session if tmux_session else ""
+    # Prefer the pinned pane id (%N); fall back to the bare session name for
+    # legacy rows without a pinned pane.
+    pane = row.get("pane") or tmux_session
     return SessionHandle(
         session_id=row.get("task_id", ""),
         tmux_session=tmux_session,
@@ -1528,10 +1530,12 @@ class SessionWatcher:
         # ------------------------------------------------------------------
         # 1. Acquire per-session lock — BEFORE any capture-pane call
         # ------------------------------------------------------------------
-        # The registry has tmux_session but not a separate pane column;
-        # derive the pane target using the same logic as _build_handle.
+        # Prefer the pinned pane id (%N) so capture targets the agent pane, not
+        # the session's active window (which drifts once the session gains other
+        # windows). Fall back to the bare session name for legacy rows with no
+        # pinned pane (pre-migration or externally-adopted sessions).
         tmux_session = row.get("tmux_session") or ""
-        pane = tmux_session if tmux_session else ""
+        pane = row.get("pane") or tmux_session
         holder = f"watcher:pid:{os.getpid()}:{time.time():.3f}"
 
         lock_acquired = self._registry.acquire_lock(
@@ -2079,12 +2083,12 @@ class SessionWatcher:
     def _build_handle(row: Dict[str, Any]) -> SessionHandle:
         """Reconstruct a ``SessionHandle`` from a registry row dict.
 
-        The registry schema stores ``tmux_session`` (session name) but not
-        the pane target.  We derive the pane as ``<tmux_session>:0.0``,
-        which is the default for single-pane sessions created by adapters.
+        Prefer the pinned pane id (``pane`` column, e.g. ``%12``) so targeting
+        survives the session gaining extra windows; fall back to the bare
+        session name for legacy rows without a pinned pane.
         """
         tmux_session = row.get("tmux_session") or ""
-        pane = tmux_session if tmux_session else ""
+        pane = row.get("pane") or tmux_session
         return SessionHandle(
             session_id=row.get("task_id", ""),
             tmux_session=tmux_session,

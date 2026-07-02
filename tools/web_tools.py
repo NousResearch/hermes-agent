@@ -97,7 +97,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import async_is_safe_url, normalize_url_for_request
+from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 import sys
 
 logger = logging.getLogger(__name__)
@@ -307,6 +307,15 @@ def _web_requires_env() -> list[str]:
 # Override via web.extract_char_limit in config.yaml.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
+# Hard ceiling on the full-text file written to cache/web. The truncate-store
+# path otherwise calls path.write_text(content) with no upper bound, so a
+# multi-MB page (some backends return very large markdown) writes unbounded
+# bytes to disk on every extract. Cap the stored copy; the model only ever
+# sees char_limit anyway, and a 2MB page is already far more than any single
+# read_file paging session needs. Mirrors the pre-truncate-store era's 2MB
+# refusal ceiling, but stores (capped) instead of refusing.
+MAX_STORED_TEXT_CHARS = 2_000_000
+
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
@@ -374,6 +383,15 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
         slug = re.sub(r"[^A-Za-z0-9._-]", "-", host)[:60].strip("-") or "page"
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
         path = cache_dir / f"{slug}-{digest}.md"
+        # Bound the stored copy so a pathologically large page can't write
+        # unbounded bytes to disk. If capped, append a marker so a reader of
+        # the file knows it isn't the literal complete page.
+        if len(content) > MAX_STORED_TEXT_CHARS:
+            content = (
+                content[:MAX_STORED_TEXT_CHARS]
+                + f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
+                f"of {len(content):,}; re-extract a more specific URL for the rest ...]"
+            )
         path.write_text(content, encoding="utf-8")
         return str(path)
     except Exception as exc:  # noqa: BLE001
@@ -422,10 +440,16 @@ def _truncate_with_footer(
         f"of {total:,} total clean characters.",
     ]
     if stored_path:
+        # The omitted middle begins right after the head we're showing. Give
+        # the model a concrete starting line (head line count + 1) so its first
+        # read_file lands in the gap instead of guessing <line>. read_file is
+        # 1-indexed; +1 moves past the last head line we already showed.
+        middle_start_line = head.count("\n") + 2
         footer_lines.append(f"Full text saved to: {stored_path}")
         footer_lines.append(
             f'To read the omitted middle: read_file path="{stored_path}" '
-            f"offset=<line> limit=<n>  (the file is the complete page)."
+            f"offset={middle_start_line} limit=200  (the file is the complete page; "
+            f"raise/lower offset to page through it)."
         )
     else:
         footer_lines.append(
@@ -634,6 +658,17 @@ async def web_extract_tool(
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
                          "Secrets must not be sent in URLs.",
+            })
+        sensitive_query_key = sensitive_query_param_name(normalized_url)
+        if sensitive_query_key:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: URL contains a credential-like query parameter "
+                    f"({sensitive_query_key}). Web extract backends are third-party "
+                    "readers; remove the sensitive query parameter or use a local "
+                    "browser session when this access is explicitly required."
+                ),
             })
         normalized_urls.append(normalized_url)
 

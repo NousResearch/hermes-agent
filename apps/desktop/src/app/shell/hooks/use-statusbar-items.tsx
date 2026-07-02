@@ -369,11 +369,7 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel
-            currentUsage={currentUsage}
-            requestGateway={requestGateway}
-            sessionId={activeSessionId}
-          />
+          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
         ),
         title: copy.openContextUsage,
         variant: 'menu'

@@ -6,6 +6,7 @@ import fnmatch
 import json
 import logging
 import os
+import posixpath
 import re
 import threading
 from pathlib import Path
@@ -305,6 +306,27 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
+def _is_windows_foreign_posix_absolute_path(filepath: str) -> bool:
+    """True for POSIX absolute paths that are not local Windows drive aliases."""
+    if os.name != "nt":
+        return False
+    expanded = _expand_tilde(str(filepath or ""))
+    if not expanded.startswith("/") or expanded.startswith("//"):
+        return False
+    if re.match(r"^/[A-Za-z](?:/|$)", expanded):
+        return False
+    if re.match(r"^/mnt/[A-Za-z](?:/|$)", expanded, re.IGNORECASE):
+        return False
+    return True
+
+
+def _is_absolute_input_path(filepath: str) -> bool:
+    expanded = _expand_tilde(str(filepath or ""))
+    if _is_windows_foreign_posix_absolute_path(expanded):
+        return True
+    return Path(normalize_windows_host_path(expanded)).is_absolute()
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
@@ -333,7 +355,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
+        if _is_absolute_input_path(filepath):
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
@@ -365,10 +387,27 @@ def _is_blocked_device_path(path: str) -> bool:
         ("/fd/0", "/fd/1", "/fd/2")
     ):
         return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
-    # command-line args, and memory layout from the host process (issue #4427)
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
+    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
+    # memory layout (ASLR bypass) from the host process (issue #4427).
+    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
+    # though it requires address knowledge to exploit usefully.
+    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
+    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
+    # virtual->physical translation. Both are blocked alongside the maps family.
+    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
     if normalized.startswith("/proc/") and normalized.endswith(
-        ("/environ", "/cmdline", "/maps")
+        (
+            "/environ",
+            "/cmdline",
+            "/maps",
+            "/smaps",
+            "/smaps_rollup",
+            "/numa_maps",
+            "/mem",
+            "/auxv",
+            "/pagemap",
+        )
     ):
         return True
     return False
@@ -414,6 +453,55 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return False
 
 
+def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
+    """Return the read-safety error for a search result path.
+
+    Search backends may return paths relative to the task cwd, while
+    ``get_read_block_error`` expects an already-resolved path when the task cwd
+    can differ from the Python process cwd. Mirror ``read_file_tool``'s path
+    resolution before applying the shared read guard.
+    """
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except (OSError, ValueError, RuntimeError):
+        return get_read_block_error(path)
+    return get_read_block_error(str(resolved))
+
+
+def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
+    """Remove credential/cache/env paths from a SearchResult in-place."""
+    omitted = 0
+
+    if hasattr(result, "matches") and result.matches:
+        allowed_matches = []
+        for match in result.matches:
+            if _search_result_read_block_error(match.path, task_id):
+                omitted += 1
+                continue
+            allowed_matches.append(match)
+        result.matches = allowed_matches
+
+    if hasattr(result, "files") and result.files:
+        allowed_files = []
+        for file_path in result.files:
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_files.append(file_path)
+        result.files = allowed_files
+
+    if hasattr(result, "counts") and result.counts:
+        allowed_counts = {}
+        for file_path, count in result.counts.items():
+            if _search_result_read_block_error(file_path, task_id):
+                omitted += 1
+                continue
+            allowed_counts[file_path] = count
+        result.counts = allowed_counts
+
+    return omitted
+
+
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
@@ -424,6 +512,19 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
+
+
+def _normalize_sensitive_path_text(filepath: str) -> str:
+    expanded = _expand_tilde(str(filepath or ""))
+    return posixpath.normpath(expanded.replace("\\", "/"))
+
+
+def _matches_sensitive_path(normalized_path: str) -> bool:
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        root = prefix.rstrip("/")
+        if normalized_path == root or normalized_path.startswith(prefix):
+            return True
+    return normalized_path in _SENSITIVE_EXACT_PATHS
 
 
 def _get_hermes_config_resolved() -> str | None:
@@ -449,15 +550,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    normalized = _normalize_sensitive_path_text(filepath)
+    resolved_normalized = _normalize_sensitive_path_text(resolved)
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if _matches_sensitive_path(resolved_normalized) or _matches_sensitive_path(normalized):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
@@ -1474,7 +1573,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            if _is_windows_foreign_posix_absolute_path(path):
+                _resolved = None
+            else:
+                _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
 
@@ -1545,8 +1647,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+        def _reject_v4a_traversal(v4a_path: str) -> str | None:
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -1559,9 +1660,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(
                     f"V4A patch header contains '..' traversal: {v4a_path!r}. "
                     "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                    "path in '*** Update File:' / '*** Add File:' / "
+                    "'*** Delete File:' / '*** Move File:' headers."
                 )
+            return None
+
+        # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser leniency:
+        # it accepts ``***Update File:`` with no space after the asterisks
+        # (patch_parser.py uses ``\*\*\*\s*Update\s+File:``). Requiring a space
+        # here let a no-space header parse + apply while skipping this check.
+        for _m in _re.finditer(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            v4a_path = _m.group(1).strip()
+            _err = _reject_v4a_traversal(v4a_path)
+            if _err:
+                return _err
             _paths_to_check.append(v4a_path)
+        # ``*** Move File: src -> dst`` is a valid V4A op (patch_parser.py:114)
+        # but was never extracted, so a Move targeting /etc/crontab skipped the
+        # sensitive-path pre-check. Check BOTH endpoints, and run them through
+        # the same ``..`` traversal rejection as the other headers.
+        for _m in _re.finditer(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            for v4a_path in (_m.group(1).strip(), _m.group(2).strip()):
+                _err = _reject_v4a_traversal(v4a_path)
+                if _err:
+                    return _err
+                _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -1578,7 +1701,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                if _is_windows_foreign_posix_absolute_path(_p):
+                    _r = None
+                else:
+                    _r = str(_resolve_path_for_task(_p, task_id))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1600,7 +1726,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    if _is_windows_foreign_posix_absolute_path(_p):
+                        _r = None
+                    else:
+                        _r = str(_resolve_path_for_task(_p, task_id))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
@@ -1869,6 +1998,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        try:
+            resolved_path = _resolve_path_for_task(path, task_id)
+        except (OSError, ValueError, RuntimeError):
+            resolved_path = None
+        block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
+        if block_error:
+            return json.dumps({"error": block_error}, ensure_ascii=False)
+
         exact_result = _exact_file_search_fallback(
             pattern=pattern,
             target=target,
@@ -1887,11 +2024,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
+
+        if omitted:
+            result_dict["_omitted"] = (
+                f"{omitted} result(s) omitted because they target credential, "
+                "token, cache, or secret-bearing environment files."
+            )
 
         if count >= 3:
             result_dict["_warning"] = (

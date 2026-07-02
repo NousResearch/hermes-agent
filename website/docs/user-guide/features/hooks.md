@@ -382,6 +382,7 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
@@ -649,6 +650,71 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
 ```
+
+---
+
+### `pre_verify`
+
+Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
+
+Hermes' shipped verification guidance is not a default `pre_verify` hook. It is appended to the evidence-based verify-on-stop nudge when edited code lacks fresh verification evidence, so it does not create a second default continuation path. Set `agent.verify_guidance: false` to keep that built-in evidence nudge terse.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, platform: str, model: str, coding: bool,
+                attempt: int, final_response: str, changed_paths: list, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `platform` | `str` | Where the session is running (`"cli"`, `"telegram"`, …) |
+| `model` | `str` | The model identifier |
+| `coding` | `bool` | Whether the turn is in the coding posture (in a code workspace) — scope your hook on this |
+| `attempt` | `int` | How many times this turn has already been nudged (0 on the first) — self-throttle on this |
+| `final_response` | `str` | The answer the agent is about to deliver |
+| `changed_paths` | `list` | Files the agent edited this turn (sorted, always non-empty here) |
+
+Scope a hook to the coding context by checking `coding` and make it one-shot with `attempt` (shell hooks read both from `.extra`), the same way a `pre_tool_call` hook scopes on `tool_name` — so you can register several `pre_verify` hooks, each firing only where it should.
+
+**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the verify-on-stop check — but only when the agent edited code this turn and at least one `pre_verify` hook is registered.
+
+**Return value — keep the agent going:**
+
+```python
+return {"action": "continue", "message": "Run the formatter on your changes, then finish."}
+```
+
+The `message` is appended as a synthetic user turn and the loop runs again. The Claude-Code Stop shape (`{"decision": "block", "reason": "..."}`, where blocking the stop means *keep going*) is accepted too. A directive with no message — or any other return — lets the turn finish.
+
+**Bounded:** consecutive continue directives in one turn are capped by `agent.max_verify_nudges` (default 3), so a hook that always says continue can never trap the loop. The attempted answer is kept in history but not surfaced to the user while the agent is being nudged.
+
+**Make it idempotent:** the hook re-fires after each nudge, so gate on `attempt` (`if attempt: return None`) — otherwise it just nudges until the bound is hit.
+
+**Use cases:** defer tests/lints during creative iteration, require green checks for certain paths, block "done" until a changelog entry exists, run a project-specific verification checklist.
+
+**Example — defer checks on creative UI work, scoped + one-shot:**
+
+```python
+UI = (".tsx", ".jsx", ".css", ".scss")
+
+def defer_ui_checks(coding, attempt, changed_paths, **kwargs):
+    if attempt or not coding:
+        return None  # one-shot, coding only
+    if not all(p.endswith(UI) for p in changed_paths):
+        return None  # only pure-UI edits
+    return {
+        "action": "continue",
+        "message": "This is UI work — don't run tests/lints yet; ask the user to "
+                   "eyeball it first, and clean the diff before any commit.",
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_verify", defer_ui_checks)
+```
+
+For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
 
 ---
 
@@ -1283,6 +1349,10 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
+
+// Keep the agent going at the verify gate (pre_verify); both shapes accepted:
+{"action": "continue", "message": "Run the formatter, then finish."}
+{"decision": "block",  "reason":  "Run the formatter, then finish."}
 
 // Silent no-op — any empty / non-matching output is fine:
 ```

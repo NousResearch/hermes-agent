@@ -671,16 +671,37 @@ Events: `run.started`, `run.status` (queued→running), `done` (completed), `err
 - Approval/clarify works for executor-owned runs
 - Secret redaction in all event/status payloads
 
+### Phase 17 Complete — DefaultAgentFactory implemented
+
+**DefaultAgentFactory:**
+- `gateway/runtime/agent_factory.py` (178 lines)
+- Constructs real AIAgent instances from gateway config (model.provider, model.default, API keys)
+- Uses `_resolve_runtime_agent_kwargs()` for credentials + `_resolve_gateway_model()` for model
+- Supports dependency injection via `agent_kwargs` for tests
+- Validates: missing API key, missing provider, missing model all return clean errors (no secrets)
+- Error redaction via `agent.redact.redact_sensitive_text`
+
+**RuntimeExecutor updated:**
+- `execute_run()` now handles sync AIAgent.run_conversation (wraps in `run_in_executor`)
+- Detects async vs sync via `asyncio.iscoroutinefunction()`
+- Backward compatible with FakeAgentFactory (which has async run_conversation)
+
+**Real AIAgent execution verified:**
+- Provider: DeepSeek (deepseek-v4-flash)
+- POST /v1/runs with execute:true → completed
+- Status/events/stop/cancel/approval/clarify all verified
+- Deterministic smoke: 6/6 passed
+- Real-credential smoke: DeepSeek AIAgent executed successfully
+
 ### What Remains Deferred
 
-1. **Real AIAgent execution** — executor works with `FakeAgentFactory` in tests; needs `DefaultAgentFactory` + gateway config wiring + model API credentials for production use
-2. Real messaging-platform adapter live smoke — requires external credentials
-3. Cross-repo live HTTP smoke with real AIAgent execution — requires model API credentials
+1. **Real messaging-platform adapter live smoke** — requires external bot/platform credentials (Telegram, Discord, etc.)
+2. **Cross-repo live HTTP smoke with real AIAgent execution** — now achievable with DefaultAgentFactory + config, but not automated without a running Agent server in CI
 
 ### Tests Run
 
 ```
-14 runtime test files: 383 passed, 0 failed
+15 runtime test files: 398 passed, 0 failed
   - test_runtime_models.py: 20 tests
   - test_runtime_run_manager.py: 40 tests
   - test_runtime_routes.py: 23 tests
@@ -692,30 +713,31 @@ Events: `run.started`, `run.status` (queued→running), `done` (completed), `err
   - test_runtime_non_api_execution.py: 17 tests
   - test_runtime_slash_approval.py: 17 tests
   - test_runtime_cross_repo_contract.py: 25 tests
-  - test_runtime_v1_runs_execution_gap.py: 16 tests (updated)
-  - test_runtime_executor.py: 30 tests (new)
-  - test_runtime_executor_routes.py: 8 tests (new)
+  - test_runtime_v1_runs_execution_gap.py: 16 tests
+  - test_runtime_executor.py: 30 tests
+  - test_runtime_executor_routes.py: 8 tests
+  - test_runtime_default_agent_factory.py: 15 tests (new)
 ```
 
 ### Smoke Test Results
 
-8/8 deterministic smoke tests passed:
-1. POST /v1/runs with execute=true → queued
-2. GET /v1/runs/{run_id} → completed
-3. GET /v1/runs/{run_id}/events → 3 events (run.started, run.status, done)
-4. Backward compat: no execute flag stays queued
-5. Failure path: status=failed, no traceback leak
-6. Stop/cancel: status=cancelled
-7. Approval: mechanism works (agent may complete before approval needed with fast fake)
-8. No secret leak in status or events
+**Deterministic (6/6 passed):**
+1. FakeAgentFactory execution → completed with expected result
+2. Executor without factory → not_supported
+3. DefaultAgentFactory injection → agent_creation_failed (clean error)
+4. Missing credentials validation → clean RuntimeError (no secrets)
+5. Approval/clarify compatibility → triggered and resolved
+6. Stop/cancel → cancelled
 
-### Files Changed
+**Real-credential (passed):**
+- Provider: DeepSeek (deepseek-v4-flash)
+- POST /v1/runs with execute: true → completed
+- Response received, no secrets leaked
 
-- `gateway/runtime/executor.py` — new (330 lines)
-- `gateway/runtime/run_manager.py` — added `claim_queued_run()` + `list_runs()`
-- `gateway/runtime/routes.py` — added optional `executor` parameter + `execute` body flag
-- `gateway/runtime/__init__.py` — exported executor classes
-- `tests/gateway/test_runtime_executor.py` — new (30 tests)
-- `tests/gateway/test_runtime_executor_routes.py` — new (8 tests)
-- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — updated (asyncio.create_task expected)
+### Files Changed (Phase 17)
+
+- `gateway/runtime/agent_factory.py` — new (178 lines)
+- `gateway/runtime/executor.py` — updated `execute_run` for sync/async agent support
+- `gateway/runtime/__init__.py` — exported `DefaultAgentFactory`
+- `tests/gateway/test_runtime_default_agent_factory.py` — new (15 tests)
 - `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated

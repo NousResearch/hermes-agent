@@ -195,6 +195,83 @@ Implements a dedicated runtime executor service that processes queued runs from 
 7. Approval: mechanism works
 8. No secret leak
 
+## Phase 17 Changes (this PR)
+
+### DefaultAgentFactory Implementation
+
+Implements a production-capable `AgentFactory` that constructs real `AIAgent` instances from gateway configuration.
+
+**New: `gateway/runtime/agent_factory.py`**
+- `DefaultAgentFactory` — constructs AIAgent using `_resolve_runtime_agent_kwargs()` + `_resolve_gateway_model()`
+- `create_default_agent_factory()` — convenience function for wiring
+- `create_runtime_executor_with_default_factory()` — one-liner to create wired executor
+- Supports dependency injection via `agent_kwargs` for tests
+- Validates: missing API key, missing provider, missing model → clean RuntimeError (no secrets)
+- Error redaction via `agent.redact.redact_sensitive_text`
+
+**Modified: `gateway/runtime/executor.py`**
+- `execute_run()` now handles synchronous AIAgent.run_conversation (real AIAgent) and async agents (FakeAgentFactory) via `asyncio.iscoroutinefunction()` detection
+- Sync methods wrapped in `run_in_executor` to avoid blocking the event loop
+
+**Sync/async design:**
+| Agent type | run_conversation | Handling |
+|---|---|---|
+| FakeAgentFactory._FakeAgent | `async def` | `await` directly |
+| Real AIAgent | `def` (sync) | `run_in_executor` |
+
+### Key Design Decisions
+
+1. **DefaultAgentFactory reuses existing GatewayRunner credential resolution** — no duplicate logic
+2. **Sync/async detection is automatic** — agents declare their nature via coroutine vs def
+3. **FakeAgentFactory unchanged** — all 30 existing executor tests pass
+4. **Real AIAgent execution verified** with DeepSeek (deepseek-v4-flash)
+5. **Errors are redacted** — `agent_creation_failed` replaces raw stack traces
+
+### New Tests
+
+- `tests/gateway/test_runtime_default_agent_factory.py` — 15 tests (construction, validation, integration with executor, helper functions)
+
+### Test Results
+
+```
+15 runtime test files: 398 passed, 0 failed
+  - test_runtime_default_agent_factory.py: 15 tests (new)
+  - All 383 Phase 16 tests preserved
+```
+
+### Smoke Test Results
+
+**Deterministic (6/6 passed):**
+1. FakeAgentFactory execution → completed
+2. No factory → not_supported
+3. DefaultAgentFactory injection → clean creation failure
+4. Missing credentials → clean RuntimeError
+5. Approval/clarify compatibility → triggered and resolved
+6. Stop/cancel → cancelled
+
+**Real-credential (passed):**
+- Provider: DeepSeek (deepseek-v4-flash)
+- POST /v1/runs execute:true → completed
+
+### Enablement
+
+```bash
+# Runtime executor with DefaultAgentFactory:
+export HERMES_USE_RUNTIME_RUNS=true
+# Then wire executor:
+#   executor = create_runtime_executor_with_default_factory(run_manager, control_bridge=cb)
+#   register_runtime_routes(app, executor=executor)
+
+# Required config:
+#   config.yaml: model.provider (e.g. deepseek), model.default (e.g. deepseek-chat)
+#   .env: DEEPSEEK_API_KEY=<key>
+```
+
+### Deferred
+
+1. Real messaging-platform adapter live smoke — requires external credentials
+2. Automated cross-repo live HTTP smoke — requires running Agent server in CI
+
 ## Rollback Plan
 
 ```bash

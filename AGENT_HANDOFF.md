@@ -900,5 +900,49 @@ queued → running → completed / failed / cancelled
 **WebUI (`hermes-webui`):**
 - No changes needed — response shape unchanged, no new statuses
 
-### Next task
-**Real AIAgent smoke** — deploy the executor with a `DefaultAgentFactory` wired to gateway config and run a live execution. This requires model API credentials and is deferred for the same reason as earlier deferred items.
+### Phase 17 — DefaultAgentFactory and Real AIAgent Execution (completed)
+
+**Design:**
+Phase 17 implements `DefaultAgentFactory` — a production-capable `AgentFactory` that constructs real `AIAgent` instances using the same provider/credential resolution chain as the gateway's platform adapters (`_resolve_runtime_agent_kwargs` + `_resolve_gateway_model`). `FakeAgentFactory` is preserved unchanged for deterministic tests.
+
+**Key components:**
+- `gateway/runtime/agent_factory.py` — `DefaultAgentFactory`, `create_default_agent_factory()`, `create_runtime_executor_with_default_factory()`
+- `gateway/runtime/executor.py` — updated `execute_run` to handle sync (`AIAgent.run_conversation`) and async (`FakeAgent._FakeAgent`) agents via `asyncio.iscoroutinefunction` detection
+- `gateway/runtime/__init__.py` — exports `DefaultAgentFactory`
+- `tests/gateway/test_runtime_default_agent_factory.py` — 15 tests
+
+**DefaultAgentFactory design:**
+1. `agent_kwargs` injected at construction for test mode (pre-resolved kwargs)
+2. `_resolve_runtime_agent_kwargs()` for live credential resolution (production)
+3. `_resolve_gateway_model()` for default model from config.yaml
+4. Run-specific overrides via `create_agent(run_id, ..., model=...)`
+5. Validation: missing API key, missing provider, missing model all raise clean `RuntimeError` without secrets
+6. Error messages are redacted via `agent.redact.redact_sensitive_text`
+
+**Sync/async handling:**
+Real `AIAgent.run_conversation()` is synchronous. `FakeAgent._FakeAgent.run_conversation()` is async. The executor now detects this via `asyncio.iscoroutinefunction()` and wraps sync calls in `run_in_executor`.
+
+**Real AIAgent execution:**
+- `DefaultAgentFactory` resolves credentials from gateway config (config.yaml model section + .env API keys)
+- Tested with DeepSeek (deepseek-v4-flash): `POST /v1/runs` with `execute: true` → `completed`
+- Status lifecycle, events, stop/cancel, approval/clarify all verified
+- Error messages for missing credentials are clean and redacted
+
+**Gating:**
+`DefaultAgentFactory` is always importable. Live credential resolution happens only when `create_agent()` is called without explicit `agent_kwargs`. The factory can be wired into `RuntimeExecutor` via `create_runtime_executor_with_default_factory(run_manager, control_bridge=cb)`.
+
+### Files Changed in Phase 17
+
+**Agent (`hermes-agent`):**
+- `gateway/runtime/agent_factory.py` — new (178 lines)
+- `gateway/runtime/executor.py` — updated `execute_run` for sync/async agent support
+- `gateway/runtime/__init__.py` — exported `DefaultAgentFactory`
+- `tests/gateway/test_runtime_default_agent_factory.py` — new (15 tests)
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+**WebUI (`hermes-webui`):**
+- No changes needed — Agent response shape unchanged, no new statuses
+
+### Remaining deferred items
+1. **Real messaging-platform adapter live smoke** — requires external bot/platform credentials
+2. **Cross-repo live HTTP smoke with real AIAgent execution** — requires model API credentials (now achievable with DefaultAgentFactory + config)

@@ -51,6 +51,7 @@ from gateway.runtime.executor import (
     FakeAgentFactory,
     SessionKeyFactory,
 )
+from gateway.runtime.agent_factory import DefaultAgentFactory
 
 __all__ = [
     "RuntimeEvent",
@@ -94,4 +95,5 @@ __all__ = [
     "AgentFactory",
     "FakeAgentFactory",
     "SessionKeyFactory",
+    "DefaultAgentFactory",
 ]

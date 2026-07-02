@@ -316,11 +316,19 @@ class RuntimeExecutor:
             self._active_tasks[run_id] = task
 
         try:
-            # 5. Execute
+            # 5. Execute — handle both async (FakeAgentFactory) and
+            #    sync (real AIAgent.run_conversation) agents.
             try:
-                result = await agent.run_conversation(
-                    user_message=claimed.get("message", "") or "",
-                )
+                user_msg = claimed.get("message", "") or ""
+                if asyncio.iscoroutinefunction(agent.run_conversation):
+                    result = await agent.run_conversation(
+                        user_message=user_msg,
+                    )
+                else:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        None, agent.run_conversation, user_msg,
+                    )
             except asyncio.CancelledError:
                 self._run_manager.stop_run(run_id)
                 return {"run_id": run_id, "status": "cancelled"}

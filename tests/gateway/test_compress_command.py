@@ -412,3 +412,144 @@ async def test_compress_command_passes_session_db_and_persists_rotated_session()
     )
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tool-heavy transcript honesty (2026-07-02: "No changes" over a 453K→32K line)
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_heavy_history() -> list[dict]:
+    """A stored transcript shaped like a real tool-heavy session: chat turns
+    plus tool-result rows and a contentless assistant tool-call turn — the
+    rows the gateway /compress chat-only projection excludes."""
+    return [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]},
+        {"role": "tool", "content": "BIG TOOL OUTPUT " * 50, "tool_call_id": "t1"},
+        {"role": "tool", "content": "MORE TOOL OUTPUT " * 50, "tool_call_id": "t2"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+
+
+def _tool_heavy_chat(history: list[dict]) -> list[dict]:
+    return [
+        {"role": m.get("role"), "content": m.get("content")}
+        for m in history
+        if m.get("role") in {"user", "assistant"} and m.get("content")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compress_command_tool_heavy_noop_chat_reports_compaction():
+    """CASE A regression: chat-only compression no-ops (chat already compact)
+    but the transcript rewrite drops the stored tool/system rows. The reply
+    must report the compaction — with the dropped-rows detail — instead of
+    the self-contradicting 'No changes ... 453,542 → ~32,036'."""
+    history = _make_tool_heavy_history()
+    chat = _tool_heavy_chat(history)
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542  # real provider-measured
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        # Chat no-op, but the session ROTATES → transcript rewrite happens.
+        agent_instance.session_id = "sess-2"
+        return list(messages), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _chat_est(messages, **_kwargs):
+        # chat-only rows small; non-chat rows big
+        if all(m.get("role") in {"user", "assistant"} for m in messages):
+            return 100
+        return 420_000  # the non-chat (tool) rows
+
+    def _full_est(messages, **_kwargs):
+        return 453_000 if len(messages) == len(history) else 32_000
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_chat_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_full_est),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Headline reports the stored-transcript compaction, never "No changes".
+    assert "No changes" not in result
+    assert "Compacted stored transcript: 7 → 4 messages" in result
+    # Chat axis honestly reported as already compact.
+    assert "already compact, kept verbatim" in result
+    # Dropped rows accounted: 3 non-chat rows (1 contentless + 2 tool).
+    assert "Dropped: 3 stored tool/system messages" in result
+    assert "420,000 tokens reclaimed" in result
+    # Full line uses the REAL before (no ~) and the compressed-basis after.
+    assert "Full request size: 453,542 → ~32,000 tokens" in result
+    # Rewrite happened → stored token count reset.
+    runner.session_store.update_session.assert_called_once_with(
+        build_session_key(_make_source()), last_prompt_tokens=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_compress_command_true_noop_preserves_measured_tokens():
+    """CASE C regression: when NO rewrite happens (no rotation, in-place off)
+    the reply must say the transcript was preserved, the full-request line
+    must say 'unchanged' (the next request resends the same context — an
+    'after' measured over the chat-only list would fabricate a shrink), and
+    last_prompt_tokens must NOT be zeroed (it is still the only real
+    provider-measured figure)."""
+    history = _make_tool_heavy_history()
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance.session_id = "sess-1"  # never rotates → no rewrite
+
+    def _compress(messages, *_args, **_kwargs):
+        return list(messages), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _est(messages, **_kwargs):
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_est),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Honest no-op: transcript preserved, with full composition.
+    assert "No changes: transcript preserved (7 messages: 4 chat + 3 tool/system)" in result
+    # No dropped-rows claim, no fabricated shrink.
+    assert "Dropped:" not in result
+    assert "reclaimed" not in result
+    assert "Full request size: 453,542 tokens (unchanged" in result
+    # The real provider-measured count survives for the next /compress or /usage.
+    runner.session_store.update_session.assert_not_called()
+    # Transcript must not have been overwritten either.
+    runner.session_store.rewrite_transcript.assert_not_called()

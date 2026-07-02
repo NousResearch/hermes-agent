@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -610,6 +611,43 @@ class TestAgentBrowserRunnable:
         # the package at run time, so the validator trusts it without stat.
         assert agent_browser_runnable("npx agent-browser") is True
         assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True
+
+    def test_version_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert agent_browser_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
+
+
+    def test_node_tool_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
+        good = self._stub(tmp_path, "node", "#!/bin/sh\necho v22\n")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        import hermes_cli._subprocess_compat as subprocess_compat
+        import subprocess as subprocess_mod
+
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert node_tool_runnable(str(good)) is True
+        assert captured[0][0] == [str(good), "--version"]
+        assert captured[0][1]["creationflags"] == 0x08000000
 
 
 class TestGetHermesDir:

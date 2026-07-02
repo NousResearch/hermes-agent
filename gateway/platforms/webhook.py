@@ -938,13 +938,34 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Missing repo or pr_number"
             )
 
+        # --- Input validation (prevent CLI argument injection) ---
+        # pr_number must be a positive integer.
+        try:
+            pr_int = int(pr_number)
+            if pr_int <= 0:
+                raise ValueError("non-positive")
+        except (ValueError, TypeError):
+            logger.error(
+                "[webhook] invalid pr_number: %r", pr_number
+            )
+            return SendResult(
+                success=False, error="Invalid pr_number"
+            )
+
+        # repo must match owner/name (alphanumeric, hyphens, underscores, dots).
+        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo):
+            logger.error("[webhook] invalid repo format: %r", repo)
+            return SendResult(
+                success=False, error="Invalid repo format"
+            )
+
         try:
             result = subprocess.run(
                 [
                     "gh",
                     "pr",
                     "comment",
-                    str(pr_number),
+                    str(pr_int),
                     "--repo",
                     repo,
                     "--body",

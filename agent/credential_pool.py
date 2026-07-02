@@ -616,17 +616,32 @@ class CredentialPool:
             file_refresh = creds.get("refreshToken", "")
             file_access = creds.get("accessToken", "")
             file_expires = creds.get("expiresAt", 0)
-            # If the credentials file has a different token pair, sync it
-            if file_refresh and file_refresh != entry.refresh_token:
-                logger.debug("Pool entry %s: syncing tokens from credentials file (refresh token changed)", entry.id)
+            # Sync when either token changed.  Access tokens can be re-issued
+            # without a new refresh token (silent re-issue path), so checking
+            # only refresh_token misses that case and leaves a stale
+            # access_token in the pool → 401 on every request until the pool
+            # entry's exhausted TTL expires.
+            entry_access = entry.access_token or ""
+            entry_refresh = entry.refresh_token or ""
+            if (file_access or file_refresh) and (
+                (file_access and file_access != entry_access)
+                or (file_refresh and file_refresh != entry_refresh)
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing tokens from credentials file (tokens changed)",
+                    entry.id,
+                )
                 updated = replace(
                     entry,
-                    access_token=file_access,
-                    refresh_token=file_refresh,
-                    expires_at_ms=file_expires,
+                    access_token=file_access or entry.access_token,
+                    refresh_token=file_refresh or entry.refresh_token,
+                    expires_at_ms=file_expires or entry.expires_at_ms,
                     last_status=None,
                     last_status_at=None,
                     last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
                 )
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -949,6 +964,34 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
+        # Codex OAuth refresh tokens are single-use.  The sync→POST→write-back
+        # sequence below must run atomically across Hermes processes: otherwise
+        # two processes can both adopt the same on-disk token, both POST it, and
+        # the loser gets ``refresh_token_reused``.  Serialize the whole sequence
+        # through the shared cross-process auth-store flock (the same lock and
+        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
+        # When a waiter finally acquires the lock, the in-lock re-sync below
+        # picks up the rotated token the winner persisted and skips the POST.
+        if self.provider == "openai-codex":
+            refresh_timeout_seconds = auth_mod.env_float(
+                "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20
+            )
+            lock_timeout = max(
+                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+                float(refresh_timeout_seconds) + 5.0,
+            )
+            with _auth_store_lock(timeout_seconds=lock_timeout):
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    if not force and not self._entry_needs_refresh(entry):
+                        return entry
+                return self._refresh_entry_impl(entry, force=force)
+        return self._refresh_entry_impl(entry, force=force)
+
+    def _refresh_entry_impl(
+        self, entry: PooledCredential, *, force: bool
+    ) -> Optional[PooledCredential]:
         try:
             if self.provider == "anthropic":
                 from agent.anthropic_adapter import refresh_anthropic_oauth_pure
@@ -1884,11 +1927,16 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
-                api_token = get_copilot_api_token(token)
+                api_token, enterprise_base_url = get_copilot_api_token(token)
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
                     pconfig = PROVIDER_REGISTRY.get(provider)
+                    # Use enterprise base URL from token exchange if available,
+                    # otherwise fall back to the provider's default.
+                    effective_base_url = enterprise_base_url or (
+                        pconfig.inference_base_url if pconfig else ""
+                    )
                     changed |= _upsert_entry(
                         entries,
                         provider,
@@ -1897,7 +1945,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                             "source": source_name,
                             "auth_type": AUTH_TYPE_API_KEY,
                             "access_token": api_token,
-                            "base_url": pconfig.inference_base_url if pconfig else "",
+                            "base_url": effective_base_url,
                             "label": source,
                         },
                     )
@@ -2142,7 +2190,12 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
+        # Claude Code OAuth tokens are the only Anthropic credentials that should flow into the OAuth refresh path.
+        auth_type = (
+            AUTH_TYPE_OAUTH
+            if provider == "anthropic" and token.startswith("sk-ant-oat")
+            else AUTH_TYPE_API_KEY
+        )
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)

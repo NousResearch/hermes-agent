@@ -44,6 +44,28 @@ from typing import Any
 # When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
 _UNSET: Any = object()
 
+# Process-level flag: has any code in this process bound a session via
+# set_session_vars()? Concurrent multi-session hosts (the messaging gateway, the
+# ACP adapter, the API server, the TUI, cron) all do; a pure single-process
+# CLI/one-shot that never engages the session-context system does not.
+#
+# The subprocess-env bridge (tools/environments/local.py) reads this to choose
+# its leak policy: when engaged, the ContextVars are authoritative and an _UNSET
+# var means "no session bound in THIS task" — so a process-global os.environ
+# mirror (written last-writer-wins by whatever concurrent session ran most
+# recently) must NOT be inherited into a child process. When never engaged, the
+# os.environ fallback is preserved (no concurrency to leak across). Monotonic
+# latch — once any host binds a session, the process stays engaged for life.
+_session_context_engaged: bool = False
+
+
+def session_context_engaged() -> bool:
+    """True if any session has been bound via set_session_vars in this process.
+
+    See the ``_session_context_engaged`` comment for the leak-policy rationale.
+    """
+    return _session_context_engaged
+
 # ---------------------------------------------------------------------------
 # Per-task session variables
 # ---------------------------------------------------------------------------
@@ -150,6 +172,11 @@ def set_session_vars(
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
     """
+    # Mark the session-context machinery engaged for this process. The
+    # subprocess-env bridge uses this to switch from "os.environ fallback" to
+    # "ContextVar-authoritative, strip on _UNSET" — see session_context_engaged.
+    global _session_context_engaged
+    _session_context_engaged = True
     tokens = [
         _SESSION_PLATFORM.set(platform),
         _SESSION_SOURCE.set(source),
@@ -200,6 +227,54 @@ def clear_session_vars(tokens: list) -> None:
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
+    _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    try:
+        from agent.runtime_cwd import clear_session_cwd
+
+        clear_session_cwd()
+    except Exception:
+        pass
+
+
+def reset_session_vars() -> None:
+    """Reset every session context variable to ``_UNSET`` for THIS context.
+
+    Distinct from :func:`clear_session_vars`, which sets the vars to ``""``
+    ("explicitly cleared" — suppresses the os.environ fallback and is used when
+    a handler *finishes*).  This helper restores the ``_UNSET`` sentinel
+    ("never bound in this context"), which is what a freshly-spawned task should
+    look like *before* it binds its own session.
+
+    🔴 Why this exists — the cross-session ContextVar inheritance leak.
+    Each gateway message is processed in its own ``asyncio`` task, created via
+    ``create_task`` (which snapshots the *current* context with
+    ``copy_context``).  When message B's task is spawned from a context where a
+    concurrent message A had already called :func:`set_session_vars`, B inherits
+    A's **set** ContextVars.  Until B calls its own ``set_session_vars`` there is
+    a window where any subprocess B spawns (e.g. a tool shelling out) reads
+    *A's* ``HERMES_SESSION_*`` identity via the subprocess-env bridge.  The
+    bridge's ``_UNSET``-strip guard cannot help: the vars are not ``_UNSET``,
+    they are set-to-A.  Calling ``reset_session_vars`` at the top of the
+    per-message handler drops the inherited identity so the window strips safe
+    (no session) instead of leaking the foreign one; the handler then binds its
+    own via ``set_session_vars`` a few steps later.  See
+    tests/tools/test_local_env_session_leak.py and
+    tests/gateway/test_session_context_inheritance.py.
+
+    Note ``_SESSION_ASYNC_DELIVERY`` lives outside ``_VAR_MAP`` (it is a bool
+    capability flag read via :func:`async_delivery_supported`, not a string
+    ``HERMES_SESSION_*`` env var read via :func:`get_session_env`), so it is
+    reset explicitly below. Without it, a task spawned from a context where a
+    sibling adapter bound ``async_delivery=False`` (the stateless API server)
+    inherits that ``False`` through the pre-bind window, and
+    ``async_delivery_supported`` wrongly reports the new turn's channel as
+    unable to route a background completion until ``set_session_vars`` runs.
+    """
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
+    # Reset the async-delivery capability to "never bound here" (_UNSET) for the
+    # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
+    # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd

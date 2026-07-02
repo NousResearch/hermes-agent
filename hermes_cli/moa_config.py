@@ -158,11 +158,26 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:

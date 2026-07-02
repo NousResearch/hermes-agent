@@ -2284,6 +2284,8 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    *,
+    delivery_platform: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2298,6 +2300,8 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        delivery_platform: Internal delivery target override. Gateway auto-TTS
+            uses this after the inbound session context has been cleared.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2329,7 +2333,7 @@ def text_to_speech_tool(
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    platform = (delivery_platform or get_session_env("HERMES_SESSION_PLATFORM", "")).lower()
     want_opus = (platform == "telegram")
 
     # Determine output path
@@ -2360,6 +2364,15 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+            # These providers can render Opus natively.  The delivery intent,
+            # not a caller-chosen suffix, controls their requested format.
+            file_path = file_path.with_suffix(".ogg")
+        elif want_opus and provider in BUILTIN_TTS_PROVIDERS and file_path.suffix == ".ogg":
+            # Conversion-backed providers (notably Edge) must first write a
+            # real source file.  Writing MP3 bytes directly to an .ogg path
+            # makes the later suffix guard incorrectly skip ffmpeg.
+            file_path = file_path.with_suffix(".mp3")
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)

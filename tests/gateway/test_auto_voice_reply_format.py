@@ -22,9 +22,11 @@ class TestAutoVoiceReplyFormat:
         event = _make_event(Platform.TELEGRAM)
         requested_paths = []
 
-        def fake_tts(*, text, output_path):
+        def fake_tts(*, text, output_path, delivery_platform):
             requested_paths.append(output_path)
-            assert output_path.endswith(".ogg")
+            assert output_path.endswith(".mp3")
+            assert delivery_platform == "telegram"
+            output_path = str(Path(output_path).with_suffix(".ogg"))
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"fake ogg opus")
             return json.dumps({
@@ -38,7 +40,7 @@ class TestAutoVoiceReplyFormat:
             await runner._send_voice_reply(event, "hello from auto tts")
 
         assert requested_paths
-        assert requested_paths[0].endswith(".ogg")
+        assert requested_paths[0].endswith(".mp3")
         adapter.send_voice.assert_awaited_once()
         assert adapter.send_voice.await_args.kwargs["audio_path"].endswith(".ogg")
 
@@ -51,9 +53,10 @@ class TestAutoVoiceReplyFormat:
         event = _make_event(Platform.SLACK)
         requested_paths = []
 
-        def fake_tts(*, text, output_path):
+        def fake_tts(*, text, output_path, delivery_platform):
             requested_paths.append(output_path)
             assert output_path.endswith(".mp3")
+            assert delivery_platform == "slack"
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"fake mp3")
             return json.dumps({

@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -5032,8 +5033,16 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            audio_path = os.path.join(
+                                tempfile.gettempdir(), "hermes_voice",
+                                f"tts_reply_{uuid.uuid4().hex[:12]}.mp3",
+                            )
+                            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                output_path=audio_path,
+                                delivery_platform=self.platform.value,
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")

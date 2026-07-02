@@ -1098,8 +1098,27 @@ def _load_local_whisper_model(model_name: str):
 
     We try ``auto`` first (fast CUDA path when it works), and on any CUDA
     library load failure fall back to CPU + int8.
+
+    SOCKS proxy note: ``ALL_PROXY`` / ``all_proxy`` set to ``socks5://`` can cause
+    URL parsing errors in huggingface_hub/requests (``Unknown scheme socks://``).
+    We temporarily clear SOCKS proxy vars during model load to work around this.
     """
     from faster_whisper import WhisperModel
+
+    # Save and clear SOCKS proxy vars to avoid URL parsing errors in huggingface_hub.
+    # The SOCKS proxy scheme ``socks://`` (without ``4`` or ``5``) is invalid and
+    # can appear when ``ALL_PROXY=socks5://...`` is misparsed by urllib3/requests.
+    _saved_proxies = {
+        k: v
+        for k in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "HTTP_PROXY",
+                  "https_proxy", "http_proxy", "NO_PROXY", "no_proxy",
+                  "ALL_PROXY", "all_proxy")
+        if (v := os.environ.get(k))
+    }
+    # Clear SOCKS-related proxy vars before model load (huggingface_hub download).
+    for _k in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        os.environ.pop(_k, None)
+
     try:
         return WhisperModel(model_name, device="auto", compute_type="auto")
     except Exception as exc:
@@ -1111,6 +1130,9 @@ def _load_local_whisper_model(model_name: str):
             exc,
         )
         return WhisperModel(model_name, device="cpu", compute_type="int8")
+    finally:
+        # Restore proxy environment.
+        os.environ.update(_saved_proxies)
 
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:

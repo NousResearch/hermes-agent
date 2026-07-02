@@ -433,6 +433,12 @@ def decide_image_input_mode(
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    # MiniMax-CN uses Anthropic-compatible endpoints that support vision natively.
+    # The models.dev metadata may not reflect this — override based on provider.
+    if provider in {"minimax", "minimax-cn", "minimax-oauth"}:
+        return "native"
+
     return "text"
 
 

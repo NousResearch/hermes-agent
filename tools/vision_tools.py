@@ -687,6 +687,10 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
         return True
 
+    # Anthropic-compatible providers (MiniMax-CN uses Anthropic-compatible endpoints)
+    if p in {"minimax", "minimax-cn", "minimax-oauth"}:
+        return True
+
     # Gemini — gate on model name; older Gemini variants did not support
     # multimodal functionResponse. Gemini 3.x does.
     if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:

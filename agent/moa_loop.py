@@ -524,6 +524,29 @@ def aggregate_moa_context(
         f"Reference {idx} — {label}:\n{text}"
         for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
     )
+
+    # Skip the aggregator call when every reference failed or was skipped —
+    # synthesising a wall of "[failed: …]" messages wastes tokens and can
+    # block for the full provider timeout (observed: ~6 min on SenseNova).
+    _FAILED_PREFIXES = ("[failed:", "[skipped:")
+    all_failed = reference_outputs and all(
+        text.startswith(_FAILED_PREFIXES)
+        for _label, text, _usage in reference_outputs
+    )
+    if all_failed:
+        logger.warning(
+            "MoA: all %d reference(s) failed — skipping aggregator, "
+            "falling back to single-model mode",
+            len(reference_outputs),
+        )
+        return (
+            "[Mixture of Agents context — all reference models failed. "
+            "Proceeding without aggregated guidance.]\n"
+            f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
+            f"{joined}"
+        )
+
+    agg_label = _slot_label(aggregator)
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
         "reference responses into concise, actionable guidance for the main "
@@ -534,7 +557,6 @@ def aggregate_moa_context(
         f"Reference responses:\n{joined}"
     )
 
-    agg_label = _slot_label(aggregator)
     try:
         response = call_llm(
             task="moa_aggregator",

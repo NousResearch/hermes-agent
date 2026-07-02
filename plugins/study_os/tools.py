@@ -118,6 +118,11 @@ def _validate_schedule_id(schedule_id: Any) -> str:
     return value
 
 
+def _slugify(value: str, fallback: str = "decision") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:60] or fallback
+
+
 def _project_dir(vault: Path, project_id: str) -> Path:
     project_id = _validate_project_id(project_id)
     path = (_study_projects_dir(vault) / project_id).resolve()
@@ -174,6 +179,24 @@ def _schedule_dir(vault: Path, project_id: str) -> Path:
 
 def _schedule_path(vault: Path, project_id: str, schedule_id: str) -> Path:
     return _schedule_dir(vault, project_id) / f"{_validate_schedule_id(schedule_id)}.json"
+
+
+def _decisions_dir(vault: Path, project_id: str) -> Path:
+    path = _project_dir(vault, project_id) / "decisions"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _learning_records_dir(vault: Path, project_id: str) -> Path:
+    path = _project_dir(vault, project_id) / "learning-records"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _lessons_dir(vault: Path, project_id: str) -> Path:
+    path = _project_dir(vault, project_id) / "lessons"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _read_text(path: Path) -> str:
@@ -2391,6 +2414,7 @@ _VALID_PROMPT_INTENTS = {
     "planning",
     "organizing",
     "reviewing",
+    "teaching",
     "assessment",
     "error_analysis",
     "schedule_adjustment",
@@ -2401,6 +2425,7 @@ _INTENT_SKILL = {
     "schedule_adjustment": "study-plan",
     "organizing": "study-organize",
     "reviewing": "study-review",
+    "teaching": "study-teach",
     "assessment": "study-assessment",
     "error_analysis": "study-assessment",
 }
@@ -2412,17 +2437,51 @@ def _now_iso() -> str:
 
 def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
     now = _now_iso()
+    requested_domain_pack = str(args.get("domain_pack") or "").strip()
+    requested_domain = str(args.get("domain") or "").strip()
+    requested_exam_type = str(args.get("exam_type") or "").strip()
+    is_kaoyan = (
+        requested_domain_pack == "kaoyan.v1"
+        or requested_domain == "kaoyan"
+        or requested_exam_type == "考研"
+    )
+    if is_kaoyan:
+        defaults = {
+            "project_id": "kaoyan-2027",
+            "title": "2027 考研学习计划",
+            "domain": "kaoyan",
+            "exam_type": "考研",
+            "exam_date": "2027-12-20",
+            "phase": "foundation",
+            "domain_pack": "kaoyan.v1",
+            "workspace_type": "exam-vault",
+            "subjects": list(_PROJECT_DEFAULT_SUBJECTS),
+        }
+    else:
+        defaults = {
+            "project_id": "general-learning",
+            "title": "General Learning Project",
+            "domain": "general",
+            "exam_type": "none",
+            "exam_date": "2099-12-31",
+            "phase": "discovery",
+            "domain_pack": requested_domain_pack or "general.v1",
+            "workspace_type": "skill-vault",
+            "subjects": [{"id": "learning", "label": "Learning"}],
+        }
     return {
         "schema_version": "study_project.v1",
-        "project_id": str(args.get("project_id") or "kaoyan-2027").strip(),
-        "title": str(args.get("title") or "2027 考研学习计划").strip(),
-        "domain": str(args.get("domain") or "kaoyan").strip(),
-        "exam_type": str(args.get("exam_type") or "考研").strip(),
-        "exam_date": str(args.get("exam_date") or "2027-12-20").strip(),
+        "project_id": str(args.get("project_id") or defaults["project_id"]).strip(),
+        "title": str(args.get("title") or defaults["title"]).strip(),
+        "domain": str(args.get("domain") or defaults["domain"]).strip(),
+        "exam_type": str(args.get("exam_type") or defaults["exam_type"]).strip(),
+        "exam_date": str(args.get("exam_date") or defaults["exam_date"]).strip(),
         "timezone": str(args.get("timezone") or "Asia/Shanghai").strip(),
-        "phase": str(args.get("phase") or "foundation").strip(),
-        "domain_pack": str(args.get("domain_pack") or "kaoyan.v1").strip(),
-        "subjects": args.get("subjects") if isinstance(args.get("subjects"), list) else list(_PROJECT_DEFAULT_SUBJECTS),
+        "phase": str(args.get("phase") or defaults["phase"]).strip(),
+        "domain_pack": str(args.get("domain_pack") or defaults["domain_pack"]).strip(),
+        "workspace_type": str(args.get("workspace_type") or defaults["workspace_type"]).strip(),
+        "artifact_policy": str(args.get("artifact_policy") or "lightweight").strip(),
+        "subjects": args.get("subjects") if isinstance(args.get("subjects"), list) else defaults["subjects"],
         "prompt_policy": dict(DEFAULT_PROMPT_POLICY),
         "created_at": now,
         "updated_at": now,
@@ -2491,6 +2550,37 @@ def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
 
 def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
     project_id = project["project_id"]
+    if project.get("domain_pack") == "kaoyan.v1":
+        phase_title = "基础阶段"
+        phase_goal = "完成核心考点覆盖"
+        event = {
+            "id": "evt-20260701-math-derivative",
+            "title": "数学：导数定义整理",
+            "subject_id": "math",
+            "type": "learning",
+            "start": "2026-07-01T19:00:00+08:00",
+            "end": "2026-07-01T21:00:00+08:00",
+            "duration_minutes": 120,
+            "goals": ["整理导数定义例题"],
+            "source_curriculum": "一元函数微分学",
+            "status": "planned",
+        }
+    else:
+        subject_id = project.get("subjects", [{}])[0].get("id", "learning")
+        phase_title = "Discovery"
+        phase_goal = "Map one concrete learning objective to lightweight notes and source anchors"
+        event = {
+            "id": "evt-20260701-learning-scout",
+            "title": "Scout one concept and source anchor",
+            "subject_id": subject_id,
+            "type": "learning",
+            "start": "2026-07-01T19:00:00+08:00",
+            "end": "2026-07-01T20:00:00+08:00",
+            "duration_minutes": 60,
+            "goals": ["Create or update one lightweight concept note only if it will be reused"],
+            "source_curriculum": "project-roadmap",
+            "status": "planned",
+        }
     return {
         "schema_version": "study_schedule.v1",
         "schedule_id": f"{project_id}-master-plan",
@@ -2501,26 +2591,13 @@ def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
         "phases": [
             {
                 "id": project.get("phase", "foundation"),
-                "title": "基础阶段",
+                "title": phase_title,
                 "start": "2026-07-01",
                 "end": "2026-09-30",
-                "goal": "完成核心考点覆盖",
+                "goal": phase_goal,
             }
         ],
-        "events": [
-            {
-                "id": "evt-20260701-math-derivative",
-                "title": "数学：导数定义整理",
-                "subject_id": "math",
-                "type": "learning",
-                "start": "2026-07-01T19:00:00+08:00",
-                "end": "2026-07-01T21:00:00+08:00",
-                "duration_minutes": 120,
-                "goals": ["整理导数定义例题"],
-                "source_curriculum": "一元函数微分学",
-                "status": "planned",
-            }
-        ],
+        "events": [event],
     }
 
 
@@ -2625,8 +2702,12 @@ def handle_study_prompt_context(args: dict[str, Any], **_kwargs) -> str:
                 return _err("PROMPT_CONTEXT_TOO_LARGE" if "exceeds" in warning else "PROMPT_CONTEXT_SOURCE_MISSING", warning)
             if fragment:
                 fragments.append(fragment)
-        if domain_pack == "kaoyan.v1":
-            fragment, warning = _read_prompt_fragment("domain", _skill_path("study-kaoyan"), int(policy["domain_max_chars"]))
+        domain_skill = {
+            "kaoyan.v1": "study-kaoyan",
+            "engineering.v1": "study-engineering",
+        }.get(domain_pack)
+        if domain_skill:
+            fragment, warning = _read_prompt_fragment("domain", _skill_path(domain_skill), int(policy["domain_max_chars"]))
             if warning:
                 return _err("PROMPT_CONTEXT_TOO_LARGE" if "exceeds" in warning else "PROMPT_CONTEXT_SOURCE_MISSING", warning)
             if fragment:
@@ -2667,6 +2748,301 @@ def handle_study_prompt_context(args: dict[str, Any], **_kwargs) -> str:
         return _err("STUDY_PROMPT_CONTEXT_FAILED", str(exc))
 
 
+def _decision_path(vault: Path, project_id: str, decision_id: str) -> Path:
+    return _decisions_dir(vault, project_id) / f"{_validate_schedule_id(decision_id)}.md"
+
+
+def _md_bullets(items: Any) -> list[str]:
+    values = [str(item).strip() for item in _as_list(items) if str(item).strip()]
+    return [f"- {value}" for value in values] or ["- None"]
+
+
+def _decision_markdown(decision: dict[str, Any]) -> str:
+    lines = [
+        "---",
+        f"schema_version: learning_decision_record.v1",
+        f"decision_id: {decision['decision_id']}",
+        f"project_id: {decision['project_id']}",
+        f"status: {decision['status']}",
+        f"created_at: {decision['created_at']}",
+        "---",
+        "",
+        f"# {decision['title']}",
+        "",
+        "## Decision",
+        "",
+        decision["decision"],
+        "",
+        "## Context",
+        "",
+        decision["context"] or "None",
+        "",
+        "## Options Considered",
+        "",
+        *_md_bullets(decision.get("options_considered")),
+        "",
+        "## Consequences",
+        "",
+        decision["consequences"] or "None",
+        "",
+        "## Linked Concepts",
+        "",
+        *_md_bullets(decision.get("linked_concepts")),
+        "",
+        "## Linked Sources",
+        "",
+        *_md_bullets(decision.get("linked_sources")),
+        "",
+        "## Linked Sessions",
+        "",
+        *_md_bullets(decision.get("linked_sessions")),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _decision_summary(path: Path, vault: Path) -> dict[str, Any]:
+    text = _read_text(path)
+    fm, body, warning = _parse_frontmatter(text)
+    headings = _extract_headings(body)
+    return {
+        "path": path.relative_to(vault).as_posix(),
+        "decision_id": fm.get("decision_id") or path.stem,
+        "project_id": fm.get("project_id"),
+        "status": fm.get("status"),
+        "title": headings[0]["text"] if headings else path.stem,
+        "warning": warning,
+    }
+
+
+def handle_study_decision(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        action = str(args.get("action") or "list").strip()
+        project = _read_project_manifest(vault, args.get("project_id"))
+        project_id = project["project_id"]
+        if action == "create":
+            title = str(args.get("title") or "").strip()
+            decision_text = str(args.get("decision") or "").strip()
+            if not title or not decision_text:
+                return _err("VALIDATION_FAILED", "title and decision are required")
+            created_at = _now_iso()
+            requested_id = str(args.get("decision_id") or "").strip()
+            base_id = requested_id or f"{len(list(_decisions_dir(vault, project_id).glob('*.md'))) + 1:04d}-{_slugify(title)}"
+            decision_id = _validate_schedule_id(base_id)
+            record = {
+                "decision_id": decision_id,
+                "project_id": project_id,
+                "title": title,
+                "status": str(args.get("status") or "accepted").strip(),
+                "created_at": created_at,
+                "decision": decision_text,
+                "context": str(args.get("context") or "").strip(),
+                "options_considered": _as_list(args.get("options_considered")),
+                "consequences": str(args.get("consequences") or "").strip(),
+                "linked_concepts": _as_list(args.get("linked_concepts")),
+                "linked_sources": _as_list(args.get("linked_sources")),
+                "linked_sessions": _as_list(args.get("linked_sessions")),
+            }
+            path = _decision_path(vault, project_id, decision_id)
+            if path.exists():
+                return _err("DECISION_EXISTS", f"LearningDecisionRecord already exists: {decision_id}")
+            _write_text(path, _decision_markdown(record))
+            return _ok({"decision": record, "path": path.relative_to(vault).as_posix()})
+        if action == "list":
+            decisions = [_decision_summary(path, vault) for path in sorted(_decisions_dir(vault, project_id).glob("*.md"))]
+            return _ok({"project_id": project_id, "decisions": decisions})
+        if action == "read":
+            decision_id = _validate_schedule_id(args.get("decision_id"))
+            path = _decision_path(vault, project_id, decision_id)
+            if not path.exists():
+                return _err("DECISION_NOT_FOUND", f"LearningDecisionRecord not found: {decision_id}")
+            return _ok({"project_id": project_id, "decision_id": decision_id, "path": path.relative_to(vault).as_posix(), "content": _read_text(path)})
+        return _err("INVALID_ACTION", f"Unsupported study_decision action: {action}")
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_DECISION_FAILED", str(exc))
+
+
+def _learning_record_path(vault: Path, project_id: str, record_id: str) -> Path:
+    return _learning_records_dir(vault, project_id) / f"{_validate_schedule_id(record_id)}.md"
+
+
+def _learning_record_markdown(record: dict[str, Any]) -> str:
+    lines = [
+        "---",
+        "schema_version: learning_record.v1",
+        f"record_id: {record['record_id']}",
+        f"project_id: {record['project_id']}",
+        f"status: {record['status']}",
+        f"created_at: {record['created_at']}",
+        "---",
+        "",
+        f"# {record['title']}",
+        "",
+        record["summary"],
+        "",
+        "## Evidence",
+        "",
+        record["evidence"] or "None",
+        "",
+        "## Implications",
+        "",
+        record["implications"] or "None",
+        "",
+        "## Linked Concepts",
+        "",
+        *_md_bullets(record.get("linked_concepts")),
+        "",
+        "## Linked Sources",
+        "",
+        *_md_bullets(record.get("linked_sources")),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _learning_record_summary(path: Path, vault: Path) -> dict[str, Any]:
+    text = _read_text(path)
+    fm, body, warning = _parse_frontmatter(text)
+    headings = _extract_headings(body)
+    return {
+        "path": path.relative_to(vault).as_posix(),
+        "record_id": fm.get("record_id") or path.stem,
+        "project_id": fm.get("project_id"),
+        "status": fm.get("status"),
+        "title": headings[0]["text"] if headings else path.stem,
+        "warning": warning,
+    }
+
+
+def handle_study_learning_record(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        action = str(args.get("action") or "list").strip()
+        project = _read_project_manifest(vault, args.get("project_id"))
+        project_id = project["project_id"]
+        if action == "create":
+            title = str(args.get("title") or "").strip()
+            summary = str(args.get("summary") or "").strip()
+            evidence = str(args.get("evidence") or "").strip()
+            if not title or not summary or not evidence:
+                return _err("VALIDATION_FAILED", "title, summary, and evidence are required")
+            requested_id = str(args.get("record_id") or "").strip()
+            base_id = requested_id or f"{len(list(_learning_records_dir(vault, project_id).glob('*.md'))) + 1:04d}-{_slugify(title, 'learning-record')}"
+            record_id = _validate_schedule_id(base_id)
+            record = {
+                "record_id": record_id,
+                "project_id": project_id,
+                "title": title,
+                "status": str(args.get("status") or "active").strip(),
+                "created_at": _now_iso(),
+                "summary": summary,
+                "evidence": evidence,
+                "implications": str(args.get("implications") or "").strip(),
+                "linked_concepts": _as_list(args.get("linked_concepts")),
+                "linked_sources": _as_list(args.get("linked_sources")),
+            }
+            path = _learning_record_path(vault, project_id, record_id)
+            if path.exists():
+                return _err("LEARNING_RECORD_EXISTS", f"LearningRecord already exists: {record_id}")
+            _write_text(path, _learning_record_markdown(record))
+            return _ok({"record": record, "path": path.relative_to(vault).as_posix()})
+        if action == "list":
+            records = [_learning_record_summary(path, vault) for path in sorted(_learning_records_dir(vault, project_id).glob("*.md"))]
+            return _ok({"project_id": project_id, "records": records})
+        if action == "read":
+            record_id = _validate_schedule_id(args.get("record_id"))
+            path = _learning_record_path(vault, project_id, record_id)
+            if not path.exists():
+                return _err("LEARNING_RECORD_NOT_FOUND", f"LearningRecord not found: {record_id}")
+            return _ok({"project_id": project_id, "record_id": record_id, "path": path.relative_to(vault).as_posix(), "content": _read_text(path)})
+        return _err("INVALID_ACTION", f"Unsupported study_learning_record action: {action}")
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_LEARNING_RECORD_FAILED", str(exc))
+
+
+def _lesson_path(vault: Path, project_id: str, lesson_id: str) -> Path:
+    return _lessons_dir(vault, project_id) / f"{_validate_schedule_id(lesson_id)}.html"
+
+
+def _lesson_summary(path: Path, vault: Path) -> dict[str, Any]:
+    content = _read_text(path)
+    title_match = re.search(r"<title>(.*?)</title>", content, flags=re.IGNORECASE | re.DOTALL)
+    h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", content, flags=re.IGNORECASE | re.DOTALL)
+    title = title_match.group(1).strip() if title_match else (h1_match.group(1).strip() if h1_match else path.stem)
+    title = re.sub(r"<[^>]+>", "", title)
+    return {
+        "path": path.relative_to(vault).as_posix(),
+        "lesson_id": path.stem,
+        "title": title,
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def handle_study_lesson(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        action = str(args.get("action") or "list").strip()
+        project = _read_project_manifest(vault, args.get("project_id"))
+        project_id = project["project_id"]
+        if action == "create":
+            title = str(args.get("title") or "").strip()
+            html = str(args.get("html") or "").strip()
+            rationale = str(args.get("rationale") or "").strip()
+            if not title or not html or not rationale:
+                return _err("VALIDATION_FAILED", "title, html, and rationale are required")
+            lowered = html.lower()
+            if "<html" not in lowered or "</html>" not in lowered:
+                return _err("VALIDATION_FAILED", "html must be a complete HTML document")
+            requested_id = str(args.get("lesson_id") or "").strip()
+            base_id = requested_id or f"{len(list(_lessons_dir(vault, project_id).glob('*.html'))) + 1:04d}-{_slugify(title, 'visual-lesson')}"
+            lesson_id = _validate_schedule_id(base_id)
+            path = _lesson_path(vault, project_id, lesson_id)
+            if path.exists():
+                return _err("LESSON_EXISTS", f"VisualLesson already exists: {lesson_id}")
+            _write_text(path, html)
+            meta = {
+                "schema_version": "visual_lesson.v1",
+                "lesson_id": lesson_id,
+                "project_id": project_id,
+                "title": title,
+                "rationale": rationale,
+                "created_at": _now_iso(),
+                "linked_concepts": _as_list(args.get("linked_concepts")),
+                "linked_sources": _as_list(args.get("linked_sources")),
+                "html_path": path.relative_to(vault).as_posix(),
+            }
+            meta_path = _lessons_dir(vault, project_id) / f"{lesson_id}.json"
+            _write_text(meta_path, _json(meta))
+            return _ok({"lesson": meta, "path": path.relative_to(vault).as_posix(), "metadata_path": meta_path.relative_to(vault).as_posix()})
+        if action == "list":
+            lessons = [_lesson_summary(path, vault) for path in sorted(_lessons_dir(vault, project_id).glob("*.html"))]
+            return _ok({"project_id": project_id, "lessons": lessons})
+        if action == "read":
+            lesson_id = _validate_schedule_id(args.get("lesson_id"))
+            path = _lesson_path(vault, project_id, lesson_id)
+            if not path.exists():
+                return _err("LESSON_NOT_FOUND", f"VisualLesson not found: {lesson_id}")
+            metadata_path = _lessons_dir(vault, project_id) / f"{lesson_id}.json"
+            metadata = _read_json_file(metadata_path) if metadata_path.exists() else {}
+            return _ok({"project_id": project_id, "lesson_id": lesson_id, "path": path.relative_to(vault).as_posix(), "metadata": metadata, "html": _read_text(path)})
+        return _err("INVALID_ACTION", f"Unsupported study_lesson action: {action}")
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_LESSON_FAILED", str(exc))
+
+
 STUDY_PROJECT_SCHEMA = {
     "description": "Manage versioned StudyOS learning projects under the current vault.",
     "parameters": {
@@ -2682,8 +3058,76 @@ STUDY_PROJECT_SCHEMA = {
             "timezone": {"type": "string"},
             "phase": {"type": "string"},
             "domain_pack": {"type": "string"},
+            "workspace_type": {
+                "type": "string",
+                "description": "Learning workspace shape, e.g. exam-vault, engineering-repo, skill-vault, or hybrid.",
+            },
+            "artifact_policy": {"type": "string", "description": "Persistence style such as lightweight or full."},
             "subjects": {"type": "array", "items": {"type": "object"}},
             "summary": {"type": "string", "description": "Prompt summary markdown for update_prompt_summary."},
+        },
+        "required": ["action"],
+    },
+}
+
+STUDY_DECISION_SCHEMA = {
+    "description": "Create, list, or read StudyOS LearningDecisionRecord markdown under the active project.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "action": {"type": "string", "enum": ["create", "list", "read"]},
+            "project_id": {"type": "string"},
+            "decision_id": {"type": "string"},
+            "title": {"type": "string"},
+            "status": {"type": "string"},
+            "decision": {"type": "string"},
+            "context": {"type": "string"},
+            "options_considered": {"type": "array", "items": {"type": "string"}},
+            "consequences": {"type": "string"},
+            "linked_concepts": {"type": "array", "items": {"type": "string"}},
+            "linked_sources": {"type": "array", "items": {"type": "string"}},
+            "linked_sessions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["action"],
+    },
+}
+
+STUDY_LEARNING_RECORD_SCHEMA = {
+    "description": "Create, list, or read StudyOS LearningRecord markdown under the active project.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "action": {"type": "string", "enum": ["create", "list", "read"]},
+            "project_id": {"type": "string"},
+            "record_id": {"type": "string"},
+            "title": {"type": "string"},
+            "status": {"type": "string"},
+            "summary": {"type": "string"},
+            "evidence": {"type": "string"},
+            "implications": {"type": "string"},
+            "linked_concepts": {"type": "array", "items": {"type": "string"}},
+            "linked_sources": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["action"],
+    },
+}
+
+STUDY_LESSON_SCHEMA = {
+    "description": "Create, list, or read on-demand StudyOS VisualLesson HTML artifacts under the active project.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "action": {"type": "string", "enum": ["create", "list", "read"]},
+            "project_id": {"type": "string"},
+            "lesson_id": {"type": "string"},
+            "title": {"type": "string"},
+            "rationale": {"type": "string", "description": "Why this topic needs a visual/interactive lesson."},
+            "html": {"type": "string", "description": "Complete HTML document for create."},
+            "linked_concepts": {"type": "array", "items": {"type": "string"}},
+            "linked_sources": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["action"],
     },
@@ -2712,7 +3156,7 @@ STUDY_PROMPT_CONTEXT_SCHEMA = {
             "vault_path": _VAULT_PROP,
             "intent": {
                 "type": "string",
-                "enum": ["planning", "organizing", "reviewing", "assessment", "error_analysis", "schedule_adjustment"],
+                "enum": ["planning", "organizing", "reviewing", "teaching", "assessment", "error_analysis", "schedule_adjustment"],
             },
             "project_id": {"type": "string"},
             "domain_pack": {"type": "string"},

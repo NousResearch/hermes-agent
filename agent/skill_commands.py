@@ -203,6 +203,39 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     return loaded_skill, skill_dir, skill_name
 
 
+def _skill_command_slug(name: str) -> str:
+    cmd_name = str(name or "").lower().replace(" ", "-").replace("_", "-")
+    cmd_name = _SKILL_INVALID_CHARS.sub("", cmd_name)
+    return _SKILL_MULTI_HYPHEN.sub("-", cmd_name).strip("-")
+
+
+def _register_skill_command(
+    *,
+    name: str,
+    description: str,
+    skill_md_path: Path,
+    skill_identifier: str,
+    seen_names: set[str],
+    extra: dict[str, Any] | None = None,
+) -> None:
+    if name in seen_names:
+        return
+    cmd_name = _skill_command_slug(name)
+    if not cmd_name:
+        return
+    seen_names.add(name)
+    payload = {
+        "name": name,
+        "description": description or f"Invoke the {name} skill",
+        "skill_md_path": str(skill_md_path),
+        "skill_dir": str(skill_md_path.parent),
+        "skill_identifier": skill_identifier,
+    }
+    if extra:
+        payload.update(extra)
+    _skill_commands[f"/{cmd_name}"] = payload
+
+
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
     """Resolve and inject skill-declared config values into the message parts.
 
@@ -393,23 +426,51 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             if line and not line.startswith('#'):
                                 description = line[:80]
                                 break
-                    seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
-                    if not cmd_name:
-                        continue
-                    _skill_commands[f"/{cmd_name}"] = {
-                        "name": name,
-                        "description": description or f"Invoke the {name} skill",
-                        "skill_md_path": str(skill_md),
-                        "skill_dir": str(skill_md.parent),
-                    }
+                    _register_skill_command(
+                        name=name,
+                        description=description,
+                        skill_md_path=skill_md,
+                        skill_identifier=str(skill_md.parent),
+                        seen_names=seen_names,
+                    )
                 except Exception:
                     continue
+
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            pm = get_plugin_manager()
+            for qualified, entry in sorted(pm._plugin_skills.items()):
+                try:
+                    skill_md = Path(entry["path"])
+                    content = skill_md.read_text(encoding="utf-8")
+                    frontmatter, body = _parse_frontmatter(content)
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    if not skill_matches_environment(frontmatter):
+                        continue
+                    bare_name = str(entry.get("bare_name") or frontmatter.get("name") or skill_md.parent.name)
+                    if bare_name in disabled or qualified in disabled:
+                        continue
+                    description = str(entry.get("description") or frontmatter.get("description") or "")
+                    if not description:
+                        for line in body.strip().split("\n"):
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                description = line[:80]
+                                break
+                    _register_skill_command(
+                        name=bare_name,
+                        description=description,
+                        skill_md_path=skill_md,
+                        skill_identifier=qualified,
+                        seen_names=seen_names,
+                        extra={"plugin": entry.get("plugin"), "qualified_name": qualified},
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
     except Exception:
         pass
     return _skill_commands
@@ -534,7 +595,7 @@ def build_skill_invocation_message(
     if not skill_info:
         return None
 
-    loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+    loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id)
     if not loaded:
         return None
 

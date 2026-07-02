@@ -58,6 +58,62 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_finds_registered_plugin_skills(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        manager = PluginManager()
+        manager._discovered = True
+        skill_md = tmp_path / "plugin" / "skills" / "study-teach" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            "---\nname: study-teach\ndescription: Teach through StudyOS learning records.\n---\nTeach body.\n",
+            encoding="utf-8",
+        )
+        manager._plugin_skills["study_os:study-teach"] = {
+            "path": skill_md,
+            "plugin": "study_os",
+            "bare_name": "study-teach",
+            "description": "Teach through StudyOS learning records.",
+        }
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "empty"):
+            result = scan_skill_commands()
+
+        assert "/study-teach" in result
+        assert result["/study-teach"]["skill_identifier"] == "study_os:study-teach"
+        assert result["/study-teach"]["qualified_name"] == "study_os:study-teach"
+
+    def test_invokes_registered_plugin_skill_command(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        manager = PluginManager()
+        manager._discovered = True
+        skill_md = tmp_path / "plugin" / "skills" / "study-grill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            "---\nname: study-grill\ndescription: Bridge grilling sessions into StudyOS decisions.\n---\n# Study Grill\n\nBridge body.\n",
+            encoding="utf-8",
+        )
+        manager._plugin_skills["study_os:study-grill"] = {
+            "path": skill_md,
+            "plugin": "study_os",
+            "bare_name": "study-grill",
+            "description": "Bridge grilling sessions into StudyOS decisions.",
+        }
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "empty"):
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/study-grill", "stress-test this")
+
+        assert msg is not None
+        assert "study_os:study-grill" in msg
+        assert "Bridge body." in msg
+        assert "stress-test this" in msg
+
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             result = scan_skill_commands()

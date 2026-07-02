@@ -28,6 +28,16 @@ The first-slice default is `kaoyan-2027`:
   representative exercise-book problems.
 - Review phase emphasizes 错题 clusters, weak prerequisites, and timed practice.
 
+## Workflow Routing
+
+Default 考研 workflows: `study-plan`, `study-organize`, `study-review`,
+`study-assessment`.
+
+Use `study-teach` only for explicit concept teaching or missing prerequisites.
+Use `study-lesson` only for explicit diagrams/visuals or geometry, process
+flow, timeline, or state transitions. Use `study-grill` only for strategic
+study decisions, never routine schedules, 整理, 复习, or 错题 remediation.
+
 ## Math Examples
 
 For 高数 planning, curriculum entries should map textbook sections to 考点 such

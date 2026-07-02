@@ -6,44 +6,46 @@ platforms: [linux, macos, windows]
 
 # StudyOS Router
 
-Use this router for StudyOS learning help from an Obsidian vault. StudyOS is
-opt-in and stores artifacts only under the vault's `.StudyOS/` directory.
+Use this router for StudyOS help from an Obsidian vault. StudyOS writes only
+under `.StudyOS/`.
 
-Before long project-specific reasoning, call `study_prompt_context` with the
-matching intent and active project. Use returned fragments as turn-local
-context only. Never mutate system prompts mid-conversation.
+Before project-specific reasoning, call `study_prompt_context` with the matching
+intent and project. Treat fragments as turn-local context only; never mutate system prompts mid-conversation.
 
 ## Intent Map
 
 | Intent | Route |
 | --- | --- |
-| `planning` | `study-plan`: projects, curriculum, schedules. |
-| `schedule_adjustment` | `study-plan`: validated schedule revisions. |
-| `organizing` | `study-organize`: 整理 single problems into notes. |
-| `reviewing` | `study-review`: 艾宾浩斯 spaced repetition and 复习. |
-| `assessment` | `study-assessment`: weekly reports and mock exams. |
-| `error_analysis` | `study-assessment`: 错题 clusters and remediation. |
-| `kaoyan.v1` | `study-kaoyan`: 考研 domain guidance. |
+| `planning`, `schedule_adjustment` | `study-plan` |
+| `organizing` | `study-organize` |
+| `reviewing` | `study-review` |
+| `teaching` | `study-teach` |
+| `assessment`, `error_analysis` | `study-assessment` |
+| `kaoyan.v1` / `engineering.v1` | domain pack |
 
-## Core Tools
+## Workspace Types
 
-- `study_project`: initialize, select, inspect, or update project summaries.
-- `study_schedule`: template, validate, save, list, or read schedules.
-- `study_prompt_context`: capped base, intent, domain, and project fragments.
-- Existing StudyOS tools handle search, 整理, 复习, weekly reports, curriculum,
-  Anki candidates, memory sync, and concept graphs.
+Classify the active project first:
+
+- `exam-vault`: exams, problem sets, 错题, review.
+- `engineering-repo`: source repo as learning surface.
+- `skill-vault`: concepts, references, records.
+- `hybrid`: repo exploration plus lightweight vault.
 
 ## Routing Rules
 
-- If no project exists for 考研 planning, call `study_project(action="init")`.
+- 考研 init: `study_project(action="init", domain_pack="kaoyan.v1")`.
+- Engineering init explicitly: `domain_pack="engineering.v1"`,
+  `workspace_type="hybrid"`.
 - If the user gives a problem and says 整理, use `study-organize`.
+- Learn concept: `study-teach`; `study-lesson` only for explicit visualization
+  or structural/temporal/stateful concepts.
+- Grill decision: `study-grill`; never routine planning, 整理, 复习, or 错题.
 - If the user says 复习 or a daily review job fires, use `study-review`.
-- If the user asks for weekly, mock, exam, or 错题 analysis, use
-  `study-assessment`.
+- If the user asks for weekly, mock, exam, or 错题 analysis, use `study-assessment`.
 - If the user asks for textbook/course/curriculum planning, use `study-plan`.
 
 ## Safety
 
 - Desktop calendars render only persisted `study_schedule.v1` JSON artifacts.
-- Do not parse chat prose into desktop events.
-- Do not add cron jobs, Anki sync, or schedule editing UI in this slice.
+- Do not parse chat prose into desktop events or mutate schedules in UI.

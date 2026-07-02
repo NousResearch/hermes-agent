@@ -15,18 +15,25 @@ turn-local context only; never mutate system prompts mid-conversation.
 ## Workflow
 
 1. Confirm or initialize the active project with `study_project`.
-2. For 考研 work, use the `study-kaoyan` domain pack and the default
-   `kaoyan-2027` manifest unless the user provides a different project.
-3. Build or inspect standardized curriculum JSON with `study_create_curriculum`
+2. Identify the project shape: `exam-vault`, `engineering-repo`,
+   `skill-vault`, or `hybrid`.
+3. For 考研, use the `study-kaoyan` domain pack and initialize with
+   `domain_pack="kaoyan.v1"` unless the user provides a different project.
+4. For engineering or skills, use `domain_pack="engineering.v1"` with
+   codebases, benchmarks, or artifacts.
+5. Build or inspect standardized curriculum JSON with `study_create_curriculum`
    and `study_list_curricula`.
-4. Generate schedules as `study_schedule.v1` JSON only.
-5. Validate with `study_schedule(action="validate")` before saving.
-6. Save with `study_schedule(action="save")`; desktop reads persisted JSON.
+6. Generate schedules as `study_schedule.v1` JSON only.
+7. Validate with `study_schedule(action="validate")` before saving.
+8. Save with `study_schedule(action="save")`; desktop reads persisted JSON.
 
 ## Curriculum
 
 Curriculum files are the source of truth for what to learn. Generate them from
 textbook and exercise book structure, not from inconsistent review notes.
+
+For engineering projects, curriculum entries can come from repos, papers, docs,
+commands, benchmarks, or artifact roadmaps. Each names the skill and source.
 
 Required curriculum thinking:
 - Extract 考点 from definitions, theorems, formulas, and problem variants.

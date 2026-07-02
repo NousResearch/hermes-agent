@@ -87,12 +87,12 @@ _CODEX_INSTRUCTIONS = (
 
 _MAX_REFERENCE_IMAGES = 16
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
-_IMAGE_MAGIC_MIME = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"RIFF", "image/webp"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
+# gpt-image-2's Responses ``input_image`` accepts raster formats only. The
+# shared magic-byte sniffer also recognizes SVG/TIFF/ICO, which the API
+# rejects server-side — gate to this allowlist so unsupported inputs fail
+# locally with a clear error instead of an opaque HTTP 400.
+_ACCEPTED_INPUT_MIME = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
 
 
@@ -159,12 +159,20 @@ def _read_codex_access_token() -> Optional[str]:
 
 
 def _sniff_image_mime(raw: bytes) -> Optional[str]:
-    """Return a safe image MIME type based on magic bytes, not filename labels."""
-    if raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
-        return "image/webp"
-    for magic, mime in _IMAGE_MAGIC_MIME:
-        if raw.startswith(magic):
-            return mime
+    """Return a safe raster image MIME from magic bytes (not filename labels).
+
+    Delegates magic-byte detection to the shared sniffer in
+    ``agent.image_routing`` (single source of truth), then gates the result
+    to :data:`_ACCEPTED_INPUT_MIME` — the raster formats gpt-image-2's
+    ``input_image`` actually accepts. SVG/TIFF/ICO (which the shared sniffer
+    also recognizes) are rejected here so they fail locally with a clear
+    error instead of an opaque server-side HTTP 400.
+    """
+    from agent.image_routing import _sniff_mime_from_bytes
+
+    mime = _sniff_mime_from_bytes(raw)
+    if mime in _ACCEPTED_INPUT_MIME:
+        return mime
     return None
 
 

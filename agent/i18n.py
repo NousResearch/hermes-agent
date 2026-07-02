@@ -217,8 +217,8 @@ def _config_language_cached() -> str | None:
     (e.g. after the setup wizard).
     """
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         lang = (cfg.get("display") or {}).get("language")
         if lang:
             return _normalize_lang(lang)

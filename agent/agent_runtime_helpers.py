@@ -1884,8 +1884,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # custom provider mid-session (closes #15779).
         _sm_custom_providers = None
         try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            _sm_cfg = load_config()
+            from hermes_cli.config import load_config_readonly, get_compatible_custom_providers
+            _sm_cfg = load_config_readonly()
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
         except Exception:
             _sm_custom_providers = None

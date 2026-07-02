@@ -1820,11 +1820,11 @@ def get_model_context_length(
     # acting context, so they're ignored here.
     if (provider or "").strip().lower() == "moa":
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
             from hermes_cli.moa_config import resolve_moa_preset
             from hermes_cli.runtime_provider import resolve_runtime_provider
 
-            preset = resolve_moa_preset(load_config().get("moa") or {}, model)
+            preset = resolve_moa_preset(load_config_readonly().get("moa") or {}, model)
             agg = preset.get("aggregator") or {}
             agg_provider = str(agg.get("provider") or "").strip()
             agg_model = str(agg.get("model") or "").strip()

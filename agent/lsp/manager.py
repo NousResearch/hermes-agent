@@ -191,8 +191,8 @@ class LSPService:
         itself returns ``is_active()`` False when LSP is disabled.
         """
         try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
         except Exception as e:  # noqa: BLE001
             logger.debug("LSP config load failed: %s", e)
             return None

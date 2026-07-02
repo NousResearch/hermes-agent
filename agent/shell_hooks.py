@@ -642,7 +642,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
             prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
         )
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(data, indent=2, sort_keys=True))
             atomic_replace(tmp_path, p)
         except Exception:

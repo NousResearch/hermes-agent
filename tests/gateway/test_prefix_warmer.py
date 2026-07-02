@@ -23,8 +23,16 @@ from gateway.config import GatewayConfig, PrefixWarmerConfig
 @pytest.fixture(autouse=True)
 def _clean_registry():
     registry.clear()
+    registry.enable_capture()
     yield
+    registry.disable_capture()
     registry.clear()
+
+
+# warm_once config with the idle gate disarmed — most tests record a prefix
+# and warm immediately, which the traffic-recency guard would otherwise skip.
+def _warm_cfg(**overrides):
+    return PrefixWarmerConfig(min_idle_seconds=0.0, **overrides)
 
 
 def _agent(base_url="http://127.0.0.1:8001/v1", api_mode="chat_completions"):
@@ -133,7 +141,7 @@ def test_warm_once_replays_minimal_request(monkeypatch):
         sent.append((base_url, api_key, kwargs))
 
     monkeypatch.setattr(prefix_warmer, "_send_warm_request", fake_send)
-    assert prefix_warmer.warm_once(PrefixWarmerConfig()) == 1
+    assert prefix_warmer.warm_once(_warm_cfg()) == 1
 
     base_url, api_key, kwargs = sent[0]
     assert base_url == "http://127.0.0.1:8001/v1"
@@ -157,12 +165,171 @@ def test_warm_once_continues_past_failures(monkeypatch):
 
     monkeypatch.setattr(prefix_warmer, "_send_warm_request", flaky)
     # One endpoint fails, the other still warms; no exception escapes.
-    assert prefix_warmer.warm_once(PrefixWarmerConfig()) == 1
+    assert prefix_warmer.warm_once(_warm_cfg()) == 1
     assert len(calls) == 2
 
 
 def test_warm_once_no_snapshots_is_noop():
-    assert prefix_warmer.warm_once(PrefixWarmerConfig()) == 0
+    assert prefix_warmer.warm_once(_warm_cfg()) == 0
+
+
+# ------------------------------------------------------- capture enablement --
+
+def test_capture_disabled_by_default_records_nothing():
+    # Simulates a warmer-less process (plain CLI run): with capture off, the
+    # hooks must be inert — no snapshots, no traffic timestamps.
+    registry.disable_capture()
+    kw = _kwargs(tools=[{"function": {"name": "t"}}])
+    out = registry.record_local_prefix(_agent(), kw)
+    assert out is kw
+    registry.record_call_prefix("http://127.0.0.1:8001/v1", "local", kw)
+    assert registry.get_snapshots() == []
+    assert registry.last_traffic_at("http://127.0.0.1:8001/v1") == 0.0
+
+
+# ---------------------------------------------------------- snapshot copies --
+
+def test_snapshot_survives_in_place_mutation_of_tools_and_extra_body():
+    # conversation_loop can sanitize the built kwargs in place after capture
+    # (_force_ascii_payload); the snapshot must not alias those objects.
+    tools = [{"function": {"name": "t", "description": "café"}}]
+    extra_body = {"chat_template_kwargs": {"x": "café"}}
+    registry.record_local_prefix(_agent(), _kwargs(tools=tools) | {"extra_body": extra_body})
+
+    tools[0]["function"]["description"] = "cafe"  # in-place ASCII sanitize
+    extra_body["chat_template_kwargs"]["x"] = "cafe"
+
+    snap = registry.get_snapshots()[0]
+    assert snap["tools"] is not tools
+    assert snap["tools"][0]["function"]["description"] == "café"
+    assert snap["extra_body"]["chat_template_kwargs"]["x"] == "café"
+
+
+# ------------------------------------------------------------- idle gating --
+
+def test_warm_once_skips_endpoint_with_recent_traffic(monkeypatch):
+    # Recording a prefix marks the endpoint as actively trafficked, so an
+    # immediate warm cycle must stand down (few-slot eviction guard).
+    registry.record_local_prefix(_agent(), _kwargs())
+    sent = []
+    monkeypatch.setattr(
+        prefix_warmer, "_send_warm_request", lambda *a: sent.append(a)
+    )
+    assert prefix_warmer.warm_once(PrefixWarmerConfig()) == 0  # default gate
+    assert sent == []
+    # Once the endpoint has been idle past the gate, warming resumes.
+    assert prefix_warmer.warm_once(_warm_cfg()) == 1
+    assert len(sent) == 1
+
+
+# -------------------------------------------------- real-prefix round trip --
+
+def test_warm_request_reproduces_real_build_kwargs_prefix(monkeypatch):
+    """The core contract: the warm request's prefix fields are byte-identical
+    to what the real chat-completions transport produced."""
+    import json
+
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file — supports UTF-8 content: café",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    }]
+    built = ChatCompletionsTransport().build_kwargs(
+        model="agentworld-35b",
+        messages=[
+            {"role": "system", "content": "SYSTEM HEAD\n\nvolatile tail"},
+            {"role": "user", "content": "hello"},
+        ],
+        tools=tools,
+        extra_body_additions={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    out = registry.record_local_prefix(_agent(), built)
+    assert out is built
+
+    sent = []
+    monkeypatch.setattr(
+        prefix_warmer, "_send_warm_request",
+        lambda base_url, api_key, config, kwargs: sent.append(kwargs),
+    )
+    assert prefix_warmer.warm_once(_warm_cfg()) == 1
+
+    warm = sent[0]
+
+    def dumps(obj):
+        return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+    # The prefix a llama.cpp chat template renders ahead of the user turn:
+    # leading system message + tool schemas + template-affecting extra_body.
+    assert dumps(warm["messages"][0]) == dumps(built["messages"][0])
+    assert dumps(warm["tools"]) == dumps(built["tools"])
+    assert dumps(warm["extra_body"]) == dumps(built["extra_body"])
+
+
+# ------------------------------------------------------------ watcher loop --
+
+def _run_watcher(monkeypatch, *, warm_side_effect, ticks, interval_seconds=240):
+    """Drive prefix_warmer_watcher with instant sleeps; returns (delays, warms)."""
+    import asyncio
+
+    runner = SimpleNamespace(_running=True)
+    delays: List[float] = []
+    warms: List[int] = []
+
+    def fake_warm(config):
+        warms.append(1)
+        if len(warms) >= ticks:
+            runner._running = False
+        return warm_side_effect()
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(delay):
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(prefix_warmer.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(prefix_warmer, "warm_once", fake_warm)
+    cfg = PrefixWarmerConfig(interval_seconds=interval_seconds)
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(prefix_warmer.prefix_warmer_watcher(runner, cfg))
+    finally:
+        loop.close()
+    return delays, warms
+
+
+def test_watcher_settles_warms_on_interval_and_stops(monkeypatch):
+    delays, warms = _run_watcher(
+        monkeypatch, warm_side_effect=lambda: 1, ticks=2, interval_seconds=300
+    )
+    assert delays[0] == 60          # initial settle delay
+    assert delays[1:] == [300, 300]  # one interval sleep per tick
+    assert len(warms) == 2           # loop exited once _running went False
+
+
+def test_watcher_confines_tick_exceptions(monkeypatch):
+    def boom():
+        raise RuntimeError("endpoint exploded")
+
+    # Every tick raises; the watcher must keep ticking and exit cleanly.
+    delays, warms = _run_watcher(monkeypatch, warm_side_effect=boom, ticks=3)
+    assert len(warms) == 3
+
+
+def test_watcher_enforces_minimum_interval(monkeypatch):
+    delays, _ = _run_watcher(
+        monkeypatch, warm_side_effect=lambda: 0, ticks=1, interval_seconds=5
+    )
+    assert delays[1:] == [30]  # clamped to the 30s floor
 
 
 # ------------------------------------------------------------------ config --
@@ -176,11 +343,13 @@ def test_config_defaults_off():
 
 def test_config_roundtrip_and_coercion():
     cfg = PrefixWarmerConfig.from_dict(
-        {"enabled": "true", "interval_seconds": "300", "timeout_seconds": "60"}
+        {"enabled": "true", "interval_seconds": "300", "timeout_seconds": "60",
+         "min_idle_seconds": "90"}
     )
     assert cfg.enabled is True
     assert cfg.interval_seconds == 300
     assert cfg.timeout_seconds == 60.0
+    assert cfg.min_idle_seconds == 90.0
     assert PrefixWarmerConfig.from_dict(cfg.to_dict()) == cfg
 
 

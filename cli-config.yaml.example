@@ -594,10 +594,17 @@ streaming:
 # request carrying the same prefix bytes Hermes last sent to each local
 # endpoint. No effect on cloud providers (they manage their own prompt
 # caches), so this is off by default.
+#
+# Caveat: warm requests share the server's cache slots with real sessions.
+# Endpoints with recent real traffic are skipped (min_idle_seconds), but on a
+# server with a single parallel slot a warm request can still evict a live
+# session's cached state — prefer leaving this off unless the server runs
+# with 2+ slots (llama.cpp --parallel 2 or higher).
 prefix_warmer:
   enabled: false
   # interval_seconds: 240     # seconds between warm cycles
   # timeout_seconds: 120      # per warm-request timeout (covers a cold prefill)
+  # min_idle_seconds: 180     # skip endpoints with real traffic this recent
 
 # =============================================================================
 # Skills Configuration

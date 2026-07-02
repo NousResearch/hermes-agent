@@ -546,12 +546,18 @@ class PrefixWarmerConfig:
     # Per-request timeout — generous enough to cover a full cold prefill of a
     # large prefix on modest hardware.
     timeout_seconds: float = 120.0
+    # Skip warming an endpoint that has seen real traffic this recently:
+    # recent traffic means the prefix is already hot, and on few-slot servers
+    # a warm request landing mid-conversation can evict a live session's
+    # cached state.
+    min_idle_seconds: float = 180.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
             "interval_seconds": self.interval_seconds,
             "timeout_seconds": self.timeout_seconds,
+            "min_idle_seconds": self.min_idle_seconds,
         }
 
     @classmethod
@@ -562,6 +568,7 @@ class PrefixWarmerConfig:
             enabled=_coerce_bool(data.get("enabled"), False),
             interval_seconds=_coerce_int(data.get("interval_seconds"), 240),
             timeout_seconds=_coerce_float(data.get("timeout_seconds"), 120.0),
+            min_idle_seconds=_coerce_float(data.get("min_idle_seconds"), 180.0),
         )
 
 

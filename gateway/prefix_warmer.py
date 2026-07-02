@@ -22,11 +22,25 @@ replays a minimal request per endpoint:
     max_tokens = 1, temperature = 0
 
 The server therefore keeps a cached state whose prompt is exactly the shared
-prefix plus a tiny tail. A fresh session diverges from it only at its own
-user turn, rolls back to the warm state's checkpoint, and prefills just its
-volatile tail instead of the whole prefix. Re-warming a state that is still
-cached costs only a few prefill tokens plus one generated token, so the
+prefix plus a tiny tail. A fresh session reuses that state up to the point
+where its prompt diverges — in practice somewhere inside the system block,
+because Hermes appends a volatile tail (memory block, user profile, session
+timestamp) after the stable head. The stable head (tool schemas + fixed
+system prose) is the bulk of the prefix, so realized reuse is typically most
+of the entry tax, not all of it; a memory write or date rollover between
+warm and reuse shortens it further. Re-warming a state that is still cached
+costs only a few prefill tokens plus one generated token, so the
 steady-state overhead is negligible.
+
+To avoid competing with live sessions for cache slots, a warm cycle skips
+any endpoint that has seen real traffic within ``min_idle_seconds``: recent
+traffic means the prefix is already hot, and on few-slot servers a warm
+request landing mid-conversation could otherwise evict an active session's
+state (llama.cpp assigns requests to slots by longest-common-prefix, so a
+warm request can select — and truncate — a slot holding a live session's
+KV). The guard keys off request-build times, so a single generation that
+runs longer than ``min_idle_seconds`` can still collide; on servers with a
+single parallel slot, prefer leaving the warmer off.
 
 Opt-in via config.yaml (the warmer is pointless for cloud providers, which
 manage their own prompt caches):
@@ -34,6 +48,7 @@ manage their own prompt caches):
     prefix_warmer:
       enabled: true
       interval_seconds: 240
+      min_idle_seconds: 180
 """
 
 from __future__ import annotations
@@ -57,11 +72,24 @@ def warm_once(config: Any) -> int:
     blocking, and a cache-hitting warm request completes in well under a
     second. Errors are logged at debug and never propagate — a local server
     that is restarting or busy simply misses one warm cycle.
-    """
-    from agent.prefix_warm_registry import get_snapshots
 
+    Endpoints with real traffic within ``config.min_idle_seconds`` are
+    skipped: their prefix is already hot, and warming a busy few-slot server
+    risks evicting a live session's cached state (see module docstring).
+    """
+    from agent.prefix_warm_registry import get_snapshots, last_traffic_at
+
+    min_idle = float(getattr(config, "min_idle_seconds", 180.0))
     warmed = 0
     for snap in get_snapshots():
+        base_url = snap["base_url"]
+        idle = time.time() - last_traffic_at(base_url)
+        if idle < min_idle:
+            logger.debug(
+                "prefix_warmer: skipping %s — active %.0fs ago (< %.0fs idle gate)",
+                base_url, idle, min_idle,
+            )
+            continue
         try:
             kwargs: Dict[str, Any] = {
                 "model": snap["model"],

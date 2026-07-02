@@ -7128,8 +7128,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             _pw_cfg = getattr(self.config, "prefix_warmer", None)
             if _pw_cfg is not None and _pw_cfg.enabled:
+                from agent.prefix_warm_registry import enable_capture
                 from gateway.prefix_warmer import prefix_warmer_watcher
 
+                # Capture hooks on the request path are dormant until this —
+                # processes that never start the warmer pay nothing.
+                enable_capture()
                 asyncio.create_task(prefix_warmer_watcher(self, _pw_cfg))
         except Exception:  # noqa: BLE001 - warmer must never block startup
             logger.debug("prefix_warmer: failed to start", exc_info=True)

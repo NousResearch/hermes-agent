@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -507,3 +508,39 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# ─── Streaming Text Helpers ───────────────────────────────────────────────────
+
+
+# Matches the tail of a partial <tool_call>/<function_call> XML opener that a
+# model emitted as text content (e.g. "ool_call>", "ol_call>", "unction_call>")
+# before switching to native tool_calls.  The alternation is deliberately
+# permissive about how much of the opener leaked:
+#   - o{1,2}l_calls?>  →  "ool_call>", "ol_call>", "ool_calls>" …
+#   - unction_calls?>  →  "unction_call>", "unction_calls>"
+# A single compiled pattern is used for both search and substitution so there
+# is no search/sub asymmetry (the live follow-up to GitHub #14251).
+_TOOLCALL_FRAGMENT_RE = re.compile(
+    r"(?:o{1,2}l_calls?|unction_calls?|unction_call)>",
+    re.IGNORECASE,
+)
+
+
+def strip_partial_toolcall_fragments(text: str) -> str:
+    """Strip leaked partial ``<tool_call>``/``<function_call>`` opener fragments.
+
+    Qwen3-class models sometimes begin emitting an XML tool-call opener as
+    ordinary content (``<tool_call>``) and then switch to native ``tool_calls``
+    mid-token, leaving a stray content delta such as ``"ool_call>"`` that leaks
+    to user-facing output.  These tails are never valid prose, so they are
+    removed unconditionally.
+
+    This is the live per-delta scrub that GitHub #14251 explicitly deferred as
+    a follow-up; that PR only scrubbed the post-streaming final-text path.
+    """
+    if not text:
+        return text
+    if _TOOLCALL_FRAGMENT_RE.search(text):
+        return _TOOLCALL_FRAGMENT_RE.sub("", text)
+    return text

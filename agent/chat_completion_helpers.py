@@ -35,7 +35,13 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from utils import (
+    base_url_host_matches,
+    base_url_hostname,
+    env_float,
+    env_int,
+    strip_partial_toolcall_fragments,
+)
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -2167,8 +2173,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        # This branch bypasses _fire_stream_delta, so it must
+                        # replicate that path's partial tool-call opener scrub:
+                        # Qwen3-class models can leak an "<tool_call>" opener as
+                        # suppressed content (e.g. "ool_call>") before switching
+                        # to native tool_calls.  Guard on the scrubbed result so
+                        # a pure-fragment delta fires no callback.  Live per-delta
+                        # follow-up to #14251.
+                        _scrubbed = strip_partial_toolcall_fragments(delta.content)
+                        if _scrubbed:
+                            agent.stream_delta_callback(_scrubbed)
+                            agent._record_streamed_assistant_text(_scrubbed)
                     except Exception:
                         pass
 

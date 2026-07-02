@@ -440,18 +440,32 @@ def copilot_request_headers(
     *,
     is_agent_turn: bool = True,
     is_vision: bool = False,
+    model: str | None = None,
 ) -> dict[str, str]:
     """Build the standard headers for Copilot API requests.
 
     Replicates the header set used by opencode and the Copilot CLI.
+
+    When *model* is provided, the ``Openai-Intent: conversation-edits``
+    header is only included for models that support the Responses API
+    (GPT-5+, excluding gpt-5-mini).  Non-GPT models (Claude, Gemini,
+    etc.) use Chat Completions and must NOT carry this header — the
+    Copilot gateway rejects them with HTTP 400 otherwise.
     """
     headers: dict[str, str] = {
         "Editor-Version": "vscode/1.104.1",
         "User-Agent": "HermesAgent/1.0",
         "Copilot-Integration-Id": "vscode-chat",
-        "Openai-Intent": "conversation-edits",
         "x-initiator": "agent" if is_agent_turn else "user",
     }
+    # Only include Openai-Intent for models that need Responses API.
+    # When no model is known, include it for backward compatibility.
+    if model is None:
+        headers["Openai-Intent"] = "conversation-edits"
+    else:
+        from hermes_cli.models import _should_use_copilot_responses_api
+        if _should_use_copilot_responses_api(model):
+            headers["Openai-Intent"] = "conversation-edits"
     if is_vision:
         headers["Copilot-Vision-Request"] = "true"
 

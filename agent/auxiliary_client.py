@@ -3951,7 +3951,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         from hermes_cli.copilot_auth import copilot_request_headers
 
         async_kwargs["default_headers"] = copilot_request_headers(
-            is_agent_turn=True, is_vision=is_vision
+            is_agent_turn=True, is_vision=is_vision, model=model
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -4255,7 +4255,7 @@ def resolve_provider_client(
             elif base_url_host_matches(custom_base, "githubcopilot.com"):
                 from hermes_cli.copilot_auth import copilot_request_headers
                 extra["default_headers"] = copilot_request_headers(
-                    is_agent_turn=True, is_vision=is_vision
+                    is_agent_turn=True, is_vision=is_vision, model=final_model
                 )
             elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
                 extra["default_headers"] = build_nvidia_nim_headers(custom_base)
@@ -4513,7 +4513,7 @@ def resolve_provider_client(
             from hermes_cli.copilot_auth import copilot_request_headers
 
             headers.update(copilot_request_headers(
-                is_agent_turn=True, is_vision=is_vision
+                is_agent_turn=True, is_vision=is_vision, model=final_model
             ))
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers.update(build_nvidia_nim_headers(base_url))

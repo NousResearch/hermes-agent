@@ -665,6 +665,21 @@ class ContextCompressor(ContextEngine):
                 config_context_length=self._config_context_length,
                 provider=self.provider,
             )
+            if self._log_init_summary:
+                # Emit once, on first resolution, so the informative startup
+                # line survives without forcing a synchronous probe in
+                # __init__ (#32221). Reads via the properties below are safe
+                # here because _resolved_context_length is already set.
+                self._log_init_summary = False
+                logger.info(
+                    "Context compressor initialized: model=%s context_length=%d "
+                    "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                    "provider=%s base_url=%s",
+                    self.model, self._resolved_context_length, self.threshold_tokens,
+                    self.threshold_percent * 100, self.summary_target_ratio * 100,
+                    self.tail_token_budget,
+                    self.provider or "none", self.base_url or "none",
+                )
         return self._resolved_context_length
 
     @property
@@ -1015,16 +1030,12 @@ class ContextCompressor(ContextEngine):
         self._max_summary_tokens: int | None = None
         self.compression_count = 0
 
-        if not quiet_mode:
-            logger.info(
-                "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
-                model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
-                self.tail_token_budget,
-                provider or "none", base_url or "none",
-            )
+        # The "initialized" log reports resolved token budgets, which would
+        # force the deferred get_model_context_length() probe to run inside
+        # __init__ and re-introduce the exact synchronous blocking this change
+        # removes (#32221). Emit it on first context-length resolution instead
+        # so construction stays non-blocking on every path (not just quiet).
+        self._log_init_summary = not quiet_mode
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0

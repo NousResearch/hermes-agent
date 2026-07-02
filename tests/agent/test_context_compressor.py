@@ -2882,6 +2882,49 @@ class TestLazyContextResolution:
             _ = c.context_length
             mock_get.assert_called_once()
 
+    def test_init_does_not_probe_when_not_quiet(self, caplog):
+        """quiet_mode=False must ALSO stay non-blocking in __init__.
+
+        Regression for the lazy-init defect: the "Context compressor
+        initialized" log reads context_length/threshold_tokens/tail_token_budget,
+        so emitting it in __init__ forced the deferred get_model_context_length()
+        probe to run during construction whenever quiet_mode was False (the
+        interactive CLI path) — silently re-introducing the #32221 blocking that
+        the original PR set out to remove. The informative line must instead be
+        emitted once, on first context-length resolution.
+        """
+        import logging
+
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ) as mock_get:
+            c = ContextCompressor(model="test/model", quiet_mode=False)
+            # No probe, and no init log, at construction time.
+            mock_get.assert_not_called()
+
+            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+                _ = c.context_length
+            mock_get.assert_called_once()
+            init_lines = [
+                r for r in caplog.records
+                if "Context compressor initialized" in r.getMessage()
+            ]
+            assert len(init_lines) == 1, (
+                f"expected exactly one init log on first access, got {len(init_lines)}"
+            )
+
+            # Subsequent access must not re-probe or re-log.
+            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+                _ = c.context_length
+                _ = c.threshold_tokens
+            mock_get.assert_called_once()
+            again = [
+                r for r in caplog.records
+                if "Context compressor initialized" in r.getMessage()
+            ]
+            assert len(again) == 1, "init log fired more than once"
+
     def test_context_length_setter_bypasses_resolution(self):
         """Assigning to .context_length directly must skip the network probe
         entirely and return the assigned value."""

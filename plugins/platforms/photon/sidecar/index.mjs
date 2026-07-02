@@ -488,6 +488,20 @@ function isUpstreamMessageRpcError(error) {
   return /MessageService\/(Edit|Unsend)Message/.test(String(error?.message ?? error ?? ""));
 }
 
+// Spectrum's inbound poll events carry synthetic message ids —
+// "<pollGuid>:<sender>:<optionId>:<vote|unvote>:<timestamp>" for votes and
+// "<pollGuid>:poll:<sequence>" for poll changes — while the advanced poll
+// mutation APIs want the bare poll message guid. Callers naturally hand us
+// whichever id they last saw in chat context, so normalize here.
+const POLL_GUID_PREFIX =
+  /^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?=:)/;
+
+function pollMessageGuid(messageId) {
+  const raw = String(messageId ?? "").trim();
+  const match = raw.match(POLL_GUID_PREFIX);
+  return match ? match[1] : raw;
+}
+
 function isAdvancedTransportError(error) {
   const message = String(error?.message ?? error ?? "");
   return (
@@ -1241,7 +1255,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "native polls are disabled");
       }
       const { spaceId, pollMessageId, messageId } = body || {};
-      const targetPollId = pollMessageId || messageId;
+      const targetPollId = pollMessageGuid(pollMessageId || messageId);
       if (!spaceId || !targetPollId) {
         return badRequest(res, "spaceId and pollMessageId are required");
       }

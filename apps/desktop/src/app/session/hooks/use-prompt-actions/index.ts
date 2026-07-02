@@ -2,7 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
@@ -158,8 +158,9 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -185,6 +186,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -447,6 +449,7 @@ export function usePromptActions({
     createBackendSessionForSend,
     handleSkinCommand,
     handoffSession,
+    openMemoryGraph,
     refreshSessions,
     requestGateway,
     resumeStoredSession,
@@ -665,11 +668,15 @@ export function usePromptActions({
       })
 
       try {
-        await requestGateway('prompt.submit', {
-          session_id: activeSessionId,
-          text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
-        })
+        await requestGateway(
+          'prompt.submit',
+          {
+            session_id: activeSessionId,
+            text: userText,
+            truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          },
+          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+        )
       } catch (err) {
         updateSessionState(activeSessionId, state => ({
           ...state,
@@ -702,11 +709,15 @@ export function usePromptActions({
       }
 
       const submit = () =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
+        requestGateway(
+          'prompt.submit',
+          {
+            session_id: sessionId,
+            text,
+            ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+          },
+          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+        )
 
       if (interruptFirst) {
         await interrupt()

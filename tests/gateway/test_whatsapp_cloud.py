@@ -20,6 +20,20 @@ import pytest
 from gateway.config import Platform
 
 
+@pytest.fixture(autouse=True)
+def _whatsapp_open_optin(monkeypatch):
+    """Opt into WhatsApp allow-all for the file's dispatch-mechanics tests.
+
+    The adapter now fails closed on ``dm_policy: open`` unless
+    ``WHATSAPP_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` is set
+    (SECURITY.md 2.6). These tests set ``_dm_policy = "open"`` as a stand-in
+    for "process this DM" while exercising unrelated dispatch mechanics, so
+    grant the opt-in here. Tests that specifically assert the gate override
+    this within their own body.
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

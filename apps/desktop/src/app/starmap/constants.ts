@@ -35,7 +35,7 @@ export const LIT_BAND_ALPHA = 0.04
 
 export const MODE_DEFAULTS: Record<'dark' | 'light', GraphParams> = {
   dark: {
-    lineAlpha: 0.12,
+    lineAlpha: 0.24,
     lineDash: 1.5,
     lineDashed: true,
     lineWidth: 0.5,
@@ -57,6 +57,6 @@ export const MODE_DEFAULTS: Record<'dark' | 'light', GraphParams> = {
 }
 
 export const RING_PARAMS: Record<'dark' | 'light', RingParams> = {
-  dark: { bandAlpha: 0.01, lightSize: 0.64, ringAlpha: 0.03, sheen: 0.12 },
+  dark: { bandAlpha: 0.01, lightSize: 0.64, ringAlpha: 0.06, sheen: 0.12 },
   light: { bandAlpha: 0.03, lightSize: 0.27, ringAlpha: 0.028, sheen: 0.1 }
 }

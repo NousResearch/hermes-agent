@@ -69,7 +69,11 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
-        self.assertIn("toolsets", props)
+        # toolsets is intentionally NOT exposed to the model — subagents always
+        # inherit the parent's toolsets. Letting the model name toolsets was a
+        # capability-selection surface the model should not control.
+        self.assertNotIn("toolsets", props)
+        self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -918,6 +922,31 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
+    def test_empty_sentinel_marks_status_failed(self):
+        """Regression: a child that returns the literal '(empty)' sentinel
+        (emitted by run_agent.py when the LLM returns empty responses after
+        retries — e.g. transport misrouting) must be reported as failed, not
+        silently accepted as a completed delegation. Otherwise the parent
+        surfaces an empty string as if the subagent succeeded."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "(empty)",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 4,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
+            self.assertEqual(result["results"][0]["status"], "failed")
+
 
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
@@ -1340,6 +1369,32 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         cfg = {"model": "some-model", "provider": "crof.ai"}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_bedrock_provider_with_base_url_uses_runtime_resolver(self, mock_resolve):
+        """Regression: provider=bedrock + base_url set must NOT fall through the
+        direct-base_url branch (which would force provider='custom' +
+        chat_completions and silently misroute OpenAI JSON to the Bedrock
+        native endpoint, returning empty responses)."""
+        mock_resolve.return_value = {
+            "provider": "bedrock",
+            "base_url": "https://bedrock-runtime.us-west-2.amazonaws.com",
+            "api_key": "aws-resolved-key",
+            "api_mode": "bedrock_converse",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "provider": "bedrock",
+            "base_url": "https://bedrock-runtime.us-west-2.amazonaws.com",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Must use Bedrock, not 'custom'
+        self.assertEqual(creds["provider"], "bedrock")
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+        mock_resolve.assert_called_once()
+        self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
+
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):
@@ -2416,6 +2471,29 @@ class TestConcurrencyDefaults(unittest.TestCase):
            return_value={"max_concurrent_children": 6})
     def test_configured_value_returned(self, mock_cfg):
         self.assertEqual(_get_max_concurrent_children(), 6)
+
+
+class TestAsyncCapUnified(unittest.TestCase):
+    """max_async_children is deprecated: the async cap IS max_concurrent_children."""
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_concurrent_children": 15})
+    def test_async_cap_follows_concurrent_children(self, mock_cfg):
+        from tools.delegate_tool import _get_max_async_children
+        self.assertEqual(_get_max_async_children(), 15)
+
+    @patch("tools.delegate_tool._load_config",
+           return_value={"max_concurrent_children": 15, "max_async_children": 3})
+    def test_stale_max_async_children_ignored(self, mock_cfg):
+        """A leftover max_async_children in config must not shrink the cap."""
+        from tools.delegate_tool import _get_max_async_children
+        self.assertEqual(_get_max_async_children(), 15)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_default_matches_concurrent_children_default(self, mock_cfg):
+        from tools.delegate_tool import _get_max_async_children
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_get_max_async_children(), _get_max_concurrent_children())
 
 
 # =========================================================================

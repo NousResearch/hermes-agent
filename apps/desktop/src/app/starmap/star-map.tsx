@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
+import { loadStarmapGraph } from '@/store/starmap'
 import type { StarmapGraph } from '@/types/hermes'
 
 import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
 import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
+import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
 import { drawScene, drawScramble } from './render'
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 import { ShareControls } from './share-controls'
@@ -153,6 +155,7 @@ export function StarMap({
   }>({ id: null, mode: 'none', moved: false, ring: null, sx: 0, sy: 0, vp: { k: 1, x: 0, y: 0 } })
 
   const [selectedId, setSelectedId] = useState<null | string>(null)
+  const [menuTarget, setMenuTarget] = useState<NodeMenuTarget | null>(null)
   const [size, setSize] = useState({ h: 0, w: 0 })
   // Increments on every theme repaint (shared hook) so the legend swatch and the
   // canvas palette re-resolve against the freshly-painted CSS custom properties.
@@ -867,6 +870,25 @@ export function StarMap({
     endDrag()
   }
 
+  const onContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const { x, y } = localXY(e)
+    const node = pickNode(x, y)
+
+    if (!node) {
+      return setMenuTarget(null)
+    }
+
+    setSelectedId(node.id)
+    setMenuTarget({
+      id: node.id,
+      kind: node.kind === 'memory' ? 'memory' : 'skill',
+      label: node.label,
+      x: e.clientX,
+      y: e.clientY
+    })
+  }
+
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect()
 
@@ -896,6 +918,7 @@ export function StarMap({
     <div className="relative min-h-0 flex-1 overflow-hidden" ref={wrapRef}>
       <canvas
         className="block touch-none select-none text-foreground"
+        onContextMenu={onContextMenu}
         onDoubleClick={resetView}
         onMouseDown={onMouseDown}
         onMouseLeave={onMouseLeave}
@@ -903,6 +926,16 @@ export function StarMap({
         onMouseUp={endDrag}
         onWheel={onWheel}
         ref={canvasRef}
+      />
+
+      <NodeContextMenu
+        onChanged={() => {
+          setMenuTarget(null)
+          setSelectedId(null)
+          void loadStarmapGraph(true)
+        }}
+        onClose={() => setMenuTarget(null)}
+        target={menuTarget}
       />
 
       {/* Timeline scrubber — centered along the top, clear of the close button.

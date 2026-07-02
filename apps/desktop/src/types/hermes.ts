@@ -657,6 +657,76 @@ export interface ToolsetInfo {
   tools: string[]
 }
 
+// Kanban plugin (`/api/plugins/kanban/*`). Field casing mirrors the backend
+// `_task_dict` wire format (snake_case) so responses map without translation.
+export type KanbanStatus =
+  | 'archived'
+  | 'blocked'
+  | 'done'
+  | 'ready'
+  | 'review'
+  | 'running'
+  | 'scheduled'
+  | 'todo'
+  | 'triage'
+
+export interface KanbanTaskProgress {
+  done: number
+  total: number
+}
+
+export interface KanbanTaskWarnings {
+  count: number
+  highest_severity?: string
+}
+
+export interface KanbanTask {
+  id: string
+  title: string
+  body?: null | string
+  assignee?: null | string
+  status: KanbanStatus
+  priority: number
+  created_at?: number
+  started_at?: null | number
+  completed_at?: null | number
+  latest_summary?: null | string
+  comment_count?: number
+  worker_pid?: null | number
+  tenant?: null | string
+  progress?: KanbanTaskProgress | null
+  warnings?: KanbanTaskWarnings | null
+}
+
+export interface KanbanColumn {
+  name: KanbanStatus
+  tasks: KanbanTask[]
+}
+
+export interface KanbanBoardResponse {
+  columns: KanbanColumn[]
+  tenants: string[]
+  assignees: string[]
+  latest_event_id: number
+  now: number
+}
+
+export interface KanbanTaskUpdate {
+  status?: KanbanStatus
+  assignee?: null | string
+  priority?: number
+  title?: string
+  body?: string
+}
+
+export interface KanbanCreateTask {
+  title: string
+  body?: string
+  assignee?: string
+  priority?: number
+  triage?: boolean
+}
+
 export interface ToolEnvVar {
   key: string
   prompt: string

@@ -17,6 +17,10 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardResponse,
+  KanbanCreateTask,
+  KanbanTask,
+  KanbanTaskUpdate,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -87,6 +91,10 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardResponse,
+  KanbanCreateTask,
+  KanbanTask,
+  KanbanTaskUpdate,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -573,6 +581,47 @@ export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
+  })
+}
+
+// Kanban plugin routes are mounted by the dashboard server at
+// `/api/plugins/kanban/*`; the desktop reaches them through the same
+// authenticated REST bridge as every other backend call.
+const KANBAN_API_PREFIX = '/api/plugins/kanban'
+
+function kanbanBoardQuery(board?: null | string): string {
+  return board ? `?board=${encodeURIComponent(board)}` : ''
+}
+
+export function getKanbanBoard(board?: null | string): Promise<KanbanBoardResponse> {
+  return window.hermesDesktop.api<KanbanBoardResponse>({
+    ...profileScoped(),
+    path: `${KANBAN_API_PREFIX}/board${kanbanBoardQuery(board)}`
+  })
+}
+
+export function updateKanbanTask(
+  taskId: string,
+  updates: KanbanTaskUpdate,
+  board?: null | string
+): Promise<{ task: KanbanTask }> {
+  return window.hermesDesktop.api<{ task: KanbanTask }>({
+    ...profileScoped(),
+    path: `${KANBAN_API_PREFIX}/tasks/${encodeURIComponent(taskId)}${kanbanBoardQuery(board)}`,
+    method: 'PATCH',
+    body: updates
+  })
+}
+
+export function createKanbanTask(
+  task: KanbanCreateTask,
+  board?: null | string
+): Promise<{ task: KanbanTask; warning?: string }> {
+  return window.hermesDesktop.api<{ task: KanbanTask; warning?: string }>({
+    ...profileScoped(),
+    path: `${KANBAN_API_PREFIX}/tasks${kanbanBoardQuery(board)}`,
+    method: 'POST',
+    body: task
   })
 }
 

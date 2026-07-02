@@ -1274,7 +1274,7 @@ class SessionStore:
         """
         if self._db:
             try:
-                return self._db.session_count() > 1
+                return self._db.session_count_ge(2)
             except Exception:
                 pass  # fall through to heuristic
         # Fallback: check if sessions.json was loaded with existing data.

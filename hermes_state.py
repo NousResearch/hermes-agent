@@ -4612,6 +4612,17 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_count_ge(self, n: int = 1) -> bool:
+        """Check if at least N sessions exist.
+
+        Short-circuits via LIMIT — much cheaper than COUNT(*) when
+        you only need an existence check.  Use this instead of
+        ``session_count() >= n`` when the exact count is irrelevant.
+        """
+        cursor = self._conn.execute("SELECT 1 FROM sessions LIMIT ?", (n,))
+        rows = cursor.fetchall()
+        return len(rows) >= n
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:
@@ -4723,9 +4734,9 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
             )
-            if cursor.fetchone()[0] == 0:
+            if cursor.fetchone() is None:
                 return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.

@@ -1254,22 +1254,22 @@ class TestHasAnySessions:
         return s
 
     def test_uses_database_count_when_available(self, store_with_mock_db):
-        """has_any_sessions should use database session_count, not len(_entries)."""
+        """has_any_sessions should use database session_count_ge, not len(_entries)."""
         store = store_with_mock_db
         # Simulate single-platform user with only 1 entry in memory
         store._entries = {"telegram:12345": MagicMock()}
         # But database has 3 sessions (current + 2 previous resets)
-        store._db.session_count.return_value = 3
+        store._db.session_count_ge.return_value = True
 
         assert store.has_any_sessions() is True
-        store._db.session_count.assert_called_once()
+        store._db.session_count_ge.assert_called_once_with(2)
 
     def test_first_session_ever_returns_false(self, store_with_mock_db):
         """First session ever should return False (only current session in DB)."""
         store = store_with_mock_db
         store._entries = {"telegram:12345": MagicMock()}
         # Database has exactly 1 session (the current one just created)
-        store._db.session_count.return_value = 1
+        store._db.session_count_ge.return_value = False
 
         assert store.has_any_sessions() is False
 

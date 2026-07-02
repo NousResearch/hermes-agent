@@ -1742,6 +1742,22 @@ class TestCounts:
 
         assert db.session_count(cwd_prefix="/repo") == 2
 
+    def test_session_count_ge_empty(self, db):
+        """session_count_ge should return False for 0 sessions."""
+        assert db.session_count_ge(1) is False
+        assert db.session_count_ge(2) is False
+
+    def test_session_count_ge_at_threshold(self, db):
+        """session_count_ge should True when count >= n."""
+        db.create_session("s1", "cli")
+        assert db.session_count_ge(1) is True
+        assert db.session_count_ge(2) is False
+
+        db.create_session("s2", "telegram")
+        assert db.session_count_ge(1) is True
+        assert db.session_count_ge(2) is True
+        assert db.session_count_ge(3) is False
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")

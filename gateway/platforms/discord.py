@@ -22,6 +22,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -3398,6 +3399,87 @@ class DiscordAdapter(BasePlatformAdapter):
 
         logger.info(
             "[%s] Registered natural Discord request as kanban task %s",
+            self.name,
+            task_data.get("id", "?"),
+        )
+        return NaturalTaskIntakeResult(
+            matched=True,
+            created=True,
+            task_id=task_data.get("id"),
+        )
+
+    async def maybe_handle_natural_task_event(
+        self,
+        *,
+        event: MessageEvent,
+        prompt: str,
+        has_attachments: bool = False,
+    ) -> NaturalTaskIntakeResult:
+        """Register a normalized Discord event after shared preprocessing.
+
+        Native Discord voice messages reach ``GatewayRunner`` before STT has
+        produced text, so the adapter's initial natural-task check cannot see
+        the actual request. This method lets the runner retry the same intake
+        path with the transcribed text while preserving Discord metadata.
+        """
+        raw_message = getattr(event, "raw_message", None)
+        if raw_message is not None:
+            source = getattr(event, "source", None)
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = getattr(source, "thread_id", None)
+            return await self._maybe_handle_natural_task_request(
+                message=raw_message,
+                prompt=prompt,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                has_attachments=has_attachments,
+            )
+
+        if not self._natural_task_requests_enabled():
+            return NaturalTaskIntakeResult()
+        if not self._looks_like_natural_task_request(prompt):
+            return NaturalTaskIntakeResult()
+
+        source = getattr(event, "source", None)
+        if source is None:
+            return NaturalTaskIntakeResult()
+
+        user = SimpleNamespace(
+            id=getattr(source, "user_id", "") or "",
+            display_name=getattr(source, "user_name", "") or "",
+            name=getattr(source, "user_name", "") or "",
+        )
+        channel = SimpleNamespace(
+            id=getattr(source, "chat_id", "") or "",
+            name=getattr(source, "chat_name", "") or getattr(source, "chat_id", "") or "",
+            guild=None,
+        )
+        payload = self._build_task_payload(
+            prompt=prompt,
+            user=user,
+            channel=channel,
+            channel_id=getattr(source, "chat_id", "") or "",
+            guild=None,
+            origin_label="Discordの自然文依頼から登録されたタスクです。",
+        )
+
+        def _create_task() -> Dict[str, str]:
+            message_id = str(getattr(event, "message_id", "") or getattr(source, "message_id", "") or "")
+            return self._create_ai_company_task(
+                payload=payload,
+                idempotency_key=f"discord-natural-task:{message_id}" if message_id else None,
+                chat_id=str(getattr(source, "chat_id", "") or ""),
+                thread_id=getattr(source, "thread_id", None),
+            )
+
+        try:
+            task_data = await asyncio.to_thread(_create_task)
+        except Exception:
+            logger.exception("[%s] Failed to create kanban task from natural Discord event", self.name)
+            return NaturalTaskIntakeResult(matched=True, created=False)
+
+        logger.info(
+            "[%s] Registered natural Discord event as kanban task %s",
             self.name,
             task_data.get("id", "?"),
         )

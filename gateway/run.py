@@ -7758,6 +7758,7 @@ class GatewayRunner:
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        voice_transcripts: List[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -7805,7 +7806,10 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    transcript_sink=voice_transcripts,
                 )
+                if voice_transcripts:
+                    event.transcribed_text = "\n\n".join(voice_transcripts)
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",
@@ -7945,6 +7949,42 @@ class GatewayRunner:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
         return message_text
+
+    async def _maybe_defer_discord_voice_natural_task(
+        self,
+        *,
+        event: MessageEvent,
+    ) -> bool:
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.DISCORD:
+            return False
+        if event.message_type != MessageType.VOICE:
+            return False
+
+        prompt = (
+            getattr(event, "transcribed_text", None)
+            or (event.text if event.text and event.text.strip() else "")
+        ).strip()
+        if not prompt:
+            return False
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        register = getattr(adapter, "maybe_handle_natural_task_event", None)
+        if not callable(register):
+            return False
+
+        result = await register(
+            event=event,
+            prompt=prompt,
+            has_attachments=bool(getattr(event, "media_urls", None)),
+        )
+        if getattr(result, "created", False):
+            logger.info(
+                "Deferred Discord voice reply to kanban worker for task %s",
+                getattr(result, "task_id", None) or "?",
+            )
+            return True
+        return False
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -8749,6 +8789,10 @@ class GatewayRunner:
             history=history,
         )
         if message_text is None:
+            return
+        if await self._maybe_defer_discord_voice_natural_task(
+            event=event,
+        ):
             return
 
         # Bind this gateway run generation to the adapter's active-session
@@ -14630,6 +14674,8 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
+        *,
+        transcript_sink: Optional[List[str]] = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -14671,7 +14717,9 @@ class GatewayRunner:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
+                    transcript = str(result.get("transcript", "")).strip()
+                    if transcript and transcript_sink is not None:
+                        transcript_sink.append(transcript)
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'

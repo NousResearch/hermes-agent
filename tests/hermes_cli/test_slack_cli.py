@@ -15,7 +15,7 @@ def _parse_slack_args(argv):
 
 
 class TestSlackManifestArgparse:
-    """The `--no-assistant` flag wires through argparse to `no_assistant`."""
+    """Slack manifest messaging-experience flags wire through argparse."""
 
     def test_no_assistant_flag_defaults_false(self):
         args = _parse_slack_args(["slack", "manifest"])
@@ -25,6 +25,13 @@ class TestSlackManifestArgparse:
         args = _parse_slack_args(["slack", "manifest", "--no-assistant"])
         assert args.no_assistant is True
 
+    def test_agent_view_flag_defaults_false(self):
+        args = _parse_slack_args(["slack", "manifest"])
+        assert getattr(args, "agent_view", False) is False
+
+    def test_agent_view_flag_sets_true(self):
+        args = _parse_slack_args(["slack", "manifest", "--agent-view"])
+        assert args.agent_view is True
 
 
 class TestSlackFullManifest:
@@ -77,6 +84,7 @@ class TestSlackFullManifest:
         manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 
         assert "assistant_view" in manifest["features"]
+        assert "agent_view" not in manifest["features"]
         assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
@@ -89,8 +97,35 @@ class TestSlackFullManifest:
         # assistant_view feature is gone -> Slack renders a flat DM, not the
         # Assistant thread pane (where bare slash commands don't dispatch).
         assert "assistant_view" not in manifest["features"]
+        assert "agent_view" not in manifest["features"]
         assert "assistant:write" not in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "assistant_thread_started" not in bot_events
+        assert "assistant_thread_context_changed" not in bot_events
+
+    def test_agent_view_uses_agent_manifest_surface(self):
+        manifest = _build_full_manifest(
+            "Hermes",
+            "Your Hermes agent on Slack",
+            messaging_experience="agent",
+        )
+
+        assert manifest["features"]["agent_view"] == {
+            "agent_description": "Chat with Hermes in Slack Messages.",
+        }
+        assert "assistant_view" not in manifest["features"]
+        assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
+
+    def test_agent_view_uses_agent_event_subscriptions(self):
+        manifest = _build_full_manifest(
+            "Hermes",
+            "Your Hermes agent on Slack",
+            messaging_experience="agent",
+        )
+
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "app_home_opened" in bot_events
+        assert "message.im" in bot_events
         assert "assistant_thread_started" not in bot_events
         assert "assistant_thread_context_changed" not in bot_events
 

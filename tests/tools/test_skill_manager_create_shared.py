@@ -71,6 +71,29 @@ def _vanilla_home(tmp_path):
         yield home, local
 
 
+@contextmanager
+def _profile_home(tmp_path, profile="athena", root_name="root",
+                  groups=("devops", "general", "research")):
+    """A PROFILE-shaped HERMES_HOME: ``<root>/profiles/<name>`` with the shared
+    tree at the TOP-LEVEL root (``<root>/skills-shared``) — the real fleet
+    layout for a specialist gateway. This is the regression fixture for the
+    profile-home bug: resolving the shared tree HERMES_HOME-relative pointed at
+    the nonexistent ``profiles/<name>/skills-shared`` and every specialist
+    create hard-errored."""
+    root = tmp_path / root_name
+    home = root / "profiles" / profile
+    local = home / "skills"
+    shared = root / "skills-shared"
+    local.mkdir(parents=True, exist_ok=True)
+    for g in groups:
+        (shared / g).mkdir(parents=True, exist_ok=True)
+    with patch.object(smt, "HERMES_HOME", home), \
+         patch.object(smt, "SKILLS_DIR", local), \
+         patch("agent.skill_utils.get_all_skills_dirs",
+               return_value=[local] + [shared / g for g in groups]):
+        yield root, home, local, shared
+
+
 # ---------------------------------------------------------------------------
 # RC-2: name validator hardening (fullmatch — rejects trailing newline etc.)
 # ---------------------------------------------------------------------------
@@ -287,3 +310,77 @@ class TestSkillManageDispatch:
                                    category="devops")
         res = json.loads(out)
         assert res["success"] is False  # shared mode forced, but no groups exist
+
+
+# ---------------------------------------------------------------------------
+# Profile-home resolution (the 2026-07-01 profile bug regression suite)
+# ---------------------------------------------------------------------------
+
+class TestProfileHomeSharedRoot:
+    """_shared_skills_root() must resolve the TOP-LEVEL shared tree from a
+    profile HERMES_HOME (<root>/profiles/<p>), not a profile-relative path."""
+
+    def test_profile_home_resolves_top_level_shared(self, tmp_path):
+        with _profile_home(tmp_path) as (root, home, local, shared):
+            assert smt._shared_skills_root() == shared
+            assert smt._shared_skills_root().is_dir()
+
+    def test_profile_home_finds_groups(self, tmp_path):
+        with _profile_home(tmp_path) as (root, home, local, shared):
+            assert _valid_shared_groups() == ["devops", "general", "research"]
+
+    def test_profile_home_autodetect_enabled(self, tmp_path):
+        with _profile_home(tmp_path) as (root, home, local, shared):
+            with patch.object(smt, "_author_to_shared_setting", return_value=None):
+                assert _shared_authoring_enabled() is True
+
+    def test_profile_home_create_lands_in_top_level_shared(self, tmp_path):
+        with _profile_home(tmp_path) as (root, home, local, shared):
+            with patch.object(smt, "_author_to_shared_setting", return_value=None):
+                r = _create_skill("probe-skill", VALID_CONTENT, "devops")
+        assert r["success"] is True
+        assert r["authored_to"] == "shared"
+        assert (shared / "devops" / "probe-skill" / "SKILL.md").exists()
+        # and NOT under the profile dir
+        assert not (home / "skills-shared").exists()
+
+    def test_docker_profile_layout(self, tmp_path):
+        # /opt/data/profiles/<p> -> /opt/data (root_name plays /opt/data here)
+        with _profile_home(tmp_path, profile="coder", root_name="opt-data") as (
+                root, home, local, shared):
+            assert smt._shared_skills_root() == shared
+            assert _valid_shared_groups() == ["devops", "general", "research"]
+
+    def test_red_proof_old_expression_missed_the_tree(self, tmp_path):
+        """Documents the bug: the OLD HERMES_HOME-relative expression points at
+        a nonexistent profile-relative dir in profile mode. If this ever starts
+        passing (profile trees growing their own skills-shared/), re-examine
+        the resolution policy rather than silently deleting this test."""
+        with _profile_home(tmp_path) as (root, home, local, shared):
+            old_expression = smt.HERMES_HOME / "skills-shared"
+            assert not old_expression.is_dir()          # the bug's root cause
+            assert old_expression != smt._shared_skills_root()  # fix diverges
+
+    def test_vanilla_home_unchanged_by_fix(self, tmp_path):
+        """INV-1: a non-profile HERMES_HOME resolves exactly as before."""
+        with _vanilla_home(tmp_path) as (home, local):
+            assert smt._shared_skills_root() == home / "skills-shared"
+
+    def test_fleet_home_unchanged_by_fix(self, tmp_path):
+        """INV-2: the default-profile (top-level home) layout is identical."""
+        with _fleet_home(tmp_path) as (home, local, shared):
+            assert smt._shared_skills_root() == shared
+
+    def test_fail_open_on_resolution_error(self, tmp_path):
+        """A pathological HERMES_HOME (parent access raising) falls back to the
+        HERMES_HOME-relative path instead of crashing the create."""
+        class _BadPath:
+            @property
+            def parent(self):
+                raise RuntimeError("boom")
+            def __truediv__(self, other):
+                return Path("/tmp/fallback") / other
+        with patch.object(smt, "HERMES_HOME", _BadPath()):
+            # must not raise; must return the fallback HERMES_HOME-relative join
+            out = smt._shared_skills_root()
+            assert str(out).endswith("skills-shared")

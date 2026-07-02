@@ -568,8 +568,33 @@ class SkillCreateError(ValueError):
 
 
 def _shared_skills_root() -> Path:
-    """The git-backed shared-skills tree for the active profile's HERMES_HOME."""
-    return HERMES_HOME / "skills-shared"
+    """The git-backed shared-skills tree (top-level Hermes root, profile-safe).
+
+    The shared tree lives at the ROOT Hermes home (``<root>/skills-shared``)
+    and is shared by every profile — it is NOT per-profile. A specialist
+    gateway runs with ``HERMES_HOME=<root>/profiles/<name>``, so the previous
+    ``HERMES_HOME / "skills-shared"`` resolution pointed at a nonexistent
+    ``profiles/<name>/skills-shared`` → ``_valid_shared_groups()`` returned []
+    and every create from a non-default profile hard-errored ("category 'X' is
+    not a shared group … (none found)").
+
+    Root derivation mirrors ``hermes_constants.get_default_hermes_root``'s
+    profile rule, applied to this module's ``HERMES_HOME`` (so the established
+    test seam — patching the module global — keeps working): when the home's
+    immediate parent dir is named ``profiles``, the root is the grandparent.
+    Covers standard (``~/.hermes/profiles/<p>`` → ``~/.hermes``) and Docker
+    (``/opt/data/profiles/<p>`` → ``/opt/data``) layouts; for a non-profile
+    home (vanilla upstream user, custom root) it returns HERMES_HOME itself —
+    behavior unchanged. Fail-open: any error falls back to the old
+    HERMES_HOME-relative path (never crash a create over root discovery).
+    """
+    try:
+        home = HERMES_HOME
+        if home.parent.name == "profiles":
+            return home.parent.parent / "skills-shared"
+        return home / "skills-shared"
+    except Exception:
+        return HERMES_HOME / "skills-shared"
 
 
 def _valid_shared_groups() -> List[str]:

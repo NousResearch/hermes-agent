@@ -34,7 +34,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
     try:
         tid = kb.create_task(conn, title="test task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-        kb.complete_task(conn, tid, result="completed by agent")
+        kb.complete_task(conn, tid, result="対応しました。")
     finally:
         conn.close()
 
@@ -63,7 +63,11 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     fake_adapter.send.assert_called_once()
     call_msg = fake_adapter.send.call_args[0][1]
-    assert "完了しました" in call_msg
+    assert call_msg == "対応しました。"
+    assert "カンバン" not in call_msg
+    assert tid not in call_msg
+    assert "@worker1" not in call_msg
+    assert "test task" not in call_msg
 
     conn = kb.connect()
     try:
@@ -71,6 +75,62 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
     finally:
         conn.close()
     assert subs == [], "Subscription should be unsub after completed event"
+
+
+@pytest.mark.asyncio
+async def test_notifier_completion_uses_handoff_without_internal_kanban_wrapper(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from tools import kanban_tools as kt
+    import os
+
+    title = "いろいろ修正したので、もう1回テストにスキルを探して教えてください。"
+    summary = "Hermesのスキル検索を再テストし、10件の結果を返すことを確認しました。"
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title=title, assignee="operations-orchestrator")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+    finally:
+        conn.close()
+
+    os.environ["HERMES_KANBAN_TASK"] = tid
+    try:
+        kt._handle_complete({"summary": summary})
+    finally:
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    call_msg = fake_adapter.send.call_args[0][1]
+    assert call_msg == summary
+    assert "カンバン" not in call_msg
+    assert tid not in call_msg
+    assert "@operations-orchestrator" not in call_msg
+    assert title not in call_msg
 
 
 @pytest.mark.asyncio

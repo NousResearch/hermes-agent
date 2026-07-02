@@ -706,6 +706,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     )
     _is_nous = "nousresearch" in agent._base_url_lower
     _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
+    _is_fireworks = base_url_host_matches(agent.base_url, "fireworks.ai")
     _is_kimi = (
         base_url_host_matches(agent.base_url, "api.kimi.com")
         or base_url_host_matches(agent.base_url, "moonshot.ai")
@@ -789,6 +790,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
+        if _is_fireworks:
+            try:
+                from tools.schema_sanitizer import inline_local_refs
+                tools_for_api = inline_local_refs(tools_for_api)
+            except Exception as exc:
+                logger.warning(
+                    "%s⚠️ Failed to inline local tool-schema refs for Fireworks: %s",
+                    getattr(agent, "log_prefix", ""), exc,
+                )
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
@@ -820,6 +831,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
+
+    if _is_fireworks:
+        try:
+            from tools.schema_sanitizer import inline_local_refs
+            tools_for_api = inline_local_refs(tools_for_api)
+        except Exception as exc:
+            logger.warning(
+                "%s⚠️ Failed to inline local tool-schema refs for Fireworks: %s",
+                getattr(agent, "log_prefix", ""), exc,
+            )
 
     return _ct.build_kwargs(
         model=agent.model,

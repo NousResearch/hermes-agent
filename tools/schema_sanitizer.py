@@ -61,6 +61,82 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     return sanitized
 
 
+def inline_local_refs(tools: list[dict]) -> list[dict]:
+    """Return a copy of ``tools`` with local ``$defs`` / ``definitions`` refs inlined.
+
+    Some OpenAI-compatible backends accept JSON Schema but do not resolve local
+    references inside tool parameters. Fireworks rejects built-in browser schemas
+    with errors such as ``unresolved #/$defs/SetCookieParam``. Inlining keeps the
+    same accepted argument shape while sending a ref-free schema to those
+    backends. Annotation siblings on the reference node (for example
+    ``description`` or ``nullable``) are preserved over the referenced schema.
+    """
+    if not tools:
+        return tools
+
+    out = copy.deepcopy(tools)
+    for tool in out:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        if isinstance(params, dict):
+            fn["parameters"] = _inline_refs_in_schema(params)
+    return out
+
+
+def _inline_refs_in_schema(schema: dict) -> dict:
+    defs: dict[str, Any] = {}
+    raw_defs = schema.get("$defs")
+    if isinstance(raw_defs, dict):
+        defs.update(raw_defs)
+    raw_definitions = schema.get("definitions")
+    if isinstance(raw_definitions, dict):
+        defs.update(raw_definitions)
+    if not defs:
+        return schema
+
+    def resolve_ref(ref: str) -> Any | None:
+        prefix = None
+        if ref.startswith("#/$defs/"):
+            prefix = "#/$defs/"
+        elif ref.startswith("#/definitions/"):
+            prefix = "#/definitions/"
+        if prefix is None:
+            return None
+        name = ref[len(prefix):].replace("~1", "/").replace("~0", "~")
+        target = defs.get(name)
+        return copy.deepcopy(target) if target is not None else None
+
+    def walk(node: Any, stack: tuple[str, ...] = ()) -> Any:
+        if isinstance(node, list):
+            return [walk(item, stack) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if ref in stack:
+                return {k: walk(v, stack) for k, v in node.items() if k != "$ref"}
+            target = resolve_ref(ref)
+            if isinstance(target, dict):
+                merged = walk(target, (*stack, ref))
+                if isinstance(merged, dict):
+                    for key, value in node.items():
+                        if key == "$ref":
+                            continue
+                        merged[key] = walk(value, stack)
+                    return merged
+
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in {"$defs", "definitions"}:
+                continue
+            out[key] = walk(value, stack)
+        return out
+
+    inlined = walk(schema)
+    return inlined if isinstance(inlined, dict) else schema
+
+
 def _sanitize_single_tool(tool: dict) -> dict:
     """Deep-copy and sanitize a single OpenAI-format tool entry."""
     out = copy.deepcopy(tool)

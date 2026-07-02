@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from tools.schema_sanitizer import (
+    inline_local_refs,
     sanitize_tool_schemas,
     strip_pattern_and_format,
     strip_slash_enum,
@@ -265,6 +266,41 @@ def test_ref_description_preserved():
     payload = out[0]["function"]["parameters"]["properties"]["payload"]
     assert payload["description"] == "The payload"
     assert payload["$ref"] == "#/$defs/Payload"
+
+
+def test_inline_local_refs_expands_defs_and_preserves_ref_annotations():
+    tools = [_tool("browser_like", {
+        "type": "object",
+        "properties": {
+            "cookies": {
+                "type": "array",
+                "items": {
+                    "$ref": "#/$defs/SetCookieParam",
+                    "description": "Cookie to set",
+                },
+            },
+        },
+        "$defs": {
+            "SetCookieParam": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                "required": ["name", "value"],
+            },
+        },
+    })]
+
+    out = inline_local_refs(tools)
+    params = out[0]["function"]["parameters"]
+    items = params["properties"]["cookies"]["items"]
+
+    assert "$ref" not in items
+    assert "$defs" not in params
+    assert items["type"] == "object"
+    assert items["description"] == "Cookie to set"
+    assert items["properties"]["name"] == {"type": "string"}
 
 
 def test_empty_tools_list_returns_empty():

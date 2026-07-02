@@ -2141,6 +2141,11 @@ def get_budget_check_verdict(**context: Any) -> Optional[Dict[str, Any]]:
     registration order — the first is kept. Non-dict results and results
     without a valid ``status`` are ignored. Returns ``None`` when no plugin
     returns a valid verdict (including when no plugin registers the hook).
+
+    Context kwargs the core supplies: ``session_id``, ``task_id``, ``turn_id``,
+    ``platform``, ``sender_id``, ``model``. A plugin resolves its scope from
+    these (e.g. parsing a ``cron_{job_id}_{ts}`` session id) and returns the
+    verdict for that scope's accumulated spend.
     """
     results = invoke_hook("on_budget_check", **context)
     best: Optional[Dict[str, Any]] = None

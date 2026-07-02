@@ -112,6 +112,39 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
+    def test_kimi_coding_forces_text_mode_even_if_registry_says_vision(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("kimi-coding", "kimi-k2.6", {}) == "text"
+
+    def test_kimi_coding_cn_forces_text_mode_even_if_registry_says_vision(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("kimi-coding-cn", "kimi-k2.6", {}) == "text"
+
+    def test_custom_provider_with_kimi_coding_base_url_forces_text_mode(self):
+        cfg = {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://api.kimi.com/coding/v1",
+            },
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("custom", "kimi-k2.6", cfg) == "text"
+
+    def test_named_custom_provider_pointing_to_kimi_coding_forces_text_mode(self):
+        cfg = {
+            "model": {
+                "provider": "moonshot-proxy",
+            },
+            "custom_providers": [
+                {
+                    "name": "Moonshot Proxy",
+                    "base_url": "https://api.kimi.com/coding",
+                },
+            ],
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("moonshot-proxy", "kimi-k2.6", cfg) == "text"
+
     def test_auto_uses_text_for_text_only_modalities_even_with_attachment_flag(self):
         registry = {
             "xiaomi": {
@@ -124,7 +157,7 @@ class TestDecideImageInputMode:
                 },
             },
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
 

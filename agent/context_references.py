@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,7 +322,66 @@ def _expand_git_reference(
     content = result.stdout.strip()
     if not content:
         content = "(no output)"
+    denied_path = _git_patch_denied_path(content, cwd)
+    if denied_path is not None:
+        return (
+            f"{ref.raw}: git patch touches a sensitive credential path "
+            f"({denied_path}) and cannot be attached",
+            None,
+        )
     return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"
+
+
+def _git_patch_denied_path(content: str, cwd: Path) -> str | None:
+    """Return the first credential-denied path referenced by a git patch."""
+    if not content or content == "(no output)":
+        return None
+    try:
+        from agent.file_safety import get_read_block_error
+    except Exception:
+        return "<unverified git patch path>"
+
+    for raw_path in _iter_git_patch_paths(content):
+        if raw_path is None:
+            continue
+        try:
+            candidate = (cwd / raw_path).resolve()
+            blocked = get_read_block_error(str(candidate))
+        except Exception:
+            return raw_path
+        if blocked is not None:
+            return raw_path
+    return None
+
+
+def _iter_git_patch_paths(content: str) -> list[str | None]:
+    paths: list[str | None] = []
+    for line in content.splitlines():
+        if line.startswith("diff --git "):
+            parts = _split_git_header(line)
+            if len(parts) >= 4:
+                paths.append(_normalize_git_patch_path(parts[2]))
+                paths.append(_normalize_git_patch_path(parts[3]))
+            continue
+        if line.startswith("--- ") or line.startswith("+++ "):
+            paths.append(_normalize_git_patch_path(line[4:]))
+    return paths
+
+
+def _split_git_header(line: str) -> list[str]:
+    try:
+        return shlex.split(line)
+    except ValueError:
+        return line.split()
+
+
+def _normalize_git_patch_path(raw: str) -> str | None:
+    path = raw.strip()
+    if not path or path == "/dev/null":
+        return None
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path or None
 
 
 async def _fetch_url_content(

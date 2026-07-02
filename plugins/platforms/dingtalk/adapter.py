@@ -748,6 +748,25 @@ class DingTalkAdapter(BasePlatformAdapter):
                             parts.append(item.text)
                     content = " ".join(parts).strip()
 
+        # DingTalk 1:1 voice messages arrive with msgtype="audio" and the
+        # ASR result in extensions.content.recognition (or extensions.recognition
+        # on some SDK versions).  The text/rich_text fields are empty, so without
+        # this fallback the message would be dropped by the empty-text gate.
+        # Do NOT add downloadCode to media_urls — it's an OSS code, not a
+        # local path, and the STT pipeline would fail trying to open it.
+        if not content:
+            msg_type_str = getattr(message, "message_type", "") or ""
+            if msg_type_str == "audio":
+                extensions = getattr(message, "extensions", {}) or {}
+                recognition = ""
+                if isinstance(extensions, dict):
+                    audio_content = extensions.get("content", {})
+                    if isinstance(audio_content, dict):
+                        recognition = (audio_content.get("recognition") or "").strip()
+                    if not recognition:
+                        recognition = (extensions.get("recognition") or "").strip()
+                content = recognition or "[Voice message — transcription unavailable]"
+
         # Do NOT strip "@bot" from the text.  The mention is a routing
         # signal (delivered structurally via callback `isInAtList`), and
         # regex-stripping @handles would collateral-damage e-mails
@@ -820,6 +839,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if any("image" in t for t in media_types)
                 else MessageType.TEXT
             )
+        elif msg_type_str == "audio":
+            # DingTalk voice messages carry ASR in extensions (extracted by
+            # _extract_text above).  Classify as AUDIO for downstream routing
+            # signals.  Do NOT add downloadCode to media_urls — it's an OSS
+            # temporary code, not a local file path.  When the ASR result is
+            # empty, the placeholder text "[Voice message — transcription
+            # unavailable]" is used; no secondary STT is attempted.
+            msg_type = MessageType.AUDIO
 
         return msg_type, media_urls, media_types
 

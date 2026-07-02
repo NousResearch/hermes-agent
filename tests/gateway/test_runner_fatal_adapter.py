@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -325,3 +326,70 @@ async def test_inflight_final_reply_uses_replacement_adapter_after_reconnect(
 
     assert old_adapter.sent == ["partial preview"]
     assert replacement.sent == ["complete final reply"]
+
+
+@pytest.mark.asyncio
+async def test_retryable_fatal_with_raising_disconnect_still_queues(monkeypatch, tmp_path):
+    """A retryable fatal adapter whose disconnect() raises must still be
+    queued for background reconnection — the teardown failure must not
+    skip the reconnect queue entry.
+
+    Regression guard for the invariant called out in PR #56770 review:
+    "A raised disconnect therefore leaves no live adapter and no
+    _failed_platforms retry entry."
+    """
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("transport_stale", "transport stale", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    # disconnect() raises instead of completing cleanly
+    adapter.disconnect = AsyncMock(side_effect=RuntimeError("close failed"))
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    # Despite the disconnect failure, adapter must still be queued
+    assert Platform.WHATSAPP in runner._failed_platforms
+    assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+    assert runner.adapters == {}
+    runner.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_fatal_error_catches_handler_exception(tmp_path, caplog):
+    """_notify_fatal_error must catch and log exceptions from the fatal
+    error handler — a raising handler must not crash the adapter or
+    propagate into the caller.
+
+    Regression guard for the base-class exception boundary added in
+    PR #56770 to gateway/platforms/base.py.
+    """
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _FatalAdapter()
+    adapter._fatal_error_handler = runner._handle_adapter_fatal_error
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    # Monkey-patch _handle_adapter_fatal_error to raise
+    async def raising_handler(_adapter):
+        raise RuntimeError("handler exploded")
+
+    adapter._fatal_error_handler = raising_handler
+
+    with caplog.at_level(logging.ERROR, logger="gateway.platforms.base"):
+        # Must NOT raise
+        await adapter._notify_fatal_error()
+
+    assert "handler exploded" in caplog.text
+    assert "preventing gateway crash" in caplog.text

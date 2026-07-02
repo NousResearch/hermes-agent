@@ -2850,9 +2850,15 @@ class BasePlatformAdapter(ABC):
         handler = self._fatal_error_handler
         if not handler:
             return
-        result = handler(self)
-        if asyncio.iscoroutine(result):
-            await result
+        try:
+            result = handler(self)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:
+            logger.exception(
+                "[%s] Fatal error handler raised exception, preventing gateway crash: %s",
+                self.name, exc,
+            )
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success.

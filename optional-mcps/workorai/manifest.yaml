@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: workorai
+description: "WorkorAI talent marketplace MCP: candidate job search and employer hiring with explainable matching."
+source: https://github.com/work0r-ai/agent-kit
+
+# WorkorAI is a remote Streamable HTTP MCP server (MIT-licensed; also
+# published on the official MCP Registry as io.github.work0r-ai/workorai).
+# Nothing to install locally — Hermes's MCP client connects to the URL.
+transport:
+  type: http
+  url: https://workorai.com/mcp
+
+# The server accepts anonymous connections, but the anonymous tool surface
+# is a single onboarding tool (`request_access`). The full candidate/employer
+# toolset (~28 tools) is exposed only with a per-user API key sent as an
+# Authorization bearer header. Users obtain keys at https://workorai.com.
+#
+# The key is optional at install time: skipping it still installs a working
+# (onboarding-only) entry. Note that manifest v1 has no way to declare
+# request headers, so entering a key here stores it in ~/.hermes/.env and
+# the Authorization header is a documented one-line follow-up in
+# post_install (runtime `${VAR}` substitution in `headers` picks the value
+# up from .env).
+auth:
+  type: api_key
+  env:
+    - name: WORKORAI_MCP_API_KEY
+      prompt: "WorkorAI API key (optional — press Enter to skip; get one at https://workorai.com)"
+      required: false
+      secret: true
+
+# Tool selection at install time:
+# The install-time probe runs unauthenticated, so it only sees
+# `request_access`. Declaring the authenticated tool names in
+# `tools.default_enabled` would be useless here — the checklist drops names
+# the probe didn't return. Leave it unset; once the Authorization header is
+# configured (see post_install), re-run `hermes mcp configure workorai` to
+# see the full list and prune. The employer tools include real mutations
+# (create/publish/close/delete job posts, invite candidates, set review
+# status) and the candidate tools can apply to / withdraw from jobs — prune
+# per your threat model.
+
+post_install: |
+  Without an API key the server exposes a single onboarding tool
+  (request_access). To use the full candidate/employer toolset:
+
+    1. Get a per-user API key at https://workorai.com (or via the
+       request_access tool).
+    2. Make sure it is stored in ~/.hermes/.env as WORKORAI_MCP_API_KEY
+       (the install prompt already did this if you entered the key).
+    3. Add the auth header to mcp_servers.workorai in ~/.hermes/config.yaml:
+
+         headers:
+           Authorization: "Bearer ${WORKORAI_MCP_API_KEY}"
+
+    4. Re-run `hermes mcp configure workorai` to re-probe the authenticated
+       tool list and prune the mutating tools you don't want.
+
+  Start a new Hermes session to load the tools.

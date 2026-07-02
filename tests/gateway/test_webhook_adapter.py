@@ -1145,6 +1145,25 @@ class TestRateLimiting:
 class TestBodySize:
 
     @pytest.mark.asyncio
+    async def test_configured_large_payload_reaches_handler(self):
+        """aiohttp must honor max_body_bytes before Hermes reads JSON bodies."""
+        routes = {"screen": {"secret": _INSECURE_NO_AUTH, "prompt": "{message}"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=2_000_000)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            payload = {
+                "event_type": "siri_screen_phone",
+                "message": "x" * 1_200_000,
+            }
+            resp = await cli.post("/webhooks/screen", json=payload)
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_oversized_payload_rejected(self):
         """Content-Length > max_body_bytes returns 413."""
         routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}

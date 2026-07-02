@@ -52,11 +52,14 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
 )
 from gateway.platforms.webhook_filters import (
     DEFAULT_SCRIPT_TIMEOUT_SECONDS,
@@ -91,6 +94,40 @@ _LOOPBACK_HOSTS = frozenset({
     "ip6-localhost",
     "ip6-loopback",
 })
+
+# Webhook media is untrusted JSON, even after the route HMAC succeeds. Keep
+# the MIME vocabulary small and require bytes consistent with the claimed MIME
+# before choosing the cache extension. The shared cache helpers remain the
+# authority for cache location and inbound-media byte limits.
+_IMAGE_MEDIA_SIGNATURES = {
+    "image/png": (".png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
+    "image/jpeg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    "image/gif": (".gif", lambda data: data.startswith((b"GIF87a", b"GIF89a"))),
+    "image/bmp": (".bmp", lambda data: data.startswith(b"BM")),
+    "image/webp": (
+        ".webp",
+        lambda data: data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP",
+    ),
+}
+_AUDIO_MEDIA_SIGNATURES = {
+    "audio/ogg": (".ogg", lambda data: data.startswith(b"OggS")),
+    "audio/opus": (".opus", lambda data: data.startswith(b"OggS")),
+    "audio/mpeg": (
+        ".mp3",
+        lambda data: data.startswith(b"ID3") or data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"},
+    ),
+    "audio/wav": (
+        ".wav",
+        lambda data: data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WAVE",
+    ),
+    "audio/flac": (".flac", lambda data: data.startswith(b"fLaC")),
+    "audio/mp4": (".m4a", lambda data: len(data) >= 8 and data[4:8] == b"ftyp"),
+    "audio/aac": (
+        ".m4a",
+        lambda data: (len(data) >= 2 and data[0] == 0xFF and data[1] & 0xF6 == 0xF0)
+        or (len(data) >= 8 and data[4:8] == b"ftyp"),
+    ),
+}
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -562,6 +599,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": "Cannot parse body"}, status=400
                 )
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"error": "Webhook payload must be a JSON object"}, status=400
+            )
 
         # Check event type filter
         event_type = (
@@ -656,6 +697,72 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
+
+        # A synthetic source is an explicit trusted-route contract: identity
+        # fields come only from route config, never from the untrusted payload.
+        source_platform: Platform | None = None
+        target_adapter = None
+        source_platform_name = route_config.get("source_platform")
+        if source_platform_name is not None:
+            try:
+                source_platform = Platform(str(source_platform_name))
+            except ValueError:
+                return web.json_response({"error": "Invalid configured source platform"}, status=500)
+            if source_platform in {Platform.WEBHOOK, Platform.API_SERVER}:
+                return web.json_response({"error": "Invalid configured source platform"}, status=500)
+            for required in ("source_chat_id", "source_user_id"):
+                value = route_config.get(required)
+                if not isinstance(value, (str, int)) or not str(value):
+                    return web.json_response(
+                        {"error": f"Synthetic source requires {required}"}, status=500
+                    )
+            target_adapter = getattr(self.gateway_runner, "adapters", {}).get(source_platform)
+            if (
+                target_adapter is None
+                or not bool(getattr(getattr(target_adapter, "config", None), "enabled", False))
+                or not bool(getattr(target_adapter, "_running", False))
+                or not callable(getattr(target_adapter, "_message_handler", None))
+                or not callable(getattr(target_adapter, "handle_message", None))
+            ):
+                return web.json_response(
+                    {"error": "Configured source platform is unavailable"}, status=503
+                )
+
+        # Decode before idempotency/cache writes. Malformed attachments must not
+        # silently become text-only agent turns.
+        def decode_media(field_names: tuple[str, ...], kind: str) -> bytes | None:
+            value = next((payload[name] for name in field_names if name in payload), None)
+            if value is None:
+                return None
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Invalid {kind} base64 payload")
+            try:
+                decoded = base64.b64decode(value, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"Invalid {kind} base64 payload") from exc
+            if not decoded:
+                raise ValueError(f"Invalid {kind} base64 payload")
+            return decoded
+
+        try:
+            audio_bytes = decode_media(("audio_base64", "voice_base64"), "audio")
+            image_bytes = decode_media(("screenshot_base64", "image_base64"), "image")
+        except ValueError:
+            return web.json_response({"error": "Invalid media payload"}, status=400)
+        if audio_bytes is not None and image_bytes is not None:
+            return web.json_response(
+                {"error": "Only one media payload is supported per webhook"}, status=400
+            )
+        audio_mime = str(payload.get("audio_mime_type") or payload.get("voice_mime_type") or "audio/ogg").lower()
+        image_mime = str(payload.get("screenshot_mime_type") or payload.get("image_mime_type") or "image/jpeg").lower()
+        audio_spec = _AUDIO_MEDIA_SIGNATURES.get(audio_mime)
+        image_spec = _IMAGE_MEDIA_SIGNATURES.get(image_mime)
+        if audio_bytes is not None and (audio_spec is None or not audio_spec[1](audio_bytes)):
+            return web.json_response({"error": "Invalid media payload"}, status=400)
+        if image_bytes is not None and (image_spec is None or not image_spec[1](image_bytes)):
+            return web.json_response({"error": "Invalid media payload"}, status=400)
+        audio_ext = audio_spec[0] if audio_spec is not None else ".ogg"
+        image_ext = image_spec[0] if image_spec is not None else ".jpg"
 
         # Build a unique delivery ID
         delivery_id = request.headers.get(
@@ -754,39 +861,91 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
 
-        # Build source and event
-        source = self.build_source(
-            chat_id=session_chat_id,
-            chat_name=f"webhook/{route_name}",
-            chat_type="webhook",
-            user_id=f"webhook:{route_name}",
-            user_name=route_name,
-        )
+        # Cache validated media through the shared inbound-media funnel. If a
+        # cache operation fails after creating a file, remove it immediately;
+        # successful files follow the existing gateway cache TTL cleanup.
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        message_type = MessageType.TEXT
+        try:
+            if audio_bytes is not None:
+                media_urls.append(cache_audio_from_bytes(audio_bytes, ext=audio_ext))
+                media_types.append(audio_mime)
+                message_type = MessageType.VOICE
+            if image_bytes is not None:
+                media_urls.append(cache_image_from_bytes(image_bytes, ext=image_ext))
+                media_types.append(image_mime)
+                message_type = MessageType.PHOTO
+        except (OSError, ValueError) as exc:
+            for path in media_urls:
+                try:
+                    import os
+                    os.unlink(path)
+                except OSError:
+                    pass
+            # A delivery is not accepted until its attachment cache succeeds;
+            # otherwise a transient disk/cache failure would consume the ID and
+            # permanently block a valid provider retry. Remove the matching
+            # ordering record too so repeated failures cannot grow stale deque
+            # entries until the normal TTL prune runs.
+            if self._seen_deliveries.get(delivery_id) == now:
+                self._seen_deliveries.pop(delivery_id, None)
+            self._delivery_info.pop(session_chat_id, None)
+            self._delivery_info_created.pop(session_chat_id, None)
+            try:
+                self._delivery_info_order.remove((now, session_chat_id))
+            except ValueError:
+                pass
+            if isinstance(exc, OSError):
+                return web.json_response({"error": "Media cache unavailable"}, status=503)
+            return web.json_response({"error": "Invalid media payload"}, status=400)
+
+        if source_platform is not None:
+            source = SessionSource(
+                platform=source_platform,
+                chat_id=str(route_config["source_chat_id"]),
+                chat_name=route_config.get("source_chat_name") or f"webhook/{route_name}",
+                chat_type=str(route_config.get("source_chat_type") or "dm"),
+                user_id=str(route_config["source_user_id"]),
+                user_name=str(route_config.get("source_user_name") or route_name),
+                thread_id=str(route_config.get("source_thread_id")) if route_config.get("source_thread_id") else None,
+            )
+            event_message_id = None
+        else:
+            source = self.build_source(
+                chat_id=session_chat_id,
+                chat_name=f"webhook/{route_name}",
+                chat_type="webhook",
+                user_id=f"webhook:{route_name}",
+                user_name=route_name,
+            )
+            event_message_id = delivery_id
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(
             text=prompt,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             raw_message=payload,
-            message_id=delivery_id,
+            message_id=event_message_id,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         logger.info(
             "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",
-            request.method,
+            getattr(request, "method", "POST"),
             event_type,
             route_name,
             len(prompt),
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately.  The per-delivery
-        # session is closed by the ``on_processing_complete`` override below
-        # once the agent run actually finishes (``handle_message`` itself is
-        # fire-and-forget: it spawns ``_process_message_background`` and
-        # returns before the run starts, so nothing can be closed here).
-        task = asyncio.create_task(self.handle_message(event))
+        # Non-blocking — return 202 Accepted immediately. The default webhook
+        # handler closes its one-shot delivery session on completion; a native
+        # synthetic source deliberately uses that platform adapter instead.
+        handler = target_adapter.handle_message if target_adapter is not None else self.handle_message
+        task = asyncio.create_task(handler(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 

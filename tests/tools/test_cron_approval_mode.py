@@ -361,18 +361,22 @@ class TestCronModeInteractions:
 
 
 class TestCronWithGatewayOrigin:
-    """Cron jobs originating from a gateway platform must NOT be treated as gateway.
+    """Cron jobs must use cron_mode, not gateway approval.
 
-    cron/scheduler.py binds HERMES_SESSION_PLATFORM via contextvars for
-    delivery routing (so cron output lands back in the origin chat). The
-    API-server approvals work (PR #20311) made check_dangerous_command treat
-    any contextvar-bound platform as a gateway session. That would route
-    cron-from-telegram/discord/etc. through submit_pending with no listener,
-    hanging the job instead of respecting approvals.cron_mode.
+    cron/scheduler.py explicitly clears HERMES_SESSION_PLATFORM via
+    contextvars (``set_session_vars(platform="", ...)``) so cron jobs
+    never satisfy the ``_get_session_platform()`` gateway check.
+    ``_is_gateway_approval_context()`` therefore falls through to
+    ``HERMES_CRON_SESSION`` and correctly routes through cron_mode.
+
+    If a session *does* have a non-empty platform (e.g. a real gateway
+    session that also leaks HERMES_CRON_SESSION from a shared process),
+    per-session gateway indicators take precedence — see
+    ``TestGatewayContextOverridesCronSession`` in test_approval.py.
     """
 
-    def test_cron_with_telegram_origin_uses_cron_mode_not_gateway(self, monkeypatch):
-        """Cron + contextvar platform=telegram + cron_mode=deny → BLOCKED, not pending."""
+    def test_cron_session_uses_cron_mode_not_gateway(self, monkeypatch):
+        """Cron + platform="" (real scheduler) + cron_mode=deny → BLOCKED."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -380,7 +384,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="telegram", chat_id="123")
+        tokens = set_session_vars(platform="", chat_id="")
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -393,8 +397,8 @@ class TestCronWithGatewayOrigin:
         finally:
             clear_session_vars(tokens)
 
-    def test_cron_with_telegram_origin_approve_mode_allows(self, monkeypatch):
-        """Cron + contextvar platform=telegram + cron_mode=approve → allowed via cron path."""
+    def test_cron_session_approve_mode_allows(self, monkeypatch):
+        """Cron + platform="" + cron_mode=approve → allowed via cron path."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -402,7 +406,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="discord", chat_id="456")
+        tokens = set_session_vars(platform="", chat_id="")
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
@@ -413,8 +417,8 @@ class TestCronWithGatewayOrigin:
         finally:
             clear_session_vars(tokens)
 
-    def test_cron_with_telegram_origin_combined_guard_uses_cron_mode(self, monkeypatch):
-        """check_all_command_guards must also honor cron_mode over gateway classification."""
+    def test_cron_session_combined_guard_uses_cron_mode(self, monkeypatch):
+        """check_all_command_guards must also honor cron_mode with platform=""."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -422,7 +426,7 @@ class TestCronWithGatewayOrigin:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         from gateway.session_context import set_session_vars, clear_session_vars
-        tokens = set_session_vars(platform="telegram", chat_id="789")
+        tokens = set_session_vars(platform="", chat_id="")
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
@@ -430,5 +434,27 @@ class TestCronWithGatewayOrigin:
                 assert not result["approved"]
                 assert "BLOCKED" in result["message"]
                 assert result.get("status") != "approval_required"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_gateway_platform_overrides_cron_flag(self, monkeypatch):
+        """Non-empty platform + HERMES_CRON_SESSION=1 → gateway, not cron.
+
+        When the scheduler and gateway share a process, HERMES_CRON_SESSION
+        leaks into gateway sessions.  A non-empty session platform is a
+        per-session indicator that must win over the process-wide flag.
+        """
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(platform="telegram", chat_id="123")
+        try:
+            from tools.approval import _is_gateway_approval_context
+            # Non-empty platform → gateway context, even with cron flag set.
+            assert _is_gateway_approval_context() is True
         finally:
             clear_session_vars(tokens)

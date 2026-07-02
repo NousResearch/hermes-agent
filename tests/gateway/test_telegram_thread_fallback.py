@@ -1453,3 +1453,42 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+def test_telegram_reply_to_bot_message_marks_reply_target_as_own():
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(id=777)
+    message = SimpleNamespace(
+        text="show diff first",
+        caption=None,
+        chat=SimpleNamespace(
+            id=123,
+            type=telegram_mod.ChatType.PRIVATE,
+            full_name="Alice",
+            title=None,
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice", is_bot=False),
+        message_thread_id=None,
+        is_topic_message=False,
+        reply_to_message=SimpleNamespace(
+            message_id=42,
+            text="Checked: server is healthy. Next step: restart gateway.",
+            caption=None,
+            from_user=SimpleNamespace(
+                id=777, full_name="Hermes Bot", username="hermesbot", is_bot=True
+            ),
+        ),
+        quote=None,
+        message_id=43,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.reply_to_message_id == "42"
+    assert event.reply_to_text == "Checked: server is healthy. Next step: restart gateway."
+    assert event.reply_to_author_id == "777"
+    assert event.reply_to_author_name == "Hermes Bot"
+    assert event.reply_to_is_own_message is True

@@ -10035,7 +10035,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_snippet = event.reply_to_text[:500]
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                    "[Reply metadata: the user is replying to an assistant/bot-authored "
+                    f'message; the quoted text is not user-authored: "{reply_snippet}"]\n\n'
                     f"{message_text}"
                 )
             else:

@@ -118,7 +118,10 @@ async def test_own_message_reply_prefix_marks_assistant_message():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
+    assert result.startswith(
+        '[Reply metadata: the user is replying to an assistant/bot-authored message; '
+        'the quoted text is not user-authored: "Use the direct train."]'
+    )
     assert result.endswith("this one")
 
 
@@ -180,3 +183,28 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+@pytest.mark.asyncio
+async def test_reply_to_own_tool_status_marks_quote_not_user_authored():
+    runner = _make_runner()
+    source = _source()
+    tool_status = "Checked: server is healthy. Next step: restart gateway."
+    event = MessageEvent(
+        text="do not restart yet; show the diff first",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=tool_status,
+        reply_to_is_own_message=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "not user-authored" in result
+    assert "[Replying to:" not in result
+    assert result.endswith("do not restart yet; show the diff first")

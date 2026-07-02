@@ -34,6 +34,7 @@ from agent.auxiliary_client import (
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _pool_runtime_base_url,
 )
 
 
@@ -1140,6 +1141,49 @@ class TestVisionClientFallback:
         assert response.usage.prompt_tokens == 3
         assert response.usage.completion_tokens == 4
 
+    def test_anthropic_auxiliary_client_uses_model_output_limit_by_default(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        final_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="aux response")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+        )
+        messages_api = SimpleNamespace(create=MagicMock())
+        real_client = SimpleNamespace(messages=messages_api)
+        captured_kwargs = {}
+
+        def fake_create_anthropic_message(_client, kwargs):
+            captured_kwargs.update(kwargs)
+            return final_message
+
+        client = AnthropicAuxiliaryClient(
+            real_client,
+            "claude-opus-4-8",
+            "sk-test",
+            "https://api.anthropic.com",
+        )
+
+        with patch(
+            "agent.anthropic_adapter.create_anthropic_message",
+            side_effect=fake_create_anthropic_message,
+        ):
+            response = client.chat.completions.create(
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "aux response"
+        # Behavior contract, not a frozen literal: a capless native-Anthropic
+        # aux call must default to the model's native output ceiling (resolved
+        # via _get_anthropic_max_output) rather than the old hidden 2000 cap.
+        # Asserting against the resolver keeps this test alive across
+        # model-table churn while still catching a regression to `or 2000`.
+        from agent.anthropic_adapter import _get_anthropic_max_output
+
+        expected_ceiling = _get_anthropic_max_output("claude-opus-4-8")
+        assert expected_ceiling > 2000
+        assert captured_kwargs["max_tokens"] == expected_ceiling
+
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
@@ -1479,7 +1523,13 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is fake_client
         assert model == "openai/gpt-5.4-mini"
-        assert mock_resolve.call_count == 1
+        # A DIFFERENT model resolves its own client (model participates in the
+        # cache key). This isolation is what stops two concurrent advisors on
+        # the same provider/base_url/key (e.g. a MoA fan-out) from sharing — and
+        # racing the lifecycle of — one cached client. Same-model reuse is still
+        # a single resolve (verified elsewhere); distinct models => distinct
+        # resolves.
+        assert mock_resolve.call_count == 2
 
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
@@ -2537,6 +2587,8 @@ class TestTransientTransportRetry:
         p1, p2, p3 = self._patches(primary)
         with (
             p1, p2, p3,
+            patch("agent.auxiliary_client._transient_retry_count", return_value=1),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
             patch(
                 "agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
@@ -2548,7 +2600,7 @@ class TestTransientTransportRetry:
         ):
             result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"fallback": True}
-        # Primary tried twice (initial + same-target retry), then fallback.
+        # Primary tried twice (initial + one same-target retry), then fallback.
         assert primary.chat.completions.create.call_count == 2
         assert fb_client.chat.completions.create.call_count == 1
 
@@ -3603,6 +3655,102 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
+class TestCodexAdapterPromptCacheKey:
+    """_CodexCompletionsAdapter emits a stable content-addressed prompt_cache_key
+    on the Codex/Responses aux path, matching the main transport
+    (agent/transports/codex.py). Regression for issue #53735: MoA acting-
+    aggregator and other auxiliary Responses calls stayed cache-cold because
+    the adapter never set prompt_cache_key.
+    """
+
+    @staticmethod
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        return adapter, captured_kwargs
+
+    def test_cache_key_set_and_prefixed(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ])
+        key = captured.get("prompt_cache_key")
+        assert isinstance(key, str) and key.startswith("pck_")
+
+    def test_cache_key_stable_across_identical_prefix(self):
+        """Same instructions + tools → same key (content-addressed, not per-call)."""
+        a1, c1 = self._build_adapter()
+        a1.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "first"},
+        ])
+        a2, c2 = self._build_adapter()
+        a2.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "second — different user turn"},
+        ])
+        # User-turn content differs but the static prefix (instructions) matches,
+        # so the routing key is identical → same warm cache bucket.
+        assert c1["prompt_cache_key"] == c2["prompt_cache_key"]
+
+    def test_cache_key_differs_on_different_instructions(self):
+        a1, c1 = self._build_adapter()
+        a1.create(messages=[{"role": "system", "content": "SYS-A"}, {"role": "user", "content": "x"}])
+        a2, c2 = self._build_adapter()
+        a2.create(messages=[{"role": "system", "content": "SYS-B"}, {"role": "user", "content": "x"}])
+        assert c1["prompt_cache_key"] != c2["prompt_cache_key"]
+
+    def test_cache_key_skipped_for_xai_host(self):
+        """xAI Responses takes the key in extra_body, not top-level — skip here."""
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_key" not in captured
+
+    def test_cache_key_skipped_for_github_copilot_host(self):
+        """GitHub/Copilot Responses opts out of cache-key routing entirely."""
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_key" not in captured
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through
@@ -4374,6 +4522,18 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+
+def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
+    entry = SimpleNamespace(
+        provider="nous",
+        runtime_base_url="https://inference-api.nousresearch.com/v1",
+        inference_base_url="https://inference-api.nousresearch.com/v1",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
+
+    assert _pool_runtime_base_url(entry) == "https://ai.wildebeest-newton.ts.net/v1"
 
 
 class TestAnthropicExplicitApiKey:

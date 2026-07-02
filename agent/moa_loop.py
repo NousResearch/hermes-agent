@@ -28,8 +28,8 @@ _MAX_REFERENCE_WORKERS = 8
 
 
 class _RefAccounting:
-    """Per-reference token usage + estimated cost, carried as the third slot
-    of a reference-output tuple.
+    """Per-reference token usage + estimated cost + full trace, carried as the
+    third slot of a reference-output tuple.
 
     Kept as a tiny object (not a bare CanonicalUsage) because an advisor may
     run on a different model/provider than the aggregator, so its cost MUST be
@@ -37,15 +37,48 @@ class _RefAccounting:
     aggregator's usage and pricing the sum at the aggregator's rate would
     misprice every advisor. ``usage`` feeds accurate token counts;
     ``cost_usd`` feeds accurate cost.
+
+    ``messages`` / ``output`` / ``model`` / ``provider`` / ``temperature``
+    carry the FULL reference input and output for trace persistence (the
+    display ``text`` is a truncated preview and is not enough to audit what an
+    advisor actually saw). They are only populated when tracing is on; they add
+    negligible cost otherwise.
     """
 
-    __slots__ = ("usage", "cost_usd", "cost_status", "cost_source")
+    __slots__ = (
+        "usage",
+        "cost_usd",
+        "cost_status",
+        "cost_source",
+        "messages",
+        "output",
+        "model",
+        "provider",
+        "temperature",
+    )
 
-    def __init__(self, usage: Any, cost_usd: Any = None, cost_status: str | None = None, cost_source: str | None = None):
+    def __init__(
+        self,
+        usage: Any,
+        cost_usd: Any = None,
+        cost_status: str | None = None,
+        cost_source: str | None = None,
+        *,
+        messages: Any = None,
+        output: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        temperature: Any = None,
+    ):
         self.usage = usage
         self.cost_usd = cost_usd
         self.cost_status = cost_status
         self.cost_source = cost_source
+        self.messages = messages
+        self.output = output
+        self.model = model
+        self.provider = provider
+        self.temperature = temperature
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -219,11 +252,29 @@ def _run_reference(
             cost_source = cost.source
         except Exception:  # pragma: no cover - defensive
             pass
-        acct = _RefAccounting(usage, cost_usd, cost_status, cost_source)
-        return label, _extract_text(response) or "(empty response)", acct
+        _output_text = _extract_text(response) or "(empty response)"
+        acct = _RefAccounting(
+            usage,
+            cost_usd,
+            cost_status,
+            cost_source,
+            messages=messages,
+            output=_output_text,
+            model=slot.get("model"),
+            provider=runtime.get("provider") or slot.get("provider"),
+            temperature=temperature,
+        )
+        return label, _output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
-        return label, f"[failed: {exc}]", _RefAccounting(CanonicalUsage())
+        return label, f"[failed: {exc}]", _RefAccounting(
+            CanonicalUsage(),
+            messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
+            output=f"[failed: {exc}]",
+            model=slot.get("model"),
+            provider=runtime.get("provider") or slot.get("provider"),
+            temperature=temperature,
+        )
 
 
 def _run_references_parallel(
@@ -510,6 +561,28 @@ def aggregate_moa_context(
     )
 
 
+def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
+    """Attach the per-turn reference block at the END of the aggregator prompt.
+
+    The reference text differs on every tool-loop iteration. In an agentic loop
+    the most recent ``user`` message is the *original task* sitting near the TOP
+    of the context (everything after it is assistant/tool turns), so merging the
+    turn-varying reference block into it diverges the prompt prefix early — the
+    server's KV cache cannot be reused and the entire conversation re-prefills on
+    every step (full prefill each tool call, dominating latency on long contexts).
+
+    Appending at the very end keeps the ``[system][task][tool-history]`` prefix
+    stable and cache-reusable (only the new block re-prefills), and gives the
+    aggregator the references with recency. Merge into the last message only when
+    it is already a trailing string ``user`` turn (plain chat — still at the end).
+    """
+    last = agg_messages[-1] if agg_messages else None
+    if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
+        last["content"] = last["content"] + "\n\n" + guidance
+    else:
+        agg_messages.append({"role": "user", "content": guidance})
+
+
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
@@ -545,6 +618,14 @@ class MoAChatCompletions:
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        # Resolved aggregator slot ({provider, model, ...}) from the most recent
+        # create(); read by session cost accounting to price the aggregator's
+        # acting turn at its real model instead of the virtual preset name.
+        self.last_aggregator_slot: Any = None
+        # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
+        # caller to stitch in the live session_id + resolved aggregator output
+        # and flush to the trace file (only when moa.save_traces is on).
+        self._pending_trace: Any = None
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
         """Pop pending reference-fan-out usage + cost, resetting both to empty.
@@ -563,6 +644,53 @@ class MoAChatCompletions:
         self._pending_reference_cost = None
         return usage, cost
 
+    def consume_and_save_trace(
+        self, session_id: Any = None, aggregator_output_fallback: Any = None
+    ) -> None:
+        """Flush the pending full-turn trace to disk, if one is pending.
+
+        No-op when tracing is off (``save_moa_turn`` checks the config), when
+        there is no pending trace (a cache-HIT iteration ran no references), or
+        when the aggregator input was never recorded. Clears the pending trace
+        so a repeat consume cannot double-write. Best-effort — never raises.
+
+        ``aggregator_output_fallback`` is the aggregator's resolved acting text
+        as the caller already holds it in memory (the streamed assistant text).
+        On the streaming path the aggregator's output could not be captured
+        inline at ``create()`` time (the raw token stream was handed to the live
+        consumer), so ``pending["aggregator_output"]`` is None; we fold the
+        caller's resolved text in here so the trace is self-contained in BOTH
+        streaming and non-streaming modes. Non-streaming already has the inline
+        output and ignores the fallback.
+        """
+        pending = self._pending_trace
+        self._pending_trace = None
+        if not pending or "aggregator_input_messages" not in pending:
+            return
+        try:
+            from agent.moa_trace import save_moa_turn
+
+            agg_slot = pending.get("aggregator_slot") or {}
+            # Prefer the inline capture (non-streaming); fall back to the
+            # caller's resolved streamed text when streaming left it None.
+            agg_output = pending.get("aggregator_output")
+            if agg_output is None and aggregator_output_fallback:
+                agg_output = aggregator_output_fallback
+            save_moa_turn(
+                session_id=session_id,
+                preset_name=pending.get("preset", ""),
+                reference_outputs=pending.get("reference_outputs", []),
+                aggregator_label=pending.get("aggregator_label", ""),
+                aggregator_model=agg_slot.get("model"),
+                aggregator_provider=agg_slot.get("provider"),
+                aggregator_temperature=pending.get("aggregator_temperature"),
+                aggregator_input_messages=pending.get("aggregator_input_messages"),
+                aggregator_output=agg_output,
+                aggregator_streamed=bool(pending.get("aggregator_streamed")),
+            )
+        except Exception as exc:  # pragma: no cover - tracing must never break a turn
+            logger.debug("MoA trace flush failed: %s", exc)
+
     def _emit(self, event: str, **kwargs: Any) -> None:
         cb = self.reference_callback
         if cb is None:
@@ -580,10 +708,24 @@ class MoAChatCompletions:
         messages = list(api_kwargs.get("messages") or [])
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
-        # MoA does not cap reference or aggregator output: each model uses its
-        # own maximum. Passing max_tokens=None makes call_llm omit the parameter
-        # (it never caps by default), so a long aggregator synthesis is never
-        # truncated and providers that reject max_tokens don't 400.
+        # Expose the resolved aggregator slot so session cost accounting can
+        # price the aggregator's acting turn at its REAL model/provider. The
+        # agent's model/provider on the MoA path are the virtual preset name
+        # ("closed") and "moa", which have no pricing entry — without this the
+        # aggregator's spend (often the bulk of the turn) is silently dropped
+        # and the session cost reflects advisor fan-out only.
+        self.last_aggregator_slot = dict(aggregator) if aggregator else None
+        # By default MoA does not cap reference or aggregator output: each model
+        # uses its own maximum (max_tokens=None → call_llm omits the parameter,
+        # so a long aggregator synthesis is never truncated and providers that
+        # reject max_tokens don't 400). A preset MAY set reference_max_tokens to
+        # cap ADVISOR output only — advisor generation is the dominant MoA
+        # latency (turn latency correlates ~0.88 with output tokens), and the
+        # aggregator only needs the gist of each advisor's judgement, so a cap
+        # (e.g. 600) measurably cuts per-turn wall time (~44% on a sample task).
+        # The acting aggregator is never capped here (its output is the
+        # user-visible answer).
+        reference_max_tokens = preset.get("reference_max_tokens")
         temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
         aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
 
@@ -618,12 +760,16 @@ class MoAChatCompletions:
             # advisor spend by the tool-iteration count, so pending is zero.
             self._pending_reference_usage = CanonicalUsage()
             self._pending_reference_cost = None
+            # Likewise no trace on a cache HIT — the full turn was already
+            # traced on the MISS that ran the references. A repeat iteration is
+            # not a new MoA turn.
+            self._pending_trace = None
         else:
             reference_outputs = _run_references_parallel(
                 reference_models,
                 ref_messages,
                 temperature=temperature,
-                max_tokens=None,
+                max_tokens=reference_max_tokens,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -645,6 +791,17 @@ class MoAChatCompletions:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
             self._pending_reference_usage = _ref_usage
             self._pending_reference_cost = _ref_cost
+            # Stash the full reference fan-out for trace persistence. The
+            # aggregator input/label are filled in below once agg_messages is
+            # built; the aggregator OUTPUT is stitched in by the caller
+            # (consume_and_save_trace) once the response resolves — the caller
+            # holds the live session_id and the resolved aggregator response.
+            self._pending_trace = {
+                "preset": self.preset_name,
+                "reference_outputs": list(reference_outputs),
+                "aggregator_slot": aggregator,
+                "aggregator_temperature": aggregator_temperature,
+            }
 
             # Surface each reference model's answer to the display BEFORE the
             # aggregator acts — once per turn (only on the iteration that
@@ -683,17 +840,18 @@ class MoAChatCompletions:
                 "answer the user directly or call tools as needed.\n\n"
                 f"{joined}"
             )
-            for msg in reversed(agg_messages):
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                    msg["content"] = msg["content"] + "\n\n" + guidance
-                    break
-            else:
-                agg_messages.append({"role": "user", "content": guidance})
+            _attach_reference_guidance(agg_messages, guidance)
 
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_kwargs = dict(api_kwargs)
         agg_kwargs["messages"] = agg_messages
+        # Record the exact aggregator INPUT (incl. the injected reference
+        # context) into the pending trace so a trace captures what the
+        # aggregator actually saw, not a reconstruction.
+        if self._pending_trace is not None:
+            self._pending_trace["aggregator_input_messages"] = agg_messages
+            self._pending_trace["aggregator_label"] = _slot_label(aggregator)
         # The aggregator is the acting model. Resolve its slot to the provider's
         # real runtime (base_url/api_key/api_mode) and call it through the same
         # request-building path any model uses — so per-model wire-format
@@ -720,7 +878,7 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        return call_llm(
+        _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
             temperature=aggregator_temperature,
@@ -730,6 +888,22 @@ class MoAChatCompletions:
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )
+        # Non-streaming path (quiet mode / eval / subagents): the aggregator
+        # output is available inline, so capture it into the pending trace now.
+        # Streaming path: the aggregator's raw token stream is returned to the
+        # consumer live and its acting output lands as the turn's assistant
+        # message; the trace marks it streamed and points there.
+        if self._pending_trace is not None:
+            if stream:
+                self._pending_trace["aggregator_streamed"] = True
+                self._pending_trace["aggregator_output"] = None
+            else:
+                self._pending_trace["aggregator_streamed"] = False
+                try:
+                    self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
+                except Exception:  # pragma: no cover - defensive
+                    self._pending_trace["aggregator_output"] = None
+        return _agg_response
 
 
 class MoAClient:
@@ -744,3 +918,24 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    @property
+    def last_aggregator_slot(self) -> Any:
+        """Resolved aggregator slot ({provider, model, ...}) from the most
+        recent create(), or None. Read by session cost accounting to price the
+        aggregator's acting turn at its real model instead of the virtual
+        preset name."""
+        return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    def consume_and_save_trace(
+        self, session_id: Any = None, aggregator_output_fallback: Any = None
+    ) -> None:
+        """Flush the pending full-turn MoA trace via the completions facade.
+
+        No-op unless ``moa.save_traces`` is enabled and a turn is pending.
+        ``aggregator_output_fallback`` supplies the resolved acting text so the
+        streaming path's trace is self-contained (see the facade docstring).
+        """
+        return self.chat.completions.consume_and_save_trace(
+            session_id, aggregator_output_fallback=aggregator_output_fallback
+        )

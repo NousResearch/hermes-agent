@@ -120,6 +120,12 @@ def gw_session(monkeypatch):
     session_key = "cluster-test-session"
     token = A.set_current_session_key(session_key)
     with A._lock:
+        original_permanent = set(A._permanent_approved)
+        # User machines may have approved execute_code permanently.  These
+        # tests verify the gateway approval path itself, so isolate them from
+        # host allowlist state.
+        for alias in A._approval_key_aliases("execute_code"):
+            A._permanent_approved.discard(alias)
         A._gateway_queues.pop(session_key, None)
         A._gateway_notify_cbs.pop(session_key, None)
     try:
@@ -127,6 +133,8 @@ def gw_session(monkeypatch):
     finally:
         A.reset_current_session_key(token)
         with A._lock:
+            A._permanent_approved.clear()
+            A._permanent_approved.update(original_permanent)
             A._gateway_queues.pop(session_key, None)
             A._gateway_notify_cbs.pop(session_key, None)
 

@@ -2914,10 +2914,9 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Mark only this execution context as a cron session so the approval system
+    # can apply cron_mode without leaking that state into live gateway/Telegram
+    # user sessions hosted by the same process.
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -2963,6 +2962,7 @@ def run_job(
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
     )
+    _VAR_MAP["HERMES_CRON_SESSION"].set("1")
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
@@ -3624,6 +3624,7 @@ def run_job(
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        _VAR_MAP["HERMES_CRON_SESSION"].set("")
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

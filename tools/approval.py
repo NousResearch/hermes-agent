@@ -27,6 +27,11 @@ from hermes_cli.config import cfg_get
 from tools.interrupt import is_interrupted
 from utils import env_var_enabled, is_truthy_value
 
+try:
+    from gateway.session_context import get_session_env
+except Exception:  # pragma: no cover - minimal tool import contexts
+    get_session_env = None
+
 logger = logging.getLogger(__name__)
 
 # Freeze YOLO mode at module import time. Reading os.environ on every call
@@ -91,6 +96,18 @@ def _is_interactive_cli() -> bool:
     if ctx_val is not None:
         return is_truthy_value(ctx_val)
     return env_var_enabled("HERMES_INTERACTIVE")
+
+
+def _is_cron_session() -> bool:
+    """Return true only for the current execution context's cron run.
+
+    Cron can run inside the gateway process.  Reading only os.environ is
+    process-global and can make live Telegram/user sessions inherit cron_mode.
+    Prefer the ContextVar mirror when available; fall back to os.environ for
+    standalone cron/CLI/test compatibility.
+    """
+    value = get_session_env("HERMES_CRON_SESSION", "") if get_session_env else os.getenv("HERMES_CRON_SESSION", "")
+    return is_truthy_value(value)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -238,7 +255,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -3242,7 +3259,7 @@ def check_all_command_guards(command: str, env_type: str,
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -3678,7 +3695,7 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,

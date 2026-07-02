@@ -8600,17 +8600,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            _clarify_reply = _raw_clarify_reply
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
-            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+            if not _clarify_reply:
+                _audio_paths = [
+                    _path
+                    for _i, _path in enumerate(getattr(event, "media_urls", None) or [])
+                    if _event_media_is_audio(event, _i)
+                ]
+                if _audio_paths:
+                    _enriched_reply, _successful_transcripts = await self._enrich_message_with_transcription(
+                        "",
+                        _audio_paths,
+                    )
+                    if _successful_transcripts:
+                        _clarify_reply = "\n\n".join(
+                            _tx.strip() for _tx in _successful_transcripts if str(_tx).strip()
+                        ).strip()
+                        _echo_adapter = self.adapters.get(source.platform)
+                        _echo_meta = self._thread_metadata_for_source(
+                            source,
+                            self._reply_anchor_for_event(event),
+                        )
+                        if _echo_adapter:
+                            for _tx in _successful_transcripts:
+                                try:
+                                    await _echo_adapter.send(
+                                        source.chat_id,
+                                        f'🎙️ "{_tx}"',
+                                        metadata=_echo_meta,
+                                    )
+                                except Exception as _echo_exc:
+                                    logger.debug(
+                                        "Clarify transcript echo failed (non-fatal): %s",
+                                        _echo_exc,
+                                    )
+                    else:
+                        _clarify_reply = (_enriched_reply or _build_media_placeholder(event)).strip()
+            if _clarify_reply and not _clarify_reply.startswith("/"):
                 _resolved = _clarify_mod.resolve_text_response_for_session(
-                    _quick_key, _raw_clarify_reply,
+                    _quick_key, _clarify_reply,
                 )
                 if _resolved:
                     logger.info(
-                        "Gateway intercepted clarify text response (session=%s, id=%s)",
+                        "Gateway intercepted clarify response (session=%s, id=%s)",
                         _quick_key, _pending_clarify.clarify_id,
                     )
                     # Acknowledge with empty string so adapters that emit

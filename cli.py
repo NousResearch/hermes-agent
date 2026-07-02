@@ -3710,7 +3710,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
-        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        _requested_model = model
+        _requested_provider_arg = provider
+        if isinstance(_requested_model, str):
+            _model_text = _requested_model.strip()
+            if _model_text.lower().startswith("moa:"):
+                _requested_provider_arg = _requested_provider_arg or "moa"
+                _requested_model = _model_text.split(":", 1)[1].strip()
+        self.model = _requested_model or _config_model or _DEFAULT_CONFIG_MODEL
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -3746,7 +3753,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
-            provider
+            _requested_provider_arg
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"

@@ -103,6 +103,19 @@ class TestVerboseAndToolProgress:
 
 
 class TestFallbackChainInit:
+    def test_moa_prefixed_model_selects_virtual_provider(self):
+        cli = _make_cli(model="moa:strategy")
+
+        assert cli.requested_provider == "moa"
+        assert cli.provider == "moa"
+        assert cli.model == "strategy"
+
+    def test_moa_provider_strips_prefixed_model(self):
+        cli = _make_cli(model="moa:code-review", provider="moa")
+
+        assert cli.requested_provider == "moa"
+        assert cli.model == "code-review"
+
     def test_merges_new_and_legacy_fallback_config(self):
         cli = _make_cli(config_overrides={
             "fallback_providers": [

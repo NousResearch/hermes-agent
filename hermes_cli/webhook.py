@@ -175,12 +175,14 @@ def _cmd_subscribe(args):
         if getattr(args, "ignore_senders", "")
         else []
     )
+    mark_own_comments = getattr(args, "mark_own_comments", False)
 
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
         "actions": actions,
         "ignore_senders": ignore_senders,
+        "mark_own_comments": mark_own_comments,
         "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
@@ -212,13 +214,15 @@ def _cmd_subscribe(args):
         route["deliver"] == "github_comment"
         and "issue_comment" in events
         and not ignore_senders
+        and not mark_own_comments
     ):
         print(
             "  Warning: this route delivers via github_comment and listens for "
-            "issue_comment, but --ignore-senders is empty. GitHub will fire a "
-            "new webhook for the agent's own reply, and the agent can end up "
-            "replying to itself in a loop. Pass --ignore-senders <bot-login> "
-            "with the account 'gh' is authenticated as."
+            "issue_comment, but neither --ignore-senders nor --mark-own-comments "
+            "is set. GitHub will fire a new webhook for the agent's own reply, "
+            "and the agent can end up replying to itself in a loop. Pass "
+            "--ignore-senders <bot-login> if the bot posts as its own account, "
+            "or --mark-own-comments if it shares an account with a human."
         )
 
     subs[name] = route
@@ -238,6 +242,8 @@ def _cmd_subscribe(args):
         print(f"  Actions: {', '.join(actions)}")
     if ignore_senders:
         print(f"  Ignoring senders: {', '.join(ignore_senders)}")
+    if mark_own_comments:
+        print("  Marking own comments: yes (self-replies filtered by content, not sender)")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -276,6 +282,8 @@ def _cmd_list(args):
             print(f"    Actions: {actions}")
         if ignore_senders:
             print(f"    Ignoring senders: {ignore_senders}")
+        if route.get("mark_own_comments"):
+            print("    Marking own comments: yes")
         print(f"    Deliver: {deliver}")
         print()
 

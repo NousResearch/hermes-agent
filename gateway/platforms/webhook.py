@@ -22,6 +22,15 @@ Each route defines:
     who posted them, including the account this gateway posts as. Without
     this, a github_comment route can loop: agent replies -> reply fires a
     new webhook -> agent replies to itself -> ...
+  - mark_own_comments: alternative to ignore_senders for when the bot posts
+    as the same GitHub account a human also comments from (so sender.login
+    can't tell them apart). When true, every github_comment reply gets an
+    invisible HTML-comment marker appended (renders as nothing on GitHub,
+    still present in the raw body), and incoming comments/reviews carrying
+    that route's marker are dropped before the agent runs — same effect as
+    ignore_senders, keyed on content instead of identity. Off by default:
+    it makes bot-authored comments identifiable via the raw markdown source
+    to anyone who goes looking, which not everyone wants.
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
@@ -763,6 +772,21 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"status": "ignored", "sender": sender_login}
                 )
 
+        # Self-loop guard, content-based variant: for routes where the bot
+        # and a human share one GitHub account (ignore_senders can't tell
+        # them apart), mark_own_comments has _deliver_github_comment append
+        # an invisible marker to everything it posts. Drop events whose
+        # comment/review body carries this route's marker — same purpose as
+        # ignore_senders, without requiring a distinct bot identity.
+        if route_config.get("mark_own_comments") and isinstance(payload, dict):
+            body_text = self._extract_comment_body(payload)
+            if body_text and self._own_comment_marker(route_name) in body_text:
+                logger.info(
+                    "[webhook] Ignoring event from self (own marker) on route %s",
+                    route_name,
+                )
+                return web.json_response({"status": "ignored", "reason": "own_marker"})
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -839,6 +863,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     route_config.get("deliver_extra", {}), payload
                 ),
                 "payload": payload,
+                "route_name": route_name,
+                "mark_own_comments": route_config.get("mark_own_comments", False),
             }
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
@@ -896,6 +922,8 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver_extra": self._render_delivery_extra(
                 route_config.get("deliver_extra", {}), payload
             ),
+            "route_name": route_name,
+            "mark_own_comments": route_config.get("mark_own_comments", False),
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -1098,6 +1126,27 @@ class WebhookAdapter(BasePlatformAdapter):
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
 
+    def _own_comment_marker(self, route_name: str) -> str:
+        """Invisible-in-rendered-markdown marker stamped on this route's own
+        github_comment posts when mark_own_comments is set. Route-scoped so
+        multiple routes posting to the same repo don't cross-filter."""
+        return f"<!-- hermes-agent:{route_name} -->"
+
+    def _extract_comment_body(self, payload: dict) -> str:
+        """Best-effort text of 'the message a human/bot just posted', across
+        the GitHub payload shapes that carry one: issue_comment /
+        pull_request_review_comment ("comment"), pull_request_review
+        ("review"). Deliberately does NOT look at issue/PR body — that's the
+        description, not a reply, and doesn't participate in the reply loop
+        this guards against."""
+        for key in ("comment", "review"):
+            node = payload.get(key)
+            if isinstance(node, dict):
+                body = node.get("body")
+                if isinstance(body, str):
+                    return body
+        return ""
+
     def _render_delivery_extra(
         self, extra: dict, payload: dict
     ) -> dict:
@@ -1149,6 +1198,9 @@ class WebhookAdapter(BasePlatformAdapter):
         extra = delivery.get("deliver_extra", {})
         repo = extra.get("repo", "")
         pr_number = extra.get("pr_number", "")
+
+        if delivery.get("mark_own_comments"):
+            content = f"{content}\n\n{self._own_comment_marker(delivery.get('route_name', ''))}"
 
         if not repo or not pr_number:
             logger.error(

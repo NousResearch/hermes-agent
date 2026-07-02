@@ -640,6 +640,155 @@ class TestActionAndSenderFilter:
             assert resp.status == 202
 
 
+class TestOwnCommentMarker:
+    """Tests for mark_own_comments — the content-based self-loop guard used
+    when the bot posts as the same GitHub account a human also comments
+    from, so ignore_senders can't distinguish them."""
+
+    @pytest.mark.asyncio
+    async def test_deliver_appends_marker_when_enabled(self):
+        adapter = _make_adapter()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("gateway.platforms.webhook.subprocess.run", return_value=mock_result) as mock_run:
+            result = await adapter._deliver_github_comment(
+                "hello world",
+                {
+                    "deliver_extra": {"repo": "org/repo", "pr_number": "5"},
+                    "route_name": "gh-issues",
+                    "mark_own_comments": True,
+                },
+            )
+        assert result.success is True
+        posted_body = mock_run.call_args.args[0][mock_run.call_args.args[0].index("--body") + 1]
+        assert "hello world" in posted_body
+        assert "<!-- hermes-agent:gh-issues -->" in posted_body
+
+    @pytest.mark.asyncio
+    async def test_deliver_no_marker_when_disabled(self):
+        adapter = _make_adapter()
+        mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("gateway.platforms.webhook.subprocess.run", return_value=mock_result) as mock_run:
+            await adapter._deliver_github_comment(
+                "hello world",
+                {"deliver_extra": {"repo": "org/repo", "pr_number": "5"}},
+            )
+        posted_body = mock_run.call_args.args[0][mock_run.call_args.args[0].index("--body") + 1]
+        assert posted_body == "hello world"
+        assert "hermes-agent" not in posted_body
+
+    @pytest.mark.asyncio
+    async def test_incoming_comment_with_own_marker_is_ignored(self):
+        routes = {
+            "gh-issues": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "mark_own_comments": True,
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh-issues",
+                json={
+                    "action": "created",
+                    "comment": {"body": "some reply\n\n<!-- hermes-agent:gh-issues -->"},
+                },
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_incoming_comment_without_marker_is_accepted(self):
+        routes = {
+            "gh-issues": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "mark_own_comments": True,
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh-issues",
+                json={"action": "created", "comment": {"body": "a genuine human reply"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_marker_text_ignored_when_feature_disabled(self):
+        """mark_own_comments is opt-in — a comment merely containing marker-like
+        text doesn't get filtered unless the route turned the feature on."""
+        routes = {
+            "gh-issues": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh-issues",
+                json={
+                    "action": "created",
+                    "comment": {"body": "text <!-- hermes-agent:gh-issues -->"},
+                },
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_marker_is_route_scoped(self):
+        """A different route's marker doesn't trigger this route's guard."""
+        routes = {
+            "gh-issues": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "mark_own_comments": True,
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh-issues",
+                json={
+                    "action": "created",
+                    "comment": {"body": "text <!-- hermes-agent:some-other-route -->"},
+                },
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+    def test_extract_comment_body_reads_review_body(self):
+        """pull_request_review payloads carry the message under 'review', not 'comment'."""
+        adapter = _make_adapter()
+        payload = {"review": {"body": "looks good <!-- hermes-agent:gh -->"}}
+        assert adapter._extract_comment_body(payload) == "looks good <!-- hermes-agent:gh -->"
+
+    def test_extract_comment_body_missing_returns_empty(self):
+        adapter = _make_adapter()
+        assert adapter._extract_comment_body({"issue": {"body": "description text"}}) == ""
+
+
 # ===================================================================
 # Loop breaker (second-layer failsafe on top of ignore_senders/actions)
 # ===================================================================

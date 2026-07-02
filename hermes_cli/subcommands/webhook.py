@@ -45,6 +45,16 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "Set this to the account used for --deliver github_comment on this "
         "route so the agent doesn't reply to its own comments and loop.",
     )
+    wh_sub.add_argument(
+        "--mark-own-comments",
+        action="store_true",
+        help="Alternative to --ignore-senders for when the bot posts as the "
+        "same GitHub account a human also comments from. Appends an "
+        "invisible marker to every comment this route posts, and ignores "
+        "incoming comments/reviews carrying that marker, so the agent still "
+        "responds to your comments but not its own. Makes bot comments "
+        "identifiable via the raw markdown source (not the rendered view).",
+    )
     wh_sub.add_argument("--description", default="", help="What this subscription does")
     wh_sub.add_argument(
         "--skills", default="", help="Comma-separated skill names to load"

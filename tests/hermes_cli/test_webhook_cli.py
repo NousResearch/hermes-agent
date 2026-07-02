@@ -31,6 +31,7 @@ def _make_args(**kwargs):
         "events": "",
         "actions": "",
         "ignore_senders": "",
+        "mark_own_comments": False,
         "description": "",
         "skills": "",
         "deliver": "log",
@@ -131,6 +132,34 @@ class TestSubscribe:
             events="issue_comment",
             deliver="github_comment",
             ignore_senders="hermes-bot",
+        ))
+        out = capsys.readouterr().out
+        assert "Warning" not in out
+
+    def test_mark_own_comments_stored(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            events="issue_comment",
+            deliver="github_comment",
+            mark_own_comments=True,
+        ))
+        route = _load_subscriptions()["gh-issues"]
+        assert route["mark_own_comments"] is True
+
+    def test_mark_own_comments_defaults_false(self):
+        webhook_command(_make_args(webhook_action="subscribe", name="s"))
+        assert _load_subscriptions()["s"]["mark_own_comments"] is False
+
+    def test_github_comment_with_mark_own_comments_no_warning(self, capsys):
+        """mark_own_comments alone (no ignore_senders) also silences the warning —
+        it's the alternative self-loop guard for a shared bot/human account."""
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            events="issue_comment",
+            deliver="github_comment",
+            mark_own_comments=True,
         ))
         out = capsys.readouterr().out
         assert "Warning" not in out

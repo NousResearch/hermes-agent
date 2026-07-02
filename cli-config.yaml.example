@@ -585,6 +585,20 @@ streaming:
   # buffer_threshold: 40      # chars before forcing an edit flush
   # cursor: " ▉"              # cursor shown during streaming
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Prompt Prefix Warmer (local backends)
+# ─────────────────────────────────────────────────────────────────────────────
+# Keep the shared prompt prefix (tool schemas + system prompt) hot in a LOCAL
+# llama.cpp-style server's cache so fresh sessions skip the 10-20k-token
+# "entry tax" prefill. The gateway periodically replays a tiny (max_tokens=1)
+# request carrying the same prefix bytes Hermes last sent to each local
+# endpoint. No effect on cloud providers (they manage their own prompt
+# caches), so this is off by default.
+prefix_warmer:
+  enabled: false
+  # interval_seconds: 240     # seconds between warm cycles
+  # timeout_seconds: 120      # per warm-request timeout (covers a cold prefill)
+
 # =============================================================================
 # Skills Configuration
 # =============================================================================

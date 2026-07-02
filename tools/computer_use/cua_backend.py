@@ -1028,16 +1028,22 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
+        # WSLg / X11 / Wayland backend windows can come back with pid=None
+        # (no host process — synthesized by the compositor or the WSLg bridge)
+        # and window_id=None. Keep the row but normalize to None so downstream
+        # filters can still match by app/title; drop rows that have neither
+        # pid nor window_id since they aren't actionable.
         windows = [
             {
                 "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
+                "pid": int(w["pid"]) if w.get("pid") is not None else None,
+                "window_id": int(w["window_id"]) if w.get("window_id") is not None else None,
                 "off_screen": not w.get("is_on_screen", True),
                 "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
+                "z_index": w.get("z_index") if w.get("z_index") is not None else 0,
             }
             for w in raw_windows
+            if w.get("pid") is not None or w.get("window_id") is not None
         ]
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 class TestFeishuMarkdownTablePayload(unittest.TestCase):
     def _adapter(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         return FeishuAdapter(PlatformConfig())
 
@@ -254,7 +254,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_send_failure_falls_back_to_plain_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -283,7 +283,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_response_failure_falls_back_to_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -316,7 +316,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_more_than_five_tables_into_multiple_interactive_cards(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -342,7 +342,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_reply_rejection_retries_as_top_level_card_before_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -371,7 +371,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_reply_exception_retries_as_top_level_card_before_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -399,7 +399,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_reply_in_thread_false_ignores_thread_metadata_fallback(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
         message_api = SimpleNamespace(
@@ -425,7 +425,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_does_not_attempt_interactive_update_for_table_content(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -442,7 +442,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.edit_message(
                     chat_id="oc_chat",

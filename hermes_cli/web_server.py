@@ -1372,14 +1372,29 @@ def _apply_main_model_assignment(
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT_MAX = 1.0
+_GATEWAY_HEALTH_ROUTE_TIMEOUT = 1.0
 try:
-    _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+    _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "1"))
 except (ValueError, TypeError):
     _log.warning(
-        "Invalid GATEWAY_HEALTH_TIMEOUT value %r — using default 3.0s",
+        "Invalid GATEWAY_HEALTH_TIMEOUT value %r — using default 1.0s",
         os.getenv("GATEWAY_HEALTH_TIMEOUT"),
     )
-    _GATEWAY_HEALTH_TIMEOUT = 3.0
+    _GATEWAY_HEALTH_TIMEOUT = 1.0
+if _GATEWAY_HEALTH_TIMEOUT <= 0:
+    _log.warning(
+        "Invalid non-positive GATEWAY_HEALTH_TIMEOUT value %.3fs — using default 1.0s",
+        _GATEWAY_HEALTH_TIMEOUT,
+    )
+    _GATEWAY_HEALTH_TIMEOUT = 1.0
+elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
+    _log.warning(
+        "Capping GATEWAY_HEALTH_TIMEOUT %.3fs to %.3fs for dashboard liveness probes",
+        _GATEWAY_HEALTH_TIMEOUT,
+        _GATEWAY_HEALTH_TIMEOUT_MAX,
+    )
+    _GATEWAY_HEALTH_TIMEOUT = _GATEWAY_HEALTH_TIMEOUT_MAX
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
 
@@ -2823,9 +2838,17 @@ async def get_status(profile: Optional[str] = None):
 
         if not gateway_running and _GATEWAY_HEALTH_URL:
             loop = asyncio.get_running_loop()
-            alive, remote_health_body = await loop.run_in_executor(
-                None, _probe_gateway_health
-            )
+            try:
+                alive, remote_health_body = await asyncio.wait_for(
+                    loop.run_in_executor(None, _probe_gateway_health),
+                    timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                )
+            except TimeoutError:
+                _log.warning(
+                    "/api/status gateway health probe exceeded %.2fs; using local status",
+                    _GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                )
+                alive, remote_health_body = False, None
             if alive:
                 gateway_running = True
                 # PID from the remote container (display only — not locally valid)

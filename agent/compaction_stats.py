@@ -14,6 +14,9 @@ Design (from the approved spec, 7 Opus review passes):
 - Every ``*_tokens`` field is an ``estimate_messages_tokens_rough`` output over
   its row subset — NEVER the model's live ``prompt_tokens`` (same-estimator
   contract), so the additive identities are real cross-checks, not noise.
+- ``_signature_partition(population, reference)`` is the one consume-once
+  helper for copied/sanitized row subtraction; callers compose it for two-way
+  and hygiene three-way partitions instead of maintaining bespoke Counter loops.
 
 Bucket model::
 
@@ -96,7 +99,7 @@ class CompactionStats:
 
     # ── A-floor approximate-attribution flag (in-turn) ──
     # True when the kept_pre/folded split came from the exhaustive single-walk
-    # fallback (``_partition_pre_by_comp_kept``) rather than exact whole-tail
+    # fallback (``_signature_partition``) rather than exact whole-tail
     # alignment or an authoritative engine record. TOTALS still reconcile exactly;
     # only the kept/folded *split* is signature-approximate (bounded by the kept-tail
     # fraction). The caller labels the render + emits COMPACTION_STATS_APPROX_ATTRIBUTION
@@ -468,39 +471,23 @@ def build_hygiene_stats(
         if m.get("role") != "system" and id(m) not in _summary_ids
     ]
 
-    # ── Identity-aware three-way partition of `pre` ──
+    # ── Signature-aware three-way partition of `pre` ──
     # The gateway hands us `raw_history` as COPIES and `eligible_msgs` as the
     # filtered ORIGINALS, and `compressed`'s kept tail as yet more copies — so
-    # id() identity does NOT line up across the three lists. We therefore
-    # partition `pre` by walking it once and classifying each row by signature
-    # membership (consume-once multisets) against the kept tail and the eligible
-    # set, in that priority order:
+    # id() identity does NOT line up across the three lists. Use the shared
+    # consume-once partition helper in priority order:
     #   kept   = pre rows whose signature matches a kept-tail row  (survived verbatim)
-    #   folded = remaining pre rows whose signature matches an eligible row
+    #   folded = remaining pre rows whose signature matches a still-unconsumed eligible row
     #   cleared= everything else (tool/system/contentless the filter removed,
     #            not kept)
     # Priority kept > folded ensures a row LCM kept verbatim is counted ONCE in
-    # `kept`, never double-counted in `cleared`/`folded`. Each bucket's tokens
-    # are then an INDEPENDENT estimator call over its own rows.
-    _kept_want = Counter(_row_signature(m) for m in kept_compressed_rows)
-    _elig_want = Counter(_row_signature(m) for m in elig)
-    kept_rows: List[dict] = []
-    folded_rows: List[dict] = []
-    cleared_rows: List[dict] = []
-    for m in pre_msgs:
-        sig = _row_signature(m)
-        if _kept_want.get(sig, 0) > 0:
-            _kept_want[sig] -= 1
-            kept_rows.append(m)
-            # consume an eligible slot if this kept row was eligible (keeps the
-            # eligible multiset honest so a folded row can't reuse the slot)
-            if _elig_want.get(sig, 0) > 0:
-                _elig_want[sig] -= 1
-        elif _elig_want.get(sig, 0) > 0:
-            _elig_want[sig] -= 1
-            folded_rows.append(m)
-        else:
-            cleared_rows.append(m)
+    # `kept`, never double-counted in `cleared`/`folded`. Consuming the kept rows
+    # from the eligible reference first keeps duplicate signatures honest: a
+    # cleared duplicate cannot reuse the eligible slot already retained as kept.
+    # Each bucket's tokens are then an INDEPENDENT estimator call over its own rows.
+    kept_rows, not_kept_rows = _signature_partition(pre_msgs, kept_compressed_rows)
+    _, remaining_elig_rows = _signature_partition(elig, kept_rows)
+    folded_rows, cleared_rows = _signature_partition(not_kept_rows, remaining_elig_rows)
 
     pre_messages = len(pre_msgs)
     # Two kept populations on the message axis (twin of the kept_pre_tokens split):
@@ -584,90 +571,51 @@ def _row_signature(m: dict) -> Tuple[Optional[str], str]:
     return (m.get("role"), digest)
 
 
-def _disjoint_remainder(whole: List[dict], subset: List[dict]) -> List[dict]:
-    """Rows in ``whole`` not present (by identity) in ``subset`` — for cleared_tok.
-
-    Uses id()-identity when the same objects flow through, else falls back to a
-    role+content signature so token attribution is over the right rows.
-    """
-    sub_ids = {id(m) for m in subset}
-    rem = [m for m in whole if id(m) not in sub_ids]
-    if len(rem) == len(whole) - len(subset):
-        return rem
-    # identity didn't line up (copies); fall back to signature subtraction
-    want = Counter(_row_signature(m) for m in subset)
-    out = []
-    for m in whole:
-        s = _row_signature(m)
-        if want.get(s, 0) > 0:
-            want[s] -= 1
-        else:
-            out.append(m)
-    return out
-
-
-def _fold_rows(eligible: List[dict], kept: List[dict]) -> List[dict]:
-    """Eligible rows NOT in the kept tail — the folded population (token source)."""
-    kept_ids = {id(m) for m in kept}
-    rem = [m for m in eligible if id(m) not in kept_ids]
-    if len(rem) == len(eligible) - len(kept):
-        return rem
-    want = Counter(_row_signature(m) for m in kept)
-    out = []
-    for m in eligible:
-        s = _row_signature(m)
-        if want.get(s, 0) > 0:
-            want[s] -= 1
-        else:
-            out.append(m)
-    return out
-
-
-def _partition_pre_by_comp_kept(
-    eligible: List[dict], kept: List[dict]
+def _signature_partition(
+    population: List[dict], reference: List[dict]
 ) -> Tuple[List[dict], List[dict]]:
-    """Single consume-once partition of ``eligible`` into (kept_pre, folded).
+    """Partition ``population`` into ``(matched, unmatched)`` against ``reference``.
 
-    The A-floor (fallback) partition for the in-turn path. Walks ``eligible``
-    ONCE, classifying each row as *matched* (a pre-side row whose signature is in
-    the comp-kept multiset → ``kept_pre``) or *unmatched* (→ ``folded``). The two
-    buckets are disjoint and together exhaust ``eligible`` BY CONSTRUCTION
-    (``len(kept_pre) + len(folded) == len(eligible)``) — so a separate
-    ``estimator()`` over each bucket reconciles to ``estimator(eligible)`` within
-    estimator rounding, regardless of WHY whole-tail alignment failed.
-
-    Prefers ``id()``-identity when the same row objects flow through; falls back to
-    a collision-resistant ``(role, full-content-hash)`` **multiset** (consume-once,
-    decrement on match) so a duplicated signature (repeated tool scaffolds, short
-    identical turns on heavy sessions) cannot be matched twice or steal another
-    row's slot. This is the can-never-RECONCILE-fail floor for any path that lacks
-    Option B's authoritative engine record (built-in engine, overflow, a future
-    engine, or an LCM generation mismatch).
-
-    NOTE: the kept_pre/folded *attribution* here is signature-approximate (a
-    sanitized-then-unmatchable kept row lands in ``folded``); the TOTALS reconcile
-    exactly. The caller labels A-floor renders as approximate and measures the
-    gross bound (degrade-to-two-line above threshold).
+    Each reference row consumes at most one population row. Exact ``id()`` matches
+    win first when the same objects flow through; any still-unmatched reference
+    rows fall back to the collision-resistant row signature so copied rows can
+    match by role+content. The output preserves ``population`` order, is disjoint,
+    and exhausts ``population`` by construction.
     """
+    pop = list(population or [])
+    refs = list(reference or [])
+    if not pop:
+        return [], []
+    if not refs:
+        return [], pop
 
-    kept_ids = {id(m) for m in kept}
-    matched = [m for m in eligible if id(m) in kept_ids]
-    if len(matched) == len(kept):
-        # identity lined up cleanly — complement is exact
-        folded = [m for m in eligible if id(m) not in kept_ids]
-        return matched, folded
-    # copies / sanitized tail: consume-once signature multiset (collision-safe)
-    want = Counter(_row_signature(m) for m in kept)
-    kept_pre: List[dict] = []
-    folded: List[dict] = []
-    for m in eligible:
-        s = _row_signature(m)
-        if want.get(s, 0) > 0:
-            want[s] -= 1
-            kept_pre.append(m)
-        else:
-            folded.append(m)
-    return kept_pre, folded
+    matched_flags = [False] * len(pop)
+    remaining_by_id = Counter(id(m) for m in refs)
+    for i, row in enumerate(pop):
+        row_id = id(row)
+        if remaining_by_id.get(row_id, 0) > 0:
+            remaining_by_id[row_id] -= 1
+            matched_flags[i] = True
+
+    want = Counter()
+    for row in refs:
+        row_id = id(row)
+        if remaining_by_id.get(row_id, 0) > 0:
+            remaining_by_id[row_id] -= 1
+            want[_row_signature(row)] += 1
+
+    if want:
+        for i, row in enumerate(pop):
+            if matched_flags[i]:
+                continue
+            sig = _row_signature(row)
+            if want.get(sig, 0) > 0:
+                want[sig] -= 1
+                matched_flags[i] = True
+
+    matched = [row for row, matched in zip(pop, matched_flags) if matched]
+    unmatched = [row for row, matched in zip(pop, matched_flags) if not matched]
+    return matched, unmatched
 
 
 _PROVENANCE_KEY = "_src_idx"
@@ -904,11 +852,10 @@ def build_inturn_stats(
     pre-side over a true partition of ``messages`` → PRE reconciles even when the
     sanitizer made the comp tail diverge from its raw originals. Without them
     (built-in / overflow / manual paths, or a legacy caller), it falls back to the
-    pre-side complement of the comp-kept rows (``_fold_rows``), where ``kept_pre``
-    is left unset and the property defaults to comp-side (equal by construction on
-    a non-sanitizing engine). If alignment fails (no slice reproduces the comp
-    tail), ``folded``/``kept_pre`` are set so ``validate()`` fails → the caller
-    degrades to the honest two-line announce.
+    shared ``_signature_partition`` A-floor, setting ``kept_pre`` and ``folded``
+    over a disjoint exhaustive pre-side partition. The split is approximate when
+    sanitized comp rows no longer signature-match raw rows, but totals still
+    reconcile and the caller labels/degrades via ``approx_attribution``.
 
     Caller validates + degrades on failure.
     """
@@ -981,7 +928,7 @@ def build_inturn_stats(
             # fraction, which is a small contiguous suffix — the folded bulk is a prefix
             # and always classifies correctly), so totals are exact and only the split is
             # approximate. ``approx_attribution`` flags the caller to label + watch it.
-            kept_pre_rows, fold_rows = _partition_pre_by_comp_kept(pre_msgs, kept_rows)
+            kept_pre_rows, fold_rows = _signature_partition(pre_msgs, kept_rows)
             kept_pre_messages = len(kept_pre_rows)
             kept_pre_tokens = int(estimator(kept_pre_rows)) if kept_pre_rows else 0
             folded_count = len(fold_rows)

@@ -544,7 +544,7 @@ def test_build_inturn_stats_populates_folded_subsplit_exact():
 
 def test_build_inturn_stats_parent_unchanged_by_subsplit():
     """BLOCKER-2: folded_tokens must be byte-equal whether or not the sub-split runs."""
-    from agent.compaction_stats import build_inturn_stats, _fold_rows
+    from agent.compaction_stats import build_inturn_stats, _signature_partition
     msgs = [_toolmsg(i) for i in range(6)] + [_chatmsg(i) for i in range(4)]
     kept = msgs[-2:]
     summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)]\nx\n[Expand for details: y]"}
@@ -554,7 +554,7 @@ def test_build_inturn_stats_parent_unchanged_by_subsplit():
     kept_rows = [m for m in compressed
                  if m.get("role") != "system"
                  and "[Recent Summary" not in (m.get("content") or "")]
-    fold_pop = _fold_rows(msgs, kept_rows)
+    _, fold_pop = _signature_partition(msgs, kept_rows)
     assert stats.folded_tokens == _est(fold_pop)
 
 
@@ -592,7 +592,7 @@ def test_build_inturn_stats_degrades_when_tool_estimate_raises():
 
 
 def test_build_inturn_stats_subsplit_survives_fold_signature_fallback():
-    # CHANGE-E/C5: duplicate-signature rows force _fold_rows' Counter fallback;
+    # CHANGE-E/C5: duplicate-signature rows force _signature_partition's Counter fallback;
     # the helper must split the SAME post-fold list → still sums exactly.
     from agent.compaction_stats import build_inturn_stats
     dup = "TOOLRESULT " * 40
@@ -722,7 +722,7 @@ def test_build_hygiene_stats_populates_cleared_subsplit_exact():
 
 
 def test_build_hygiene_stats_cleared_parent_unchanged_by_subsplit():
-    from agent.compaction_stats import build_hygiene_stats, _disjoint_remainder
+    from agent.compaction_stats import build_hygiene_stats, _signature_partition
     raw = []
     for i in range(5):
         raw.append({"role": "user", "content": f"u{i} " * 20})
@@ -733,7 +733,7 @@ def test_build_hygiene_stats_cleared_parent_unchanged_by_subsplit():
     kept = eligible[-2:]
     compressed = list(kept)
     stats = build_hygiene_stats(raw_history=raw, eligible_msgs=eligible, compressed=compressed, estimator=_est)
-    cleared_rows = _disjoint_remainder(raw, eligible)
+    _, cleared_rows = _signature_partition(raw, eligible)
     assert stats.cleared_tokens == _est(cleared_rows)  # parent untouched
 
 

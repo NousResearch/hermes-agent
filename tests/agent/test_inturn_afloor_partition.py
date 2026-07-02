@@ -10,7 +10,7 @@ pre/comp-side sum → ``COMPACTION_STATS_RECONCILE_FAILED in-turn`` (live: ``cle
 + folded F + kept K != pre P``, |gap| ≤ ~3000 on ~650K sessions).
 
 The fix replaces that fallback with an exhaustive consume-once partition
-(``_partition_pre_by_comp_kept``): ``pre`` is split ONCE into (kept_pre, folded)
+(``_signature_partition``): ``pre`` is split ONCE into (kept_pre, folded)
 against the comp-kept multiset, so both buckets are measured pre-side over a disjoint
 exhaustive partition → totals reconcile BY CONSTRUCTION regardless of why alignment
 failed. The kept/folded *attribution* is signature-approximate (bounded by the
@@ -20,11 +20,11 @@ correctly), so ``approx_attribution`` is flagged for labelling + observability.
 from __future__ import annotations
 
 import dataclasses
+import random
 
 from agent.compaction_stats import (
     CompactionStats,
-    _fold_rows,
-    _partition_pre_by_comp_kept,
+    _signature_partition,
     build_inturn_stats,
 )
 from agent.model_metadata import estimate_messages_tokens_rough as _est
@@ -49,7 +49,7 @@ def test_red1_old_mixed_side_fallback_fails():
     measured pre-side) produces the exact live gap and FAILS validate()."""
     pre = [{"role": "user", "content": f"u{i} " + ("w" * 40)} for i in range(60)]
     _comp, kept_sanitized = _sanitized_comp(pre)
-    fold_old = _fold_rows(pre, kept_sanitized)
+    _, fold_old = _signature_partition(pre, kept_sanitized)
     old = CompactionStats(
         pre_messages=60, post_messages=2 + len(kept_sanitized), eligible_count=60,
         kept_messages=len(kept_sanitized), summary_messages=1, anchor_messages=1,
@@ -79,7 +79,7 @@ def test_green_a_floor_reconciles_same_shape():
 def test_partition_is_exhaustive_and_disjoint():
     pre = [{"role": "user", "content": f"u{i}"} for i in range(100)]
     kept = [dict(pre[i]) for i in (90, 92, 95, 97, 99)]  # copies (not id-identical)
-    kept_pre, folded = _partition_pre_by_comp_kept(pre, kept)
+    kept_pre, folded = _signature_partition(pre, kept)
     # exhaustive
     assert len(kept_pre) + len(folded) == len(pre)
     # disjoint by identity
@@ -92,7 +92,7 @@ def test_partition_identity_fast_path():
     """When the SAME row objects flow through, the partition is exact via id()."""
     pre = [{"role": "user", "content": f"u{i}"} for i in range(20)]
     kept = pre[-3:]  # same objects
-    kept_pre, folded = _partition_pre_by_comp_kept(pre, kept)
+    kept_pre, folded = _signature_partition(pre, kept)
     assert kept_pre == pre[-3:]
     assert folded == pre[:-3]
 
@@ -112,7 +112,7 @@ def test_partition_duplicate_signatures_consume_once():
         pre.append(dict(dup_t))
     # comp keeps 3 user + 2 tool copies of those duplicated signatures
     kept = [dict(dup_u), dict(dup_u), dict(dup_u), dict(dup_t), dict(dup_t)]
-    kept_pre, folded = _partition_pre_by_comp_kept(pre, kept)
+    kept_pre, folded = _signature_partition(pre, kept)
     assert len(kept_pre) == 5            # exactly as many as comp-kept (consume-once)
     assert len(kept_pre) + len(folded) == len(pre)   # exhaustive
     assert not ({id(m) for m in kept_pre} & {id(m) for m in folded})  # disjoint
@@ -128,7 +128,7 @@ def test_a_floor_gross_error_bounded_by_kept_tail():
     true_kept = pre[-20:]                       # the real pre-side kept tail
     # comp-kept = sanitized (content-stripped) versions of the true kept tail
     kept_sanitized = [{"role": "user", "content": f"strip{i}"} for i in range(20)]
-    kept_pre, folded = _partition_pre_by_comp_kept(pre, kept_sanitized)
+    kept_pre, folded = _signature_partition(pre, kept_sanitized)
     # rows the A-floor mis-bucketed vs the true tail boundary
     true_ids = {id(m) for m in true_kept}
     mis = [m for m in kept_pre if id(m) not in true_ids] + [m for m in folded if id(m) in true_ids]
@@ -154,6 +154,54 @@ def test_estimator_additivity_scattered_partition():
         b = [m for m, k in zip(pre, mask) if not k]
         worst = max(worst, abs((_est(a) + _est(b)) - _est(pre)))
     assert worst <= 4   # two-bucket ceil-rounding worst case (validate tol is ≥ this)
+
+
+def test_signature_partition_property_exhaustive_with_copies_sanitized_duplicates():
+    """Property-style guard: copied rows, sanitized non-matches, and duplicated
+    signatures still produce an exhaustive consume-once kept/folded partition.
+    """
+    from agent.compaction_stats import _row_signature
+
+    rng = random.Random(20260701)
+    for _ in range(100):
+        population = []
+        for i in range(rng.randint(1, 60)):
+            role = rng.choice(["user", "assistant", "tool"])
+            # Small content pool deliberately creates duplicate signatures.
+            content = f"dup-{rng.randrange(8)} " * rng.randint(1, 4)
+            population.append({"role": role, "content": content, "i": i})
+
+        reference = []
+        for row in rng.sample(population, rng.randint(0, len(population))):
+            copied = dict(row)
+            if rng.random() < 0.25:
+                # Sanitized comp-side row: same role, changed content, should not
+                # steal an original row's signature slot.
+                copied["content"] = f"sanitized-{copied['content']}"
+            reference.append(copied)
+            if rng.random() < 0.20:
+                # Duplicate reference signature; the helper may match another
+                # population duplicate, but only one row per reference copy.
+                reference.append(dict(copied))
+
+        kept, folded = _signature_partition(population, reference)
+
+        kept_ids = {id(m) for m in kept}
+        folded_ids = {id(m) for m in folded}
+        assert kept_ids.isdisjoint(folded_ids)
+        assert kept_ids | folded_ids == {id(m) for m in population}
+        assert len(kept) + len(folded) == len(population)
+
+        ref_counts = {}
+        for row in reference:
+            sig = _row_signature(row)
+            ref_counts[sig] = ref_counts.get(sig, 0) + 1
+        kept_counts = {}
+        for row in kept:
+            sig = _row_signature(row)
+            kept_counts[sig] = kept_counts.get(sig, 0) + 1
+        for sig, count in kept_counts.items():
+            assert count <= ref_counts.get(sig, 0)
 
 
 # ───────────────────────── gross-error guard denominator (Greptile P1 ×2, #109) ──

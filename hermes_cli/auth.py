@@ -1578,30 +1578,17 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         return ""
 
 
-def resolve_provider(
-    requested: Optional[str] = None,
-    *,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-) -> str:
-    """
-    Determine which inference provider to use.
+def _build_provider_alias_map() -> Dict[str, str]:
+    """Return the canonical provider-alias → provider-id map.
 
-    Priority (when requested="auto" or None) — explicit user intent wins over a
-    stale logged-in OAuth provider (#29285):
-    1. Explicit CLI api_key/base_url -> "openrouter"
-    2. config.yaml `model.provider`
-    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
-    4. OpenRouter credential pool
-    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
-    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
-    7. AWS Bedrock credential chain
-    8. Error (no provider configured)
-    """
-    normalized = (requested or "auto").strip().lower()
+    Single source of truth for alias resolution. Used by resolve_provider() and
+    by `hermes auth ...` command input normalization (auth_commands.py) so
+    `hermes auth add qwen` works the same as `hermes model --provider qwen`.
 
-    # Normalize provider aliases
-    _PROVIDER_ALIASES = {
+    The hardcoded dict remains authoritative for existing aliases; aliases
+    declared in plugins/model-providers/<name>/ extend it but never override.
+    """
+    aliases: Dict[str, str] = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
@@ -1642,11 +1629,45 @@ def resolve_provider(
         from providers import list_providers as _lp
         for _pp in _lp():
             for _alias in _pp.aliases:
-                if _alias not in _PROVIDER_ALIASES:
-                    _PROVIDER_ALIASES[_alias] = _pp.name
+                if _alias not in aliases:
+                    aliases[_alias] = _pp.name
     except Exception:
         pass
-    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+    return aliases
+
+
+def normalize_provider_alias(provider: str) -> str:
+    """Map a user-typed provider name (any alias) to its canonical provider id.
+
+    Pass-through: unknown names return unchanged so the caller can still raise
+    a useful "Unknown provider" error. The caller is expected to have already
+    lowercased/stripped the input.
+    """
+    return _build_provider_alias_map().get(provider, provider)
+
+
+def resolve_provider(
+    requested: Optional[str] = None,
+    *,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> str:
+    """
+    Determine which inference provider to use.
+
+    Priority (when requested="auto" or None) — explicit user intent wins over a
+    stale logged-in OAuth provider (#29285):
+    1. Explicit CLI api_key/base_url -> "openrouter"
+    2. config.yaml `model.provider`
+    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
+    4. OpenRouter credential pool
+    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
+    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
+    7. AWS Bedrock credential chain
+    8. Error (no provider configured)
+    """
+    normalized = (requested or "auto").strip().lower()
+    normalized = normalize_provider_alias(normalized)
 
     if normalized == "openrouter":
         return "openrouter"

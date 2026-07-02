@@ -76,10 +76,15 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
+    if not normalized:
+        return normalized
     if normalized in {"or", "open-router"}:
         return "openrouter"
-    if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
-        return "xai-oauth"
+    # Resolve canonical aliases (qwen -> qwen-oauth, glm -> zai, etc.) using
+    # the same source of truth as `hermes model` / `resolve_provider`. Without
+    # this, `hermes auth add qwen` fails with "Unknown provider: qwen" even
+    # though `hermes model --provider qwen` works.
+    normalized = auth_mod.normalize_provider_alias(normalized)
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -365,7 +370,22 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "qwen-oauth":
-        creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        # Unlike xai-oauth / minimax-oauth, Hermes does not perform the Qwen
+        # OAuth flow itself — the user must open the Qwen CLI interactive
+        # session and run the /auth slash command to populate
+        # ~/.qwen/oauth_creds.json (qwen CLI v0.19.4+ removed the
+        # `qwen auth qwen-oauth` subcommand). Convert the expected "file
+        # missing" precondition into a friendly one-line message instead of
+        # dumping a stack trace.
+        try:
+            creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        except auth_mod.AuthError as exc:
+            raise SystemExit(
+                f"Qwen OAuth credentials not found at {auth_mod._qwen_cli_auth_path()}.\n"
+                f"Open the Qwen CLI (`qwen`), run the `/auth` slash command to log in, "
+                f"then re-run `hermes auth add qwen-oauth`.\n"
+                f"({exc})"
+            ) from exc
         auth_mod._mark_qwen_oauth_active(creds)
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["api_key"],

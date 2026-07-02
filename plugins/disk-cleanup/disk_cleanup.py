@@ -147,7 +147,7 @@ ALLOWED_CATEGORIES = {
 _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
+    "hermes-agent", "backups", "profiles", ".worktrees", "scripts",
 })
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
@@ -557,7 +557,7 @@ def guess_category(path: Path) -> Optional[str]:
         if top in {
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
-            "auth.json", "hermes-agent",
+            "auth.json", "hermes-agent", "scripts",
         }:
             return None
         if top == "cron" or top == "cronjobs":

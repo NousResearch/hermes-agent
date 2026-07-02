@@ -163,6 +163,24 @@ class TestGuessCategory:
         p.write_text("[]")
         assert dg.guess_category(p) is None
 
+    def test_scripts_subtree_not_tracked(self, _isolate_env):
+        """Persistent helper scripts/tests under HERMES_HOME/scripts are durable."""
+        dg = _load_lib()
+        scripts_tests = _isolate_env / "scripts" / "tests"
+        scripts_tests.mkdir(parents=True)
+        p = scripts_tests / "test_helper.py"
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
+    def test_quick_preserves_empty_scripts_subdirs(self, _isolate_env):
+        """Empty-dir sweep must not remove durable scripts/ helper folders."""
+        dg = _load_lib()
+        scripts_tests = _isolate_env / "scripts" / "tests"
+        scripts_tests.mkdir(parents=True)
+        summary = dg.quick()
+        assert summary["empty_dirs"] == 0
+        assert scripts_tests.exists()
+
     def test_ordinary_file_returns_none(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "notes.md"

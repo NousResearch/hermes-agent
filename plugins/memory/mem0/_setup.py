@@ -293,6 +293,13 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         return
 
     provider_config["mode"] = "platform"
+    # Clear any stale self-hosted host: routing checks ``host`` before platform
+    # (see _create_backend), so leaving it would silently keep routing to the
+    # self-hosted server even though the user just chose platform mode. Set it
+    # to "" rather than pop() — save_config merges into the existing mem0.json
+    # (existing.update), so a popped key would survive; an empty value overwrites
+    # it and reads as falsy at routing time.
+    provider_config["host"] = ""
 
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"

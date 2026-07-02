@@ -207,11 +207,23 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
 def set_pkce_cookie(
     response: Response, *, payload: str, use_https: bool, prefix: str = "",
 ) -> None:
+    # SameSite=None when HTTPS: the PKCE cookie is set on the /auth/login
+    # 302 response (redirecting to the IDP) and must survive the cross-site
+    # redirect chain (same-site → IDP → same-site callback). Chromium has a
+    # long-standing bug (crbug 40508226) where SameSite=Lax cookies set on a
+    # 302 in a cross-site redirect chain are intermittently dropped, causing
+    # "Missing PKCE state cookie" on the callback. SameSite=None + Secure
+    # sidesteps the bug — these cookies are explicitly designed for cross-site
+    # delivery and Chromium processes them reliably during redirects.
+    # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
+    attrs = _common_attrs(use_https=use_https, prefix=prefix)
+    if use_https:
+        attrs["samesite"] = "none"
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
         payload,
         max_age=_PKCE_MAX_AGE,
-        **_common_attrs(use_https=use_https, prefix=prefix),
+        **attrs,
     )
 
 
@@ -220,7 +232,8 @@ def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
     for variant in _NAME_VARIANTS:
         response.set_cookie(
             f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
+            path=path, httponly=True, samesite="none",
+            secure=True,
         )
 
 

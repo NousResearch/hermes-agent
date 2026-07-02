@@ -266,6 +266,33 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     return _configured_terminal_cwd()
 
 
+def _container_default_base() -> str | None:
+    """Sanitized container cwd to anchor relative paths during cold start.
+
+    On a container backend (docker/singularity/modal/daytona) the agent's
+    relative writes target the CONTAINER filesystem, not the host. Before any
+    terminal command has populated the live cwd registry, returns the sanitized
+    container cwd from ``terminal_tool._get_env_config()`` (already guarded to
+    ``/root``/``/workspace`` etc.) so a first relative file-tool path resolves
+    inside the container rather than the host cwd. Returns ``None`` for
+    local/ssh, a non-absolute cwd, or on any failure (degrade to host getcwd).
+    """
+    try:
+        # Lazy import to avoid an import cycle with terminal_tool (matches the
+        # in-function imports used elsewhere in this module).
+        from tools.terminal_tool import _CONTAINER_BACKENDS, _get_env_config
+
+        env_type = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+        if env_type not in _CONTAINER_BACKENDS:
+            return None
+        cwd = _get_env_config().get("cwd")
+        if cwd and os.path.isabs(cwd):
+            return cwd
+    except Exception:
+        return None
+    return None
+
+
 def _resolve_base_dir(task_id: str = "default") -> Path:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
@@ -277,7 +304,10 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
       3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
          terminal command has populated the live cwd registry.
-      4. The process cwd.
+      4. For container backends only, the sanitized container cwd (e.g.
+         ``/root``) so a first relative path on cold start anchors inside the
+         container rather than the host. Local/ssh skip this step.
+      5. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
     prevents the worktree-cwd divergence bug: a relative or sentinel
@@ -293,7 +323,9 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     if root:
         base = Path(_expand_tilde(root))
     else:
-        base = Path(os.getcwd())
+        # Cold-start container fallback: a relative write before any command has
+        # run targets the container fs, not the host cwd. Local/ssh keep host.
+        base = Path(_container_default_base() or os.getcwd())
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
         # terminal backend ever reports a relative cwd, anchor it to the process

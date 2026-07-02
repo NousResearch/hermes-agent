@@ -104,6 +104,36 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
 
+// Read the preview data URL for a COMPOSER image (a pasted/clipboard/dropped/
+// picked image staged by the Electron main process via saveImageBuffer/
+// saveClipboardImage). Those bytes are always written to the CLIENT's local
+// Electron userData dir — even in remote mode — so the preview must be read
+// LOCALLY. Routing it through readDesktopFileDataUrl() is wrong in remote mode:
+// that hits the backend's GET /api/fs/read-data-url, and the backend (a
+// different machine) has no such file → 404 "File not found", surfacing as the
+// "Image preview failed" toast even though the attachment itself uploads fine
+// at submit (image.attach_bytes reads the same local path). Try the local
+// bridge first; fall back to the remote-aware read only if the local bridge is
+// unavailable or can't read it (e.g. a path dragged from the remote file tree).
+export async function readComposerImagePreview(path: string): Promise<string> {
+  const localReader = window.hermesDesktop?.readFileDataUrl
+
+  if (localReader) {
+    try {
+      const dataUrl = await localReader(path)
+
+      if (dataUrl) {
+        return dataUrl
+      }
+    } catch {
+      // Local bridge couldn't read it (not a client-local path, or unreadable) —
+      // fall through to the remote-aware read below.
+    }
+  }
+
+  return readDesktopFileDataUrl(path)
+}
+
 export async function desktopGitRoot(path: string): Promise<string | null> {
   const desktop = bridge()
 

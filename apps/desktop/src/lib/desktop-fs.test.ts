@@ -6,6 +6,7 @@ import {
   desktopDefaultCwd,
   desktopFileDiff,
   desktopGitRoot,
+  readComposerImagePreview,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -152,5 +153,58 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+})
+
+describe('readComposerImagePreview', () => {
+  beforeEach(() => {
+    stubBridge()
+    $connection.set(null)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    $connection.set(null)
+  })
+
+  // The regression this guards: a composer image (paste/clipboard/drop) is
+  // written to the CLIENT's local Electron disk even in remote mode, so its
+  // preview MUST be read locally. Reading it through the remote-aware
+  // readDesktopFileDataUrl would GET /api/fs/read-data-url on the backend, which
+  // has no such file → 404 "File not found" → "Image preview failed" toast.
+  it('reads the preview from the LOCAL bridge in remote mode (never the backend)', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(readComposerImagePreview('/Users/ace/Library/.../composer_x.png')).resolves.toBe(
+      'data:text/plain;base64,bG9jYWw='
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/ace/Library/.../composer_x.png')
+    // The backend FS REST must NOT be touched — that's the whole bug.
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('reads the preview from the local bridge in local mode too', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(readComposerImagePreview('/tmp/composer_y.png')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/composer_y.png')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the remote-aware read when the local bridge cannot read the path', async () => {
+    // A path dragged from the REMOTE file tree is not on local disk: the local
+    // bridge read throws, and we fall through to the backend read-data-url.
+    $connection.set({ mode: 'remote' } as never)
+    readFileDataUrl.mockRejectedValueOnce(new Error('ENOENT: no such file'))
+
+    await expect(readComposerImagePreview('/home/user/project/pic.png')).resolves.toBe(
+      'data:text/plain;base64,cmVtb3Rl'
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/home/user/project/pic.png')
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fpic.png' })
   })
 })

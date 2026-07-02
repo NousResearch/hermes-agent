@@ -5,7 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
-import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { readComposerImagePreview, selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -367,7 +367,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await readDesktopFileDataUrl(filePath)
+        const previewUrl = await readComposerImagePreview(filePath)
 
         if (previewUrl) {
           addComposerAttachment({ ...baseAttachment, previewUrl })

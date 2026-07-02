@@ -31,7 +31,11 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.config import (
+    _coerce_provider_extra_headers,
+    get_compatible_custom_providers,
+    load_config,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_int
 
@@ -592,16 +596,17 @@ def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> No
 
 
 def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
-    """Copy a validated ``extra_headers`` dict from a provider entry.
+    """Copy provider HTTP headers from a provider entry.
+
+    ``extra_headers`` is canonical; ``default_headers`` is accepted as a
+    compatibility alias matching the OpenAI client kwarg name.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Never log them.
     """
-    extra_headers = entry.get("extra_headers")
-    if isinstance(extra_headers, dict) and extra_headers:
-        result["extra_headers"] = {
-            str(k): str(v) for k, v in extra_headers.items() if v is not None
-        }
+    extra_headers = _coerce_provider_extra_headers(entry)
+    if extra_headers:
+        result["extra_headers"] = extra_headers
 
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:

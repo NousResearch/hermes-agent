@@ -39,6 +39,24 @@ logger = logging.getLogger(__name__)
 _CONFIG_PARSE_WARNED: set = set()
 
 
+def _coerce_provider_extra_headers(entry: Dict[str, Any]) -> Dict[str, str]:
+    """Return provider HTTP headers, accepting ``default_headers`` as an alias.
+
+    ``extra_headers`` is the canonical config key for provider-level request
+    headers.  ``default_headers`` appeared in older examples because it mirrors
+    the OpenAI client kwarg name, so keep it as a compatibility alias while
+    letting the canonical key win on collisions.
+    """
+    merged: Dict[str, str] = {}
+    for key in ("default_headers", "extra_headers"):
+        headers = entry.get(key)
+        if isinstance(headers, dict) and headers:
+            merged.update({
+                str(k): str(v) for k, v in headers.items() if v is not None
+            })
+    return merged
+
+
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
 
@@ -4489,7 +4507,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body", "extra_headers",
+        "discover_models", "extra_body", "extra_headers", "default_headers",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -4598,13 +4616,12 @@ def _normalize_custom_provider_entry(
         normalized["extra_body"] = dict(extra_body)
 
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
-    # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
-    # log them anywhere downstream.
-    extra_headers = entry.get("extra_headers")
-    if isinstance(extra_headers, dict) and extra_headers:
-        normalized["extra_headers"] = {
-            str(k): str(v) for k, v in extra_headers.items() if v is not None
-        }
+    # ``extra_headers`` is canonical; ``default_headers`` is a compatibility
+    # alias matching the OpenAI client kwarg name. Values may carry credentials
+    # (e.g. CF-Access-Client-Secret) — never log them anywhere downstream.
+    extra_headers = _coerce_provider_extra_headers(entry)
+    if extra_headers:
+        normalized["extra_headers"] = extra_headers
 
     ssl_ca_cert = entry.get("ssl_ca_cert")
     if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
@@ -4792,12 +4809,13 @@ def get_custom_provider_extra_headers(
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
+    """Return provider headers from a matching ``providers`` / ``custom_providers`` entry.
 
     Matches the entry whose ``base_url`` equals *base_url* (trailing-slash and
     case insensitive, mirroring :func:`get_custom_provider_tls_settings`) and
-    returns its ``extra_headers`` dict, or ``{}`` when no entry matches or the
-    entry declares none.
+    returns its ``extra_headers`` dict. ``default_headers`` is accepted as a
+    compatibility alias and normalized into the same return shape. Returns
+    ``{}`` when no entry matches or the entry declares none.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Callers must never
@@ -4818,12 +4836,7 @@ def get_custom_provider_extra_headers(
         entry_url = (entry.get("base_url") or "").rstrip("/").lower()
         if not entry_url or entry_url != target_url:
             continue
-        extra_headers = entry.get("extra_headers")
-        if isinstance(extra_headers, dict) and extra_headers:
-            return {
-                str(k): str(v) for k, v in extra_headers.items() if v is not None
-            }
-        return {}
+        return _coerce_provider_extra_headers(entry)
     return {}
 
 

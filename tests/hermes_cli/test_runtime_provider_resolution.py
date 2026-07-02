@@ -3286,6 +3286,33 @@ def test_providers_dict_entry_surfaces_extra_headers(monkeypatch):
     assert resolved["extra_headers"] == {"CF-Access-Client-Id": "xxxx.access"}
 
 
+def test_providers_dict_entry_surfaces_default_headers_alias(monkeypatch):
+    """providers.<name>.default_headers feeds the same runtime path."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "coreweave": {
+                    "base_url": "https://api.inference.wandb.ai/v1",
+                    "api_key": "wandb-key",
+                    "default_headers": {"OpenAI-Project": "team/project"},
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="coreweave")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.inference.wandb.ai/v1"
+    assert resolved["api_key"] == "wandb-key"
+    assert resolved["extra_headers"] == {"OpenAI-Project": "team/project"}
+    assert "default_headers" not in resolved
+
+
 def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):
     """extra_headers must survive the credential-pool path too."""
     pool_return_value = {

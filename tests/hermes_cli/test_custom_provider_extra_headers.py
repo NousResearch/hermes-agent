@@ -26,6 +26,38 @@ def test_normalize_entry_keeps_extra_headers():
     }
 
 
+def test_normalize_entry_accepts_default_headers_alias():
+    normalized = _normalize_custom_provider_entry(
+        {
+            "name": "coreweave",
+            "base_url": "https://api.inference.wandb.ai/v1",
+            "default_headers": {"OpenAI-Project": "team/project"},
+        }
+    )
+    assert normalized is not None
+    assert normalized["extra_headers"] == {"OpenAI-Project": "team/project"}
+    assert "default_headers" not in normalized
+
+
+def test_normalize_entry_extra_headers_wins_over_default_headers_alias():
+    normalized = _normalize_custom_provider_entry(
+        {
+            "name": "coreweave",
+            "base_url": "https://api.inference.wandb.ai/v1",
+            "default_headers": {
+                "OpenAI-Project": "team/default-project",
+                "X-Default-Only": "kept",
+            },
+            "extra_headers": {"OpenAI-Project": "team/explicit-project"},
+        }
+    )
+    assert normalized is not None
+    assert normalized["extra_headers"] == {
+        "OpenAI-Project": "team/explicit-project",
+        "X-Default-Only": "kept",
+    }
+
+
 def test_normalize_entry_drops_invalid_extra_headers():
     for bad in ("not-a-dict", {}, 42, ["a"]):
         normalized = _normalize_custom_provider_entry(
@@ -65,6 +97,21 @@ def test_get_custom_provider_extra_headers_matches_base_url():
         custom_providers=providers,
     )
     assert headers == {"CF-Access-Client-Id": "xxxx.access"}
+
+
+def test_get_custom_provider_extra_headers_accepts_default_headers_alias():
+    providers = [
+        {
+            "name": "coreweave",
+            "base_url": "https://api.inference.wandb.ai/v1",
+            "default_headers": {"OpenAI-Project": "team/project"},
+        }
+    ]
+    headers = get_custom_provider_extra_headers(
+        "https://api.inference.wandb.ai/v1",
+        custom_providers=providers,
+    )
+    assert headers == {"OpenAI-Project": "team/project"}
 
 
 def test_get_custom_provider_extra_headers_no_match_returns_empty():

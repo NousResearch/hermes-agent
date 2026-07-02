@@ -441,6 +441,86 @@ all_scored vs bucket; 14-cell vs 34-prompt scan) is the strongest form of this e
 stands; rollback trigger untripped on both criteria.** Raw runs: `~/.hermes/tmp/infogain_premortem/`
 (scan_off/scan_auto/scan_life_forced_on, ve_off/ve_auto, evals_off/evals_auto).
 
+## Sampled P(a) (#26) — the input-calibration experiment (2026-07-02)
+
+Research motivation (see `algorithm-review-2026-07.md`): BED-LLM (arXiv:2508.21184) and OPEN
+(arXiv:2403.05534) show LLM self-stated probabilities are miscalibrated and Monte-Carlo sampled
+distributions materially better — the strongest frontier critique that maps onto our within-task
+weakness. #26 tested it behind the standard gate: `answer_prob_mode=sampled` (N=6 forced-choice
+draws, shuffled options, Laplace α=0.5 → empirical P(a); stated survives as `stated_prob`), A/B'd
+via `validate_evsi --ab-probs` — the run samples, the stated arm is a free re-score of the SAME
+records, realized measured once over the union of each arm's top-3 answers.
+
+**Setup:** powered n=12 REALIZED_SUBSET, all-`fast` pinned (gen/elicit/judge — the reproducible
+host recipe), `--source all_scored --keep-responses`. 488 rows / 244 shared realized pairs / 72
+questions, 21 min wall. Raw: `~/.hermes/evsi_probs_ab.json` (+ smoke `~/.hermes/tmp/evsi_probs_smoke.json`).
+
+**VERDICT — #26 CLOSED, KEEP STATED (powered null).**
+
+| target | stated mean ρ | sampled mean ρ | paired Δρ (sampled−stated) | wins | gate |
+|---|---|---|---|---|---|
+| realized_regret (PRIMARY) | +0.356 | +0.366 | **+0.010** (sd 0.39, se 0.11) | 4/12 | keep stated |
+| realized_stakes | +0.266 | +0.307 | +0.041 (sd 0.42, se 0.12) | 7/12 | keep stated |
+| realized_change | +0.325 | +0.308 | — | — | — |
+
+- **The null is real, not a no-contrast artifact:** the arms disagreed on 79% of pairs
+  (|ΔP| > 0.05) and shifted q_value on 76% — a materially different P estimate produced the same
+  within-task discrimination. The forced-choice machinery itself worked (zero fallbacks observed in
+  the smoke; live divergence throughout).
+- **Interpretation (mirrors #24):** the binding within-task weakness is not P(a) miscalibration.
+  With a coarse 0/1-saturating realized target and utility weighting (Δplan·stakes) dominating the
+  expectation, sharpening P buys nothing detectable at n=12. BED-LLM's calibration gains were
+  measured on multi-class prediction success, not utility-weighted question ranking — they do not
+  transfer here.
+- **Bonus independent replication of the frozen formula:** this run's p1c ablation ranks
+  `√(U·EVSI)` best on ALL THREE realized targets — regret **+0.356** (prior study: +0.360), stakes
+  +0.266, change +0.325, above every component ablation each time. Third independent within-task
+  validation.
+- **Instrument notes:** judge = `fast` (qwen3.6:35b-a3b) — `gpt-oss:20b` is UNUSABLE as a judge
+  through `raw_chat` (reasoning-channel model returns empty `message.content`; every realized value
+  nulls). Realized saturation 39% at extremes (68 of 244 at 1.0) — better than the historical 71%
+  but still coarse.
+
+Sampled stays built + off (`--answer-prob-mode sampled` for re-testing). Do NOT build free-form
+answer rollouts on this evidence — the cheap hybrid already moved P materially with no ranking gain.
+
+## Solution-space Δplan (#27) — the grounding experiment (2026-07-02)
+
+Research motivation (see `algorithm-review-2026-07.md`): Active Task Disambiguation (ICLR 2025,
+arXiv:2502.04485) + ClarifyGPT — score questions by how they SPLIT a sampled set of viable
+solutions rather than by an abstract 0-1 change judgment. #27: `value_judge_mode=solution` — K=4
+candidate solutions sampled once per run (baseline reused as S1), judge returns which solutions
+remain viable per answer, `delta_plan = invalidated/K`. Gated via `validate_evsi --ab-solution`
+(re-judge the SAME records, realized shared).
+
+**Setup:** powered n=12 REALIZED_SUBSET, all-`fast` pinned, stated P (#26 had just closed), 432
+rows / 216 shared pairs / 72 questions, 21 min wall. Raw: `~/.hermes/evsi_solution_ab.json`.
+
+**VERDICT — #27 CLOSED, KEEP ABSOLUTE (decisively worse, not a mere null).**
+
+| target | absolute mean ρ | solution mean ρ | paired Δρ (sol−abs) | wins | gate |
+|---|---|---|---|---|---|
+| realized_regret (PRIMARY) | +0.360 | **−0.047** | **−0.343** (sd 0.51, se 0.16) | 3/10 | keep absolute |
+| realized_stakes | +0.249 | −0.169 | −0.339 (sd 0.52, se 0.16) | 3/10 | keep absolute |
+| realized_change | +0.297 | +0.023 | — | — | — |
+
+- **The accepted caveat was the failure mode:** solution-set collapse. 69% of solution deltas are
+  exactly 0 ("no solution invalidated") and most of the rest land at 1.0 — support ≈
+  {0: 149, ¼: 10, ½: 8, ¾: 2, 1: 45}. Near-binary Δplan zeroes EVSI for most questions and
+  destroys within-task ordering, even though the arms genuinely diverged (90% of pairs shifted
+  Δplan by >0.05). Also observed: some prompts ran with K=3 (a sampled solution occasionally fails
+  to parse; the set shrinks by design).
+- **Interpretation:** with a small sampled solution set and a strict "survives unchanged" viability
+  judge, most clarifying answers invalidate either nothing or everything. ATD's solution-space
+  signal needs either many more solutions (cost) or graded viability (which reintroduces exactly
+  the absolute-judgment fragility it was meant to replace). The absolute judge carries strictly
+  more within-task signal in this domain.
+- **Consistency check across the day's two runs:** absolute-arm regret ρ = +0.360 here vs +0.356 in
+  the #26 run — the within-task baseline is stable across instruments and runs.
+
+Solution stays built + off (`--value-judge-mode solution` for re-testing). Do not iterate on K or
+judge leniency without a new hypothesis for the mass-at-zero problem.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

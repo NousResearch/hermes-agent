@@ -50,7 +50,17 @@ weakness (within-task ranking, per-prompt ρ≈0.34–0.36):
   splits them — instead of judging questions abstractly. → **#27 solution-space Δplan**.
 
 Both shipped as off-by-default selectors gated by the #24-pattern powered A/B (n=12,
-`realized_regret`, paired-Δρ broad-win guard). Verdicts recorded in `evsi-validation-findings.md`.
+`realized_regret`, paired-Δρ broad-win guard).
+
+**Outcome (same day, 2026-07-02): both frontier critiques FAILED the gate on this skill's domain.**
+#26 sampled P(a) = real-contrast null (P moved on 79% of pairs, ranking Δρ +0.010, keep stated);
+#27 solution-space Δplan = decisively worse (deltas collapse to near-binary, ρ −0.047 vs +0.360,
+keep absolute). Combined with #24 (pairwise null), the empirical picture is now three independent
+literature-motivated input-estimation upgrades, three powered negative results — while `√(U·EVSI)`
+re-validated as the best within-task formula in both new runs (+0.356/+0.360 on regret). The
+skill's stated-P, absolute-judge, frozen-formula configuration is not just defensible; it has now
+out-tested the frontier's specific alternatives on its own domain. Details in
+`evsi-validation-findings.md` §§Sampled P(a) (#26) / Solution-space Δplan (#27).
 
 ## Considered and not built (with reasons)
 

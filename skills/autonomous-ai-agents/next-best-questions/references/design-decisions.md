@@ -164,6 +164,18 @@ projection call's stated `P(a)` with an **empirical forced-choice frequency**, g
   (control = `stated`) applies the #24 decisive rule: adopt only on a broad, beyond-noise Δρ > 0.02
   win on `realized_regret` at n=12.
 - Smoke-verified: the arms genuinely diverge (11/14 pairs shift P by >0.05, 9/14 shift q_value).
+- **A/B verdict (2026-07-02): #26 CLOSED — KEEP STATED (powered null).** Powered 12-prompt
+  REALIZED_SUBSET A/B, all-`fast` pinned (judge/elicit/gen), 488 rows / 244 shared realized pairs:
+  on the PRIMARY target `realized_regret`, Δρ mean **+0.010** (sd 0.39, se 0.11), sampled wins only
+  4/12 — nowhere near the broad-win gate. Secondary `realized_stakes` +0.041 (7/12) also
+  indecisive. The null is REAL, not a no-contrast artifact: the arms disagreed on 79% of pairs
+  (|ΔP| > 0.05) and shifted q_value on 76% — a materially different P estimate that produced the
+  same within-task discrimination. Conclusion mirrors #24: the binding weakness of within-task
+  ranking is NOT input miscalibration of P(a); BED-LLM's calibration gains don't transfer to this
+  utility-weighted, coarse-realized-target setting. Sampled stays built + off as a documented
+  negative result. **Bonus replication:** the same run's p1c ablation ranks `√(U·EVSI)` best on ALL
+  three realized targets (regret +0.356 ≈ the prior +0.360; stakes +0.266; change +0.325) — a
+  second independent within-task validation of the frozen formula.
 
 ## Solution-space Δplan (#27) — built, off by default, A/B-gated
 
@@ -188,6 +200,18 @@ change, 0-1?" judgment. #27 grounds `delta_plan` in a concrete self-consistency 
 - **The gate** — `validate_evsi --ab-solution` (re-judge the same records, realized shared;
   `--answer-prob-mode sampled` pins the #26 winner if adopted), same decisive rule, control =
   `absolute`.
+- **A/B verdict (2026-07-02): #27 CLOSED — KEEP ABSOLUTE (powered, decisively worse).** Powered
+  12-prompt REALIZED_SUBSET A/B, all-`fast` pinned, stated P (#26 closed first), 432 rows / 216
+  shared pairs: solution Δplan within-task ρ on `realized_regret` is **−0.047 vs absolute +0.360**
+  (paired Δρ **−0.343**, loses 7/10) and negative on stakes too (−0.169). The accepted-caveat
+  failure mode is exactly what happened: the anticipated collapse — **69% of solution deltas are
+  exactly 0** ("no solution invalidated") and most of the rest land at 1.0 (support ≈ {0: 149,
+  1: 45}) — flattens Δplan to near-binary and destroys within-task discrimination, even though the
+  arms diverged on 90% of pairs. Active Task Disambiguation's solution-space scoring does not
+  survive contact with a small sampled solution set + a strict viability judge in this domain. The
+  absolute 0-1 judge, for all its known fragility, carries strictly more within-task signal.
+  Solution stays built + off as a documented negative result; do NOT iterate on K or judge leniency
+  without a new hypothesis for the mass-at-zero problem.
 
 ## Pre-mortem lens (#25) — a fourth question family, auto-on by design
 

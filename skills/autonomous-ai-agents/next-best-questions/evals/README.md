@@ -38,6 +38,16 @@ loop into the sibling **`investigator`** skill (`../../investigator/evals/valida
   sub-stories (change "dead", pairwise edge, saturation) were small-sample noise. **Positive:** the p1c
   ablation vs regret ranks `√(U·EVSI)` best (+0.360) above every component → the frozen formula is
   validated *within*-task too. The live default is untouched.
+- **Sampled P(a) (#26) is also a powered null — keep `stated`.** The BED-LLM/OPEN calibration
+  critique doesn't transfer: forced-choice frequencies moved P on 79% of pairs and q_value on 76%,
+  yet within-task ranking didn't improve (regret Δρ +0.010, wins 4/12). Bonus: the run's ablation
+  re-validates `√(U·EVSI)` as best on all three realized targets (regret +0.356 ≈ prior +0.360).
+  See `evsi-validation-findings.md` §Sampled P(a) (#26).
+- **Solution-space Δplan (#27) is decisively worse — keep `absolute`.** ATD-style "which of K
+  sampled solutions does the answer invalidate" collapses to near-binary (69% of deltas exactly 0)
+  and within-task ρ goes negative (regret −0.047 vs absolute +0.360, Δρ −0.343, loses 7/10). The
+  absolute judge carries strictly more within-task signal here. See `evsi-validation-findings.md`
+  §Solution-space Δplan (#27).
 - **Wrapper end-to-end is task-dependent** (de-confounded 1-1 at k=1): helps where a clarification
   shapes the work, redundant where a capable agent self-investigates. Distinctive value = user-only
   constraints. The grounded answerer's **cwd** must be the user's project.

@@ -215,11 +215,13 @@ names are `ask`-style aliases (`glm`, `deepseek`, `fast`, `qwen`, …) resolved 
 `--value-judge-mode absolute|pairwise|solution` selects the Δplan/stakes elicitation (`pairwise` =
 forced-choice → Bradley-Terry, the #24 experiment — its powered A/B closed **keep `absolute`**, so
 the flag exists for re-testing, not for live use; `solution` = Δplan grounded as the fraction of
-`--solution-samples` sampled candidate solutions an answer invalidates — the #27 experiment,
-off-by-default pending its A/B gate). `--answer-prob-mode stated|sampled` selects the P(a) estimate
+`--solution-samples` sampled candidate solutions an answer invalidates — the #27 experiment; its
+powered A/B closed **keep `absolute`**, decisively: solution deltas collapse to near-binary and
+within-task ρ goes negative). `--answer-prob-mode stated|sampled` selects the P(a) estimate
 (`sampled` = Laplace-smoothed frequencies over `--answer-samples` forced-choice draws instead of the
-model's self-stated probabilities — the #26 experiment, off-by-default pending its A/B gate; stated
-probs survive as `stated_prob`).
+model's self-stated probabilities — the #26 experiment; its powered A/B closed **keep `stated`**
+(a real-contrast null: P moved on 79% of pairs, ranking didn't improve), so the flag exists for
+re-testing, not for live use; stated probs survive as `stated_prob`).
 
 ## Dependency
 

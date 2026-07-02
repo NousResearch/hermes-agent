@@ -273,6 +273,9 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Per-model description/tagline keyed by model id (sourced from
+   *  `models.<id>.description` in config). Rendered under the model name. */
+  descriptions?: Record<string, string>
 }
 
 export interface ModelCapabilities {

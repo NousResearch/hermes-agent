@@ -1974,6 +1974,15 @@ def list_authenticated_providers(
                     if m and m not in models_list:
                         models_list.append(m)
 
+            # Optional per-model ``description`` annotations from
+            # ``providers.<slug>.models.<id>.description`` — surfaced in the
+            # picker so users can label what each configured model is best for.
+            model_descriptions: dict = {}
+            if isinstance(cfg_models, dict):
+                for _mid, _mv in cfg_models.items():
+                    if isinstance(_mv, dict) and _mv.get("description"):
+                        model_descriptions[_mid] = str(_mv["description"])
+
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
             if not models_list:
@@ -2025,6 +2034,7 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
+                "descriptions": model_descriptions,
             })
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
@@ -2187,6 +2197,15 @@ def list_authenticated_providers(
                     if m and m not in groups[group_key]["models"]:
                         groups[group_key]["models"].append(m)
 
+            # Accumulate optional per-model ``description`` annotations
+            # (custom_providers[].models.<id>.description) across entries in
+            # this grouped row, surfaced in the picker.
+            if isinstance(cfg_models, dict):
+                _grp_desc = groups[group_key].setdefault("descriptions", {})
+                for _mid, _mv in cfg_models.items():
+                    if isinstance(_mv, dict) and _mv.get("description") and _mid not in _grp_desc:
+                        _grp_desc[_mid] = str(_mv["description"])
+
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
         _current_base_url_group_count = sum(
@@ -2294,6 +2313,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "descriptions": grp.get("descriptions", {}),
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())

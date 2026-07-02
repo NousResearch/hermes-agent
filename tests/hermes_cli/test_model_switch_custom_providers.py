@@ -69,6 +69,53 @@ def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkey
     assert row["total_models"] == 1
 
 
+def test_custom_provider_model_descriptions_surface(monkeypatch):
+    """``models.<id>.description`` flows into the picker row's ``descriptions``.
+
+    Covers both the user ``providers:`` dict path and the ``custom_providers:``
+    list path. Models without a description are simply omitted from the map.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    # providers: dict path — discovery off keeps the explicit model subset.
+    via_providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={
+            "custom:mynim": {
+                "base_url": "https://example.com/v1",
+                "discover_models": False,
+                "models": {
+                    "vendor/alpha": {"description": "great for code"},
+                    "vendor/beta": {},
+                },
+            }
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+    row = next(p for p in via_providers if p["slug"] == "custom:mynim")
+    assert row["descriptions"] == {"vendor/alpha": "great for code"}
+    assert set(row["models"]) == {"vendor/alpha", "vendor/beta"}
+
+    # custom_providers: list path.
+    via_custom = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "mynim2",
+                "base_url": "https://example2.com/v1",
+                "discover_models": False,
+                "models": {"vendor/gamma": {"description": "fast"}},
+            }
+        ],
+        max_models=50,
+    )
+    row2 = next(p for p in via_custom if p["slug"] == "custom:mynim2")
+    assert row2["descriptions"] == {"vendor/gamma": "fast"}
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

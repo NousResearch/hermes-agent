@@ -2039,17 +2039,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent.model or "unknown",
             )
             agent._disable_streaming = True
-            response_choices = stream.choices
             # An empty/None ``choices`` carries no message to surface; return the
             # completed object as-is so the outer loop's normal invalid-response
             # validation (conversation_loop.py) handles it via the retry path,
             # never ``for chunk in stream``.
-            first_choice = (
-                response_choices[0]
-                if isinstance(response_choices, (list, tuple)) and response_choices
-                else None
-            )
-            message = getattr(first_choice, "message", None) if first_choice is not None else None
+            choices = stream.choices
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            message = getattr(first_choice, "message", None)
             if message is not None:
                 reasoning_text = (
                     getattr(message, "reasoning_content", None)

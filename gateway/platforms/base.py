@@ -546,13 +546,12 @@ async def _ssrf_redirect_guard(response):
 
     Must be async because httpx.AsyncClient awaits response event hooks.
     """
-    if response.is_redirect and response.next_request:
-        redirect_url = str(response.next_request.url)
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(redirect_url):
-            raise ValueError(
-                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
-            )
+    from tools.url_safety import is_safe_url, redirect_target_from_response
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url and not is_safe_url(redirect_url):
+        raise ValueError(
+            f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -564,8 +563,20 @@ async def _ssrf_redirect_guard(response):
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
+# Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
+# re-resolve per call so the active profile override is honored.
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
+
+
+def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
+    """Resolve fresh via get_hermes_dir (active profile), unless a test has
+    monkeypatched the constant away from its import-time default."""
+    fresh = get_hermes_dir(new_subpath, old_name)
+    current = globals().get(constant_name)
+    default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
+    if current is not None and default is not None and current != default:
+        return Path(current)
+    return fresh
 
 # ---------------------------------------------------------------------------
 # Inbound media size cap (#13145)
@@ -660,8 +671,9 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
-    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return IMAGE_CACHE_DIR
+    d = _resolve_cache_dir("IMAGE_CACHE_DIR", "cache/images", "image_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _looks_like_image(data: bytes) -> bool:
@@ -806,8 +818,9 @@ AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 
 def get_audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if it doesn't exist."""
-    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return AUDIO_CACHE_DIR
+    d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
@@ -912,8 +925,9 @@ SUPPORTED_VIDEO_TYPES = {
 
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""
-    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return VIDEO_CACHE_DIR
+    d = _resolve_cache_dir("VIDEO_CACHE_DIR", "cache/videos", "video_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
@@ -935,6 +949,17 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+# Import-time defaults; _resolve_cache_dir compares against these to tell a
+# test monkeypatch from an unmodified constant.
+_CACHE_DIR_IMPORT_DEFAULTS = {
+    "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
+    "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
+    "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR,
+    "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
+    "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR,
+}
+
 _HERMES_HOME = get_hermes_home()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
@@ -1134,12 +1159,18 @@ def _media_delivery_denied_paths() -> List[Path]:
         # Bitwarden Secrets Manager plaintext disk cache.
         os.path.join("cache", "bws_cache.json"),
     )
-    # Directory trees whose every child is credential material. (MCP OAuth
-    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
-    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
-    # overlap.)
+    # Directory trees whose every child is credential material.
+    #
+    # mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
+    # dynamically-registered client credentials (<server>.client.json); see
+    # tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
+    # The write side already denies it (file_tools _check_sensitive_path);
+    # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
+    # tag can't deliver a live bearer token as a native attachment.
+    # (session/kanban SQLite stores are handled by #41071 — kept out here.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:
@@ -1442,11 +1473,58 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Extension-less absolute paths (e.g. Caddyfile, Dockerfile, Makefile) are
+# intentionally excluded from MEDIA_TAG_CLEANUP_RE — they are validated and
+# delivered via MEDIA_EXTENSIONLESS_TAG_RE so prompt-injection paths that do
+# not exist on disk are left visible instead of silently dropped. Paths with
+# an unknown but present extension (e.g. .weirdext) stay on the #34517
+# bare-path fallback and are not handled here.
+MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
+    r'''[`"']?MEDIA:\s*'''
+    r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+)'''
+    r'''[`"']?\s*''',
+    re.IGNORECASE,
+)
+
+
+def _normalize_media_tag_path(raw: str) -> str:
+    path = str(raw or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+        path = path[1:-1].strip()
+    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+
+
+def _path_lacks_deliverable_extension(path: str) -> bool:
+    """True only when the basename has no extension (Caddyfile, Makefile, …)."""
+    return not Path(path).suffix
+
+
+def _strip_media_tag_directives(text: str) -> str:
+    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
+    if (
+        "MEDIA:" not in text
+        and "[[audio_as_voice]]" not in text
+        and "[[as_document]]" not in text
+    ):
+        return text
+    cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+
+    def _strip_extensionless(match: re.Match) -> str:
+        path = _normalize_media_tag_path(match.group("path"))
+        if not path or not _path_lacks_deliverable_extension(path):
+            return match.group(0)
+        return "" if validate_media_delivery_path(path) else match.group(0)
+
+    cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
+    return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
+
 
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
-    DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return DOCUMENT_CACHE_DIR
+    d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -1836,6 +1914,42 @@ SEND_ERROR_KINDS = frozenset(
     }
 )
 
+# ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
+# the chat/user/group itself is gone, so the whole target is dead.  A
+# *thread/topic/message-level* not_found (a deleted forum topic, an edited-away
+# message) leaves the parent chat reachable — it must NOT mark the whole chat
+# dead.  ``classify_send_error`` collapses both into ``"not_found"``;
+# ``is_chat_level_not_found`` recovers the distinction for the dead-target path.
+# See gateway.dead_targets.
+_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
+_SUBCHAT_NOT_FOUND_SUBSTRINGS = (
+    "message to edit not found",
+    "message to reply not found",
+    "thread not found",
+    "topic_deleted",
+    "message_id_invalid",
+)
+
+
+def _error_blob(exc: Optional[BaseException] = None, error_text: str = "") -> str:
+    """Build the lowercased text blob both send-error classifiers match against.
+
+    Single source of truth so ``classify_send_error`` and
+    ``is_chat_level_not_found`` can never drift (e.g. one including the
+    exception class name and the other not) and silently disagree on the same
+    failure.  Includes ``str(exc)`` (when non-empty) and the exception's class
+    name, plus any explicit ``error_text``.
+    """
+    parts = []
+    if error_text:
+        parts.append(error_text)
+    if exc is not None:
+        exc_str = str(exc)
+        if exc_str:
+            parts.append(exc_str)
+        parts.append(exc.__class__.__name__)
+    return " ".join(parts).lower()
+
 
 def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> str:
     """Map a send exception / error string to a :data:`SEND_ERROR_KINDS` value.
@@ -1845,13 +1959,7 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     use.  Conservative — anything unrecognized returns ``"unknown"`` so callers
     never mistake an unclassified failure for a benign one.
     """
-    parts = []
-    if error_text:
-        parts.append(error_text)
-    if exc is not None:
-        parts.append(str(exc))
-        parts.append(exc.__class__.__name__)
-    blob = " ".join(parts).lower()
+    blob = _error_blob(exc, error_text)
     if not blob.strip():
         return "unknown"
     if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
@@ -1875,13 +1983,8 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not a member" in blob
     ):
         return "forbidden"
-    if (
-        "chat not found" in blob
-        or "message to edit not found" in blob
-        or "message to reply not found" in blob
-        or "thread not found" in blob
-        or "topic_deleted" in blob
-        or "message_id_invalid" in blob
+    if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(
+        s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS
     ):
         return "not_found"
     if (
@@ -1897,6 +2000,26 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     if "connecttimeout" in blob:
         return "transient"
     return "unknown"
+
+
+def is_chat_level_not_found(exc: Optional[BaseException] = None, error_text: str = "") -> bool:
+    """Whether a ``not_found`` failure means the *whole chat* is gone.
+
+    :func:`classify_send_error` collapses chat-level and thread/topic/message-level
+    not_found into the single ``"not_found"`` kind.  Only the chat-level case (the
+    chat/user/group no longer exists) should mark a delivery target dead; a deleted
+    forum topic or an edited-away message leaves the parent chat reachable.  When
+    both a chat-level and a sub-chat marker are present, the sub-chat reading wins
+    (conservative: never kill a chat that may still be reachable).
+
+    Argument order mirrors :func:`classify_send_error` (``exc`` first) and both
+    share :func:`_error_blob`, so the two classifiers cannot disagree on the same
+    failure.
+    """
+    blob = _error_blob(exc, error_text)
+    if any(s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS):
+        return False
+    return any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS)
 
 
 class EphemeralReply(str):
@@ -2118,13 +2241,13 @@ def _strip_media_directives(text: str) -> str:
     Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
     ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
     extension are removed; an unknown-extension tag is intentionally left so the
-    bare-path detector downstream can still pick it up, per #34517). [[...]] is
-    exact.
+    bare-path detector downstream can still pick it up, per #34517). Validated
+    extension-less tags (e.g. ``MEDIA:/output/Caddyfile``) are also removed.
+    [[...]] is exact.
     """
     if not text:
         return text
-    text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return MEDIA_TAG_CLEANUP_RE.sub("", text)
+    return _strip_media_tag_directives(text)
 
 
 class BasePlatformAdapter(ABC):
@@ -2184,6 +2307,21 @@ class BasePlatformAdapter(ABC):
     # "typed_command_prefix", "/"); no per-platform branching at call sites.
     typed_command_prefix: str = "/"
 
+    # Whether this adapter supports the ``in_channel`` continuable-cron surface
+    # (``platforms.<p>.extra.cron_continuable_surface: in_channel``): a
+    # continuable cron job delivered FLAT into a channel (no dedicated thread),
+    # with the user's plain channel reply continuing the job in-context via the
+    # shared-channel session.  Only coherent on a platform that has BOTH a
+    # flat-reply outbound gate AND a whole-channel inbound session bucket keyed
+    # ``(platform, chat_id, None)`` — today that is Slack (``reply_in_thread:
+    # false``).  Default False: an unsupported platform fails SAFE, treating
+    # ``in_channel`` as ``thread`` (a threaded continuation ≈ today's
+    # behaviour), never a dropped continuation.  Read generically by the cron
+    # scheduler via ``getattr(adapter, "supports_inchannel_continuable",
+    # False)`` — no per-platform branching at the call site (the key stays a
+    # generic seam; Slack is merely the first consumer).
+    supports_inchannel_continuable: bool = False
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -2236,6 +2374,12 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional authorization check, registered by GatewayRunner. Used by
+        # adapters that fetch external context (e.g. Slack thread history) to
+        # mark senders not on the allowlist as unverified in LLM context,
+        # mitigating indirect prompt injection from third parties in a shared
+        # thread/channel.
+        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2667,6 +2811,44 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_authorization_check(
+        self,
+        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
+    ) -> None:
+        """Register a platform-bound authorization check.
+
+        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
+        It is used by adapters that pull external context (e.g. Slack thread
+        replies via ``conversations.replies``) to flag messages from senders
+        that are not on the configured allowlist, so the LLM can treat them
+        as unverified background reference rather than authoritative input.
+        """
+        self._authorization_check = callback
+
+    def _is_sender_authorized(
+        self,
+        user_id: Optional[str],
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Return whether ``user_id`` is on the allowlist, if a check is configured.
+
+        Returns ``True``/``False`` when an authorization check has been
+        registered via :meth:`set_authorization_check`. Returns ``None``
+        when no check is registered (caller should treat as "trust unknown"
+        and preserve legacy behaviour).
+        """
+        if not user_id or self._authorization_check is None:
+            return None
+        try:
+            return bool(self._authorization_check(user_id, chat_type, chat_id))
+        except Exception:
+            logger.warning(
+                "[%s] Authorization check raised for user %s; treating as unknown",
+                self.name, user_id, exc_info=True,
+            )
+            return None
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3447,10 +3629,7 @@ class BasePlatformAdapter(ABC):
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = _normalize_media_tag_path(match.group("path"))
             if path:
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
@@ -3458,6 +3637,16 @@ class BasePlatformAdapter(ABC):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
+
+        seen_paths = {p for p, _ in media}
+        for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
+            path = _normalize_media_tag_path(match.group("path"))
+            if not path or not _path_lacks_deliverable_extension(path):
+                continue
+            safe = validate_media_delivery_path(path)
+            if safe and safe not in seen_paths:
+                media.append((safe, has_voice_tag))
+                seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
@@ -3471,6 +3660,12 @@ class BasePlatformAdapter(ABC):
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked_cleaned):
+                path = _normalize_media_tag_path(match.group("path"))
+                if not path or not _path_lacks_deliverable_extension(path):
+                    continue
+                if validate_media_delivery_path(path):
+                    spans.append(match.span())
             if spans:
                 chars = list(cleaned)
                 for start, end in sorted(spans, reverse=True):
@@ -3479,6 +3674,25 @@ class BasePlatformAdapter(ABC):
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
+
+    @staticmethod
+    def strip_media_directives_for_display(text: str) -> str:
+        """Strip MEDIA: directives from streamed/display text.
+
+        Known-extension tags are removed unconditionally (same as
+        ``MEDIA_TAG_CLEANUP_RE``). Extension-less tags are removed only when
+        ``validate_media_delivery_path`` accepts the path so undeliverable
+        paths stay visible for debugging.
+        """
+        if (
+            "MEDIA:" not in text
+            and "[[audio_as_voice]]" not in text
+            and "[[as_document]]" not in text
+        ):
+            return text
+        cleaned = _strip_media_tag_directives(text)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.rstrip()
 
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
@@ -3747,15 +3961,22 @@ class BasePlatformAdapter(ABC):
                 _prev = existing_cb
                 _new = callback
 
-                def _chained() -> None:
-                    try:
-                        _prev()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
-                    try:
-                        _new()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
+                async def _chained() -> None:
+                    # Both _prev and _new may be sync or async. The chained
+                    # wrapper itself must be async because the outer invoker
+                    # (``_handle_message`` etc.) awaits awaitable callbacks; a
+                    # sync wrapper here would call ``_prev()`` / ``_new()`` and
+                    # silently drop any returned coroutine, breaking chained
+                    # async post-delivery hooks (e.g. ``/goal`` continuations).
+                    for _cb in (_prev, _new):
+                        try:
+                            _result = _cb()
+                            if inspect.isawaitable(_result):
+                                await _result
+                        except Exception:
+                            logger.debug(
+                                "Post-delivery callback failed", exc_info=True
+                            )
 
                 callback = _chained
 

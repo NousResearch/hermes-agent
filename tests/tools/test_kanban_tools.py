@@ -713,6 +713,120 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
+def _make_goal_mode_worker_env(monkeypatch, tmp_path):
+    """Set up an isolated HERMES_HOME with one claimed goal_mode task,
+    matching the pattern used by the kanban_complete judge gate tests."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-block-test", assignee="test-worker",
+            body="Must achieve X.", goal_mode=True,
+        )
+        kb.claim_task(conn, goal_task_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    return goal_task_id
+
+
+def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
+    """A goal_mode worker calling kanban_block with no kind must not be able
+    to use it as an unguarded escape from the goal loop (Issue #38696,
+    sibling of the kanban_complete judge gate / Issue #38367)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "giving up"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "goal_mode" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
+    """`capability` / `transient` are valid kinds in general but must not
+    let a goal_mode worker exit the loop without going through the judge."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    for kind in ("capability", "transient"):
+        out = kt._handle_block({"reason": "blocked", "kind": kind})
+        d = json.loads(out)
+        assert "error" in d, f"kind={kind} should be rejected for goal_mode"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
+    """`dependency` and `needs_input` represent a genuine external blocker
+    the worker cannot resolve itself — these remain ungated.
+
+    `dependency` routes to status='todo' (not 'blocked') per block_task's
+    own kind-routing — the goal loop still treats anything outside
+    running/ready/done/blocked as a stop, so this is still a legitimate,
+    judge-free exit; it's just not the literal 'blocked' status."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "waiting on another task", "kind": "dependency"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "todo"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "need a decision from the user", "kind": "needs_input"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_block_non_goal_mode_task_unaffected_by_new_gate(worker_env):
+    """The new gate only applies to goal_mode tasks — plain tasks must keep
+    blocking freely with no kind, exactly as before this fix."""
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "need clarification"})
+    assert json.loads(out).get("ok") is True
+
+
 def test_heartbeat_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "progress"})

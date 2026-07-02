@@ -353,6 +353,21 @@ class TestEmailResponseDelivery(unittest.TestCase):
 class TestDispatchMessage(unittest.TestCase):
     """Test email message dispatch logic."""
 
+    def setUp(self):
+        # These tests exercise dispatch mechanics (subject formatting,
+        # attachment typing, source building), not the authorization gate.
+        # The adapter now fails closed at dispatch when no allowlist / allow-all
+        # is configured (SECURITY.md 2.6), so opt into allow-all here to keep
+        # exercising the dispatch path. Auth-contract tests below override this.
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+
     def _make_adapter(self):
         """Create an EmailAdapter with mocked env vars."""
         from gateway.config import PlatformConfig
@@ -664,13 +679,14 @@ class TestDispatchMessage(unittest.TestCase):
             self.assertEqual(len(captured_events), 1)
             self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
 
-    def test_empty_allowlist_allows_all(self):
-        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+    def test_empty_allowlist_denies_without_optin(self):
+        """No allowlist and no allow-all opt-in → adapter fails closed (2.6)."""
         import asyncio
         with patch.dict(os.environ, {}, clear=False):
-            # Ensure EMAIL_ALLOWED_USERS is not in the env
-            if "EMAIL_ALLOWED_USERS" in os.environ:
-                del os.environ["EMAIL_ALLOWED_USERS"]
+            # No allowlist, and explicitly no allow-all opt-in.
+            for k in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS",
+                      "GATEWAY_ALLOW_ALL_USERS"):
+                os.environ.pop(k, None)
 
             adapter = self._make_adapter()
             adapter._message_handler = MagicMock()
@@ -688,7 +704,32 @@ class TestDispatchMessage(unittest.TestCase):
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))
-            # Handler should be called when no allowlist is configured
+            # Fail closed: an unset allowlist without allow-all drops the sender.
+            adapter._message_handler.assert_not_called()
+
+    def test_empty_allowlist_allows_all_with_optin(self):
+        """EMAIL_ALLOW_ALL_USERS=true with no allowlist → all senders proceed."""
+        import asyncio
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}, clear=False):
+            os.environ.pop("EMAIL_ALLOWED_USERS", None)
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # With explicit allow-all opt-in the handler is called.
             adapter._message_handler.assert_called()
 
     def test_spoofed_from_rejected_when_allowlisted(self):
@@ -701,6 +742,8 @@ class TestDispatchMessage(unittest.TestCase):
         import asyncio
         with patch.dict(os.environ, {
             "EMAIL_ALLOWED_USERS": "admin@test.com",
+            "EMAIL_ALLOW_ALL_USERS": "",
+            "GATEWAY_ALLOW_ALL_USERS": "",
         }):
             adapter = self._make_adapter()
             adapter._message_handler = MagicMock()
@@ -723,11 +766,12 @@ class TestDispatchMessage(unittest.TestCase):
             adapter._message_handler.assert_not_called()
             self.assertNotIn("admin@test.com", adapter._thread_context)
 
-    def test_unauthenticated_allowed_without_allowlist(self):
-        """No allowlist → no From: auth gate (gateway default-denies anyway)."""
+    def test_unauthenticated_denied_without_allowlist_optin(self):
+        """No allowlist, no allow-all → adapter fails closed regardless of From auth."""
         import asyncio
         with patch.dict(os.environ, {}, clear=False):
-            for k in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+            for k in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
+                      "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"):
                 os.environ.pop(k, None)
             adapter = self._make_adapter()
             adapter._message_handler = MagicMock()
@@ -747,8 +791,8 @@ class TestDispatchMessage(unittest.TestCase):
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))
-            # Adapter forwards; the gateway's own default-deny handles authz.
-            adapter._message_handler.assert_called()
+            # Fail closed at the adapter — no allowlist and no allow-all opt-in.
+            adapter._message_handler.assert_not_called()
 
     def test_unauthenticated_allowed_with_trust_from_header(self):
         """EMAIL_TRUST_FROM_HEADER=true disables the gate even with an allowlist."""
@@ -822,6 +866,19 @@ class TestDispatchMessage(unittest.TestCase):
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
+
+    def setUp(self):
+        # Thread-context storage is a dispatch-mechanics test, not an auth test.
+        # The adapter fails closed at dispatch without allow-all (SECURITY.md 2.6),
+        # so opt into allow-all to keep exercising the threading path.
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig

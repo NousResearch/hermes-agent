@@ -53,7 +53,10 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       const cwd = (config.terminal?.cwd ?? '').trim()
 
       if (cwd && cwd !== '.') {
-        setCurrentCwd(prev => prev || cwd)
+        // Configured terminal.cwd beats a stale remembered workspace cwd
+        // (#38855) — but never yank the workspace out from under an active
+        // session; those keep their own cwd until the user detaches.
+        setCurrentCwd(prev => (activeSessionIdRef.current ? prev : cwd))
         void refreshProjectBranch($currentCwd.get() || cwd)
       }
 

@@ -162,20 +162,20 @@ class TestMiniMaxAnthropicWire:
 
 
 class TestOpenAIWireFormatOnCustomProvider:
-    """A custom provider using chat_completions (OpenAI wire) should NOT get caching."""
+    """Claude models on any provider should get caching — even OpenAI-wire."""
 
-    def test_custom_openai_wire_does_not_cache_even_with_claude_name(self):
-        # This is the blocklist risk #9621 failed to avoid: sending
-        # cache_control fields in OpenAI-wire JSON can trip strict providers
-        # that reject unknown keys.  Stay off unless the transport is
-        # explicitly anthropic_messages or the aggregator is OpenRouter.
+    def test_claude_on_custom_openai_wire_caches_envelope(self):
+        # Claude models benefit from cache_control across all transports:
+        # gateways (OpenRouter, LiteLLM, company-internal multi-model
+        # endpoints) accept these markers on the OpenAI wire — and without
+        # them Claude silently reports 0% cached tokens (#56776).
         agent = _make_agent(
             provider="custom",
             base_url="https://api.fireworks.ai/inference/v1",
             api_mode="chat_completions",
             model="claude-sonnet-4",
         )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
 
 class TestQwenAlibabaFamily:

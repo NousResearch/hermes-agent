@@ -1474,6 +1474,15 @@ def anthropic_prompt_cache_policy(
         # Third-party Anthropic-compatible gateway.
         return True, True
 
+    # Claude models on OpenAI-wire gateways (chat_completions) also
+    # benefit from cache_control markers — gateways like OpenRouter,
+    # LiteLLM proxies, and company-internal multi-model endpoints all
+    # accept these markers on the OpenAI wire.  Without this branch
+    # Claude silently reports 0% cached tokens on these gateways,
+    # burning full price on every turn (#56776).
+    if is_claude:
+        return True, False
+
     # MiniMax on its Anthropic-compatible endpoint serves its own
     # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
     # cache_control support (0.1× read pricing, 5-minute TTL).  The

@@ -1,18 +1,22 @@
 import json
 import os
 import stat
+import sys
 import threading
+import types
 
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
+    _conversations_url,
     _format_connection_summary,
     _format_prefetch_context,
     _load_supermemory_config,
     _probe_supermemory_connection,
     _save_supermemory_config,
+    _supermemory_base_url,
 )
 
 
@@ -623,3 +627,41 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def test_base_url_defaults_to_cloud(monkeypatch):
+    monkeypatch.delenv("SUPERMEMORY_BASE_URL", raising=False)
+    assert _supermemory_base_url() == "https://api.supermemory.ai"
+    assert _conversations_url() == "https://api.supermemory.ai/v4/conversations"
+
+
+def test_base_url_honors_env_override(monkeypatch):
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://localhost:6767/")  # trailing slash trimmed
+    assert _supermemory_base_url() == "http://localhost:6767"
+    assert _conversations_url() == "http://localhost:6767/v4/conversations"
+
+
+def test_blank_base_url_falls_back_to_cloud(monkeypatch):
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "   ")
+    assert _supermemory_base_url() == "https://api.supermemory.ai"
+
+
+def test_sdk_client_receives_base_url(monkeypatch):
+    """_SupermemoryClient must forward the resolved base URL to the Supermemory SDK."""
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://localhost:6767")
+    captured = {}
+
+    fake_mod = types.ModuleType("supermemory")
+
+    class _FakeSupermemory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    fake_mod.Supermemory = _FakeSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", fake_mod)
+
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    _SupermemoryClient(api_key="k", timeout=5.0, container_tag="hermes")
+    assert captured["base_url"] == "http://localhost:6767"
+    assert captured["api_key"] == "k"

@@ -909,6 +909,37 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _parse_list_windows_entries(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize ``list_windows`` structuredContent rows for capture/focus.
+
+    cua-driver on Linux/WSL can return panel/dock windows with ``pid`` or
+    ``window_id`` set to ``null`` (NousResearch/hermes-agent#56704). Skip
+    those entries instead of crashing on ``int(None)``.
+    """
+    parsed: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        pid_raw = w.get("pid")
+        wid_raw = w.get("window_id")
+        if pid_raw is None or wid_raw is None:
+            continue
+        try:
+            pid = int(pid_raw)
+            window_id = int(wid_raw)
+        except (TypeError, ValueError):
+            continue
+        parsed.append(
+            {
+                "app_name": w.get("app_name", ""),
+                "pid": pid,
+                "window_id": window_id,
+                "off_screen": not w.get("is_on_screen", True),
+                "title": w.get("title", ""),
+                "z_index": w.get("z_index", 0),
+            }
+        )
+    return parsed
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------

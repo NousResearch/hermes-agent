@@ -234,6 +234,20 @@ class TestGenerate:
         assert result["error_type"] == "invalid_image_input"
         assert "not a supported image" in result["error"]
 
+    def test_rejects_svg_local_source(self, provider, monkeypatch, tmp_path):
+        # The shared magic-byte sniffer recognizes SVG, but gpt-image-2's
+        # input_image accepts raster only — SVG must fail locally with a clear
+        # error, not get embedded and rejected server-side with an opaque 400.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        svg_path = tmp_path / "vector.svg"
+        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+
+        result = provider.generate("edit this", image_url=str(svg_path))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
+
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""
         payload = {

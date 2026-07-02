@@ -2775,9 +2775,15 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        defer_archived_filter = (
+            project_compression_tips
+            and not include_children
+            and not include_archived
+            and not archived_only
+        )
         if archived_only:
             where_clauses.append("s.archived = 1")
-        elif not include_archived:
+        elif not include_archived and not defer_archived_filter:
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -2936,12 +2942,15 @@ class SessionDB:
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "archived",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+            if defer_archived_filter:
+                sessions = [s for s in sessions if not s.get("archived")]
 
         return sessions
 

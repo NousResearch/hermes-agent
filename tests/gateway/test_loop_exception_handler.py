@@ -83,6 +83,25 @@ def test_transient_classifier_rejects_unrelated_errors():
         assert _is_transient_network_error(exc) is False
 
 
+def test_transient_classifier_handles_traceback_exception_in_chain():
+    """TracebackException objects in the exception chain don't crash the walker.
+
+    ``traceback.TracebackException`` lacks ``__cause__`` / ``__context__``
+    instance attributes (they live on the *captured* chain, not as direct
+    attrs).  The walker must use ``getattr()`` to avoid ``AttributeError``.
+    """
+    import traceback
+
+    tbe = traceback.TracebackException.from_exception(
+        ConnectError("connection refused")
+    )
+    # TracebackException objects don't have __cause__ as an instance attr
+    assert not hasattr(tbe, "__cause__") or tbe.__cause__ is None
+
+    # Must not raise AttributeError — should return False (no transient name)
+    assert _is_transient_network_error(tbe) is False
+
+
 def test_transient_classifier_unwraps_cause_chain():
     """A NetworkError wrapping a ConnectError is still classified."""
     inner = ConnectError("connection refused")

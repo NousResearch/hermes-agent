@@ -9,6 +9,7 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import os
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -377,7 +378,12 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        # Some CI filesystems keep the same mtime_ns for immediate rewrites;
+        # force a distinct timestamp so this test checks memo invalidation, not
+        # the platform's timestamp granularity.
+        next_mtime_ns = config_path.stat().st_mtime_ns + 1_000_000_000
         config_path.write_text("{\n  \"changed\": true\n}")
+        os.utime(config_path, ns=(next_mtime_ns, next_mtime_ns))
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

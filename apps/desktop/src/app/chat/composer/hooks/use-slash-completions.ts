@@ -98,12 +98,14 @@ export function useSlashCompletions(options: {
 
         const matches = (
           needle
-            ? $sessions.get().filter(
-                session =>
-                  sessionTitle(session).toLowerCase().includes(needle) ||
-                  (session.preview ?? '').toLowerCase().includes(needle) ||
-                  session.id.toLowerCase().includes(needle)
-              )
+            ? $sessions
+                .get()
+                .filter(
+                  session =>
+                    sessionTitle(session).toLowerCase().includes(needle) ||
+                    (session.preview ?? '').toLowerCase().includes(needle) ||
+                    session.id.toLowerCase().includes(needle)
+                )
             : $sessions.get()
         ).slice(0, SESSION_INLINE_LIMIT)
 
@@ -135,9 +137,7 @@ export function useSlashCompletions(options: {
           // Prefer the categorized layout so the popover renders section headers
           // (Session, Tools & Skills, ...). Fall back to the flat list when the
           // backend didn't categorize.
-          const sections = catalog.categories?.length
-            ? catalog.categories
-            : [{ name: '', pairs: catalog.pairs ?? [] }]
+          const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
 
           const items = sections.flatMap(section =>
             section.pairs.map(([command, meta]) => ({
@@ -151,10 +151,9 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>(
-          'complete.slash',
-          { text }
-        )
+        const result = await gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+          text
+        })
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
         // e.g. complete.slash returns `{text: "alice"}` for `/personality alic`

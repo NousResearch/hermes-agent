@@ -1,17 +1,23 @@
 """Tests for hermes_logging — centralized logging setup."""
-
+import io
 import logging
 import os
 import stat
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import hermes_logging
+# Use whatever RotatingFileHandler class hermes_logging actually resolved so
+# the autouse fixture's isinstance checks (which strip rotating handlers
+# between tests) match the real handlers on every platform. hermes_logging
+# aliases concurrent-log-handler's ConcurrentRotatingFileHandler on Windows
+# (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
+# the name from the module under test keeps the two in lockstep.
+from hermes_logging import RotatingFileHandler
 
 
 @pytest.fixture(autouse=True)
@@ -305,7 +311,7 @@ class TestGatewayMode:
         """gateway.log captures records from gateway.* loggers."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        gw_logger = logging.getLogger("gateway.platforms.telegram")
+        gw_logger = logging.getLogger("plugins.platforms.telegram.adapter")
         gw_logger.info("telegram connected")
 
         for h in logging.getLogger().handlers:
@@ -552,9 +558,14 @@ class TestComponentFilter:
         assert f.filter(record) is True
 
     def test_passes_nested_matching_prefix(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
+        # Migrated platform adapters log under plugins.platforms.* (#41112);
+        # the gateway component filter is built from COMPONENT_PREFIXES["gateway"]
+        # (which includes "plugins.platforms"), so such records pass.
+        f = hermes_logging._ComponentFilter(
+            hermes_logging.COMPONENT_PREFIXES["gateway"]
+        )
         record = logging.LogRecord(
-            "gateway.platforms.telegram", logging.INFO, "", 0, "msg", (), None
+            "plugins.platforms.telegram.adapter", logging.INFO, "", 0, "msg", (), None
         )
         assert f.filter(record) is True
 
@@ -586,10 +597,16 @@ class TestComponentPrefixes:
 
     def test_gateway_prefix(self):
         assert "gateway" in hermes_logging.COMPONENT_PREFIXES
-        # The gateway component captures both core gateway logs and the
-        # hermes_plugins facility (plugin-installed gateway adapters log
-        # under that prefix).
-        assert ("gateway", "hermes_plugins") == hermes_logging.COMPONENT_PREFIXES["gateway"]
+        # The gateway component captures core gateway logs, the hermes_plugins
+        # facility, and plugins.platforms (messaging-platform adapters that
+        # migrated out of gateway/platforms/ into bundled plugins, #41112).
+        # Assert the required members as an invariant rather than an exact
+        # tuple snapshot so adding future gateway-component prefixes doesn't
+        # break this test.
+        gateway_prefixes = hermes_logging.COMPONENT_PREFIXES["gateway"]
+        assert "gateway" in gateway_prefixes
+        assert "hermes_plugins" in gateway_prefixes
+        assert "plugins.platforms" in gateway_prefixes
 
     def test_agent_prefix(self):
         prefixes = hermes_logging.COMPONENT_PREFIXES["agent"]
@@ -799,6 +816,85 @@ class TestAddRotatingHandler:
             if isinstance(h, RotatingFileHandler):
                 logger.removeHandler(h)
                 h.close()
+
+
+class TestWindowsConcurrentLogLockTimeout:
+    """Windows concurrent-log-handler lock timeouts stay inside logging."""
+
+    def _make_logger_and_handler(self, log_path: Path):
+        logger = logging.getLogger(f"_test_concurrent_lock_timeout_{log_path.stem}")
+        logger.handlers.clear()
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        return logger, handler
+
+    def test_helper_only_matches_windows_concurrent_lock_timeout(self):
+        with patch.object(hermes_logging.sys, "platform", "win32"):
+            assert hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("some other logging failure")
+            )
+
+        with patch.object(hermes_logging.sys, "platform", "linux"):
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+
+    def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
+        """Mirror CLH's real control flow.
+
+        ``concurrent-log-handler``'s ``emit()`` wraps its whole body in
+        ``try/except Exception: self.handleError(record)``, so the lock
+        RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
+        to ``handleError`` with the exception live in ``sys.exc_info()``.  We
+        invoke ``handleError`` the same way CLH would and assert no traceback
+        reaches stderr (the slash-worker surface)."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
+        )
+        try:
+            with patch.object(hermes_logging.sys, "platform", "win32"):
+                try:
+                    raise RuntimeError("Cannot acquire lock after 20 attempts")
+                except RuntimeError:
+                    handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "Cannot acquire lock after 20 attempts" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_other_errors_routed_to_handle_error_still_print(self, tmp_path, capsys):
+        """An unrelated failure routed through ``handleError`` must still emit the
+        normal stdlib logging-error output — only the known CLH timeout is silent."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
+        )
+        try:
+            with patch.object(hermes_logging.sys, "platform", "win32"):
+                try:
+                    raise RuntimeError("unexpected logging failure")
+                except RuntimeError:
+                    handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "unexpected logging failure" in captured.err
+            assert "--- Logging error ---" in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
 
 
 class TestReadLoggingConfig:

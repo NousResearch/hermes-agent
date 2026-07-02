@@ -1,5 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { $clarifyRequest } from './clarify'
 import { $activeSessionId } from './session'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -87,10 +88,20 @@ export interface SecretRequest extends KeyedPrompt {
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
+const $approvalInlineAnchorCount = atom(0)
 
 export const $approvalRequest = approval.$active
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
+export const $approvalInlineVisible = computed($approvalInlineAnchorCount, count => count > 0)
+
+export function registerApprovalInlineAnchor(): () => void {
+  $approvalInlineAnchorCount.set($approvalInlineAnchorCount.get() + 1)
+
+  return () => {
+    $approvalInlineAnchorCount.set(Math.max(0, $approvalInlineAnchorCount.get() - 1))
+  }
+}
 
 export const $sudoRequest = sudo.$active
 export const setSudoRequest = sudo.set
@@ -100,6 +111,16 @@ export const $secretRequest = secret.$active
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
 
+// True when the active session is blocked on the user (clarify question or an
+// approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
+// (agent/pet/state.py): the turn is paused on you, not working — so callers can
+// suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
+// decide, instead of treating the wait as an in-flight turn.
+export const $activeSessionAwaitingInput = computed(
+  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
+  (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
+)
+
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).
 export function clearAllPrompts(sessionId?: string | null): void {
@@ -107,6 +128,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
+    $approvalInlineAnchorCount.set(0)
 
     return
   }

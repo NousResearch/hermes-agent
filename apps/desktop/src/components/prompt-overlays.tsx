@@ -3,6 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 
+import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -21,13 +22,12 @@ import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
-// password and skill secret capture. (Dangerous-command / execute_code approval
-// is rendered INLINE on the pending tool row instead — see
-// components/assistant-ui/tool-approval.tsx — so it reads like an inline "Run"
-// affordance rather than a blocking modal.) Each Python-side caller blocks the
-// agent thread until the matching `*.respond` RPC lands; without a renderer the
-// agent stalls until its timeout and the tool is BLOCKED (the bug this fixes —
-// desktop handled clarify.request but not these). Any close path (Esc, backdrop
+// password and skill secret capture. Dangerous-command / execute_code approval
+// prefers the pending tool row, but also has a chat-level fallback when no row
+// is mounted (remote gateway sessions can raise the request before the matching
+// tool call is visible). Each Python-side caller blocks the agent thread until
+// the matching `*.respond` RPC lands; without a renderer the agent stalls until
+// its timeout and the tool is BLOCKED. Any close path (Esc, backdrop
 // click) funnels through Radix's single `onOpenChange(false)` and maps to a
 // refusal, so silence is never mistaken for consent, matching the TUI. We
 // deliberately do NOT add onEscapeKeyDown / onInteractOutside handlers — they'd
@@ -227,6 +227,7 @@ function SecretDialog() {
 export function PromptOverlays() {
   return (
     <>
+      <PendingApprovalFallback />
       <SudoDialog />
       <SecretDialog />
     </>

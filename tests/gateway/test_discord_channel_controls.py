@@ -140,6 +140,11 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500,600")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
+    # Stub auto-thread creation so this test focuses on ignored-channel
+    # routing only — auto-thread failures now correctly skip agent invocation
+    # (#20243), which would otherwise mask the assertion below.
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
     message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
     await adapter._handle_message(message)
 
@@ -166,6 +171,11 @@ async def test_ignored_channels_empty_string_ignores_nothing(adapter, monkeypatc
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    # Stub auto-thread creation so this test focuses on ignored-channel
+    # routing only — auto-thread failures now correctly skip agent invocation
+    # (#20243), which would otherwise mask the assertion below.
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
 
     message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
     await adapter._handle_message(message)
@@ -279,6 +289,71 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
 
     adapter._auto_create_thread.assert_not_awaited()
     adapter.handle_message.assert_awaited_once()
+
+
+# ── auto-thread failure must not silently fall back to inline (#20243) ──
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkeypatch):
+    """Auto-thread creation failure must not trigger an inline parent-channel reply.
+
+    Before #20243, ``effective_channel = auto_threaded_channel or message.channel``
+    silently routed the response back to the parent channel when thread creation
+    failed, breaking thread-first Discord workflows. The fix surfaces a short
+    visible error to the parent channel and skips agent invocation entirely so
+    the user can retry.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=None)
+
+    channel = FakeTextChannel(channel_id=800)
+    channel.send = AsyncMock()
+    message = make_message(channel=channel, content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    # Agent must NOT be invoked when the routing target failed.
+    adapter.handle_message.assert_not_awaited()
+    # User gets a visible explanation in the parent channel instead of a silent
+    # inline reply.
+    channel.send.assert_awaited_once()
+    sent_text = channel.send.await_args.args[0]
+    assert "could not create" in sent_text.lower()
+    assert "thread" in sent_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_failure_notify_error_does_not_crash(adapter, monkeypatch):
+    """If even the failure-notification send raises, we still skip the agent.
+
+    ``message.channel.send`` itself can fail (the same connect issue that
+    killed thread creation often kills plain sends too). The handler should
+    swallow the secondary error and still avoid invoking the agent.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=None)
+
+    channel = FakeTextChannel(channel_id=800)
+    channel.send = AsyncMock(side_effect=RuntimeError("Cannot connect to host discord.com:443"))
+    message = make_message(channel=channel, content="hello")
+
+    # No exception must propagate.
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_not_awaited()
+    channel.send.assert_awaited_once()
 
 
 # ── config.py bridging ───────────────────────────────────────────────

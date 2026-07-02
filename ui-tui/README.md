@@ -70,14 +70,38 @@ npm run test:watch
 
 `src/app.tsx` is the center of the UI. Heavy logic is split into `src/app/`:
 
-- `createGatewayEventHandler.ts` — maps gateway events to state updates
-- `createSlashHandler.ts` — local slash command dispatch
-- `useComposerState.ts` — draft, multiline buffer, queue editing
-- `useInputHandlers.ts` — keypress routing
-- `useTurnState.ts` — agent turn lifecycle
-- `overlayStore.ts` / `uiStore.ts` — nanostores for overlay and UI state
-- `gatewayContext.tsx` — React context for the gateway client
-- `constants.ts`, `helpers.ts`, `interfaces.ts`
+- `src/app/createGatewayEventHandler.ts` — maps gateway events to state updates
+- `src/app/createSlashHandler.ts` — local slash command dispatch
+- `src/app/useComposerState.ts` — draft, multiline buffer, queue editing
+- `src/app/useInputHandlers.ts` — keypress routing
+- `src/app/useMainApp.ts` — top-level composition hook: wires all sub-hooks, manages transcript history, session polling, and exposes props consumed by `app.tsx`
+- `src/app/useSessionLifecycle.ts` — session create / resume / activate / close and visible-history reset
+- `src/app/useSubmission.ts` — message send, shell exec (`!cmd`), inline interpolation (`{!cmd}`), and busy-input-mode dispatch (queue / steer / interrupt)
+- `src/app/turnController.ts` — stateful class that drives the turn lifecycle: buffers streaming deltas, manages tool/reasoning state, handles interrupt and message-complete transitions
+- `src/app/turnStore.ts` — nanostore for turn state (streaming text, tools, reasoning, subagents, todos, activity trail)
+- `src/app/useConfigSync.ts` — fetches `config.get full` on session start and polls config mtime every 5 s; applies display settings and triggers MCP reload on change
+- `src/app/useLongRunToolCharms.ts` — fires ambient activity messages for tools running longer than 8 s
+- `src/app/overlayStore.ts` / `src/app/uiStore.ts` — nanostores for overlay and UI state
+- `src/app/delegationStore.ts` — nanostore for subagent spawning caps and overlay accordion state
+- `src/app/spawnHistoryStore.ts` — in-memory ring (last 10) of finished subagent fan-out snapshots; populated at turn end for `/replay`
+- `src/app/inputSelectionStore.ts` — nanostore exposing the active text-input selection handle
+- `src/app/gatewayContext.tsx` — React context for the gateway client
+- `src/app/gatewayRecovery.ts` — pure function that decides whether to respawn and resume after a gateway crash, with a 3-attempt / 60 s budget
+- `src/app/setupHandoff.ts` — launches external `hermes setup`, suspends Ink while it runs, opens a new session on success
+- `src/app/scroll.ts` — scrolls the viewport while keeping the text selection anchor in sync
+- `src/app/interfaces.ts` — internal interfaces (ComposerActions, GatewayRpc, etc.)
+
+### Slash command subsystem (`src/app/slash/`)
+
+- `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
+- `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
+- `commands/core.ts` — general TUI commands
+- `commands/billing.ts` — `/billing`: manage Nous terminal billing — buy credits, auto-reload, limits
+- `commands/credits.ts` — `/credits`
+- `commands/session.ts` — session and agent commands
+- `commands/ops.ts` — operations commands
+- `commands/setup.ts` — `/setup`
+- `commands/debug.ts` — `/heapdump`, `/mem`
 
 The top-level `app.tsx` composes these into the Ink tree with `Static` transcript output, a live streaming assistant row, prompt overlays, queue preview, status rule, input line, and completion list.
 
@@ -197,32 +221,41 @@ These are stateful UI branches in `app.tsx`, not separate screens.
 
 ## Commands
 
-The local slash handler covers the built-ins that need direct client behavior:
+The following commands are handled directly by the TUI client. Unrecognized commands fall through to the Python gateway via `slash.exec` and `command.dispatch`.
 
-- `/help`
-- `/quit`, `/exit`, `/q`
-- `/clear`
-- `/new`
-- `/compact`
-- `/resume`
-- `/copy`
-- `/paste`
-- `/details`
-- `/logs`
-- `/statusbar`, `/sb`
-- `/queue`
-- `/undo`
-- `/retry`
+### Core (`core.ts`)
+`/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
+`/compact`, `/copy`, `/paste`, `/details` (alias `/detail`),
+`/statusbar` (alias `/sb`), `/queue` (alias `/q`), `/logs`, `/history`,
+`/save`, `/undo`, `/retry`, `/steer`, `/mouse` (alias `/scroll`),
+`/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`
 
-Notes:
+### Billing (`billing.ts`)
+`/billing` — manage Nous terminal billing — buy credits, auto-reload, limits
 
-- `/copy` sends the selected assistant response through OSC 52.
-- `/paste` with no args asks the gateway to attach a clipboard image.
-- Text paste remains inline-only; `Cmd+V` / `Ctrl+V` handle layered text/OSC52/image fallback before `/paste` is needed.
-- `/details [hidden|collapsed|expanded|cycle]` controls thinking/tool-detail visibility.
-- `/statusbar` toggles the status rule on/off.
+### Session (`session.ts`)
+`/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
+`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
+`/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 
-Anything else falls through to:
+### Ops (`ops.ts`)
+`/stop`, `/reload-mcp` (alias `/reload_mcp`), `/reload`, `/browser`,
+`/rollback`, `/agents` (alias `/tasks`), `/replay`, `/replay-diff`,
+`/skills`, `/reload-skills` (alias `/reload_skills`), `/plugins`, `/tools`
+
+### Credits (`credits.ts`)
+`/credits` — Nous credit balance and browser top-up
+
+### Setup (`setup.ts`)
+`/setup` — launches external `hermes setup` wizard, suspends Ink while it runs
+
+### Debug (`debug.ts`)
+`/heapdump`, `/mem` — V8 memory diagnostics
+
+---
+
+Anything not matched above falls through to:
 
 1. `slash.exec`
 2. `command.dispatch`
@@ -233,28 +266,44 @@ That lets Python own aliases, plugins, skills, and registry-backed commands with
 
 Primary event types the client handles today:
 
-| Event                    | Payload                                         |
-| ------------------------ | ----------------------------------------------- |
-| `gateway.ready`          | `{ skin? }`                                     |
-| `session.info`           | session metadata for banner + tool/skill panels |
-| `message.start`          | start assistant streaming                       |
-| `message.delta`          | `{ text, rendered? }`                           |
-| `message.complete`       | `{ text, rendered?, usage, status }`            |
-| `thinking.delta`         | `{ text }`                                      |
-| `reasoning.delta`        | `{ text }`                                      |
-| `reasoning.available`    | `{ text }`                                      |
-| `status.update`          | `{ kind, text }`                                |
-| `tool.start`             | `{ tool_id, name, context? }`                   |
-| `tool.progress`          | `{ name, preview }`                             |
-| `tool.complete`          | `{ tool_id, name }`                             |
-| `clarify.request`        | `{ question, choices?, request_id }`            |
-| `approval.request`       | `{ command, description }`                      |
-| `sudo.request`           | `{ request_id }`                                |
-| `secret.request`         | `{ prompt, env_var, request_id }`               |
-| `background.complete`    | `{ task_id, text }`                             |
-| `error`                  | `{ message }`                                   |
-| `gateway.stderr`         | synthesized from child stderr                   |
-| `gateway.protocol_error` | synthesized from malformed stdout               |
+| Event                      | Payload                                                                     |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `gateway.ready`            | `{ skin? }`                                                                 |
+| `skin.changed`             | `{ skin }`                                                                  |
+| `session.info`             | session metadata for banner + tool/skill panels                             |
+| `message.start`            | start assistant streaming                                                   |
+| `message.delta`            | `{ text, rendered? }`                                                       |
+| `message.complete`         | `{ text, rendered?, usage, status }`                                        |
+| `thinking.delta`           | `{ text }`                                                                  |
+| `reasoning.delta`          | `{ text, verbose? }`                                                        |
+| `reasoning.available`      | `{ text, verbose? }`                                                        |
+| `status.update`            | `{ kind, text }`                                                            |
+| `notification.show`        | `{ id, key, kind, level, text, ttl_ms? }`                                   |
+| `notification.clear`       | `{ key }`                                                                   |
+| `tool.start`               | `{ tool_id, name, context?, args_text? }`                                   |
+| `tool.generating`          | `{ name }`                                                                  |
+| `tool.progress`            | `{ name, preview }`                                                         |
+| `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
+| `clarify.request`          | `{ question, choices?, request_id }`                                        |
+| `approval.request`         | `{ command, description, allow_permanent? }`                                |
+| `sudo.request`             | `{ request_id }`                                                            |
+| `secret.request`           | `{ prompt, env_var, request_id }`                                           |
+| `background.complete`      | `{ task_id, text }`                                                         |
+| `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
+| `review.summary`           | `{ text }`                                                                  |
+| `browser.progress`         | `{ message }`                                                               |
+| `voice.status`             | `{ state }`                                                                 |
+| `voice.transcript`         | `{ text, no_speech_limit? }`                                                |
+| `subagent.spawn_requested` | `{ subagent_id?, task_index, goal?, depth?, parent_id? }`                   |
+| `subagent.start`           | `{ subagent_id?, task_index, goal?, depth?, parent_id? }`                   |
+| `subagent.thinking`        | `{ text }`                                                                  |
+| `subagent.tool`            | `{ tool_name?, tool_preview?, text? }`                                      |
+| `subagent.progress`        | `{ text }`                                                                  |
+| `subagent.complete`        | `{ status, summary?, text?, duration_seconds? }`                            |
+| `error`                    | `{ message }`                                                               |
+| `gateway.stderr`           | synthesized from child stderr                                               |
+| `gateway.protocol_error`   | synthesized from malformed stdout                                           |
+| `gateway.start_timeout`    | `{ cwd?, python?, stderr_tail? }`                                           |
 
 ## Theme model
 
@@ -283,56 +332,151 @@ ui-tui/
     entry.tsx            TTY gate + render()
     app.tsx              top-level Ink tree, composes src/app/*
     gatewayClient.ts     child process + JSON-RPC bridge
-    theme.ts             default palette + skin merge
-    constants.ts         display constants, hotkeys, tool labels
-    types.ts             shared client-side types
-    banner.ts            ASCII art data
+    gatewayTypes.ts      gateway event and RPC response type definitions
+    theme.ts             theme colors and skin merge
+    banner.ts            ASCII art renderer (parses Rich color tags)
+    types.ts             shared client-side types (ActiveTool, Msg, etc.)
 
     app/
       createGatewayEventHandler.ts  event → state mapping
       createSlashHandler.ts         local slash dispatch
-      useComposerState.ts           draft + multiline + queue editing
+      delegationStore.ts            nanostore for subagent spawning caps and overlay accordion state
+      gatewayContext.tsx            React context for gateway client
+      gatewayRecovery.ts            crash-recovery budget: respawn+resume capped to 3 attempts / 60 s
+      inputSelectionStore.ts        nanostore exposing the active text-input selection handle
+      interfaces.ts                 internal interfaces (ComposerActions, GatewayRpc, etc.)
+      overlayStore.ts               nanostores for overlay state
+      scroll.ts                     viewport scroll with text-selection anchor sync
+      setupHandoff.ts               launches external hermes setup, suspends Ink while it runs
+      spawnHistoryStore.ts          ring buffer of finished subagent fan-out snapshots
+      turnController.ts             stateful turn lifecycle driver (streaming, tools, reasoning)
+      turnStore.ts                  nanostore for turn state (streaming, tools, reasoning, subagents)
+      uiStore.ts                    nanostores for UI flags (busy, sid, mouseTracking, etc.)
+      useComposerState.ts           draft + multiline buffer + queue editing
+      useConfigSync.ts              config polling and MCP reload on mtime change
       useInputHandlers.ts           keypress routing
-      useTurnState.ts               agent turn lifecycle
-      overlayStore.ts               nanostores for overlays
-      uiStore.ts                    nanostores for UI flags
-      gatewayContext.tsx             React context for gateway client
-      constants.ts                  app-level constants
-      helpers.ts                    pure helpers
-      interfaces.ts                 internal interfaces
+      useLongRunToolCharms.ts       ambient activity messages for tools running longer than 8 s
+      useMainApp.ts                 top-level composition hook
+      useSessionLifecycle.ts        session create / resume / activate / close
+      useSubmission.ts              message send, shell exec, interpolation, busy-input-mode dispatch
+
+      slash/
+        types.ts                    SlashCommand interface and SlashRunCtx execution context
+        registry.ts                 SLASH_COMMANDS assembly and findSlashCommand lookup
+        commands/
+          billing.ts                /billing — manage Nous terminal billing
+          core.ts                   general TUI commands
+          credits.ts                /credits
+          debug.ts                  /heapdump, /mem
+          ops.ts                    operations commands
+          session.ts                session and agent commands
+          setup.ts                  /setup wizard
 
     components/
-      appChrome.tsx      status bar, input row, completions
-      appLayout.tsx      top-level layout composition
-      appOverlays.tsx    overlay routing (pickers, prompts)
-      branding.tsx       banner + session summary
-      markdown.tsx       Markdown-to-Ink renderer
-      maskedPrompt.tsx   masked input for sudo / secrets
-      messageLine.tsx    transcript rows
-      modelPicker.tsx    model switch picker
-      prompts.tsx        approval + clarify flows
-      queuedMessages.tsx queued input preview
-      sessionPicker.tsx  session resume picker
-      textInput.tsx      custom line editor
-      thinking.tsx       spinner, reasoning, tool activity
+      activeSessionSwitcher.tsx  active session switch overlay
+      agentsOverlay.tsx          subagent delegation overlay
+      appChrome.tsx              status bar, input row, completions
+      appLayout.tsx              top-level layout composition
+      appOverlays.tsx            overlay routing (pickers, prompts)
+      billingOverlay.tsx         billing overlay
+      branding.tsx               banner + session summary
+      fpsOverlay.tsx             FPS debug overlay
+      helpHint.tsx               contextual help hint
+      markdown.tsx               Markdown-to-Ink renderer
+      maskedPrompt.tsx           masked input for sudo / secrets
+      messageLine.tsx            transcript rows
+      modelPicker.tsx            model switch picker
+      overlayControls.tsx        shared overlay control buttons
+      pluginsHub.tsx             plugins hub overlay
+      prompts.tsx                approval + clarify flows
+      queuedMessages.tsx         queued input preview
+      skillsHub.tsx              skills hub overlay
+      streamingAssistant.tsx     live streaming assistant row
+      streamingMarkdown.tsx      streaming Markdown renderer
+      textInput.tsx              custom line editor
+      themed.tsx                 theme-aware wrapper
+      thinking.tsx               spinner, reasoning, tool activity
+      todoPanel.tsx              todo list panel
+
+    config/
+      env.ts                     environment variable resolution and Termux/mouse defaults
+      limits.ts                  paste size, live-render and history limits
+      timing.ts                  streaming batch and debounce timing constants
+
+    content/
+      charms.ts                  ambient activity strings for long-running tools
+      faces.ts                   agent face / kaomoji pool
+      fortunes.ts                /fortune quote pool
+      hotkeys.ts                 platform-aware hotkey display strings
+      placeholders.ts            rotating input placeholder strings
+      setup.ts                   setup-required panel content
+      verbs.ts                   tool activity verb map (browser → browsing, etc.)
+
+    domain/
+      blockLayout.ts             block layout and lead-gap helpers
+      details.ts                 details visibility mode resolution (hidden/collapsed/expanded)
+      messages.ts                message formatting and transcript helpers
+      paths.ts                   cwd shortening and path display helpers
+      providers.ts               provider display name helpers
+      roles.ts                   message role color and label helpers
+      slash.ts                   slash command parsing and TUI session model flag
+      usage.ts                   token usage zero value and helpers
+      viewport.ts                viewport height estimation helpers
 
     hooks/
-      useCompletion.ts   tab completion (slash + path)
-      useInputHistory.ts persistent history navigation
-      useQueue.ts        queued message management
-      useVirtualHistory.ts in-memory history for pickers
+      useCompletion.ts           tab completion (slash + path)
+      useGitBranch.ts            current git branch via child_process execFile
+      useInputHistory.ts         persistent history navigation
+      useQueue.ts                queued message management
+      useVirtualHistory.ts       virtual list scroll and height tracking
 
     lib/
-      history.ts         persistent input history
-      messages.ts        message formatting helpers
-      osc52.ts           OSC 52 clipboard copy
-      rpc.ts             JSON-RPC type helpers
-      text.ts            text helpers, ANSI detection, previews
+      circularBuffer.ts          fixed-size generic ring buffer
+      clipboard.ts               clipboard read / write via child_process
+      editor.ts                  $EDITOR launch, PATH resolution, and Ink suspend
+      emoji.ts                   emoji and variation selector width helpers
+      externalCli.ts             external CLI subprocess launcher
+      externalLink.ts            open URLs in the system browser
+      forceTruecolor.ts          24-bit truecolor override before chalk imports
+      fpsStore.ts                Ink frame FPS tracker nanostore
+      fuzzy.ts                   lightweight fuzzy subsequence scorer
+      gracefulExit.ts            clean shutdown with failsafe timeout
+      history.ts                 persistent input history (read/append to disk)
+      inputMetrics.ts            input width and wrap metrics
+      liveProgress.ts            todo helpers and tool-shelf message assembly
+      mathUnicode.ts             best-effort LaTeX → Unicode for inline math
+      memory.ts                  V8 heap snapshot and diagnostics helpers
+      memoryMonitor.ts           automatic heap-dump trigger on high usage
+      messages.ts                transcript message append helpers
+      openExternalUrl.ts         platform-aware URL opener (macOS/Linux/Windows)
+      osc52.ts                   OSC 52 terminal clipboard copy sequence
+      parentLog.ts               append-only log to ~/.hermes/tui-parent.log
+      perfPane.tsx               FPS / render perf overlay pane
+      platform.ts                platform-aware keybinding and SSH detection helpers
+      precisionWheel.ts          high-precision scroll wheel with sticky-frame budget
+      prompt.ts                  composer prompt text helpers (Termux-safe)
+      reasoning.ts               reasoning tag detection and split helpers
+      rpc.ts                     JSON-RPC result and command dispatch helpers
+      subagentTree.ts            subagent tree flattening and aggregate helpers
+      syntax.ts                  syntax token types and theme-aware highlighting
+      terminalModes.ts           terminal mode reset sequences (kitty, mouse, etc.)
+      terminalParity.ts          VSCode-like terminal detection and hint helpers
+      terminalSetup.ts           IDE keybinding config file install helpers
+      termux.ts                  Termux platform detection helpers
+      text.ts                    text helpers, ANSI detection, tool trail builders
+      todo.ts                    todo item tone and display helpers
+      viewportStore.ts           viewport height nanostore via ScrollBoxHandle
+      virtualHeights.ts          virtual list row height estimation
+      wheelAccel.ts              scroll wheel acceleration state machine
+
+    protocol/
+      interpolation.ts           {!cmd} inline shell interpolation regex and helpers
+      paste.ts                   bracketed paste snippet token regex
 
     types/
-      hermes-ink.d.ts    type declarations for @hermes/ink
+      hermes-ink.d.ts            type declarations for @hermes/ink
 
-    __tests__/           vitest suite
+    __tests__/                   vitest suite
 ```
 
 Related Python side:

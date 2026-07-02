@@ -12,6 +12,7 @@ import {
   setCurrentServiceTier,
   setIntroPersonality
 } from '@/store/session'
+import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -52,7 +53,10 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       const cwd = (config.terminal?.cwd ?? '').trim()
 
       if (cwd && cwd !== '.') {
-        setCurrentCwd(prev => prev || cwd)
+        // Configured terminal.cwd beats a stale remembered workspace cwd
+        // (#38855) — but never yank the workspace out from under an active
+        // session; those keep their own cwd until the user detaches.
+        setCurrentCwd(prev => (activeSessionIdRef.current ? prev : cwd))
         void refreshProjectBranch($currentCwd.get() || cwd)
       }
 
@@ -65,6 +69,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+      applyAutoSpeakFromConfig(config)
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

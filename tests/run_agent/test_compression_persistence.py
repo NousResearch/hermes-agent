@@ -129,6 +129,68 @@ class TestFlushAfterCompression:
             assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
 
+    def test_in_place_compression_rebaseline_prevents_duplicate_compacted_rows(self):
+        """In-place compaction already persisted the compacted transcript.
+
+        Regression for the 2026-06-26 SRE compression loop: archive_and_compact()
+        inserted a compacted active block, then the same turn continued with
+        conversation_history=None and _flush_messages_to_session_db() appended
+        the compacted dicts again, doubling live context.
+        """
+        from agent.conversation_compression import conversation_history_after_compression
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            agent._ensure_db_session()
+
+            original_history = [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+            agent._flush_messages_to_session_db(original_history, [])
+            assert [row["content"] for row in db.get_messages("original-session")] == [
+                "old question",
+                "old answer",
+            ]
+
+            compacted = [
+                {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "recent question"},
+                {"role": "assistant", "content": "recent answer"},
+            ]
+            db.archive_and_compact("original-session", compacted)
+            setattr(agent, "_last_compaction_in_place", True)
+            agent._last_flushed_db_idx = 0
+
+            # Same agent turn continues after compaction. The compacted dicts
+            # must be treated as already-persisted history; only later appends
+            # should be flushed.
+            post_compaction_history = conversation_history_after_compression(
+                agent, compacted
+            )
+            assert post_compaction_history is not None
+            assert post_compaction_history is not compacted
+            assert post_compaction_history == compacted
+
+            messages = compacted + [
+                {"role": "tool", "content": "tool result"},
+                {"role": "assistant", "content": "final answer"},
+            ]
+            agent._flush_messages_to_session_db(messages, post_compaction_history)
+
+            rows = db.get_messages("original-session")
+            assert [row["content"] for row in rows] == [
+                "[CONTEXT COMPACTION] summary",
+                "recent question",
+                "recent answer",
+                "tool result",
+                "final answer",
+            ]
+
 
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split

@@ -67,6 +67,15 @@ from fastapi.responses import Response
 SESSION_AT_COOKIE = "hermes_session_at"
 SESSION_RT_COOKIE = "hermes_session_rt"
 PKCE_COOKIE = "hermes_session_pkce"
+# One-shot loop-guard marker for the auto-SSO redirect (Phase 1,
+# cloud-auto-discovery). Set when the gate auto-initiates the portal OAuth
+# redirect on an unauthenticated document load; its mere PRESENCE on the next
+# unauthenticated load tells the gate "we already bounced once" so a genuinely
+# absent portal session degrades to the /login page instead of ping-ponging.
+# Carries no secret — it's a boolean breadcrumb — but is set HttpOnly/Lax/Secure
+# like the others for consistency. Short TTL so a user who returns later gets a
+# fresh silent attempt rather than a permanently-disabled one.
+SSO_ATTEMPT_COOKIE = "hermes_sso_attempt"
 
 # Possible name variants we may have to read back. Sorted so most-strict
 # wins on iteration when both happen to be present (shouldn't happen in
@@ -82,6 +91,13 @@ _NAME_VARIANTS = ("__Host-", "__Secure-", "")
 # stale-cookie refresh churn ever matters.)
 _RT_MAX_AGE = 30 * 24 * 60 * 60
 _PKCE_MAX_AGE = 10 * 60
+# Auto-SSO loop-guard marker TTL. Just long enough to cover one redirect
+# round trip to the portal and back (a few seconds in practice); kept at 60s
+# so a slow portal hop or a manual back-button still trips the guard, while a
+# user returning minutes later gets a fresh silent attempt rather than being
+# stuck on /login forever. The marker is also cleared explicitly on a
+# successful callback and whenever the gate falls back to /login.
+_SSO_ATTEMPT_MAX_AGE = 60
 
 
 def _resolved_name(bare: str, *, use_https: bool, prefix: str) -> str:
@@ -234,6 +250,43 @@ def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str]
 
 def read_pkce_cookie(request: Request) -> Optional[str]:
     return _read_with_fallback(request, PKCE_COOKIE)
+
+
+def set_sso_attempt_cookie(
+    response: Response, *, use_https: bool, prefix: str = "",
+) -> None:
+    """Set the one-shot auto-SSO loop-guard marker (Phase 1).
+
+    Written by the gate the moment it auto-initiates the portal OAuth
+    redirect on an unauthenticated document load. The value is a constant
+    (``"1"``) — only its presence matters. Short Max-Age so a stale marker
+    can't permanently suppress a future silent attempt.
+    """
+    response.set_cookie(
+        _resolved_name(SSO_ATTEMPT_COOKIE, use_https=use_https, prefix=prefix),
+        "1",
+        max_age=_SSO_ATTEMPT_MAX_AGE,
+        **_common_attrs(use_https=use_https, prefix=prefix),
+    )
+
+
+def read_sso_attempt_cookie(request: Request) -> Optional[str]:
+    """Return the auto-SSO marker value if present (any variant), else None."""
+    return _read_with_fallback(request, SSO_ATTEMPT_COOKIE)
+
+
+def clear_sso_attempt_cookie(response: Response, *, prefix: str = "") -> None:
+    """Emit Max-Age=0 deletions for the auto-SSO marker, every name variant.
+
+    Called on a successful callback and whenever the gate falls back to
+    /login, so the marker never lingers to suppress a later silent attempt.
+    """
+    path = _cookie_path(prefix)
+    for variant in _NAME_VARIANTS:
+        response.set_cookie(
+            f"{variant}{SSO_ATTEMPT_COOKIE}", "", max_age=0,
+            path=path, httponly=True, samesite="lax",
+        )
 
 
 def detect_https(request: Request) -> bool:

@@ -153,8 +153,9 @@ class TestSessionEntryReason:
         source = _make_source()
 
         entry1 = store.get_or_create_session(source)
-        # Simulate some conversation happened
-        entry1.total_tokens = 5000
+        # Simulate some conversation happened (last_prompt_tokens is the field
+        # written on every turn; total_tokens is never persisted).
+        entry1.last_prompt_tokens = 5000
         entry1.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 
@@ -245,7 +246,7 @@ class TestSessionEntryAutoResetRoundtrip:
         source = _make_source()
 
         entry = store.get_or_create_session(source)
-        entry.total_tokens = 1000
+        entry.last_prompt_tokens = 1000
         entry.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 

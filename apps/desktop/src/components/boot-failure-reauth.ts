@@ -62,9 +62,7 @@ export function deriveProviderShape(providers: DesktopAuthProvider[] | null | un
   const isPassword = list.every(p => Boolean(p.supportsPassword))
 
   const providerLabel =
-    list.length === 1
-      ? list[0].displayName || list[0].name
-      : list.map(p => p.displayName || p.name).join(' / ')
+    list.length === 1 ? list[0].displayName || list[0].name : list.map(p => p.displayName || p.name).join(' / ')
 
   return { isPassword, providerLabel }
 }
@@ -75,7 +73,8 @@ export function signInLabel(reauth: RemoteReauth | null, copy: SignInCopy = DEFA
     return copy.remoteGateway
   }
 
-  const provider = reauth?.providerLabel === DEFAULT_SIGN_IN_COPY.identityProvider ? copy.identityProvider : reauth?.providerLabel
+  const provider =
+    reauth?.providerLabel === DEFAULT_SIGN_IN_COPY.identityProvider ? copy.identityProvider : reauth?.providerLabel
 
   return copy.withProvider(provider ?? copy.identityProvider)
 }

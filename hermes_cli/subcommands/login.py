@@ -10,20 +10,40 @@ from typing import Callable
 
 
 def build_login_parser(subparsers, *, cmd_login: Callable) -> None:
-    """Attach the ``login`` subcommand to ``subparsers``."""
-    # =========================================================================
-    # login command
-    # =========================================================================
+    """Attach the deprecated ``login`` subcommand to ``subparsers``.
+
+    ``hermes login`` was removed in favor of ``hermes auth`` / ``hermes model``
+    (the runtime handler in ``hermes_cli/auth.py::login_command`` just prints a
+    deprecation message and exits).  The subparser is kept registered so that
+    old scripts/aliases invoking ``hermes login [--flags]`` still receive the
+    actionable deprecation message rather than an argparse ``invalid choice:
+    'login'`` error — but:
+
+    - The subparser is registered WITHOUT a ``help=`` kwarg so the row is
+      omitted from ``hermes --help`` (argparse only lists subcommands that
+      have a help string).  This hides a command that no longer works (#24756)
+      without the ``help=argparse.SUPPRESS`` ``==SUPPRESS==`` leak that
+      argparse emits for a top-level subparser on Python 3.12+.
+    - ``--provider`` accepts ANY value (no ``choices=``) so that, e.g.,
+      ``hermes login --provider anthropic`` reaches the deprecation handler and
+      gets pointed at ``hermes model`` instead of crashing in argparse with
+      ``invalid choice: 'anthropic'`` before the handler can run.
+    """
     login_parser = subparsers.add_parser(
         "login",
-        help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Hermes CLI",
+        description=(
+            "Deprecated. Use `hermes auth` to manage credentials, "
+            "`hermes model` to select a provider, or `hermes setup` for full setup."
+        ),
     )
+    # No ``choices=`` on purpose — the handler is a deprecation notice that
+    # ignores the value, and a restrictive list would reject providers the user
+    # legitimately wants (e.g. ``anthropic``) with an argparse error before the
+    # friendly redirect message is ever printed.
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "xai-oauth"],
         default=None,
-        help="Provider to authenticate with (default: nous)",
+        help="(deprecated) Provider name; ignored — see `hermes model`",
     )
     login_parser.add_argument(
         "--portal-url", help="Portal base URL (default: production portal)"

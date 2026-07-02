@@ -39,8 +39,16 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
             "clawhub",
             "lobehub",
             "browse-sh",
+            # Provider filters (GitHub taps stored under source="github"):
+            "nvidia",
+            "openai",
+            "anthropic",
+            "huggingface",
+            "voltagent",
+            "gstack",
+            "minimax",
         ],
-        help="Filter by source (default: all)",
+        help="Filter by source or provider (e.g. nvidia, openai) (default: all)",
     )
 
     skills_search = skills_subparsers.add_parser(
@@ -59,9 +67,18 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
             "clawhub",
             "lobehub",
             "browse-sh",
+            # Provider filters (GitHub taps stored under source="github"):
+            "nvidia",
+            "openai",
+            "anthropic",
+            "huggingface",
+            "voltagent",
+            "gstack",
+            "minimax",
         ],
+        help="Filter by source or provider (e.g. nvidia, openai)",
     )
-    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
+    skills_search.add_argument("--limit", type=int, default=25, help="Max results")
     skills_search.add_argument(
         "--json",
         action="store_true",
@@ -162,6 +179,35 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "-y",
         action="store_true",
         help="Skip confirmation prompt when using --restore",
+    )
+
+    skills_list_modified = skills_subparsers.add_parser(
+        "list-modified",
+        help="List bundled skills you've edited (which `hermes update` keeps)",
+        description=(
+            "Show the bundled skills whose local copy differs from the version last "
+            "synced, i.e. the ones `hermes update` reports as user-modified and skips. "
+            "Use `hermes skills diff <name>` to see changes and `hermes skills reset "
+            "<name>` to resume updates."
+        ),
+    )
+    skills_list_modified.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the list as JSON",
+    )
+
+    skills_diff = skills_subparsers.add_parser(
+        "diff",
+        help="Show how your copy of a bundled skill differs from the stock version",
+        description=(
+            "Print a unified diff between your local copy of a bundled skill and the "
+            "current bundled (stock) version, so you can confirm what changed before "
+            "running `hermes skills reset`."
+        ),
+    )
+    skills_diff.add_argument(
+        "name", help="Skill name to diff (e.g. google-workspace)"
     )
 
     skills_opt_out = skills_subparsers.add_parser(

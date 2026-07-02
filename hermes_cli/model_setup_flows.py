@@ -24,6 +24,8 @@ import argparse
 import os
 import subprocess
 
+from hermes_cli.config import clear_model_endpoint_credentials
+
 
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
@@ -123,11 +125,108 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
     else:
         print("No change.")
+
+
+def _print_moa_preset(name: str, preset: dict) -> None:
+    """Print the full reference-models + aggregator breakdown for a preset."""
+    print(f"  Preset: {name}")
+    print("  Reference models:")
+    for idx, slot in enumerate(preset.get("reference_models") or [], start=1):
+        print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
+    agg = preset.get("aggregator") or {}
+    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_moa(config, current_model=""):
+    """Mixture of Agents virtual provider: pick a preset, then persist it.
+
+    Unlike the other provider flows there is no credential step — MoA is a
+    virtual provider whose presets reference already-configured providers. We
+    always show the preset list (even when there is only one) so the user sees
+    what they are selecting, then print the full preset breakdown on selection.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.moa_config import normalize_moa_config
+
+    moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
+    presets = moa.get("presets") or {}
+    if not presets:
+        print("No MoA presets configured. Run `hermes moa configure <name>` first.")
+        return
+
+    names = list(presets.keys())
+    default_name = moa.get("default_preset") or names[0]
+
+    # Build labelled rows showing the aggregator so the picker is informative
+    # even before drilling into the full breakdown.
+    rows = []
+    for n in names:
+        agg = (presets[n].get("aggregator") or {})
+        agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
+        ref_count = len(presets[n].get("reference_models") or [])
+        suffix = "  ← default" if n == default_name else ""
+        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+
+    default_idx = names.index(default_name) if default_name in names else 0
+
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice("Select a Mixture of Agents preset:", rows, default_idx)
+    except Exception:
+        print("Select a Mixture of Agents preset:")
+        for i, row in enumerate(rows, 1):
+            marker = "→" if (i - 1) == default_idx else " "
+            print(f"  {marker} {i}. {row}")
+        try:
+            raw = input(f"  Choice [1-{len(rows)}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("No change.")
+            return
+        if not raw:
+            idx = default_idx
+        else:
+            try:
+                idx = max(0, min(len(rows) - 1, int(raw) - 1))
+            except ValueError:
+                print("No change.")
+                return
+
+    if idx is None or idx < 0:
+        print("No change.")
+        return
+
+    selected_name = names[idx]
+    preset = presets[selected_name]
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = selected_name
+    model["provider"] = "moa"
+    # MoA is a virtual local provider — drop any stale endpoint credentials and
+    # base_url so auto-resolution doesn't keep pointing at the previous real
+    # provider. (clear_model_endpoint_credentials handles api_key/api_mode but
+    # intentionally leaves base_url, so pop it here.)
+    clear_model_endpoint_credentials(model, clear_api_mode=True)
+    model.pop("base_url", None)
+    save_config(cfg)
+    _save_model_choice(selected_name)
+    deactivate_provider()
+
+    print()
+    print(f"Default model set to: {selected_name} (via Mixture of Agents)")
+    _print_moa_preset(selected_name, preset)
+
 
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
@@ -325,6 +424,9 @@ def _model_flow_nous(config, current_model="", args=None):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        # Reload after the auth helper writes provider state. The incoming
+        # config object may still contain stale custom-provider fields.
+        config = load_config()
         current_model_cfg = config.get("model")
         if isinstance(current_model_cfg, dict):
             model_cfg = dict(current_model_cfg)
@@ -338,6 +440,7 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        clear_model_endpoint_credentials(model_cfg)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -626,84 +729,6 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
 
-def _model_flow_google_gemini_cli(_config, current_model=""):
-    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
-
-    Flow:
-      1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
-      2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
-      3. Resolve project context (env -> config -> auto-discover -> free tier).
-      4. Prompt user to pick a model.
-      5. Save to ~/.hermes/config.yaml.
-    """
-    from hermes_cli.auth import (
-        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-        get_gemini_oauth_auth_status,
-        resolve_gemini_oauth_runtime_credentials,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-    )
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    print()
-    print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
-    print("   software a policy violation. Some users have reported account")
-    print("   restrictions. You can use your own API key via 'gemini' provider")
-    print("   for the lowest-risk experience.")
-    print()
-    try:
-        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("Cancelled.")
-        return
-    if proceed not in {"y", "yes"}:
-        print("Cancelled.")
-        return
-
-    status = get_gemini_oauth_auth_status()
-    if not status.get("logged_in"):
-        try:
-            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
-
-            env_project = resolve_project_id_from_env()
-            start_oauth_flow(force_relogin=True, project_id=env_project)
-        except Exception as exc:
-            print(f"OAuth login failed: {exc}")
-            return
-
-    # Verify creds resolve + trigger project discovery
-    try:
-        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
-        project_id = creds.get("project_id", "")
-        if project_id:
-            print(f"  Using GCP project: {project_id}")
-        else:
-            print(
-                "  No GCP project configured — free tier will be auto-provisioned on first request."
-            )
-    except Exception as exc:
-        print(f"Failed to resolve Gemini credentials: {exc}")
-        return
-
-    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
-    default = current_model or (models[0] if models else "gemini-3-flash-preview")
-    selected = _prompt_model_selection(
-        models,
-        current_model=default,
-        confirm_provider="google-gemini-cli",
-        confirm_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-    )
-    if selected:
-        _save_model_choice(selected)
-        _update_config_for_provider(
-            "google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL
-        )
-        print(
-            f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)"
-        )
-    else:
-        print("No change.")
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
@@ -1246,6 +1271,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["api_mode"] = api_mode
     model["default"] = effective_model
     model["auth_mode"] = auth_mode_label
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     if use_entra:
         # Persist only the non-default Entra scope so config.yaml stays tidy.
         # Azure identity selection stays in standard AZURE_* env vars.
@@ -1667,6 +1693,7 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         )
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if selected_effort is not None:
             _set_reasoning_effort(cfg, selected_effort)
         save_config(cfg)
@@ -1792,6 +1819,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     save_config(cfg)
     deactivate_provider()
 
@@ -1881,6 +1909,7 @@ def _model_flow_kimi(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)  # let runtime auto-detect from URL
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -1994,6 +2023,7 @@ def _model_flow_stepfun(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -2077,6 +2107,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
         model.pop("api_mode", None)  # chat_completions is the default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2270,6 +2301,7 @@ def _model_flow_bedrock(config, current_model=""):
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
         model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -2283,6 +2315,168 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
+
+    Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
+    Application Default Credentials (ADC). No static API key. The credential
+    *path* lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS);
+    project ID and region are non-secret and saved to config.yaml under vertex:.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config, get_env_value
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    # 1. Credential source detection (fast, no network / no google-auth import).
+    sa_path = (
+        get_env_value("VERTEX_CREDENTIALS_PATH")
+        or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+        or ""
+    ).strip()
+    if sa_path:
+        print(f"  Vertex credentials: service account JSON ({sa_path}) ✓")
+    else:
+        print("  Vertex credentials: Application Default Credentials (ADC)")
+        print("    Vertex uses OAuth2, not a static API key. Either:")
+        print("      • run 'gcloud auth application-default login', or")
+        print("      • set VERTEX_CREDENTIALS_PATH in ~/.hermes/.env to a service account JSON")
+    print()
+
+    cfg = load_config()
+    vertex_cfg = cfg.get("vertex")
+    if not isinstance(vertex_cfg, dict):
+        vertex_cfg = {}
+
+    # 2. Project ID (optional — falls back to the project embedded in creds).
+    current_project = str(vertex_cfg.get("project_id") or "").strip()
+    try:
+        project_input = input(
+            f"  GCP project ID [{current_project or 'from credentials'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    project_id = project_input or current_project
+
+    # 3. Region (default global — required for the Gemini 3.x previews).
+    current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
+    try:
+        region_input = input(f"  Vertex region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+
+    # 4. Model selection (curated list — Vertex has no /models listing route).
+    model_list = _PROVIDER_MODELS.get("vertex", []) or [
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ]
+    base_url_preview = (
+        "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+        if region == "global"
+        else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+    )
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model,
+        confirm_provider="vertex",
+        confirm_base_url=base_url_preview,
+    )
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "vertex"
+        # base_url is computed at runtime from project+region; do not pin it.
+        model.pop("base_url", None)
+        model.pop("api_mode", None)  # chat_completions is the profile default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
+
+        vcfg = cfg.get("vertex")
+        if not isinstance(vcfg, dict):
+            vcfg = {}
+        vcfg["project_id"] = project_id
+        vcfg["region"] = region
+        cfg["vertex"] = vcfg
+
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
+    else:
+        print("  No change.")
+
+def _select_zai_endpoint(current_base: str) -> str:
+    """Present a picker for Z.AI endpoint selection during setup.
+
+    Offers the four official Z.AI endpoints (Global, China, Coding Plan
+    Global, Coding Plan China) plus a custom-proxy option.  The list is
+    sourced from ``ZAI_ENDPOINTS`` in ``hermes_cli.auth`` so it stays in
+    sync with the probe list.
+
+    Returns the selected base URL.  Falls back to *current_base* on cancel
+    or error.
+    """
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import ZAI_ENDPOINTS
+
+    # Build label + URL pairs from the shared endpoint list.
+    options = [(label, url) for _, url, _, label in ZAI_ENDPOINTS]
+    normalized_current = (current_base or "").strip().rstrip("/")
+
+    # Default to the currently-active option if it matches one of the
+    # known endpoints; otherwise default to the first (Global).
+    default_idx = 0
+    for idx, (_, url) in enumerate(options):
+        if normalized_current == url.rstrip("/"):
+            default_idx = idx
+            break
+    else:
+        if normalized_current:
+            # A custom URL is active — offer "Custom proxy" as the default.
+            default_idx = len(options)
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom proxy URL")
+
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title="Select Z.AI / GLM endpoint:",
+    )
+    if selected is None:
+        return current_base
+
+    if selected == len(options):
+        # Custom proxy URL
+        try:
+            override = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return current_base
+        if not override:
+            return current_base
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            return current_base
+        return override.rstrip("/")
+
+    return options[selected][1].rstrip("/")
+
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
@@ -2398,19 +2592,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id == "zai":
+        # Z.AI has four official endpoints (Global, China, Coding Plan
+        # Global, Coding Plan China) with separate billing paths.  Present
+        # a picker instead of a plain text input so users can explicitly
+        # choose the endpoint that matches their key type.
+        chosen_base = _select_zai_endpoint(effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print(
+                    "  Invalid URL — must start with http:// or https://. Keeping current value."
+                )
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -2563,6 +2767,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
@@ -2717,6 +2922,7 @@ def _model_flow_anthropic(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "anthropic"
         model.pop("base_url", None)
+        clear_model_endpoint_credentials(model)
         save_config(cfg)
         deactivate_provider()
 

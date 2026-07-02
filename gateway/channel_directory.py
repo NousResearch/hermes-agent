@@ -275,6 +275,10 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
         seen_ids = set()
         for _key, session in data.items():
+            # Skip documentation/metadata sentinels (keys starting with "_",
+            # e.g. the gateway's "_README" note) — not session entries.
+            if str(_key).startswith("_") or not isinstance(session, dict):
+                continue
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue

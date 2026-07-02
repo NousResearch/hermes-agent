@@ -87,19 +87,19 @@ class TestAdapterInit:
     """Test that WhatsAppAdapter reads reply_prefix from config.extra."""
 
     def test_reply_prefix_from_extra(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         config = PlatformConfig(enabled=True, extra={"reply_prefix": "Bot\\n"})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == "Bot\\n"
 
     def test_reply_prefix_default_none(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         config = PlatformConfig(enabled=True)
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix is None
 
     def test_reply_prefix_empty_string(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == ""

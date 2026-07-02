@@ -2,6 +2,28 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
+import fs from 'fs'
+
+// `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
+// those before enforcing server.fs.allow, so codicon/font assets resolve outside
+// the worktree root and 404. Whitelist the real node_modules locations.
+const real = (p: string): string | null => {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return null
+  }
+}
+
+const fsAllow = [
+  ...new Set(
+    [
+      path.resolve(__dirname, '../..'),
+      real(path.resolve(__dirname, 'node_modules')),
+      real(path.resolve(__dirname, '../../node_modules'))
+    ].filter((p): p is string => p !== null)
+  )
+]
 
 export default defineConfig({
   base: './',
@@ -47,7 +69,10 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5174,
-    strictPort: true
+    strictPort: true,
+    fs: {
+      allow: fsAllow
+    }
   },
   preview: {
     host: '127.0.0.1',

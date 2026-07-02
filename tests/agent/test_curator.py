@@ -7,6 +7,7 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,7 +38,21 @@ def curator_env(tmp_path, monkeypatch):
     # directly). Tests opt in with _enable_prune_builtins(...).
     monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
-    return {"home": home, "curator": curator, "usage": usage}
+    yield {"home": home, "curator": curator, "usage": usage}
+
+    # Teardown: a curator review launched with synchronous=False spawns a
+    # daemon "curator-review" thread that calls save_state() when it finishes.
+    # save_state() resolves the state path from HERMES_HOME at write time, so a
+    # straggler thread that outlives this test would write into whatever home
+    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # restores the env) — corrupting an unrelated test's state file. This race
+    # is invisible on a fast machine but flakes under CI load. Join any such
+    # thread here, while HERMES_HOME is still pinned to this test's tmp home
+    # (curator_env depends on monkeypatch, so this teardown runs before the
+    # monkeypatch env is restored). See the salvage of #14261 CI flake.
+    for t in threading.enumerate():
+        if t.name == "curator-review" and t.is_alive():
+            t.join(timeout=10.0)
 
 
 def _write_skill(skills_dir: Path, name: str):
@@ -246,6 +261,94 @@ def test_new_skill_without_last_used_not_immediately_archived(curator_env):
     assert counts["archived"] == 0
     assert counts["marked_stale"] == 0
     assert (skills_dir / "fresh").exists()
+
+
+def _backdate(u, name: str, days: int, *, use_count: int = 1):
+    """Write an agent-created usage record whose activity is *days* old."""
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["created_by"] = "agent"
+    data[name]["created_at"] = ts
+    data[name]["last_used_at"] = ts if use_count else None
+    data[name]["last_activity_at"] = ts if use_count else None
+    data[name]["use_count"] = use_count
+    u.save_usage(data)
+
+
+def test_cron_referenced_skill_is_not_archived(curator_env, monkeypatch):
+    """A skill referenced by a cron job must survive inactivity archival even
+    when its activity is well past archive_after_days. The scheduler only
+    bumps usage when a job fires, so paused / infrequent / far-future jobs
+    would otherwise have their skills aged out from under them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "cron-dep", 200)
+    _backdate(u, "orphan", 200)
+
+    # Pretend a (paused/infrequent) cron job references "cron-dep" only.
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("cron-dep")["state"] == "active"  # protected
+    assert (skills_dir / "cron-dep").exists()
+    assert u.get_record("orphan")["state"] == "archived"  # control
+    assert counts["archived"] == 1
+
+
+def test_unused_skill_not_archived_before_stale_floor(curator_env):
+    """A never-used skill (use_count == 0) younger than stale_after_days must
+    not be marked stale or archived — absence of use is not evidence of
+    staleness when the skill simply hasn't had its trigger come up yet."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "young-unused")
+    _backdate(u, "young-unused", 10, use_count=0)  # < 30d stale floor
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("young-unused")["state"] == "active"
+    assert counts["archived"] == 0
+    assert counts["marked_stale"] == 0
+
+
+def test_unused_skill_archived_past_archive_window(curator_env):
+    """The use=0 floor only protects YOUNG skills — a never-used skill older
+    than archive_after_days still archives (no perpetual reprieve)."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "old-unused")
+    _backdate(u, "old-unused", 200, use_count=0)
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("old-unused")["state"] == "archived"
+    assert counts["archived"] == 1
+
+
+def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
+    """The LLM review candidate list flags cron-referenced skills so the
+    review pass knows not to prune them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "plain")
+    _backdate(u, "cron-dep", 1)
+    _backdate(u, "plain", 1)
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    listing = c._render_candidate_list()
+    cron_line = next(l for l in listing.splitlines() if l.startswith("- cron-dep"))
+    plain_line = next(l for l in listing.splitlines() if l.startswith("- plain"))
+    assert "cron=yes" in cron_line
+    assert "cron=no" in plain_line
 
 
 def test_manual_skill_is_not_auto_archived(curator_env):
@@ -1119,3 +1222,54 @@ def test_curator_slot_is_canonical_aux_task():
 
     # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
     #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.
+
+
+def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatch):
+    """The curator LLM fork must tag itself as background_review.
+
+    This is the keystone that makes skill_manager_tool's
+    ``_background_review_write_guard`` fire during a curation pass. Without
+    ``_memory_write_origin = "background_review"`` on the fork, the agent
+    inherits the default ``assistant_tool`` origin, ``is_background_review()``
+    stays False, and the external/bundled/hub-installed skill_manage guards
+    never trigger — leaving the LLM agent free to mutate skills.external_dirs
+    skills (GH-47688). turn_context.py binds this attribute onto the
+    write-origin ContextVar at turn start, so asserting it is set is the
+    enforceable invariant linking the fork to the guard.
+    """
+    curator = curator_env["curator"]
+
+    # The curator_env fixture stubs out _run_llm_review wholesale; this test
+    # exercises the real implementation, so reload the module to restore it.
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            # AIAgent.__init__ normally sets this default; mirror it so the
+            # production assignment in _run_llm_review is what flips it.
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 10
+            self._skill_nudge_interval = 10
+            self.platform = kwargs.get("platform")
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            # Capture the origin AT RUN TIME — i.e. after _run_llm_review has
+            # finished configuring the fork, which is exactly when it matters.
+            captured["write_origin"] = self._memory_write_origin
+            return {"final_response": "no change"}
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured.get("write_origin") == "background_review", (
+        "curator review fork did not set _memory_write_origin to "
+        "'background_review' — the skill_manage background-review write "
+        "guard would not fire (GH-47688 regression)"
+    )

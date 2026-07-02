@@ -17,8 +17,12 @@ import json
 import logging
 import os
 import random
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
     SIGNAL_MAX_ATTACHMENTS_PER_MSG,
@@ -76,7 +81,14 @@ def _parse_comma_list(value: str) -> List[str]:
 
 
 def _guess_extension(data: bytes) -> str:
-    """Guess file extension from magic bytes."""
+    """Guess file extension from magic bytes.
+
+    Android Signal delivers voice notes as raw ADTS AAC frames, which share
+    the ``0xFF 0xFx`` sync word with MPEG-1/2 Layer 3 (MP3). The byte-1
+    layout disambiguates: ADTS packs ``ID layer protection_absent`` into
+    bits 3-0, where ``ID`` is 0 for MPEG-2/4 AAC and ``layer`` is always
+    0 for ADTS. A real MP3 frame has ``ID=1`` and ``layer`` in {1, 2, 3}.
+    """
     if data[:4] == b"\x89PNG":
         return ".png"
     if data[:2] == b"\xff\xd8":
@@ -92,6 +104,12 @@ def _guess_extension(data: bytes) -> str:
     if data[:4] == b"OggS":
         return ".ogg"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. The discriminator
+        # is bits 3-1 of byte 1: ADTS has ``ID=0`` and ``layer=00`` (mask
+        # 0xF6, target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}
+        # (mask 0xF6, target in {0xF2, 0xF4, 0xF6}).
+        if (data[1] & 0xF6) == 0xF0:
+            return ".aac"
         return ".mp3"
     if data[:2] == b"PK":
         return ".zip"
@@ -118,6 +136,61 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
+    """Losslessly remux raw ADTS AAC bytes into an MP4 (.m4a) container.
+
+    Used by the Signal attachment cache so Android voice notes land on disk
+    in a container that every major STT API (Groq, OpenAI, xAI, Mistral
+    Voxtral) will accept. ``ffmpeg -c:a copy`` is a single demux/remux —
+    no re-encode, no quality loss, sub-100ms for typical voice-note sizes.
+
+    Returns ``(m4a_bytes, ".m4a")`` on success, or ``None`` if ffmpeg is
+    missing, input is invalid, or remux fails for any reason. Callers
+    must treat ``None`` as "pass through unchanged" and not raise.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # Common Homebrew/local prefixes on macOS dev hosts.
+        for prefix in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(prefix) and os.access(prefix, os.X_OK):
+                ffmpeg = prefix
+                break
+    if not ffmpeg:
+        logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as src:
+            src.write(aac_data)
+            src_path = src.name
+        dst_path = src_path[:-4] + ".m4a"
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", src_path,
+                 "-c:a", "copy", "-movflags", "+faststart", dst_path],
+                capture_output=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
+                    proc.returncode, proc.stderr.decode("utf-8", "replace")[:300],
+                )
+                return None
+            with open(dst_path, "rb") as f:
+                return f.read(), ".m4a"
+        finally:
+            for p in (src_path, dst_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    except subprocess.TimeoutExpired:
+        logger.warning("Signal: AAC→M4A remux timed out (>10s)")
+        return None
+    except Exception:
+        logger.exception("Signal: AAC→M4A remux error")
+        return None
 
 
 def _render_mentions(text: str, mentions: list) -> str:
@@ -232,9 +305,24 @@ class SignalAdapter(BasePlatformAdapter):
         self._account_normalized = self.account.strip()
 
         # Track recently sent message timestamps to prevent echo-back loops
-        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
-        self._recent_sent_timestamps: set = set()
-        self._max_recent_timestamps = 50
+        # in Note to Self / self-chat mode and linked-device group sync-sents.
+        # OrderedDict[timestamp_ms -> insertion_monotonic_seconds] gives us
+        # LRU eviction (popitem(last=False) drops oldest) plus a TTL so that
+        # under chatty groups a still-pending echo cannot be evicted just
+        # because >50 outbounds happened. With a 5-minute TTL the cap only
+        # matters for runaway producers, not normal traffic bursts.
+        self._recent_sent_timestamps: "OrderedDict[int, float]" = OrderedDict()
+        self._max_recent_timestamps = 512
+        self._recent_sent_ttl_seconds = 300.0
+        # Keep a separate bounded cache of outbound Signal message timestamps.
+        # Signal quote.id is the timestamp of the quoted message, so this lets
+        # inbound replies identify that the user replied to a message sent by
+        # this bot even after the self-sync echo was filtered above.
+        # OrderedDict (not set) so the cap evicts the OLDEST timestamp in FIFO
+        # order — a plain set.pop() removes an arbitrary element, which could
+        # drop a still-recent timestamp and miss a genuine reply-to-own-message.
+        self._sent_message_timestamps: "OrderedDict[str, None]" = OrderedDict()
+        self._max_sent_message_timestamps = 500
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
@@ -250,7 +338,7 @@ class SignalAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to signal-cli daemon and start SSE listener."""
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
@@ -458,8 +546,7 @@ class SignalAdapter(BasePlatformAdapter):
                     sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
                     if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
-                        if sent_ts and sent_ts in self._recent_sent_timestamps:
-                            self._recent_sent_timestamps.discard(sent_ts)
+                        if self._consume_sent_timestamp(sent_ts):
                             return
                         # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
@@ -543,10 +630,37 @@ class SignalAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Extract quote (reply-to) context from Signal dataMessage
+        # Strip the bot's own @mention from any group message so the agent
+        # doesn't misinterpret "@+155****4567 say hello" as a directive to
+        # contact that phone number. _render_mentions replaces the Signal
+        # ￼ placeholder with @<number-or-uuid>, which looks like an
+        # addressee to the LLM rather than a self-reference. Applies to every
+        # group (not just require_mention groups) so the self-mention is
+        # cleaned wherever it appears.
+        if is_group and text:
+            account_norm = self._account_normalized
+            if account_norm:
+                text = text.replace(f"@{account_norm}", "")
+                # Also strip if the mention was rendered using the bot's UUID
+                bot_uuid = self._recipient_uuid_by_number.get(account_norm)
+                if bot_uuid:
+                    text = text.replace(f"@{bot_uuid}", "")
+                # Tidy the spacing the removed mention left behind: collapse the
+                # double-space at a mid-sentence removal and trim the ends.
+                # Only touches the doubled space the removal introduced, so
+                # intentional newlines in a multi-line message are preserved.
+                text = text.replace("  ", " ").strip()
+
+        # Extract quote (reply-to) context from Signal dataMessage. Signal's
+        # quote.id is the timestamp of the quoted message; quote.author points
+        # at the quoted sender when available. Preserve both so the gateway can
+        # tell the agent when the user replied to a specific assistant message.
         quote_data = data_message.get("quote") or {}
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_text = quote_data.get("text")
+        reply_to_author = self._extract_quote_author(quote_data)
+        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
+        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])
@@ -631,9 +745,16 @@ class SignalAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,
-            raw_message={"sender": sender, "timestamp_ms": ts_ms},
+            raw_message={
+                "sender": sender,
+                "timestamp_ms": ts_ms,
+                "quote": quote_data if quote_data else None,
+            },
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
         )
 
         logger.debug("Signal: message from %s in %s: %s",
@@ -647,6 +768,56 @@ class SignalAdapter(BasePlatformAdapter):
             return
         self._recipient_uuid_by_number[number] = service_id
         self._recipient_number_by_uuid[service_id] = number
+
+    @staticmethod
+    def _extract_quote_author(quote_data: Any) -> Optional[str]:
+        """Return the best available Signal sender identifier from quote metadata."""
+        if not isinstance(quote_data, dict):
+            return None
+        for key in (
+            "author",
+            "authorNumber",
+            "authorUuid",
+            "authorAci",
+            "authorServiceId",
+            "authorServiceIdString",
+        ):
+            value = quote_data.get(key)
+            if value:
+                return str(value)
+        return None
+
+    def _quote_references_own_message(
+        self,
+        reply_to_id: Optional[str],
+        reply_to_author: Optional[str],
+    ) -> bool:
+        """True when a Signal quote points at this adapter's outbound message."""
+        if reply_to_id and str(reply_to_id) in self._sent_message_timestamps:
+            return True
+        if not reply_to_author:
+            return False
+        author = str(reply_to_author).strip()
+        if self._account_normalized and author == self._account_normalized:
+            return True
+        cached_uuid = self._recipient_uuid_by_number.get(self._account_normalized)
+        if cached_uuid and author == cached_uuid:
+            return True
+        cached_number = self._recipient_number_by_uuid.get(author)
+        return bool(cached_number and cached_number == self._account_normalized)
+
+    def _remember_sent_message_timestamp(self, timestamp: Any) -> None:
+        """Keep a bounded cache of outbound Signal timestamps for quote matching."""
+        if timestamp is None:
+            return
+        key = str(timestamp)
+        # Re-insert to mark most-recently-used so eviction drops genuinely old
+        # timestamps, not a recently re-seen one.
+        self._sent_message_timestamps.pop(key, None)
+        self._sent_message_timestamps[key] = None
+        # FIFO-evict the oldest entry once over the cap.
+        while len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
+            self._sent_message_timestamps.popitem(last=False)
 
     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""
@@ -724,6 +895,18 @@ class SignalAdapter(BasePlatformAdapter):
         raw_data = base64.b64decode(result)
         ext = _guess_extension(raw_data)
 
+        # Android Signal voice notes are raw ADTS AAC streams. Most STT
+        # providers (Groq Whisper, OpenAI Whisper) reject raw ADTS — they
+        # require AAC to be muxed into an MP4 container. Remux losslessly
+        # with ``ffmpeg -c:a copy`` so the cached file is a normal .m4a.
+        # No re-encode, sub-100ms on a Pi 5. Graceful no-op if ffmpeg is
+        # absent: the raw ADTS file is cached as-is and STT may reject it
+        # (there is no downstream sniff-and-remux fallback).
+        if ext == ".aac":
+            remuxed: Optional[Tuple[bytes, str]] = await asyncio.to_thread(_remux_aac_to_m4a, raw_data)
+            if remuxed is not None:
+                raw_data, ext = remuxed
+
         if _is_image_ext(ext):
             path = cache_image_from_bytes(raw_data, ext)
         elif _is_audio_ext(ext):
@@ -796,7 +979,16 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.debug("Signal RPC error (%s): %s", method, err)
                 return None
 
-            return data.get("result")
+            result = data.get("result")
+            if isinstance(result, dict) and raise_on_rate_limit:
+                results = result.get("results")
+                if isinstance(results, list):
+                    for r in results:
+                        if isinstance(r, dict) and r.get("type") == "RATE_LIMIT_FAILURE":
+                            retry_after = r.get("retryAfterSeconds")
+                            raise SignalRateLimitError("Rate limit exceeded for recipient", retry_after=retry_after)
+
+            return result
 
         except SignalRateLimitError:
             raise
@@ -812,144 +1004,9 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _markdown_to_signal(text: str) -> tuple:
-        """Convert markdown to plain text + Signal textStyles list.
-
-        Signal doesn't render markdown.  Instead it uses ``bodyRanges``
-        (exposed by signal-cli as ``textStyle`` / ``textStyles`` params)
-        with the format ``start:length:STYLE``.
-
-        Positions are measured in **UTF-16 code units** (not Python code
-        points) because that's what the Signal protocol uses.
-
-        Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE.
-        (Signal's SPOILER style is not currently mapped — no standard
-        markdown syntax for it; would need ``||spoiler||`` parsing.)
-
-        Returns ``(plain_text, styles_list)`` where *styles_list* may be
-        empty if there's nothing to format.
-        """
-        import re
-
-        def _utf16_len(s: str) -> int:
-            """Length of *s* in UTF-16 code units."""
-            return len(s.encode("utf-16-le")) // 2
-
-        # Pre-process: normalize whitespace before any position tracking
-        # so later operations don't invalidate recorded offsets.
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-
-        styles: list = []
-
-        # --- Phase 1: fenced code blocks  ```...``` → MONOSPACE ---
-        _CB = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
-        while m := _CB.search(text):
-            inner = m.group(1).rstrip("\n")
-            start = m.start()
-            text = text[: m.start()] + inner + text[m.end() :]
-            styles.append((start, len(inner), "MONOSPACE"))
-
-        # --- Phase 2: heading markers  # Foo → Foo (BOLD) ---
-        _HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-        new_text = ""
-        last_end = 0
-        for m in _HEADING.finditer(text):
-            new_text += text[last_end : m.start()]
-            last_end = m.end()
-            eol = text.find("\n", m.end())
-            if eol == -1:
-                eol = len(text)
-            heading_text = text[m.end() : eol]
-            start = len(new_text)
-            new_text += heading_text
-            styles.append((start, len(heading_text), "BOLD"))
-            last_end = eol
-        new_text += text[last_end:]
-        text = new_text
-
-        # --- Phase 3: inline patterns (single-pass to avoid offset drift) ---
-        # The old code processed each pattern sequentially, stripping markers
-        # and recording positions per-pass.  Later passes shifted text without
-        # adjusting earlier positions → bold/italic landed mid-word.
-        #
-        # Fix: collect ALL non-overlapping matches first, then strip every
-        # marker in one pass so positions are computed against the final text.
-        _PATTERNS = [
-            (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
-            (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
-            (re.compile(r"~~(.+?)~~", re.DOTALL), "STRIKETHROUGH"),
-            (re.compile(r"`(.+?)`"), "MONOSPACE"),
-            (re.compile(r"(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)"), "ITALIC"),
-            (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC"),
-        ]
-
-        # Collect all non-overlapping matches (earlier patterns win ties).
-        all_matches: list = []  # (start, end, g1_start, g1_end, style)
-        occupied: list = []     # (start, end) intervals already claimed
-        for pat, style in _PATTERNS:
-            for m in pat.finditer(text):
-                ms, me = m.start(), m.end()
-                if not any(ms < oe and me > os for os, oe in occupied):
-                    all_matches.append((ms, me, m.start(1), m.end(1), style))
-                    occupied.append((ms, me))
-        all_matches.sort()
-
-        # Build removal list so we can adjust Phase 1/2 styles.
-        # Each match removes its prefix markers (start..g1_start) and
-        # suffix markers (g1_end..end).
-        removals: list = []  # (position, length) sorted
-        for ms, me, g1s, g1e, _ in all_matches:
-            if g1s > ms:
-                removals.append((ms, g1s - ms))
-            if me > g1e:
-                removals.append((g1e, me - g1e))
-        removals.sort()
-
-        # Adjust Phase 1/2 styles for characters about to be removed.
-        def _adj(pos: int) -> int:
-            shift = 0
-            for rp, rl in removals:
-                if rp < pos:
-                    shift += min(rl, pos - rp)
-                else:
-                    break
-            return pos - shift
-
-        adjusted_prior: list = []
-        for s, l, st in styles:
-            ns = _adj(s)
-            ne = _adj(s + l)
-            if ne > ns:
-                adjusted_prior.append((ns, ne - ns, st))
-
-        # Strip all inline markers in one pass → positions are correct.
-        result = ""
-        last_end = 0
-        inline_styles: list = []
-        for ms, me, g1s, g1e, sty in all_matches:
-            result += text[last_end:ms]
-            pos = len(result)
-            inner = text[g1s:g1e]
-            result += inner
-            inline_styles.append((pos, len(inner), sty))
-            last_end = me
-        result += text[last_end:]
-        text = result
-
-        styles = adjusted_prior + inline_styles
-
-        # Convert code-point offsets → UTF-16 code-unit offsets
-        style_strings = []
-        for cp_start, cp_len, stype in sorted(styles):
-            # Safety: skip any out-of-bounds styles
-            if cp_start < 0 or cp_start + cp_len > len(text):
-                continue
-            u16_start = _utf16_len(text[:cp_start])
-            u16_len = _utf16_len(text[cp_start : cp_start + cp_len])
-            style_strings.append(f"{u16_start}:{u16_len}:{stype}")
-
-        return text, style_strings
+    def _markdown_to_signal(text: str) -> tuple[str, list[str]]:
+        """Backward-compatible wrapper around shared Signal formatting helper."""
+        return markdown_to_signal(text)
 
     def format_message(self, content: str) -> str:
         """Strip markdown for plain-text fallback (used by base class).
@@ -959,6 +1016,29 @@ class SignalAdapter(BasePlatformAdapter):
         # This is only called if someone uses the base-class send path.
         # Our send() override bypasses this entirely.
         return content
+
+    def _validate_send_result(self, result: Any) -> tuple[bool, Optional[str]]:
+        """Validate signal-cli send response results.
+
+        Returns (success, error_message).
+        """
+        if not result or not isinstance(result, dict):
+            return True, None
+
+        results = result.get("results")
+        if isinstance(results, list):
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                rtype = r.get("type")
+                if rtype and rtype != "SUCCESS":
+                    return False, str(rtype)
+                if "success" in r and not r.get("success"):
+                    fail = r.get("failure")
+                    if fail:
+                        return False, str(fail)
+                    return False, "Recipient delivery failed"
+        return True, None
 
     # ------------------------------------------------------------------
     # Sending
@@ -992,9 +1072,13 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
+        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
         result = await self._rpc("send", params)
 
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
@@ -1006,9 +1090,29 @@ class SignalAdapter(BasePlatformAdapter):
         """Record outbound message timestamp for echo-back filtering."""
         ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
         if ts:
-            self._recent_sent_timestamps.add(ts)
-            if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
-                self._recent_sent_timestamps.pop()
+            self._remember_sent_message_timestamp(ts)
+            now = time.monotonic()
+            # Re-insert to mark as most-recently-used.
+            self._recent_sent_timestamps.pop(ts, None)
+            self._recent_sent_timestamps[ts] = now
+            # Drop entries older than TTL first (cheap O(k) where k=expired).
+            cutoff = now - self._recent_sent_ttl_seconds
+            while self._recent_sent_timestamps:
+                oldest_ts, oldest_at = next(iter(self._recent_sent_timestamps.items()))
+                if oldest_at < cutoff:
+                    self._recent_sent_timestamps.popitem(last=False)
+                else:
+                    break
+            # Hard cap as a last-resort guard against runaway producers.
+            while len(self._recent_sent_timestamps) > self._max_recent_timestamps:
+                self._recent_sent_timestamps.popitem(last=False)
+
+    def _consume_sent_timestamp(self, ts) -> bool:
+        """Pop a timestamp if it matches one we sent. Returns True on echo."""
+        if ts and ts in self._recent_sent_timestamps:
+            self._recent_sent_timestamps.pop(ts, None)
+            return True
+        return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator.
@@ -1171,14 +1275,33 @@ class SignalAdapter(BasePlatformAdapter):
                     )
                     _rpc_duration = time.monotonic() - _rpc_t0
                     if result is not None:
-                        self._track_sent_timestamp(result)
-                        await scheduler.report_rpc_duration(_rpc_duration, n)
-                        logger.info(
-                            "Signal batch %d/%d: %d attachments sent in %.1fs "
-                            "(attempt %d/%d)",
-                            idx + 1, len(att_batches), n, _rpc_duration,
-                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                        )
+                        success, err_msg = self._validate_send_result(result)
+                        if success:
+                            self._track_sent_timestamp(result)
+                            await scheduler.report_rpc_duration(_rpc_duration, n)
+                            logger.info(
+                                "Signal batch %d/%d: %d attachments sent in %.1fs "
+                                "(attempt %d/%d)",
+                                idx + 1, len(att_batches), n, _rpc_duration,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                            )
+                        else:
+                            logger.error(
+                                "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                                "attempt %d/%d, rpc_duration=%.1fs): %s",
+                                idx + 1, len(att_batches), n,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                                _rpc_duration, err_msg,
+                            )
+                            # Retry transient (non-rate-limit) failures once
+                            if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                                backoff = 2.0 ** attempt
+                                logger.info(
+                                    "Signal: retrying batch %d/%d after %.1fs backoff",
+                                    idx + 1, len(att_batches), backoff,
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
                     else:
                         # Assume the server didn't accept the batch, don't deduce tokens
                         logger.error(
@@ -1277,6 +1400,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
@@ -1316,6 +1442,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
@@ -1385,8 +1514,29 @@ class SignalAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
-        # Reset per-chat typing backoff state so the next agent turn starts
-        # fresh rather than inheriting a cooldown from a prior conversation.
+
+        # Send an explicit stop-typing RPC so the recipient's device drops the
+        # indicator immediately instead of waiting for Signal's ~5s built-in
+        # timeout.  Failures are best-effort — the backoff state must still be
+        # cleared so the next agent turn starts clean.
+        try:
+            params: Dict[str, Any] = {"account": self.account}
+            if chat_id.startswith("group:"):
+                params["groupId"] = chat_id[6:]
+            else:
+                params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["stop"] = True
+            await self._rpc(
+                "sendTyping",
+                params,
+                rpc_id="typing-stop",
+                log_failures=False,
+            )
+        except Exception:
+            # Best-effort: any RPC failure (or recipient-resolution failure)
+            # must not prevent backoff cleanup.
+            pass
+
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
 

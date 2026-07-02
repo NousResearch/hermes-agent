@@ -165,7 +165,9 @@ def test_build_models_payload_returns_expected_shape():
     assert set(payload.keys()) == {"providers", "model", "provider"}
     assert payload["model"] == "m1"
     assert payload["provider"] == "openrouter"
-    assert payload["providers"] == rows
+    assert payload["providers"][0]["slug"] == "moa"
+    assert payload["providers"][0]["models"] == ["default"]
+    assert payload["providers"][1:] == rows
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():
@@ -586,7 +588,7 @@ def test_aggregator_dedup_no_user_providers_unchanged():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx)
 
-    or_row = payload["providers"][0]
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
     assert len(or_row["models"]) == 2
 
 
@@ -639,6 +641,46 @@ def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
     assert or_row["total_models"] == 1
 
 
+def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy():
+    """opencode-go / opencode-zen are flagged ``is_aggregator=True`` (their
+    flat ``/v1/models`` returns bare IDs the model-switch resolver searches),
+    but they are NOT routing aggregators — every model they list is a
+    first-party model under the user's subscription. When a user also runs a
+    custom proxy that happens to serve a same-named model, the picker dedup
+    must NOT strip the reseller's own catalog. Regression for #47077, where
+    opencode-go showed only 13 of 19 models because minimax-m3/m2.7/m2.5,
+    glm-5/5.1, and deepseek-v4-flash were deduped against an overlapping
+    custom provider.
+    """
+    rows = [
+        _user_provider_row("custom:my-proxy", [
+            "minimax-m3", "minimax-m2.7", "glm-5", "deepseek-v4-flash",
+        ]),
+        _aggregator_row("opencode-go", [
+            "kimi-k2.6", "minimax-m3", "minimax-m2.7", "glm-5",
+            "deepseek-v4-flash", "qwen3.7-max",
+        ]),
+        _aggregator_row("openrouter", ["minimax-m3", "anthropic/claude-sonnet-4.6"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    go_row = next(r for r in payload["providers"] if r["slug"] == "opencode-go")
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+
+    # The reseller keeps ALL of its first-party models — nothing stripped.
+    assert go_row["models"] == [
+        "kimi-k2.6", "minimax-m3", "minimax-m2.7", "glm-5",
+        "deepseek-v4-flash", "qwen3.7-max",
+    ]
+    assert go_row["total_models"] == 6
+
+    # A TRUE routing aggregator is still deduped against the user's models.
+    assert "minimax-m3" not in or_row["models"]
+    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
+
+
 def test_two_custom_providers_with_overlap_both_survive():
     """Two user-defined custom endpoints that happen to expose an
     overlapping model must each keep their full catalog. Neither is the
@@ -659,4 +701,69 @@ def test_two_custom_providers_with_overlap_both_survive():
     assert b_row["models"] == ["shared/model", "b/only"]
     assert a_row["total_models"] == 2
     assert b_row["total_models"] == 2
+
+
+def test_build_models_payload_no_max_models_returns_full_list():
+    """When max_models is not passed (None), build_models_payload must
+    return the full model list — not truncate to the old default of 50.
+    Regression for #48279: Kilo Gateway picker was capped at 50 of 336
+    models, making most models undiscoverable via search."""
+    full_models = [f"model-{i}" for i in range(100)]
+    rows = [
+        {
+            "slug": "kilocode",
+            "name": "Kilo Code",
+            "models": full_models,
+            "total_models": len(full_models),
+            "is_current": False,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        # No max_models argument — should return all 100 models
+        payload = build_models_payload(ctx)
+
+    kilo_row = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+    assert kilo_row["models"] == full_models
+    assert kilo_row["total_models"] == 100
+    assert len(kilo_row["models"]) == 100
+
+
+# ─── refresh flag (cache-bust) ─────────────────────────────────────────
+
+
+def test_build_models_payload_forwards_refresh_flag():
+    """build_models_payload must forward refresh= to list_authenticated_providers.
+
+    The desktop picker's "Refresh Models" control passes refresh=True; the
+    flag has to reach list_authenticated_providers so the per-provider
+    model-id cache gets busted. Default opens pass refresh=False.
+    """
+    captured: dict = {}
+
+    def _capture(*args, **kwargs):
+        captured["refresh"] = kwargs.get("refresh")
+        return []
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx())
+    assert captured["refresh"] is False
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx(), refresh=True)
+    assert captured["refresh"] is True
+
+
+def test_list_authenticated_providers_refresh_busts_cache():
+    """refresh=True clears the provider-model disk cache exactly once;
+    refresh=False leaves it untouched (so normal picker opens stay snappy)."""
+    from hermes_cli import model_switch
+
+    with patch("hermes_cli.models.clear_provider_models_cache") as clear:
+        model_switch.list_authenticated_providers(refresh=False)
+        assert clear.call_count == 0
+        model_switch.list_authenticated_providers(refresh=True)
+        assert clear.call_count == 1
 

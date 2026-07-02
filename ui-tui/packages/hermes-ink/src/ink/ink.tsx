@@ -18,7 +18,7 @@ import { colorize } from './colorize.js'
 import App from './components/App.js'
 import type { CursorAdvanceNotifier } from './components/CursorAdvanceContext.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
-import { FRAME_INTERVAL_MS } from './constants.js'
+import { FRAME_INTERVAL_MS, MAX_COALESCED_BACKPRESSURE_FRAMES } from './constants.js'
 import * as dom from './dom.js'
 import { markDirty } from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
@@ -205,6 +205,11 @@ export default class Ink {
   // (callback fired).
   private pendingWriteStart: number | null = null
   private lastDrainMs = 0
+  // Issue #31486: count of consecutive frames skipped because the previous
+  // write hadn't drained. Reset to 0 whenever a frame actually writes (or the
+  // pipe has drained). Capped by MAX_COALESCED_BACKPRESSURE_FRAMES so a
+  // never-firing drain callback can't coalesce forever.
+  private coalescedBackpressureFrames = 0
   private lastYogaCounters: {
     ms: number
     visited: number
@@ -702,6 +707,36 @@ export default class Ink {
       clearTimeout(this.drainTimer)
       this.drainTimer = null
     }
+
+    // Issue #31486 (stdout-backpressure strand): if the PREVIOUS frame's
+    // stdout.write still hasn't drained (callback hasn't fired —
+    // pendingWriteStart is non-null), the outer terminal is consuming bytes
+    // slower than we're producing them. Piling another write on the backed-up
+    // pipe is wasted work AND keeps the macrotask queue hot, which is what
+    // starves the stdin 'readable' callback and wedges input. Coalesce:
+    // skip this frame's render+write entirely and retry on the drain tick.
+    // The ceiling guarantees forward progress — after N coalesced frames we
+    // force the write through, so a terminal whose drain callback NEVER fires
+    // (e.g. OSError EIO on flush) self-heals once the pipe recovers instead of
+    // coalescing forever. Only on a TTY; piped stdout has no flow control and
+    // pendingWriteStart is never set there.
+    if (
+      this.options.stdout.isTTY &&
+      this.pendingWriteStart !== null &&
+      this.coalescedBackpressureFrames < MAX_COALESCED_BACKPRESSURE_FRAMES
+    ) {
+      this.coalescedBackpressureFrames += 1
+      this.isRendering = false
+      // Retry at the same cadence as a scroll drain tick. Don't use
+      // scheduleRender — lodash throttle's leading edge would re-enter here.
+      this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2)
+
+      return
+    }
+
+    // Either we wrote, or we hit the ceiling and are forcing a write through.
+    // Reset the coalesce counter so the next backpressure episode starts fresh.
+    this.coalescedBackpressureFrames = 0
 
     // Flush deferred interaction-time update before rendering so we call
     // Date.now() at most once per frame instead of once per keypress.

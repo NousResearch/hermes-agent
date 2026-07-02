@@ -25,8 +25,11 @@ _MAX_TEXT_CHARS = 2000
 
 
 def _store_path() -> str:
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    return os.path.join(home, "state", "rich_sent_index.json")
+    # Resolve via get_hermes_home() so the active profile override is honored.
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    return os.path.join(str(home), "state", "rich_sent_index.json")
 
 
 def _key(chat_id, message_id) -> str:

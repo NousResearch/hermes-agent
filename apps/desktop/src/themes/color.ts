@@ -18,7 +18,13 @@ export function hexToRgb(hex: string): [number, number, number] | null {
 }
 
 export const rgbToHex = ([r, g, b]: [number, number, number]): string =>
-  `#${[r, g, b].map(n => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, '0')).join('')}`
+  `#${[r, g, b]
+    .map(n =>
+      Math.round(Math.min(255, Math.max(0, n)))
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`
 
 export function mix(a: string, b: string, amount: number): string {
   const ar = hexToRgb(a)

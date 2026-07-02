@@ -216,10 +216,7 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
  * entries enqueued under the old id would otherwise be stranded under a key
  * nothing reads anymore. No-op unless both keys resolve and differ.
  */
-export const migrateQueuedPrompts = (
-  fromKey: string | null | undefined,
-  toKey: string | null | undefined
-): boolean => {
+export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: string | null | undefined): boolean => {
   const from = sidOf(fromKey)
   const to = sidOf(toKey)
 

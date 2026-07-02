@@ -32,10 +32,6 @@ from __future__ import annotations
 
 import pytest
 
-# Same xdist group as the other dashboard-auth tests — they all mutate
-# web_server.app.state.auth_required at module level.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
-
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -109,10 +105,13 @@ class TestGateRedirectsCarryPrefix:
             follow_redirects=False,
         )
         assert r.status_code == 302
-        # /login redirect must include the prefix or the browser will
-        # follow it to mission-control.tilos.com/login (which the proxy
-        # doesn't route to the dashboard).
-        assert r.headers["location"].startswith("/hermes/login"), (
+        # Phase 1 (cloud-auto-discovery): a single-provider unauth HTML load
+        # auto-initiates the OAuth redirect to /auth/login. That redirect must
+        # ALSO carry the prefix, or the browser follows it to
+        # mission-control.tilos.com/auth/login (which the proxy doesn't route
+        # to the dashboard). The prefix-carrying invariant is what's under
+        # test; only the target path moved from /login to /auth/login.
+        assert r.headers["location"].startswith("/hermes/auth/login"), (
             f"Location header lost prefix: {r.headers['location']!r}"
         )
 
@@ -136,7 +135,11 @@ class TestGateRedirectsCarryPrefix:
         proxy at all."""
         r = gated_app_direct.get("/sessions", follow_redirects=False)
         assert r.status_code == 302
-        assert r.headers["location"] == "/login?next=%2Fsessions"
+        # Phase 1: single-provider unauth HTML load auto-initiates OAuth to
+        # /auth/login (no phantom prefix), carrying the original path as next=.
+        assert r.headers["location"] == (
+            "/auth/login?provider=stub&next=%2Fsessions"
+        )
 
     def test_malformed_prefix_header_is_ignored(self, gated_app_proxied):
         """A hostile proxy injects ``X-Forwarded-Prefix: <script>``;
@@ -149,7 +152,8 @@ class TestGateRedirectsCarryPrefix:
         )
         assert r.status_code == 302
         assert "<script>" not in r.headers["location"]
-        assert r.headers["location"].startswith("/login")
+        # Phase 1: malformed prefix dropped → unprefixed auto-SSO redirect.
+        assert r.headers["location"].startswith("/auth/login")
 
 
 # ---------------------------------------------------------------------------

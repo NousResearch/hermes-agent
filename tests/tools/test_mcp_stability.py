@@ -260,6 +260,56 @@ class TestStdioPgroupReaping:
             assert fake_pid not in _orphan_stdio_pids
             assert fake_pid not in _stdio_pgids
 
+    def test_killpg_skipped_when_pgid_matches_gateway_own_pgroup(self, monkeypatch):
+        """#47134: when a tracked MCP child shares the gateway's OWN process
+        group, killpg(pgid) would signal the gateway itself and crash it.
+        The guard must skip killpg for that pgid and fall through to per-pid
+        os.kill instead."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _lock,
+        )
+
+        if not hasattr(os, "killpg") or not hasattr(os, "getpgrp"):
+            pytest.skip("os.killpg/os.getpgrp not available on this platform")
+
+        self._reset_state()
+        gateway_pgid = 424242
+        fake_pid = 717171  # a child pid that resolves to the gateway's pgid
+        other_pid = 818181  # a normal child in its OWN (non-gateway) group
+        other_pgid = 818181
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _stdio_pgids[fake_pid] = gateway_pgid  # == gateway's own pgid
+            _orphan_stdio_pids.add(other_pid)
+            _stdio_pgids[other_pid] = other_pgid  # distinct group → killpg OK
+
+        fake_sigkill = 9
+        monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
+
+        with patch("tools.mcp_tool.os.getpgrp", return_value=gateway_pgid), \
+             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        # killpg must NEVER be called for the gateway's own pgid (would self-kill).
+        killpg_pgids = [call.args[0] for call in mock_killpg.call_args_list]
+        assert gateway_pgid not in killpg_pgids, (
+            "killpg was called with the gateway's own pgid — self-kill (#47134)"
+        )
+        # The shared-pgid child must be reaped via per-pid kill instead.
+        mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
+        mock_kill.assert_any_call(fake_pid, fake_sigkill)
+        # NEGATIVE CONTROL: a child in a DISTINCT group must STILL use killpg —
+        # the guard must skip only the gateway's own group, not all pgids.
+        assert other_pgid in killpg_pgids, (
+            "killpg must still be used for a non-gateway pgid (guard too broad)"
+        )
+
     def test_killpg_failure_falls_back_to_kill(self, monkeypatch):
         """If killpg raises ProcessLookupError (pgroup gone), try os.kill."""
         from tools.mcp_tool import (

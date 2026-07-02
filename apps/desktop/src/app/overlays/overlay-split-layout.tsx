@@ -1,7 +1,5 @@
 import type { ReactNode } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -50,9 +48,10 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
-        // pt clears the floating titlebar/header; the bg itself fills from the
-        // card's top edge so there's no surface-colored gap above the sidebar.
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        // pt clears the in-card close button (the OverlayView now insets the
+        // whole card below the OS titlebar); the bg fills from the card's top
+        // edge so there's no surface-colored gap above the sidebar.
+        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)/2+1rem)]',
         className
       )}
     >
@@ -65,38 +64,13 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
       className={cn(
-        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)/2+1rem)]',
         PAGE_INSET_X,
         className
       )}
     >
       {children}
     </main>
-  )
-}
-
-// Boxless "+ New …" action that tops an OverlaySidebar list (profiles, cron, …).
-// The text variant underlines on hover, which also strokes the icon glyph — so
-// we keep the button itself underline-free and underline only the label span.
-export function OverlayNewButton({
-  icon = 'add',
-  label,
-  onClick
-}: {
-  icon?: string
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <Button
-      className="group mb-1 w-full justify-start gap-2 text-muted-foreground hover:bg-transparent hover:text-foreground"
-      onClick={onClick}
-      size="sm"
-      variant="ghost"
-    >
-      <Codicon name={icon} />
-      <span className="underline-offset-4 group-hover:underline">{label}</span>
-    </Button>
   )
 }
 

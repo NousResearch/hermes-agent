@@ -208,7 +208,7 @@ class SimplexAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the simplex-chat daemon and start the WebSocket listener."""
         try:
             import websockets  # noqa: F401

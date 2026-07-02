@@ -50,6 +50,21 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+
+
+def _emit_compaction_done(agent: Any) -> None:
+    """Emit a structured compaction-complete status for UI drivers.
+
+    ``_emit_status`` intentionally maps everything to the generic lifecycle
+    channel. Desktop needs a distinct edge so its "Summarizing thread" indicator
+    means active work, not "compaction happened sometime during this turn".
+    """
+    if getattr(agent, "status_callback", None):
+        try:
+            agent.status_callback("compacted", COMPACTION_DONE_STATUS)
+        except Exception:
+            logger.debug("status_callback error in _emit_compaction_done", exc_info=True)
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -458,6 +473,7 @@ def compress_context(
         focus_topic,
     )
     agent._emit_status(COMPACTION_STATUS)
+    _compaction_done_emitted = False
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
@@ -552,6 +568,8 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _emit_compaction_done(agent)
+            _compaction_done_emitted = True
             return messages, _existing_sp
         if _lock_holder is not None:
             _lock_refresher = _CompressionLockLeaseRefresher(
@@ -564,6 +582,10 @@ def compress_context(
 
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
+        nonlocal _compaction_done_emitted
+        if not _compaction_done_emitted:
+            _emit_compaction_done(agent)
+            _compaction_done_emitted = True
         if _lock_refresher is not None:
             _lock_refresher.stop()
         if _lock_db is not None and _lock_sid and _lock_holder:
@@ -613,6 +635,8 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _emit_compaction_done(agent)
+            _compaction_done_emitted = True
             return messages, _existing_sp
         finally:
             _release_lock()
@@ -1185,6 +1209,7 @@ def try_shrink_image_parts_in_messages(
 
 
 __all__ = [
+    "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS",
     "COMPACTION_STATUS_MARKER",
     "check_compression_model_feasibility",

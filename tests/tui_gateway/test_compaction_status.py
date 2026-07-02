@@ -71,3 +71,12 @@ def test_compaction_status_contains_marker():
     )
 
     assert COMPACTION_STATUS_MARKER in COMPACTION_STATUS
+
+
+def test_compaction_done_kind_is_preserved(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compacted", COMPACTION_DONE_STATUS)
+
+    assert events == [{"kind": "compacted", "text": COMPACTION_DONE_STATUS}]

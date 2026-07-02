@@ -58,3 +58,22 @@ def test_breakdown_uses_measured_context_when_available():
 
     assert data["context_used"] == 42_000
     assert data["context_percent"] == 21
+
+
+def test_breakdown_scales_category_rows_to_measured_total():
+    agent, parts = _make_agent(
+        stable="system prompt " * 100,
+        context="rules " * 100,
+        volatile="volatile " * 100,
+        tools=[{"type": "function", "function": {"name": "terminal", "description": "run " * 100}}],
+        last_prompt_tokens=42_000,
+    )
+    history = [{"role": "user", "content": "conversation " * 1000}]
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, history)
+
+    assert data["context_used"] == 42_000
+    assert data["estimated_total"] != 42_000
+    assert sum(item["tokens"] for item in data["categories"]) == data["context_used"]
+    assert all(item["tokens"] <= data["context_used"] for item in data["categories"])

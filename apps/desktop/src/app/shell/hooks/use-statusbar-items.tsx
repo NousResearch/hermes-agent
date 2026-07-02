@@ -21,6 +21,7 @@ import {
   $sessionStartedAt,
   $turnStartedAt,
   $yoloActive,
+  setCurrentUsage,
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
@@ -369,7 +370,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+          <ContextUsagePanel
+            currentUsage={currentUsage}
+            onUsageSnapshot={usage => setCurrentUsage(current => ({ ...current, ...usage }))}
+            requestGateway={requestGateway}
+            sessionId={activeSessionId}
+          />
         ),
         title: copy.openContextUsage,
         variant: 'menu'

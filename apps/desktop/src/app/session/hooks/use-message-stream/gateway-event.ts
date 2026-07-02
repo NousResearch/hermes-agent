@@ -547,6 +547,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'compacted') {
+          setSessionCompacting(sessionId, false)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.

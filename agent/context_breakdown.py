@@ -40,6 +40,43 @@ def _json_tokens(value: Any) -> int:
     return _chars_to_tokens(json.dumps(value, ensure_ascii=False))
 
 
+def _scale_categories_to_total(
+    categories: Sequence[Tuple[str, str, int]],
+    target_total: int,
+) -> List[Tuple[str, str, int]]:
+    """Scale rough category estimates so their sum matches measured usage.
+
+    ``last_prompt_tokens`` is provider-reported current prompt occupancy, while
+    the category rows are necessarily heuristic buckets. The desktop presents
+    both in one breakdown, so keep the rows as proportional estimates but make
+    the invariant visible to users true: the rows add up to the header total.
+    """
+    rough_total = sum(tokens for _, _, tokens in categories)
+    if target_total <= 0 or rough_total <= 0 or rough_total == target_total:
+        return list(categories)
+
+    scaled: List[Tuple[str, str, int]] = []
+    remainders: List[Tuple[float, int]] = []
+    assigned = 0
+
+    for index, (category_id, label, tokens) in enumerate(categories):
+        if tokens <= 0:
+            scaled.append((category_id, label, 0))
+            continue
+        exact = tokens * target_total / rough_total
+        whole = int(exact)
+        assigned += whole
+        scaled.append((category_id, label, whole))
+        remainders.append((exact - whole, index))
+
+    remainder = target_total - assigned
+    for _, index in sorted(remainders, reverse=True)[:remainder]:
+        category_id, label, tokens = scaled[index]
+        scaled[index] = (category_id, label, tokens + 1)
+
+    return scaled
+
+
 def _tool_name(tool: dict) -> str:
     fn = tool.get("function") if isinstance(tool, dict) else None
     if isinstance(fn, dict):
@@ -114,7 +151,7 @@ def compute_session_context_breakdown(
 
     conversation_tokens = estimate_messages_tokens_rough(messages or [])
 
-    categories = [
+    rough_categories = [
         ("system_prompt", "System prompt", _chars_to_tokens(system_prompt_text)),
         ("tool_definitions", "Tool definitions", _json_tokens(builtin_tools)),
         ("rules", "Rules", _chars_to_tokens(context)),
@@ -125,12 +162,17 @@ def compute_session_context_breakdown(
         ("conversation", "Conversation", conversation_tokens),
     ]
 
-    estimated_total = sum(tokens for _, _, tokens in categories)
+    estimated_total = sum(tokens for _, _, tokens in rough_categories)
 
     comp = getattr(agent, "context_compressor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
     measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
     context_used = measured_used if measured_used > 0 else estimated_total
+    categories = (
+        _scale_categories_to_total(rough_categories, context_used)
+        if measured_used > 0
+        else rough_categories
+    )
     context_percent = (
         max(0, min(100, round(context_used / context_max * 100)))
         if context_max

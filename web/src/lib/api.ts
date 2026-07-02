@@ -34,6 +34,30 @@ declare global {
 }
 let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
+export const AUTH_UNAUTHORIZED_MESSAGE = "Authentication required. Sign in again or retry the request.";
+
+export class AuthUnauthorizedError extends Error {
+  readonly status: 401 | 403;
+
+  constructor(status: 401 | 403, message = AUTH_UNAUTHORIZED_MESSAGE) {
+    super(message);
+    this.name = "AuthUnauthorizedError";
+    this.status = status;
+  }
+}
+
+export function isAuthUnauthorizedError(err: unknown): err is AuthUnauthorizedError {
+  return err instanceof AuthUnauthorizedError;
+}
+
+function isAuthManagedEndpoint(url: string): boolean {
+  return (
+    url.startsWith("/api/profiles") ||
+    url.startsWith("/api/plugins/kanban") ||
+    url.startsWith("/api/memory") ||
+    url.startsWith("/api/auth/ws-ticket")
+  );
+}
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
@@ -95,6 +119,9 @@ export async function fetchJSON<T>(
       // Never resolve — the page is about to unload.
       return new Promise<T>(() => {});
     }
+    if (isAuthManagedEndpoint(url) && !options?.allowUnauthorized) {
+      throw new AuthUnauthorizedError(401);
+    }
     // Loopback mode: ``_SESSION_TOKEN`` rotates on every server restart
     // (``hermes update``, ``hermes gateway restart``, etc.). A tab kept
     // open across the restart holds the OLD token in
@@ -134,6 +161,9 @@ export async function fetchJSON<T>(
     }
   }
   if (!res.ok) {
+    if (res.status === 403 && isAuthManagedEndpoint(url) && !options?.allowUnauthorized) {
+      throw new AuthUnauthorizedError(403);
+    }
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
   }
@@ -168,14 +198,9 @@ async function getSessionToken(): Promise<string> {
  * fetch a fresh ticket.
  */
 export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
-  const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
+  return fetchJSON<{ ticket: string; ttl_seconds: number }>("/api/auth/ws-ticket", {
     method: "POST",
-    credentials: "include",
   });
-  if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
-  }
-  return res.json();
 }
 
 /**
@@ -579,6 +604,23 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryContent: (target: "memory" | "user" = "memory") =>
+    fetchJSON<{
+      content: string;
+      entries: { text: string }[];
+      char_count: number;
+      char_limit: number;
+      target: string;
+    }>(`/api/memory/content?target=${encodeURIComponent(target)}`),
+  updateMemory: (target: "memory" | "user", content: string) =>
+    fetchJSON<{ ok: boolean; char_count: number; char_limit: number }>(
+      "/api/memory/content",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, content }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",

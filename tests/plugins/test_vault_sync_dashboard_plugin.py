@@ -68,6 +68,7 @@ def test_artefacts_are_metadata_only_and_duplicate_is_flagged(client):
     data = response.json()
     rendered = response.text
     assert data["temporary_copy_duplicates_canonical"] is True
+    assert data["content_relation"] == "identical"
     assert data["canonical"]["exists"] is True
     assert data["temporary_copy"]["exists"] is True
     assert "LOCAL GSSAI PROJECT ONLY\\nNo secrets here" not in rendered
@@ -79,7 +80,32 @@ def test_duplicates_endpoint_reports_review_only(client):
     assert response.status_code == 200
     duplicate = response.json()["duplicates"][0]
     assert duplicate["same_sha256"] is True
+    assert duplicate["content_relation"] == "identical"
     assert duplicate["action_required"] == "review before any move/delete"
+
+
+def test_frontmatter_only_difference_reports_content_relation(tmp_path, monkeypatch, plugin_module):
+    vault = tmp_path / "obsidian-vault"
+    tmp = tmp_path / "ivan-tmp"
+    canonical = vault / plugin_module.CANONICAL_REL
+    temp_copy = tmp / plugin_module.TMP_REL
+    canonical.parent.mkdir(parents=True)
+    tmp.mkdir(parents=True)
+    body = "## Phase 2.1\n\nNo secrets here.\n"
+    canonical.write_text("---\ntitle: Phase 2.1\n---\n\n" + body)
+    temp_copy.write_text(body)
+    monkeypatch.setenv("VAULT_SYNC_VAULT_ROOT", str(vault))
+    monkeypatch.setenv("VAULT_SYNC_TMP_ROOT", str(tmp))
+
+    app = FastAPI()
+    app.include_router(plugin_module.router, prefix="/api/plugins/vault-sync")
+    response = TestClient(app).get("/api/plugins/vault-sync/duplicates")
+
+    assert response.status_code == 200
+    duplicate = response.json()["duplicates"][0]
+    assert duplicate["same_sha256"] is False
+    assert duplicate["content_relation"] == "same_except_canonical_frontmatter"
+    assert duplicate["action_required"] == "none or manual review"
 
 
 def test_artefacts_non_matching_temp_copy_is_not_duplicate(tmp_path, monkeypatch, plugin_module):
@@ -99,7 +125,9 @@ def test_artefacts_non_matching_temp_copy_is_not_duplicate(tmp_path, monkeypatch
     response = TestClient(app).get("/api/plugins/vault-sync/artefacts")
 
     assert response.status_code == 200
-    assert response.json()["temporary_copy_duplicates_canonical"] is False
+    data = response.json()
+    assert data["temporary_copy_duplicates_canonical"] is False
+    assert data["content_relation"] == "different"
 
 
 def test_metadata_rejects_symlink_and_skips_hash(tmp_path, plugin_module):

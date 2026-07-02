@@ -16,8 +16,9 @@ import {
 import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { ProfileInfo } from "@/lib/api";
+import { useAgentProfiles } from "@/hooks/useAgentProfiles";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { UnauthorizedState } from "@/components/UnauthorizedState";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -66,8 +67,15 @@ function ProfilesLoadingSpinner() {
 }
 
 export default function ProfilesPage() {
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    profiles,
+    loading,
+    error: profilesError,
+    connectionStatus: profilesConnectionStatus,
+    nextRetryMs: profilesNextRetryMs,
+    unauthorized: profilesUnauthorized,
+    refreshProfiles,
+  } = useAgentProfiles();
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
@@ -95,18 +103,6 @@ export default function ProfilesPage() {
   // newer state when the user switches profiles or closes the editor.
   const activeSoulRequest = useRef<string | null>(null);
 
-  const load = useCallback(() => {
-    api
-      .getProfiles()
-      .then((res) => setProfiles(res.profiles))
-      .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
-      .finally(() => setLoading(false));
-  }, [showToast, t.status.error]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
   const handleCreate = async () => {
     const name = newName.trim();
     if (!name) {
@@ -123,7 +119,7 @@ export default function ProfilesPage() {
       showToast(`${t.profiles.created}: ${name}`, "success");
       setNewName("");
       setCreateModalOpen(false);
-      load();
+      void refreshProfiles({ keepExisting: true });
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
     } finally {
@@ -151,7 +147,7 @@ export default function ProfilesPage() {
       );
       setRenamingFrom(null);
       setRenameTo("");
-      load();
+      void refreshProfiles({ keepExisting: true });
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
     }
@@ -216,20 +212,24 @@ export default function ProfilesPage() {
         try {
           await api.deleteProfile(name);
           showToast(`${t.profiles.deleted}: ${name}`, "success");
-          load();
+          void refreshProfiles({ keepExisting: true });
         } catch (e) {
           showToast(`${t.status.error}: ${e}`, "error");
           throw e;
         }
       },
-      [load, showToast, t.profiles.deleted, t.status.error],
+      [refreshProfiles, showToast, t.profiles.deleted, t.status.error],
     ),
   });
 
   const pendingName = profileDelete.pendingId;
 
-  // Put "Create" button in page header
+  // Put "Create" button in page header when profile data is authorized.
   useLayoutEffect(() => {
+    if (loading || profilesUnauthorized) {
+      setEnd(null);
+      return;
+    }
     setEnd(
       <Button
         className="uppercase"
@@ -242,7 +242,7 @@ export default function ProfilesPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading]);
+  }, [setEnd, t.common.create, loading, profilesUnauthorized]);
 
   if (loading) {
     return (
@@ -258,9 +258,58 @@ export default function ProfilesPage() {
     );
   }
 
+  const profilesRetrySeconds = profilesNextRetryMs
+    ? Math.ceil(profilesNextRetryMs / 1000)
+    : null;
+  const showProfilesConnectionBanner =
+    !!profilesError || profilesConnectionStatus === "offline" || profilesConnectionStatus === "reconnecting";
+
+  if (profilesUnauthorized) {
+    return (
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 py-10">
+        <UnauthorizedState
+          service="Agent profiles"
+          message={profilesError}
+          loginUrl={window.__HERMES_AUTH_REQUIRED__ ? "/login" : undefined}
+          onRetry={() => void refreshProfiles()}
+        />
+      </div>
+    );
+  }
+
+  if (profilesError && profiles.length === 0) {
+    return (
+      <div
+        role="alert"
+        aria-live="polite"
+        className="flex flex-col gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-5 py-4 text-sm text-destructive"
+      >
+        <div>
+          {profilesConnectionStatus === "offline" ? "Disconnected" : "Reconnecting"}: {profilesError}
+          {profilesRetrySeconds ? ` — retrying in ${profilesRetrySeconds}s` : ""}
+        </div>
+        <Button className="w-fit uppercase" size="sm" onClick={() => void refreshProfiles()}>
+          {t.common.retry}
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
+
+      {showProfilesConnectionBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-xs text-warning"
+        >
+          {profilesConnectionStatus === "offline" ? "Disconnected" : "Reconnecting"}
+          {profilesError ? `: ${profilesError}` : ""}
+          {profilesRetrySeconds ? ` — retrying in ${profilesRetrySeconds}s` : ""}
+        </div>
+      )}
 
       <DeleteConfirmDialog
         open={profileDelete.isOpen}

@@ -480,6 +480,8 @@
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [connectionStatus, setConnectionStatus] = useState("loading");
+    const [nextRetryMs, setNextRetryMs] = useState(null);
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
@@ -503,9 +505,44 @@
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
+    const boardRetryTimerRef = useRef(null);
+    const boardRetryDelayRef = useRef(2000);
+    const wsReconnectTimerRef = useRef(null);
     const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
     const wsClosedRef = useRef(false);
+
+    function browserIsOffline() {
+      return typeof navigator !== "undefined" && navigator.onLine === false;
+    }
+
+    function clearBoardRetry() {
+      if (boardRetryTimerRef.current) {
+        clearTimeout(boardRetryTimerRef.current);
+        boardRetryTimerRef.current = null;
+      }
+      setNextRetryMs(null);
+    }
+
+    function clearWsReconnect() {
+      if (wsReconnectTimerRef.current) {
+        clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
+      }
+    }
+
+    function scheduleBoardRetry() {
+      if (boardRetryTimerRef.current) return;
+      const delay = Math.min(boardRetryDelayRef.current || 2000, 10000);
+      setNextRetryMs(delay);
+      boardRetryTimerRef.current = setTimeout(function () {
+        boardRetryTimerRef.current = null;
+        setNextRetryMs(null);
+        boardRetryDelayRef.current = Math.min(delay * 2, 10000);
+        loadBoard();
+        loadBoardList();
+      }, delay);
+    }
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -533,9 +570,14 @@
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
+          setConnectionStatus("connected");
+          boardRetryDelayRef.current = 2000;
+          clearBoardRetry();
         })
         .catch(function (err) {
           setError(String(err && err.message ? err.message : err));
+          setConnectionStatus(browserIsOffline() ? "offline" : "reconnecting");
+          scheduleBoardRetry();
         })
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
@@ -559,7 +601,11 @@
             writeSelectedBoard("default");
           }
         })
-        .catch(function () { /* non-fatal */ });
+        .catch(function (err) {
+          setConnectionStatus(browserIsOffline() ? "offline" : "reconnecting");
+          setError(String(err && err.message ? err.message : err));
+          scheduleBoardRetry();
+        });
     }, [board]);
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
@@ -579,14 +625,38 @@
           clearTimeout(reloadTimerRef.current);
           reloadTimerRef.current = null;
         }
+        clearBoardRetry();
       };
     }, [loadBoard]);
+
+    useEffect(function () {
+      function handleOffline() {
+        setConnectionStatus("offline");
+        setError("Browser is offline — reconnecting automatically when the network returns.");
+        scheduleBoardRetry();
+      }
+      function handleOnline() {
+        setConnectionStatus("reconnecting");
+        boardRetryDelayRef.current = 2000;
+        clearBoardRetry();
+        loadBoard();
+        loadBoardList();
+      }
+      window.addEventListener("offline", handleOffline);
+      window.addEventListener("online", handleOnline);
+      if (browserIsOffline()) handleOffline();
+      return function () {
+        window.removeEventListener("offline", handleOffline);
+        window.removeEventListener("online", handleOnline);
+      };
+    }, [loadBoard, loadBoardList]);
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
       wsClosedRef.current = false;
       function openWs() {
+        clearWsReconnect();
         if (wsClosedRef.current) return;
         const token = window.__HERMES_SESSION_TOKEN__ || "";
         const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -605,7 +675,10 @@
         let ws;
         try { ws = new WebSocket(url); } catch (_e) { return; }
         wsRef.current = ws;
-        ws.onopen = function () { wsBackoffRef.current = 1000; };
+        ws.onopen = function () {
+          wsBackoffRef.current = 1000;
+          if (!error) setConnectionStatus("connected");
+        };
         ws.onmessage = function (ev) {
           try {
             const msg = JSON.parse(ev.data);
@@ -632,12 +705,15 @@
           }
           const delay = Math.min(wsBackoffRef.current, 30000);
           wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-          setTimeout(openWs, delay);
+          setConnectionStatus(browserIsOffline() ? "offline" : "reconnecting");
+          clearWsReconnect();
+          wsReconnectTimerRef.current = setTimeout(openWs, delay);
         };
       }
       openWs();
       return function () {
         wsClosedRef.current = true;
+        clearWsReconnect();
         try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
       };
     }, [!!boardData, board, scheduleReload]);
@@ -964,10 +1040,13 @@
       return h(Card, null,
         h(CardContent, { className: "p-6" },
           h("div", { className: "text-sm text-destructive" },
-            tx(t, "loadFailed", "Failed to load Kanban board: "), error),
+            connectionStatus === "offline" ? "Disconnected: " : "Reconnecting: ", error),
           h("div", { className: "text-xs text-muted-foreground mt-2" },
-            tx(t, "loadFailedHint",
-              "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.")),
+            nextRetryMs ? `Retrying automatically in ${Math.ceil(nextRetryMs / 1000)}s.` :
+              tx(t, "loadFailedHint",
+                "The backend auto-creates kanban.db on first read. If this persists, check the dashboard logs.")),
+          h(Button, { className: "mt-4 uppercase", size: "sm", onClick: loadBoard },
+            tx(t, "refresh", "Refresh")),
         ),
       );
     }
@@ -990,6 +1069,14 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        (error || connectionStatus === "offline" || connectionStatus === "reconnecting") ? h("div", {
+          role: "status",
+          "aria-live": "polite",
+          className: "rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-xs text-warning",
+        },
+          connectionStatus === "offline" ? "Disconnected" : "Reconnecting",
+          error ? `: ${error}` : "",
+          nextRetryMs ? ` — retrying in ${Math.ceil(nextRetryMs / 1000)}s` : "") : null,
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
@@ -1017,7 +1104,7 @@
          onSelectAllVisible: selectAllVisible,
          onDelete: deleteSelected,
        }) : null,
-        error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
+        error ? h("div", { className: "text-xs text-warning px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
           laneByProfile,

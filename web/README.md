@@ -2,6 +2,14 @@
 
 Browser-based dashboard for managing Hermes Agent configuration, API keys, and monitoring active sessions.
 
+## API Integration
+
+The dashboard fetches live data from three backend services: Agent Profiles,
+Kanban board state, and Memory. See
+[docs/dashboard-apis.md](../docs/dashboard-apis.md)
+for endpoint specs, request/response shapes, hook usage, and how to point the
+dashboard at a local backend.
+
 ## Stack
 
 - **Vite** + **React 19** + **TypeScript**
@@ -35,11 +43,23 @@ npm run build
 
 This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a static SPA. The built assets are included in the Python package via `pyproject.toml` package-data.
 
+## API integrations
+
+The dashboard fetches live data from three backend services:
+
+- **Agent Profiles** — `GET /api/profiles` → `useAgentProfiles` hook
+- **Kanban board state** — `GET /api/plugins/kanban/board` → `useKanbanState` hook
+- **Memory** — `GET /api/memory` → `useMemory` / `useMemoryData` hook
+
+Full developer reference (endpoints, request/response shapes, env vars, hook APIs, error conventions):
+**[`../docs/dashboard-apis.md`](../docs/dashboard-apis.md)**
+
 ## Structure
 
 ```
 src/
 ├── components/ui/   # Reusable UI primitives (Card, Badge, Button, Input, etc.)
+├── hooks/           # React hooks — useAgentProfiles, useKanbanState, useMemory, etc.
 ├── lib/
 │   ├── api.ts       # API client — typed fetch wrappers for all backend endpoints
 │   └── utils.ts     # cn() helper for Tailwind class merging
@@ -51,6 +71,12 @@ src/
 ├── main.tsx         # React entry point
 └── index.css        # Tailwind imports and theme variables
 ```
+
+## API Documentation
+
+See [../docs/dashboard-apis.md](../docs/dashboard-apis.md) for a full reference
+covering the three integrated services (agent profiles, Kanban board state, and
+memory), including endpoint shapes, TypeScript types, and hook usage examples.
 
 ## Typography & contrast rules
 

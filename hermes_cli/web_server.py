@@ -4565,6 +4565,57 @@ async def reset_memory(body: MemoryReset):
 
 
 # ---------------------------------------------------------------------------
+# Memory content endpoints — read/write MEMORY.md and USER.md files.
+# ---------------------------------------------------------------------------
+
+_MEMORY_FILES: dict[str, str] = {
+    "memory": "MEMORY.md",
+    "user": "USER.md",
+}
+
+_CHAR_LIMIT = 2_200  # roughly matches the in-agent limit shown in the sidebar
+
+
+@app.get("/api/memory/content")
+async def get_memory_content(target: str = "memory"):
+    """Return the raw markdown content of a memory store (memory or user)."""
+    if target not in _MEMORY_FILES:
+        raise HTTPException(status_code=400, detail="target must be 'memory' or 'user'")
+    fname = _MEMORY_FILES[target]
+    path = get_hermes_home() / "memories" / fname
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    # Parse entries: split on "§" delimiter used by the memory tool.
+    raw_entries = [e.strip() for e in content.split("§") if e.strip()]
+    entries = [{"text": e} for e in raw_entries]
+    return {
+        "content": content,
+        "entries": entries,
+        "char_count": len(content),
+        "char_limit": _CHAR_LIMIT,
+        "target": target,
+    }
+
+
+class MemoryContentUpdate(BaseModel):
+    content: str
+    target: str = "memory"
+
+
+@app.put("/api/memory/content")
+async def update_memory_content(body: MemoryContentUpdate):
+    """Write new content to a memory store (memory or user)."""
+    target = (body.target or "memory").strip().lower()
+    if target not in _MEMORY_FILES:
+        raise HTTPException(status_code=400, detail="target must be 'memory' or 'user'")
+    fname = _MEMORY_FILES[target]
+    mem_dir = get_hermes_home() / "memories"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    path = mem_dir / fname
+    path.write_text(body.content, encoding="utf-8")
+    return {"ok": True, "char_count": len(body.content), "char_limit": _CHAR_LIMIT}
+
+
+# ---------------------------------------------------------------------------
 # Operations endpoints — doctor / security audit / backup / import /
 # checkpoints / hooks.
 #

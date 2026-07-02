@@ -146,6 +146,49 @@ class TestMemoryEndpoints:
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
 
+    def test_content_missing_file_returns_empty_store(self):
+        r = self.client.get("/api/memory/content?target=memory")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["target"] == "memory"
+        assert data["content"] == ""
+        assert data["entries"] == []
+        assert data["char_count"] == 0
+        assert data["char_limit"] > 0
+
+    def test_content_write_read_roundtrip_for_each_target(self):
+        from hermes_constants import get_hermes_home
+
+        mem_dir = get_hermes_home() / "memories"
+        cases = {
+            "memory": ("MEMORY.md", "first note\n§\nsecond note"),
+            "user": ("USER.md", "Phil prefers concise ops summaries."),
+        }
+        for target, (fname, content) in cases.items():
+            r = self.client.put(
+                "/api/memory/content", json={"target": target, "content": content}
+            )
+            assert r.status_code == 200
+            assert r.json()["char_count"] == len(content)
+            assert (mem_dir / fname).read_text(encoding="utf-8") == content
+
+            readback = self.client.get(f"/api/memory/content?target={target}")
+            assert readback.status_code == 200
+            data = readback.json()
+            assert data["content"] == content
+            assert data["char_count"] == len(content)
+
+        assert self.client.get("/api/memory/content?target=memory").json()["entries"] == [
+            {"text": "first note"},
+            {"text": "second note"},
+        ]
+
+    def test_content_rejects_invalid_target(self):
+        assert self.client.get("/api/memory/content?target=bogus").status_code == 400
+        assert self.client.put(
+            "/api/memory/content", json={"target": "bogus", "content": "x"}
+        ).status_code == 400
+
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)

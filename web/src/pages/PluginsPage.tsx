@@ -20,6 +20,8 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useRetryFetch } from "@/hooks/useRetryFetch";
+import type { RetryFetchStatus } from "@/hooks/useRetryFetch";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
@@ -27,6 +29,9 @@ const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hubError, setHubError] = useState<string | null>(null);
+  const [hubConnectionStatus, setHubConnectionStatus] = useState<RetryFetchStatus>("idle");
+  const [hubNextRetryMs, setHubNextRetryMs] = useState<number | null>(null);
   const [installId, setInstallId] = useState("");
   const [installForce, setInstallForce] = useState(false);
   const [installEnable, setInstallEnable] = useState(true);
@@ -41,22 +46,32 @@ export default function PluginsPage() {
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
-  const loadHub = useCallback(() => {
-    return api
-      .getPluginsHub()
-      .then((h) => {
-        setHub(h);
-        const p = h.providers;
-        setMemorySel(p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN);
-        setContextSel(p.context_engine || "compressor");
-      })
-      .catch(() => showToast(t.common.loading, "error"));
-  }, [showToast, t.common.loading]);
+  const applyHub = useCallback((h: PluginsHubResponse) => {
+    setHub(h);
+    setHubError(null);
+    const p = h.providers;
+    setMemorySel(p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN);
+    setContextSel(p.context_engine || "compressor");
+  }, []);
 
-  useEffect(() => {
-    setLoading(true);
-    void loadHub().finally(() => setLoading(false));
-  }, [loadHub]);
+  const loadHub = useCallback(async () => {
+    const h = await api.getPluginsHub();
+    applyHub(h);
+    setHubConnectionStatus("connected");
+    return h;
+  }, [applyHub]);
+
+  useRetryFetch({
+    fetchFn: api.getPluginsHub,
+    onSuccess: applyHub,
+    onError: setHubError,
+    setLoading,
+    baseIntervalMs: 30_000,
+    retryIntervalMs: 2_000,
+    maxIntervalMs: 10_000,
+    onStatusChange: setHubConnectionStatus,
+    onNextRetryMsChange: setHubNextRetryMs,
+  });
 
   useEffect(() => {
     setAfterTitle(
@@ -110,6 +125,8 @@ export default function PluginsPage() {
       );
       await loadHub();
     } catch (e) {
+      setHubError(e instanceof Error ? e.message : "Rescan failed");
+      setHubConnectionStatus(typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "reconnecting");
       showToast(e instanceof Error ? e.message : "Rescan failed", "error");
     } finally {
       setRescanBusy(false);
@@ -147,10 +164,26 @@ export default function PluginsPage() {
 
   const rows = hub?.plugins ?? [];
   const providers = hub?.providers;
+  const hubRetrySeconds = hubNextRetryMs ? Math.ceil(hubNextRetryMs / 1000) : null;
+  const showHubConnectionBanner =
+    !!hubError || hubConnectionStatus === "offline" || hubConnectionStatus === "reconnecting";
 
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="plugins:top" />
+
+      {showHubConnectionBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-xs text-warning"
+        >
+          {hubConnectionStatus === "offline" ? "Disconnected" : "Reconnecting"}
+          {hubError ? `: ${hubError}` : ""}
+          {hubRetrySeconds ? ` — retrying in ${hubRetrySeconds}s` : ""}
+          {!hub && " — plugin/provider data will restore automatically"}
+        </div>
+      )}
 
       <div className={cn("flex w-full flex-col gap-8")}>
 

@@ -74,6 +74,40 @@ def _sha256(path: Path) -> str | None:
     return h.hexdigest()
 
 
+def _read_text_for_comparison(path: Path) -> str | None:
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        if path.stat().st_size > MAX_HASH_BYTES:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _strip_yaml_frontmatter(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            remainder = "".join(lines[index + 1 :])
+            return remainder.lstrip("\r\n")
+    return text
+
+
+def _content_relation(canonical_path: Path, tmp_path: Path) -> str:
+    canonical = _read_text_for_comparison(canonical_path)
+    tmp = _read_text_for_comparison(tmp_path)
+    if canonical is None or tmp is None:
+        return "unavailable"
+    if canonical == tmp:
+        return "identical"
+    if _strip_yaml_frontmatter(canonical) == tmp:
+        return "same_except_canonical_frontmatter"
+    return "different"
+
+
 def _metadata(path: Path, allowed_roots: tuple[Path, ...]) -> dict[str, Any]:
     if path.is_symlink():
         return {"path": str(path), "allowed": False, "exists": False, "error": "symlink not permitted"}
@@ -142,12 +176,16 @@ async def artefacts() -> dict[str, Any]:
         and canonical.get("sha256")
         and canonical.get("sha256") == tmp_copy.get("sha256")
     )
+    relation = "unavailable"
+    if canonical.get("exists") and tmp_copy.get("exists"):
+        relation = _content_relation(_canonical_path(), _tmp_copy_path())
     return {
         "scope": "LOCAL GSSAI PROJECT ONLY",
         "policy": "metadata and hashes only; no file contents returned",
         "canonical": canonical,
         "temporary_copy": tmp_copy,
         "temporary_copy_duplicates_canonical": duplicate,
+        "content_relation": relation,
     }
 
 
@@ -162,6 +200,7 @@ async def duplicates() -> dict[str, Any]:
                 "canonical": artefact_data["canonical"]["path"],
                 "temporary_copy": artefact_data["temporary_copy"]["path"],
                 "same_sha256": duplicate,
+                "content_relation": artefact_data.get("content_relation", "unavailable"),
                 "action_required": "review before any move/delete" if duplicate else "none or manual review",
             }
         ],

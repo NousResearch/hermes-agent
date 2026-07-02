@@ -6,7 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { CronJob, ProfileInfo } from "@/lib/api";
+import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -19,6 +19,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { cn, themedBody } from "@/lib/utils";
+import { useAgentProfiles } from "@/hooks/useAgentProfiles";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -98,12 +99,14 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+
+  // Live profiles from hook — replaces direct api.getProfiles() call
+  const { profiles } = useAgentProfiles();
 
   // New job modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -126,13 +129,6 @@ export default function CronPage() {
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
   }, [selectedProfile, showToast, t.common.loading]);
-
-  useEffect(() => {
-    api
-      .getProfiles()
-      .then((res) => setProfiles(res.profiles))
-      .catch(() => setProfiles([]));
-  }, []);
 
   useEffect(() => {
     loadJobs();

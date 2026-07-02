@@ -431,6 +431,8 @@ class TestResolveVisionMainFirst:
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="configured-copilot-model",
         ), patch(
+            "agent.auxiliary_client._main_model_supports_vision", return_value=True,
+        ), patch(
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ), patch(

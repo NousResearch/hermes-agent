@@ -607,6 +607,21 @@ export default function CronPage() {
     loadJobs();
   }, [loadJobs]);
 
+  // Cron state changes outside this tab — the scheduler recording a run
+  // result, CLI/other-process edits — and there is no push channel (the same
+  // gap SessionsPage polls around), so refresh silently every 30s. Errors
+  // are swallowed: a failed background tick must not toast; the next user
+  // action surfaces problems through loadJobs' own handler.
+  useEffect(() => {
+    const id = setInterval(() => {
+      api
+        .getCronJobs(selectedProfile)
+        .then(setJobs)
+        .catch(() => {});
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [selectedProfile]);
+
   // Load resources from the profile the create/edit form actually targets.
   // Pass "default" explicitly so the global dashboard profile switch cannot
   // redirect a default-profile cron form to some other profile.

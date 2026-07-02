@@ -360,6 +360,7 @@ def _format_exec_approval_fallback(
     *,
     allow_permanent: bool = True,
     smart_denied: bool = False,
+    include_command: bool = True,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
@@ -375,8 +376,9 @@ def _format_exec_approval_fallback(
         if allow_permanent:
             choices.append(f"`{command_prefix}approve always` to approve permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
+    command_block = f"```\n{cmd_preview}\n```\n" if include_command else ""
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
+        f"{heading}\n{command_block}Reason: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
@@ -19098,6 +19100,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _p,
                     allow_permanent=approval_data.get("allow_permanent", True),
                     smart_denied=approval_data.get("smart_denied", False),
+                    include_command=tool_progress_enabled,
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

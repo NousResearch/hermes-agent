@@ -711,3 +711,26 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+def test_fable_5_prices_at_premium_tier_across_notional_providers():
+    """claude-fable-5 (added after real claude-app turns landed unpriced,
+    2026-07-01 sweep alert) must price at its premium tier — $10/$50 per M,
+    $1.00 cache-read, $12.50 cache-write — through every notional provider
+    AND the bare anthropic route, with status 'estimated', never 'unknown'."""
+    usage = CanonicalUsage(
+        input_tokens=100_000, output_tokens=10_000,
+        cache_read_tokens=200_000, cache_write_tokens=4_000,
+    )
+    # 100000*10/1e6 + 10000*50/1e6 + 200000*1.00/1e6 + 4000*12.50/1e6 = 1.75
+    expected = 1.75
+    # "" and None cover the provider-less rows the blackbox store actually
+    # contains (priced via the vendor-inference fallback, not the notional map).
+    for provider in list(_REPRESENTATIVE_NOTIONAL) + ["anthropic", "", None]:
+        result = estimate_usage_cost("claude-fable-5", usage, provider=provider)
+        assert result.status == "estimated", f"{provider}: {result.status}"
+        assert result.amount_usd is not None, f"{provider} priced None"
+        assert float(result.amount_usd) == round(expected, 6), (
+            f"{provider}: {result.amount_usd}"
+        )
+        assert has_known_pricing("claude-fable-5", provider=provider), provider

@@ -197,6 +197,24 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Fable 5 ─────────────────────────────────────────
+    # Premium 1M-context model priced at the opus-4-8-fast tier ($10/$50,
+    # cache read 0.1x input, cache write 1.25x input). Subscription relays
+    # (claude-app/-api-proxy/-bridge/-pool) price NOTIONAL via
+    # is_notional_anthropic_provider(); this entry supplies the rate.
+    # Source: https://openrouter.ai/anthropic/claude-fable-5
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/anthropic/claude-fable-5",
+        pricing_version="anthropic-pricing-2026-06",
+    ),
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
     # tokens for the same text).

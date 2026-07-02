@@ -2518,6 +2518,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
+        agent_result: Optional[Dict[str, Any]] = None
+        effective_session_id = session_id
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
@@ -2525,6 +2527,7 @@ class APIServerAdapter(BasePlatformAdapter):
             response_env: Dict[str, Any],
             *,
             conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
+            snapshot_session_id: Optional[str] = None,
         ) -> None:
             if not store:
                 return
@@ -2535,7 +2538,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": snapshot_session_id if snapshot_session_id is not None else session_id,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -2819,18 +2822,20 @@ class APIServerAdapter(BasePlatformAdapter):
             # Pick up agent result + usage from the completed task
             try:
                 result, agent_usage = await agent_task
+                agent_result = result if isinstance(result, dict) else None
+                effective_session_id = self._result_effective_session_id(agent_result, session_id)
                 usage = agent_usage or usage
                 # If the agent produced a final_response but no text
                 # deltas were streamed (e.g. some providers only emit
                 # the full response at the end), emit a single fallback
                 # delta so Responses clients still receive a live text part.
-                agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+                agent_final = agent_result.get("final_response", "") if agent_result else ""
                 if agent_final and not final_text_parts:
                     await _emit_text_delta(agent_final)
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
-                if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = _redact_api_error_text(result["error"])
+                if agent_result and agent_result.get("error") and not final_response_text:
+                    agent_error = _redact_api_error_text(agent_result["error"])
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)
@@ -2918,6 +2923,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _persist_response_snapshot(
                     failed_env,
                     conversation_history_snapshot=_failed_history,
+                    snapshot_session_id=effective_session_id,
                 )
                 terminal_snapshot_persisted = True
                 await _write_event("response.failed", {
@@ -2935,12 +2941,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,
-                    result,
+                    agent_result or {},
                     final_response_text,
+                    prefer_result_messages=effective_session_id != session_id,
                 )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
+                    snapshot_session_id=effective_session_id,
                 )
                 terminal_snapshot_persisted = True
                 await _write_event("response.completed", {
@@ -3238,6 +3246,7 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
+        effective_session_id = self._result_effective_session_id(result, session_id)
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
@@ -3249,6 +3258,7 @@ class APIServerAdapter(BasePlatformAdapter):
             user_message,
             result,
             final_response,
+            prefer_result_messages=effective_session_id != session_id,
         )
 
         # Build output items from the current turn only.  AIAgent returns a
@@ -3281,14 +3291,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -3633,6 +3643,8 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any,
         result: Dict[str, Any],
         final_response: Any,
+        *,
+        prefer_result_messages: bool = False,
     ) -> List[Dict[str, Any]]:
         """Build the stored Responses transcript without duplicating history."""
         prior = list(conversation_history)
@@ -3645,7 +3657,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 user_message,
                 result,
             )
-            if turn_start:
+            if turn_start or prefer_result_messages:
                 return list(agent_messages)
 
             full_history = prior
@@ -3676,7 +3688,26 @@ class APIServerAdapter(BasePlatformAdapter):
             return len(expected_prefix)
         if prior and agent_messages[:len(prior)] == prior:
             return len(prior)
+        for idx in range(len(agent_messages) - 1, -1, -1):
+            msg = agent_messages[idx]
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == current_user["role"]
+                and msg.get("content") == current_user["content"]
+            ):
+                return idx + 1
         return 0
+
+    @staticmethod
+    def _result_effective_session_id(
+        result: Optional[Dict[str, Any]],
+        fallback: Optional[str],
+    ) -> Optional[str]:
+        if isinstance(result, dict):
+            session_id = result.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+        return fallback
 
     @classmethod
     def _turn_transcript_messages(

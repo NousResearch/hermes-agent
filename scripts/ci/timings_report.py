@@ -135,9 +135,30 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     run_info = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}", token)
     created_at = run_info.get("created_at", "")
 
-    # Orchestrator direct jobs
-    orch_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
-                        token, list_key="jobs")
+    warnings: list[str] = []
+
+    # Orchestrator direct jobs. On external fork PRs GitHub can expose the
+    # workflow run metadata but still return 403 for the jobs endpoint despite
+    # the token showing Actions: read. The timing report is diagnostic only;
+    # degrade to a minimal report instead of making otherwise-green PRs red.
+    try:
+        orch_jobs = api_get(f"/repos/{owner}/{repo_name}/actions/runs/{run_id}/jobs",
+                            token, list_key="jobs")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 403:
+            raise
+        warnings.append(
+            "GitHub API returned 403 while listing jobs for this run; "
+            "generated a metadata-only timing report. This commonly happens "
+            "for pull requests from forks with restricted GITHUB_TOKEN scopes."
+        )
+        return {
+            "run_id": run_id,
+            "head_sha": head_sha,
+            "created_at": created_at,
+            "jobs": [],
+            "warnings": warnings,
+        }
 
     direct = []
     for job in orch_jobs:
@@ -149,11 +170,20 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         direct.append(job)
 
     # Sub-workflow runs
-    sub_runs = api_get(f"/repos/{owner}/{repo_name}/actions/runs", token, params={
-        "head_sha": head_sha,
-        "event": "workflow_call",
-        "per_page": 100,
-    }, list_key="workflow_runs")
+    try:
+        sub_runs = api_get(f"/repos/{owner}/{repo_name}/actions/runs", token, params={
+            "head_sha": head_sha,
+            "event": "workflow_call",
+            "per_page": 100,
+        }, list_key="workflow_runs")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 403:
+            raise
+        warnings.append(
+            "GitHub API returned 403 while listing workflow_call runs; "
+            "sub-workflow timings were omitted."
+        )
+        sub_runs = []
     sub_runs = [r for r in sub_runs if r.get("created_at", "") >= created_at]
 
     sub_jobs_raw = []
@@ -177,6 +207,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         "head_sha": head_sha,
         "created_at": created_at,
         "jobs": all_jobs,
+        "warnings": warnings,
     }
 
 
@@ -661,6 +692,12 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
         f' | Generated {escape(created)}{bl_info}</div>\n'
     )
 
+    warnings = timings.get("warnings") or []
+    if warnings:
+        html += '<h2>Warnings</h2>\n<ul>'
+        html += "".join(f'<li>{escape(str(w))}</li>' for w in warnings)
+        html += '</ul>\n'
+
     html += '<h2>Global Stats</h2>\n'
     html += _stats_cards(stats)
 
@@ -690,6 +727,11 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
 
     lines = ["## CI Timing Summary\n"]
+
+    for warning in timings.get("warnings") or []:
+        lines.append(f"> ⚠️ {warning}")
+    if timings.get("warnings"):
+        lines.append("")
 
     # Global stats table
     lines.append("| Metric | Current | Baseline | Delta |")
@@ -748,8 +790,7 @@ def main():
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
-
-    timings = collect_timings(token, repo, run_id, head_sha)
+        timings = collect_timings(token, repo, run_id, head_sha)
 
     # Save JSON
     with open(args.json_out, "w", encoding="utf-8") as f:

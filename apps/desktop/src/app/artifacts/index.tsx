@@ -298,7 +298,10 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        // DB timestamps (message.timestamp, session.last_active, session.started_at)
+        // are Unix epoch **seconds**. JS Date() expects **milliseconds**, so multiply by 1000.
+        // Date.now() returns ms, so divide by 1000 to keep the conversion uniform.
+        timestamp: (message.timestamp ?? session.last_active ?? session.started_at ?? Date.now() / 1000) * 1000
       })
     })
   }

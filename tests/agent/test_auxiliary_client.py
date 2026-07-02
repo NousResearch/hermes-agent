@@ -1173,7 +1173,16 @@ class TestVisionClientFallback:
             )
 
         assert response.choices[0].message.content == "aux response"
-        assert captured_kwargs["max_tokens"] == 128_000
+        # Behavior contract, not a frozen literal: a capless native-Anthropic
+        # aux call must default to the model's native output ceiling (resolved
+        # via _get_anthropic_max_output) rather than the old hidden 2000 cap.
+        # Asserting against the resolver keeps this test alive across
+        # model-table churn while still catching a regression to `or 2000`.
+        from agent.anthropic_adapter import _get_anthropic_max_output
+
+        expected_ceiling = _get_anthropic_max_output("claude-opus-4-8")
+        assert expected_ceiling > 2000
+        assert captured_kwargs["max_tokens"] == expected_ceiling
 
 
 class TestAuxiliaryPoolAwareness:

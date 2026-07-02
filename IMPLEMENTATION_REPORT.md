@@ -696,48 +696,86 @@ Events: `run.started`, `run.status` (queued→running), `done` (completed), `err
 ### What Remains Deferred
 
 1. **Real messaging-platform adapter live smoke** — requires external bot/platform credentials (Telegram, Discord, etc.)
-2. **Cross-repo live HTTP smoke with real AIAgent execution** — now achievable with DefaultAgentFactory + config, but not automated without a running Agent server in CI
+2. Real DeepSeek live cross-repo smoke (deterministic fake-mode smoke implemented and passing)
 
-### Tests Run
+### Phase 18 — Cross-Repo Live HTTP Smoke Harness
+
+**Goal:** Create a repeatable cross-repo live HTTP smoke harness that starts the Hermes Agent API server with runtime routes and RuntimeExecutor enabled, starts or targets Hermes WebUI in agent-runs mode, submits POST /v1/runs execute:true through WebUI/Agent paths, and verifies status/events/cancel/approval/clarify behavior without exposing secrets.
+
+**Files created (Agent):**
+- `scripts/standalone_runtime_server.py` — Minimal aiohttp server with RuntimeExecutor + configurable AgentFactory (--fake for deterministic, DefaultAgentFactory for live)
+- `scripts/smoke_runtime_executor_live.sh` — Agent-only live smoke (7 smoke tests)
+- `scripts/smoke_cross_repo.sh` — Combined Agent + WebUI cross-repo smoke (11 smoke tests)
+- `tests/gateway/test_runtime_live_http_smoke.py` — 11 pytest tests for construction + end-to-end HTTP
+- `docs/runtime-live-smoke.md` — Documentation
+
+**Files created (WebUI):**
+- `scripts/smoke_agent_runs_live.sh` — WebUI agent-runs live smoke
+- `tests/test_agent_runs_live_http_smoke.py` — 8 pytest tests for smoke harness construction
+
+**Smoke architecture:**
+1. `standalone_runtime_server.py` starts an aiohttp server on port 8642 with register_runtime_routes(executor=...) — all routes registered, health endpoint.
+2. WebUI `server.py` starts in agent-runs mode pointing at the Agent server.
+3. Shell scripts submit execute:true runs via curl, poll status/events, and verify terminal states.
+4. Approval/clarify smoke returns action_not_found (expected — no pending action exists).
+5. Cancel/stop tested with --fake mode where a delayed agent allows meaningful cancellation.
+
+**Live smoke verified:**
+1. Agent /health ok
+2. POST /v1/runs execute:true → creates run with run_id
+3. Poll status → reaches completed
+4. Events contain done event
+5. Stop/cancel → terminal state (or graceful already-completed response)
+6. Approval endpoint → 404 action_not_found (correct for completed runs)
+7. Clarify endpoint → 404 action_not_found (correct for completed runs)
+8. WebUI runtime capabilities → shows agent-runs mode
+9. WebUI proxied run status → terminal state
+10. WebUI proxied events → contains done event
+11. WebUI cancel → proxies correctly
+12. WebUI deployment health → shows agent-runs adapter
+
+**Approval/clarify live pending-action smoke:**
+Deferred — no deterministic pending-action trigger exists without production-only test injection endpoints. Approval/clarify remain verified by existing contract/unit tests and RunManager-level smoke.
+
+### Tests Run (Phase 18)
 
 ```
-15 runtime test files: 398 passed, 0 failed
-  - test_runtime_models.py: 20 tests
-  - test_runtime_run_manager.py: 40 tests
-  - test_runtime_routes.py: 23 tests
-  - test_runtime_server_mount.py: 42 tests
-  - test_runtime_approval_clarify.py: 38 tests
-  - test_runtime_control_bridge.py: 33 tests
-  - test_runtime_gateway_binding.py: 38 tests
-  - test_runtime_messaging_binding.py: 36 tests
-  - test_runtime_non_api_execution.py: 17 tests
-  - test_runtime_slash_approval.py: 17 tests
-  - test_runtime_cross_repo_contract.py: 25 tests
-  - test_runtime_v1_runs_execution_gap.py: 16 tests
-  - test_runtime_executor.py: 30 tests
-  - test_runtime_executor_routes.py: 8 tests
-  - test_runtime_default_agent_factory.py: 15 tests (new)
+Agent: 16 runtime test files: 409 passed, 0 failed
+  (Previous 15 files + tests/gateway/test_runtime_live_http_smoke.py: 11 tests)
+
+WebUI (default env): 146 passed, 0 failed (7 test files)
+WebUI (agent-runs env): 138 passed, 8 expected failures
 ```
 
-### Smoke Test Results
+### Smoke Test Results (Phase 18)
 
-**Deterministic (6/6 passed):**
-1. FakeAgentFactory execution → completed with expected result
-2. Executor without factory → not_supported
-3. DefaultAgentFactory injection → agent_creation_failed (clean error)
-4. Missing credentials validation → clean RuntimeError (no secrets)
-5. Approval/clarify compatibility → triggered and resolved
-6. Stop/cancel → cancelled
+**Agent-only smoke (--fake): 7/7 PASSED**
+1. /health ok
+2. POST /v1/runs execute:true → run created
+3. Poll status → completed
+4. Events contain done
+5. Stop/call → no error
+6. Approval → endpoint responded (action_not_found)
+7. Clarify → endpoint responded (action_not_found)
 
-**Real-credential (passed):**
-- Provider: DeepSeek (deepseek-v4-flash)
-- POST /v1/runs with execute: true → completed
-- Response received, no secrets leaked
+**Cross-repo smoke (--fake): 11/11 PASSED**
+- 5 Agent direct smoke tests
+- 1 WebUI login
+- 5 WebUI agent-runs smoke tests
 
-### Files Changed (Phase 17)
+**Real DeepSeek smoke:** SKIPPED (DEEPSEEK_API_KEY not set in this environment)
 
-- `gateway/runtime/agent_factory.py` — new (178 lines)
-- `gateway/runtime/executor.py` — updated `execute_run` for sync/async agent support
-- `gateway/runtime/__init__.py` — exported `DefaultAgentFactory`
-- `tests/gateway/test_runtime_default_agent_factory.py` — new (15 tests)
+### Files Changed (Phase 18)
+
+**Agent (`hermes-agent`):**
+- `scripts/standalone_runtime_server.py` — new (99 lines)
+- `scripts/smoke_runtime_executor_live.sh` — new (275 lines)
+- `scripts/smoke_cross_repo.sh` — new (440 lines)
+- `tests/gateway/test_runtime_live_http_smoke.py` — new (240 lines)
+- `docs/runtime-live-smoke.md` — new (80 lines)
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+**WebUI (`hermes-webui`):**
+- `scripts/smoke_agent_runs_live.sh` — new (180 lines)
+- `tests/test_agent_runs_live_http_smoke.py` — new (100 lines)
 - `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated

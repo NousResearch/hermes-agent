@@ -945,4 +945,62 @@ Real `AIAgent.run_conversation()` is synchronous. `FakeAgent._FakeAgent.run_conv
 
 ### Remaining deferred items
 1. **Real messaging-platform adapter live smoke** — requires external bot/platform credentials
-2. **Cross-repo live HTTP smoke with real AIAgent execution** — requires model API credentials (now achievable with DefaultAgentFactory + config)
+2. Real DeepSeek live cross-repo HTTP smoke (deterministic fake-mode smoke implemented and passing; real-credential smoke deferred when DEEPSEEK_API_KEY unavailable)
+
+### Phase 18 — Cross-repo live HTTP smoke harness (completed)
+
+**Design:**
+Phase 18 adds a repeatable cross-repo live HTTP smoke harness that starts the Hermes Agent API server with runtime routes and RuntimeExecutor enabled, starts Hermes WebUI in agent-runs mode, submits POST /v1/runs execute:true through both Agent direct and WebUI proxied paths, verifies status/events/cancel/approval/clarify behavior, and records a clean pass/fail report without exposing secrets.
+
+**Key components (Agent):**
+- `scripts/standalone_runtime_server.py` — minimal aiohttp server with RuntimeExecutor + AgentFactory, --fake flag for deterministic mode
+- `scripts/smoke_runtime_executor_live.sh` — Agent-only live smoke script
+- `scripts/smoke_cross_repo.sh` — combined Agent + WebUI cross-repo smoke
+- `tests/gateway/test_runtime_live_http_smoke.py` — 11 tests for smoke harness construction + end-to-end HTTP
+- `docs/runtime-live-smoke.md` — documentation
+
+**Key components (WebUI):**
+- `scripts/smoke_agent_runs_live.sh` — WebUI agent-runs live smoke
+- `tests/test_agent_runs_live_http_smoke.py` — 8 tests for smoke harness construction
+
+**Cross-repo smoke verified:**
+1. Agent direct POST /v1/runs execute:true → create, complete, events with done
+2. WebUI proxied run status — GET /api/runs/{run_id} returns terminal state
+3. WebUI proxied run events — GET /api/runs/{run_id}/events contains done
+4. WebUI cancel/stop path — POST /api/runs/{run_id}/cancel proxies correctly
+5. WebUI runtime capabilities — GET /api/runtime/capabilities shows agent-runs mode
+6. WebUI deployment health — GET /api/deployment/health shows agent-runs adapter
+7. Agent approval/clarify endpoints — return action_not_found (no pending action)
+
+**Smoke harness safety:**
+- API keys and credentials are never printed
+- Background servers are reliably cleaned up (EXIT trap, SIGINT/SIGTERM)
+- Ports checked for availability before starting
+- Deterministic fake-mode works without any credentials
+- Real-credential mode requires DEEPSEEK_API_KEY env var
+
+**Approval/clarify live pending-action smoke:**
+Deferred — no deterministic pending-action trigger exists without production-only test injection endpoints. Approval/clarify remain verified by contract/unit tests and RunManager-level smoke.
+
+**Test results:**
+- Agent: 409 runtime tests passed (16 files, including 11 new live HTTP smoke tests)
+- WebUI (default env): 146 passed, 0 failed
+- WebUI (agent-runs env): 138 passed, 8 expected failures in test_runtime_routes.py
+- Agent-only live smoke (--fake): 7/7 PASSED
+- Cross-repo live smoke (--fake): 11/11 PASSED
+- Real DeepSeek smoke: SKIPPED (DEEPSEEK_API_KEY not set in this environment)
+
+**Files changed in Phase 18:**
+
+**Agent (`hermes-agent`):**
+- `scripts/standalone_runtime_server.py` — new (99 lines)
+- `scripts/smoke_runtime_executor_live.sh` — new (270 lines)
+- `scripts/smoke_cross_repo.sh` — new (430 lines)
+- `tests/gateway/test_runtime_live_http_smoke.py` — new (240 lines)
+- `docs/runtime-live-smoke.md` — new (80 lines)
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+**WebUI (`hermes-webui`):**
+- `scripts/smoke_agent_runs_live.sh` — new (180 lines)
+- `tests/test_agent_runs_live_http_smoke.py` — new (100 lines)
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated

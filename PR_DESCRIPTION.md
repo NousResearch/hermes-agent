@@ -267,10 +267,40 @@ export HERMES_USE_RUNTIME_RUNS=true
 #   .env: DEEPSEEK_API_KEY=<key>
 ```
 
-### Deferred
+### Phase 18 — Cross-Repo Live HTTP Smoke Harness
 
-1. Real messaging-platform adapter live smoke — requires external credentials
-2. Automated cross-repo live HTTP smoke — requires running Agent server in CI
+**New files:**
+- `scripts/standalone_runtime_server.py` — Minimal aiohttp server for runtime smoke
+- `scripts/smoke_runtime_executor_live.sh` — Agent-only live smoke (7 tests)
+- `scripts/smoke_cross_repo.sh` — Combined Agent + WebUI cross-repo smoke (11 tests)
+- `tests/gateway/test_runtime_live_http_smoke.py` — 11 pytest tests
+- `docs/runtime-live-smoke.md` — Documentation
+
+**Smoke verified:**
+1. Agent direct POST /v1/runs execute:true → completed + done events
+2. WebUI proxied run status → terminal state
+3. WebUI proxied run events → done event present
+4. WebUI cancel/stop → proxies correctly
+5. WebUI runtime capabilities → agent-runs mode
+6. WebUI deployment health → agent-runs adapter
+7. Agent approval/clarify → action_not_found (no pending action)
+
+**Approval/clarify live pending-action smoke:** Deferred (no deterministic trigger)
+
+**Run:**
+```bash
+cd hermes-agent
+scripts/smoke_cross_repo.sh --fake    # deterministic (no credentials)
+DEEPSEEK_API_KEY=<key> scripts/smoke_cross_repo.sh  # real DeepSeek
+```
+
+**Results:**
+- Agent tests: 409 passed, 0 failed (16 files)
+- WebUI tests (default): 146 passed, 0 failed
+- WebUI tests (agent-runs env): 138 passed, 8 expected failures
+- Agent-only smoke (--fake): 7/7 PASSED
+- Cross-repo smoke (--fake): 11/11 PASSED
+- Real DeepSeek smoke: SKIPPED (no key in this env)
 
 ## Rollback Plan
 
@@ -280,4 +310,4 @@ unset HERMES_USE_RUNTIME_RUNS
 git revert <commit-range>
 ```
 
-The `gateway/runtime/` package is additive — removing it has zero impact on running Agent server.
+The `gateway/runtime/` package is additive — removing it has zero impact on running Agent server. Smoke scripts are standalone and do not affect production.

@@ -223,7 +223,12 @@ export function normalizePersonalityValue(value: string): string {
 }
 
 export function parseSlashCommand(command: string) {
-  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/)
+  // `[\s\S]*` (not `.*`): the arg may span newlines — `/goal <multi-line text>`
+  // or a skill command with a long pasted context. The old `.*$` regex failed
+  // the whole match on any newline, so every multiline slash command parsed as
+  // an empty name and got swallowed (#41323, #55510). The backend and CLI both
+  // split on any whitespace (`split(maxsplit=1)`), so this is the parity fix.
+  const match = command.replace(/^\/+/, '').match(/^(\S+)([\s\S]*)$/)
 
   return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
 }

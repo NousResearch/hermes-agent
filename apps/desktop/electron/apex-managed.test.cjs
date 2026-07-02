@@ -37,7 +37,8 @@ const {
   parseLoopbackCallback,
   parseProvisionResponse,
   relayKeyFromResponse,
-  resolveApexEndpoints
+  resolveApexEndpoints,
+  syncCustomProviderKeyYaml
 } = require('./apex-managed.cjs')
 
 // --- resolveApexEndpoints ---
@@ -515,4 +516,62 @@ test('accountFromLogin uses an @-shaped JWT sub as an email fallback', () => {
 test('accountFromLogin returns empty strings when nothing is available', () => {
   assert.deepEqual(accountFromLogin(null, ''), { email: '', name: '', plan: '' })
   assert.deepEqual(accountFromLogin(undefined, undefined), { email: '', name: '', plan: '' })
+})
+
+// --- syncCustomProviderKeyYaml ---
+
+const ROTATED_CONFIG = [
+  'model:',
+  '  api_key: sk-fresh',
+  '  base_url: https://apex-nodes.com/relay/v1',
+  '  default: deepseek-v4-pro-APEX',
+  '  provider: custom',
+  'custom_providers:',
+  '- api_key: sk-stale',
+  '  base_url: https://apex-nodes.com/relay/v1',
+  '  model: deepseek-v4-pro-APEX',
+  '  name: Apex-nodes.com',
+  'skills:',
+  '  disabled: []',
+  ''
+].join('\n')
+
+test('syncCustomProviderKeyYaml refreshes a rotated relay entry key (PyYAML dump shape)', () => {
+  const { changed, next } = syncCustomProviderKeyYaml(ROTATED_CONFIG, 'https://apex-nodes.com/relay/v1/', 'sk-fresh')
+  assert.equal(changed, true)
+  assert.match(next, /- api_key: sk-fresh\n {2}base_url: https:\/\/apex-nodes\.com\/relay\/v1/)
+  // model.* block and other keys untouched.
+  assert.match(next, /model:\n {2}api_key: sk-fresh/)
+  assert.match(next, /name: Apex-nodes\.com/)
+})
+
+test('syncCustomProviderKeyYaml is a no-op when the key already matches or nothing matches', () => {
+  const synced = syncCustomProviderKeyYaml(ROTATED_CONFIG, 'https://apex-nodes.com/relay/v1', 'sk-stale')
+  assert.equal(synced.changed, false)
+  assert.equal(synced.next, ROTATED_CONFIG)
+
+  const otherBase = syncCustomProviderKeyYaml(ROTATED_CONFIG, 'https://elsewhere.example/v1', 'sk-fresh')
+  assert.equal(otherBase.changed, false)
+
+  const noList = syncCustomProviderKeyYaml('model:\n  api_key: sk-a\n', 'https://apex-nodes.com/relay/v1', 'sk-b')
+  assert.equal(noList.changed, false)
+
+  assert.equal(syncCustomProviderKeyYaml('', 'https://apex-nodes.com/relay/v1', 'sk-b').changed, false)
+})
+
+test('syncCustomProviderKeyYaml only touches the matching entry in a multi-entry list', () => {
+  const multi = [
+    'custom_providers:',
+    '- api_key: sk-other',
+    '  base_url: https://my-own-endpoint.example/v1',
+    '  name: mine',
+    '- api_key: sk-stale',
+    '  base_url: https://apex-nodes.com/relay/v1',
+    '  name: Apex-nodes.com',
+    ''
+  ].join('\n')
+  const { changed, next } = syncCustomProviderKeyYaml(multi, 'https://apex-nodes.com/relay/v1', 'sk-fresh')
+  assert.equal(changed, true)
+  assert.match(next, /- api_key: sk-other\n {2}base_url: https:\/\/my-own-endpoint\.example\/v1/)
+  assert.match(next, /- api_key: sk-fresh\n {2}base_url: https:\/\/apex-nodes\.com\/relay\/v1/)
 })

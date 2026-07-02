@@ -4,22 +4,34 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { persistString, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
-// The composer's model/effort/fast is sticky UI state, NOT the profile default
-// (that lives in Settings → Model). Persisting it in localStorage makes a pick
-// follow across Cmd+N and app restarts instead of snapping back to the default.
-// It's deliberately global (not per-profile): a profile switch force-reseeds to
-// that profile's default, while within a profile new chats keep your last pick.
-const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
-const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
-const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
-const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+// The composer's model/effort/fast is sticky UI state ONLY while the app runs
+// (a pick follows across Cmd+N), and deliberately NOT persisted across
+// restarts: a relaunch always opens on the product defaults — the managed
+// profile model (deepseek-v4-pro) + High effort. Persisting it turned backend
+// echoes and one-off test picks into permanent defaults (the "opens on
+// Qwen · 中" bug). Old persisted values are scrubbed below so stale state
+// can't linger in localStorage.
+const LEGACY_COMPOSER_KEYS = [
+  'hermes.desktop.composer.model',
+  'hermes.desktop.composer.provider',
+  'hermes.desktop.composer.reasoning-effort',
+  'hermes.desktop.composer.fast'
+]
+
+try {
+  for (const key of LEGACY_COMPOSER_KEYS) {
+    window.localStorage.removeItem(key)
+  }
+} catch {
+  // Storage unavailable (tests / hardened contexts) — nothing to scrub.
+}
 
 let configuredDefaultProjectDir = ''
 
@@ -238,13 +250,14 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
-export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
-export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
-// Default reasoning effort is High (product decision) — a fresh install with no
-// stored pick opens on High, and new sessions ship it (see use-session-actions).
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? 'high')
+// Composer state starts on the product defaults every launch (model seeds from
+// the profile default via refreshCurrentModel; effort is High by product
+// decision) — see the LEGACY_COMPOSER_KEYS note for why nothing persists.
+export const $currentModel = atom('')
+export const $currentProvider = atom('')
+export const $currentReasoningEffort = atom('high')
 export const $currentServiceTier = atom('')
-export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+export const $currentFastMode = atom(false)
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -289,20 +302,11 @@ export const setResumeExhaustedSessionId = (next: Updater<string | null>) => upd
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
-export const setCurrentModel = (next: Updater<string>) => {
-  updateAtom($currentModel, next)
-  persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
-}
+export const setCurrentModel = (next: Updater<string>) => updateAtom($currentModel, next)
 
-export const setCurrentProvider = (next: Updater<string>) => {
-  updateAtom($currentProvider, next)
-  persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
-}
+export const setCurrentProvider = (next: Updater<string>) => updateAtom($currentProvider, next)
 
-export const setCurrentReasoningEffort = (next: Updater<string>) => {
-  updateAtom($currentReasoningEffort, next)
-  persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
-}
+export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 
 // Switching models makes the backend re-broadcast the session's *pre-override*
 // reasoning effort in a slightly-delayed session.info — that stale event would
@@ -339,10 +343,7 @@ export const clearLocalReasoningIntent = () => {
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
-export const setCurrentFastMode = (next: Updater<boolean>) => {
-  updateAtom($currentFastMode, next)
-  persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
-}
+export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 

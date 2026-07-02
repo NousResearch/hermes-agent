@@ -76,7 +76,9 @@ export function ApprovalPill({ disabled }: { disabled: boolean }) {
           <ChevronDown className="size-2.5 shrink-0 opacity-50" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72" side="top" sideOffset={8}>
+      {/* Wide enough that each tier's one-line description never wraps (Codex
+          keeps these single-line). */}
+      <DropdownMenuContent align="start" className="w-96" side="top" sideOffset={8}>
         <DropdownMenuRadioGroup onValueChange={value => void select(value as ApprovalMode)} value={mode}>
           {(['review', 'full'] as const).map(value => {
             const Icon = value === 'full' ? AlertTriangle : Check

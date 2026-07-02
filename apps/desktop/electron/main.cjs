@@ -89,7 +89,8 @@ const {
   seedSkillsBlockYaml,
   MODEL_DISABLED_PROVIDERS,
   parseProvisionResponse,
-  resolveApexEndpoints
+  resolveApexEndpoints,
+  syncCustomProviderKeyYaml
 } = require('./apex-managed.cjs')
 const { startLoopbackLogin } = require('./apex-loopback.cjs')
 const {
@@ -611,6 +612,28 @@ function seedDefaultModelConfig() {
     fs.writeFileSync(configPath, seed, { encoding: 'utf8' })
   } catch (err) {
     rememberLog(`[apexnodes] could not seed default config: ${err && err.message ? err.message : err}`)
+  }
+}
+
+// Keep the registered relay custom_providers entry's api_key in lockstep with
+// the freshly provisioned relay key (see syncCustomProviderKeyYaml — provision
+// rotates the key on every sign-in, and the runtime's dedupe never refreshes a
+// registered entry's key, stranding the picker's live model listing on a dead
+// credential). Runs at boot and right after provisioning; no-op when signed
+// out, config missing, or already in sync.
+function syncManagedCustomProviderKey() {
+  try {
+    const managed = resolveManagedConfig()
+    if (!managed.key || !managed.baseUrl) return
+    const configPath = path.join(HERMES_HOME, 'config.yaml')
+    if (!fs.existsSync(configPath)) return
+    const raw = fs.readFileSync(configPath, 'utf8')
+    const { changed, next } = syncCustomProviderKeyYaml(raw, managed.baseUrl, managed.key)
+    if (!changed) return
+    fs.writeFileSync(configPath, next, { encoding: 'utf8' })
+    rememberLog('[apexnodes] refreshed relay custom_providers api_key after key rotation')
+  } catch (err) {
+    rememberLog(`[apexnodes] custom provider key sync skipped: ${err && err.message ? err.message : err}`)
   }
 }
 
@@ -2830,6 +2853,11 @@ function resolveHermesBackend(dashboardArgs) {
 }
 
 async function ensureRuntime(backend) {
+  // Every boot path (existing install or fresh bootstrap) passes through here
+  // before the gateway starts — heal a rotated relay key in the registered
+  // custom provider so the model picker's live listing works this launch.
+  syncManagedCustomProviderKey()
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
     return backend
@@ -4748,6 +4776,10 @@ async function provisionManagedFromAccessToken(accessToken, account = null) {
       plan: provisioned.plan || resolvedAccount.plan
     }
     writeManagedConfig({ ...provisioned, account: account2 })
+    // A re-login just ROTATED the relay key — refresh the registered custom
+    // provider entry immediately so the model picker's live listing doesn't
+    // run on the dead key until the next app restart.
+    syncManagedCustomProviderKey()
     return { ok: true, hasRelayKey: true }
   }
   return { ok: true, hasRelayKey: false }

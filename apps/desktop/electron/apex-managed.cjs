@@ -545,6 +545,81 @@ function defaultModelPath(state) {
 }
 
 /**
+ * Keep the registered relay `custom_providers:` entry's api_key in lockstep
+ * with the freshly provisioned relay key — pure YAML line surgery, no yaml dep.
+ *
+ * Why: provision-key ROTATES the key on every sign-in. The runtime's
+ * /api/model/set applies the fresh key to `model.*`, but its custom-provider
+ * bookkeeping (_save_custom_provider) dedups by base_url and only refreshes
+ * model/api_mode — NEVER api_key. After a re-login the registered relay entry
+ * therefore keeps a rotated (dead) key: the picker's live model listing 401s
+ * against the relay and collapses to the single configured model.
+ *
+ * Matches the list entry whose base_url equals `baseUrl` (trailing slashes
+ * ignored) and rewrites its api_key line when it differs from `key`. Handles
+ * both the desktop-seeded shape and PyYAML's re-dump of it (`- api_key: …`
+ * first line or indented, optional quotes). Anything unexpected → no change.
+ *
+ * @param {string} raw      config.yaml contents
+ * @param {string} baseUrl  the managed relay base_url to match
+ * @param {string} key      the current (fresh) relay key
+ * @returns {{ changed: boolean, next: string }}
+ */
+function syncCustomProviderKeyYaml(raw, baseUrl, key) {
+  const source = String(raw || '')
+  const targetBase = String(baseUrl || '').trim().replace(/\/+$/, '')
+  const freshKey = String(key || '').trim()
+  if (!source || !targetBase || !freshKey) return { changed: false, next: source }
+
+  const lines = source.split('\n')
+  const unquote = value => value.trim().replace(/^(["'])(.*)\1$/, '$2')
+
+  // Collect [start, end) line ranges of each `custom_providers:` list entry.
+  const entryRanges = []
+  let inList = false
+  let entryStart = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^custom_providers:\s*$/.test(line)) {
+      inList = true
+      continue
+    }
+    if (!inList) continue
+    if (/^- /.test(line)) {
+      if (entryStart >= 0) entryRanges.push([entryStart, i])
+      entryStart = i
+      continue
+    }
+    if (/^\S/.test(line)) {
+      // Next top-level key — list is over.
+      if (entryStart >= 0) entryRanges.push([entryStart, i])
+      entryStart = -1
+      inList = false
+    }
+  }
+  if (entryStart >= 0) entryRanges.push([entryStart, lines.length])
+
+  let changed = false
+  for (const [start, end] of entryRanges) {
+    let baseMatches = false
+    let keyLine = -1
+    for (let i = start; i < end; i++) {
+      const m = lines[i].match(/^(?:- |\s+)(api_key|base_url):\s*(.*)$/)
+      if (!m) continue
+      if (m[1] === 'base_url' && unquote(m[2]).replace(/\/+$/, '') === targetBase) baseMatches = true
+      if (m[1] === 'api_key' && keyLine < 0) keyLine = i
+    }
+    if (!baseMatches || keyLine < 0) continue
+    const current = unquote(lines[keyLine].replace(/^.*api_key:\s*/, ''))
+    if (current === freshKey) continue
+    lines[keyLine] = lines[keyLine].replace(/(api_key:\s*).*$/, `$1${freshKey}`)
+    changed = true
+  }
+
+  return { changed, next: changed ? lines.join('\n') : source }
+}
+
+/**
  * Extract a relay key from the (future) relay-key endpoint response, tolerating
  * the couple of shapes the backend might return. Returns null when none present
  * so the caller falls back to BYOK rather than seeding an empty key.
@@ -652,5 +727,6 @@ module.exports = {
   parseLoopbackCallback,
   parseProvisionResponse,
   relayKeyFromResponse,
-  resolveApexEndpoints
+  resolveApexEndpoints,
+  syncCustomProviderKeyYaml
 }

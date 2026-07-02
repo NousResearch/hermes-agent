@@ -30,12 +30,26 @@ const PILL = cn(
  * full picker when the gateway is closed and no live menu exists.
  */
 export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatBarState['model'] }) {
-  const copy = useI18n().t.shell.statusbar
+  const { t } = useI18n()
+  const copy = t.shell.statusbar
+  const modelOptionsCopy = t.shell.modelOptions
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
   const fastMode = useStore($currentFastMode)
   const reasoningEffort = useStore($currentReasoningEffort)
   const [open, setOpen] = useState(false)
+
+  // Localized effort tag for the pill (低/中/高/超高) — unknown/none efforts fall
+  // back to the lib's compact English labels.
+  const effortLabels: Record<string, string> = {
+    high: modelOptionsCopy.high,
+    low: modelOptionsCopy.low,
+    medium: modelOptionsCopy.medium,
+    minimal: modelOptionsCopy.minimal,
+    xhigh: modelOptionsCopy.max
+  }
+
+  const effortLabel = effortLabels[reasoningEffort.trim().toLowerCase()]
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
@@ -43,7 +57,14 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   const label = (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">
+          {formatModelStatusLabel(currentModel, {
+            effortLabel,
+            fastLabel: modelOptionsCopy.fast,
+            fastMode,
+            reasoningEffort
+          })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

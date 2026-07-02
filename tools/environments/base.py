@@ -282,6 +282,19 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+_SECRET_ENV_NAME_PATTERN = (
+    "API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|"
+    "(^|_)AUTH(ORIZATION)?($|_)"
+)
+
+_SNAPSHOT_ENV_FILTER = (
+    "awk '/^declare -x [A-Za-z_][A-Za-z0-9_]*(=|$)/ { "
+    "name=$3; sub(/=.*/, \"\", name); "
+    f"if (toupper(name) ~ /({_SECRET_ENV_NAME_PATTERN})/) next "
+    "} { print }'"
+)
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -395,7 +408,8 @@ class BaseEnvironment(ABC):
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
-            f"export -p > {_snap_tmp}\n"
+            f"( set -o pipefail; export -p | {_SNAPSHOT_ENV_FILTER} > {_snap_tmp} ) "
+            f"|| {{ rm -f {_snap_tmp}; exit 1; }}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -509,7 +523,8 @@ class BaseEnvironment(ABC):
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ ( set -o pipefail; export -p | {_SNAPSHOT_ENV_FILTER} > {_snap_tmp} ) "
+                f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

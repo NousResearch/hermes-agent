@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _SNAPSHOT_ENV_FILTER
 
 
 class _TestableEnv(BaseEnvironment):
@@ -32,7 +32,7 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
+        assert "export -p |" in wrapped
         assert "pwd -P >" in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
@@ -105,7 +105,7 @@ class TestAtomicSnapshotWrite:
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
         # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p > " in wrapped
+        assert "export -p |" in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
@@ -150,7 +150,8 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "export -p > " in wrapped and "&& mv -f " in wrapped
+        assert "export -p |" in wrapped and "&& mv -f " in wrapped
+        assert "set -o pipefail" in wrapped
         assert "rm -f " in wrapped  # temp cleanup on failure
 
     def test_init_session_bootstrap_also_atomic_and_bashpid(self):
@@ -204,7 +205,8 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         writer = (
             "for i in $(seq 1 80); do "
             "export BIG_$i=$(head -c 600 /dev/zero | tr '\\0' x); "
-            f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_q(snap)}; }} "
+            f"{{ ( set -o pipefail; export -p | {_SNAPSHOT_ENV_FILTER} > {_snap_tmp} ) "
+            f"&& mv -f {_snap_tmp} {_q(snap)}; }} "
             f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true; "
             "done"
         )
@@ -242,12 +244,88 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         # must then NOT run (&&) and not clobber snap.
         bad_tmp = _q("/nonexistent-dir/snap.tmp.") + "$BASHPID"
         script = (
-            f"{{ export -p > {bad_tmp} && mv -f {bad_tmp} {_q(snap)}; }} "
+            f"{{ ( set -o pipefail; export -p | {_SNAPSHOT_ENV_FILTER} > {bad_tmp} ) "
+            f"&& mv -f {bad_tmp} {_q(snap)}; }} "
             f"2>/dev/null || rm -f {bad_tmp} 2>/dev/null || true"
         )
         self._run(script)
         out = self._run(f"cat {_q(snap)}")
         assert "export GOOD=1" in out.stdout, "good snapshot was destroyed by a failed export"
+
+
+class TestSnapshotSecretFiltering:
+    """Regression for #48441: secret-looking env vars must not persist to the
+    terminal session snapshot on disk.
+    """
+
+    @staticmethod
+    def _new_local_env(tmp_path, monkeypatch, extra_env):
+        import shutil
+        import pytest
+
+        if not shutil.which("bash"):
+            pytest.skip("bash required")
+
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_resolve_shell_init_files", lambda: [])
+        env = dict(extra_env)
+        env["TMPDIR"] = str(tmp_path)
+        return local_mod.LocalEnvironment(cwd=str(tmp_path), timeout=10, env=env)
+
+    def test_init_session_filters_secret_env_names(self, tmp_path, monkeypatch):
+        env = self._new_local_env(
+            tmp_path,
+            monkeypatch,
+            {
+                "PROJECT_SECRET": "secret-value",
+                "SERVICE_TOKEN": "token-value",
+                "CUSTOM_API_KEY": "key-value",
+                "CLIENT_PRIVATE_KEY": "private-key-value",
+                "BASIC_AUTH": "auth-value",
+                "GIT_AUTHOR_NAME": "Hermes Bot",
+                "NORMAL_VAR": "visible-value",
+            },
+        )
+        try:
+            from pathlib import Path
+
+            snapshot = Path(env._snapshot_path).read_text(encoding="utf-8")
+        finally:
+            env.cleanup()
+
+        assert "PROJECT_SECRET" not in snapshot
+        assert "SERVICE_TOKEN" not in snapshot
+        assert "CUSTOM_API_KEY" not in snapshot
+        assert "CLIENT_PRIVATE_KEY" not in snapshot
+        assert "BASIC_AUTH" not in snapshot
+        assert "GIT_AUTHOR_NAME" in snapshot
+        assert "NORMAL_VAR" in snapshot
+
+    def test_post_command_redump_filters_new_secret_exports(self, tmp_path, monkeypatch):
+        env = self._new_local_env(
+            tmp_path,
+            monkeypatch,
+            {
+                "NORMAL_VAR": "visible-value",
+            },
+        )
+        try:
+            result = env.execute(
+                "export RUNTIME_TOKEN=token-value; "
+                "export lowercase_secret=secret-value; "
+                "export PUBLIC_FLAG=still-visible"
+            )
+            from pathlib import Path
+
+            snapshot = Path(env._snapshot_path).read_text(encoding="utf-8")
+        finally:
+            env.cleanup()
+
+        assert result["returncode"] == 0
+        assert "RUNTIME_TOKEN" not in snapshot
+        assert "lowercase_secret" not in snapshot
+        assert "PUBLIC_FLAG" in snapshot
 
 
 class TestExtractCwdFromOutput:

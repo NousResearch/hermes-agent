@@ -34,16 +34,14 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 try:
-    from langfuse import Langfuse, propagate_attributes
+    from langfuse import Langfuse
 except Exception:  # pragma: no cover - fail-open when optional dep is missing
     Langfuse = None
-    propagate_attributes = None
 
 
 @dataclass
 class TraceState:
     trace_id: str
-    root_ctx: Any
     root_span: Any
     generations: Dict[str, Any] = field(default_factory=dict)
     tools: Dict[str, Any] = field(default_factory=dict)
@@ -621,42 +619,23 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    if propagate_attributes is not None:
-        try:
-            with propagate_attributes(
-                session_id=session_id or task_key,
-                trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
-            ):
-                root_ctx = client.start_as_current_observation(
-                    trace_context=trace_ctx,
-                    name="Hermes turn",
-                    as_type="chain",
-                    input=trace_input,
-                    metadata=metadata,
-                    end_on_exit=False,
-                )
-                root_span = root_ctx.__enter__()
-        except Exception:
-            root_ctx = client.start_as_current_observation(
-                trace_context=trace_ctx,
-                name="Hermes turn",
-                as_type="chain",
-                input=trace_input,
-                metadata=metadata,
-                end_on_exit=False,
-            )
-            root_span = root_ctx.__enter__()
-    else:
-        root_ctx = client.start_as_current_observation(
-            trace_context=trace_ctx,
-            name="Hermes turn",
-            as_type="chain",
-            input=trace_input,
-            metadata=metadata,
-            end_on_exit=False,
-        )
-        root_span = root_ctx.__enter__()
+    # Use the detached start_observation() (not start_as_current_observation())
+    # deliberately: the "current" variant pushes an OTEL contextvars Token when
+    # entered and expects it popped from the *same* thread/async context it was
+    # created in. Hermes hooks fire pre/post across the agent's worker threads,
+    # so entering here and ending the span later (in _finish_trace, possibly on
+    # a different thread) trips OTEL's cross-context Token check —
+    # ``ValueError: <Token ...> was created in a different Context`` — and the
+    # trace silently never reaches Langfuse. start_observation() returns the
+    # same span object without touching the "current span" contextvar, so
+    # start/end can safely happen on different threads.
+    root_span = client.start_observation(
+        trace_context=trace_ctx,
+        name="Hermes turn",
+        as_type="chain",
+        input=trace_input,
+        metadata=metadata,
+    )
 
     try:
         root_span.set_trace_io(input=trace_input)
@@ -664,7 +643,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         pass
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(trace_id=trace_id, root_span=root_span)
 
 
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,

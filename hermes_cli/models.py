@@ -77,13 +77,29 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
-    ("openrouter/elephant-alpha",              "free"),
-    ("openrouter/owl-alpha",                   "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3-preview:free",               "free"),
-    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("openrouter/free",                                      "free — auto-picks from all free models"),
+    ("openrouter/elephant-alpha",                            "free"),
+    ("openrouter/owl-alpha",                                 "free"),
+    ("cohere/north-mini-code:free",                          "free"),
+    ("google/gemma-4-26b-a4b-it:free",                       "free"),
+    ("google/gemma-4-31b-it:free",                           "free"),
+    ("liquid/lfm-2.5-1.2b-thinking:free",                    "free"),
+    ("meta-llama/llama-3.3-70b-instruct:free",               "free"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free",                  "free"),
+    ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",   "free"),
+    ("nvidia/nemotron-3-super-120b-a12b:free",               "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free",               "free"),
+    ("nvidia/nemotron-nano-12b-v2-vl:free",                  "free"),
+    ("nvidia/nemotron-nano-9b-v2:free",                      "free"),
+    ("openai/gpt-oss-120b:free",                             "free"),
+    ("openai/gpt-oss-20b:free",                              "free"),
+    ("poolside/laguna-m.1:free",                             "free"),
+    ("poolside/laguna-xs-2.1:free",                          "free"),
+    ("poolside/laguna-xs.2:free",                            "free"),
+    ("qwen/qwen3-coder:free",                                "free"),
+    ("qwen/qwen3-next-80b-a3b-instruct:free",               "free"),
+    ("tencent/hy3-preview:free",                             "free"),
+    ("inclusionai/ring-2.6-1t:free",                         "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -285,17 +301,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
         "kimi-k2.7-code",
@@ -1366,7 +1379,7 @@ def fetch_openrouter_models(
         remote = get_curated_openrouter_models()
     except Exception:
         remote = None
-    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
+    fallback = list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
 
     try:

@@ -596,6 +596,25 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def find_last_user_idx(messages: List[Dict]) -> Optional[int]:
+    """Return the index of the last ``role == "user"`` message in *messages*.
+
+    Must be recomputed from the final message list at glue time (right
+    before the ``api_messages`` build), not cached from turn-start. A
+    turn-start snapshot (e.g. ``current_turn_user_idx``) goes stale when
+    preflight compression or ``repair_message_sequence_with_cursor`` replace
+    or compact ``messages`` afterwards — the stale index then matches
+    nothing, and ephemeral plugin/memory context silently never gets glued
+    onto the outgoing request.
+
+    Returns ``None`` if no ``user`` message is present.
+    """
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return idx
+    return None
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.

@@ -794,12 +794,30 @@ def run_conversation(
         # repair_message_sequence_with_cursor also recomputes the SessionDB
         # flush cursor (_last_flushed_db_idx) when repair compacts the list,
         # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
-        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        from agent.agent_runtime_helpers import (
+            find_last_user_idx,
+            repair_message_sequence_with_cursor,
+        )
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
                 "Repaired %s message-alternation violations before request (session=%s)",
                 repaired_seq,
+                agent.session_id or "-",
+            )
+
+        # Recompute the glue target from the final message list here, not
+        # from the turn-start snapshot (``current_turn_user_idx``): preflight
+        # compression (above, in ``turn_context.py``) and the repair just
+        # above both mutate/replace ``messages``, which can leave that
+        # snapshot pointing at the wrong element or nothing at all — silently
+        # dropping ephemeral plugin/memory context from the request.
+        _glue_idx = find_last_user_idx(messages)
+        if _glue_idx is None and (_ext_prefetch_cache or _plugin_user_context):
+            request_logger.warning(
+                "No user message found to glue ephemeral plugin/memory context "
+                "onto (session=%s) — context will be silently dropped from "
+                "this request",
                 agent.session_id or "-",
             )
 
@@ -812,7 +830,7 @@ def run_conversation(
             # with target="user_message" (the default).  Both are
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
+            if idx == _glue_idx:
                 _injections = []
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)

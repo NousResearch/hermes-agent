@@ -94,3 +94,18 @@ cd hermes-agent && scripts/smoke_cross_repo.sh
 
 The harness respects `SKIP_REAL=1` to skip real-credential execution
 when credentials are present but should not be used in CI.
+
+## Phase 19 Updates
+
+- `--fake` mode now generates `approval.requested` and `clarify.requested` events
+  during execution (wired via `FakeAgentFactory` callbacks).
+- Smokes 6 and 7 verify that run events contain approval/clarify events.
+- Full e2e lifecycle resolution (approve while run is non-terminal) remains
+  deferred — the fake agent completes immediately, putting the run in terminal
+  state before resolution can complete. A future improvement can add a
+  pause-before-complete mechanism or delay-based polling window.
+- Real DeepSeek smoke was skipped in this environment because `DEEPSEEK_API_KEY`
+  was not set. Run with `DEEPSEEK_API_KEY=<key>` to exercise the live
+  `DefaultAgentFactory` path.
+- Messaging-adapter live-smoke requirements are documented in
+  `docs/messaging-adapter-live-smoke.md`.

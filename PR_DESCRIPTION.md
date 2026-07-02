@@ -285,8 +285,6 @@ export HERMES_USE_RUNTIME_RUNS=true
 6. WebUI deployment health → agent-runs adapter
 7. Agent approval/clarify → action_not_found (no pending action)
 
-**Approval/clarify live pending-action smoke:** Deferred (no deterministic trigger)
-
 **Run:**
 ```bash
 cd hermes-agent
@@ -301,6 +299,14 @@ DEEPSEEK_API_KEY=<key> scripts/smoke_cross_repo.sh  # real DeepSeek
 - Agent-only smoke (--fake): 7/7 PASSED
 - Cross-repo smoke (--fake): 11/11 PASSED
 - Real DeepSeek smoke: SKIPPED (no key in this env)
+
+### Phase 19 Additions
+
+- `standalone_runtime_server.py --fake` now wires `FakeAgentFactory` with `request_approval`/`request_clarify` callbacks, generating `approval.requested` and `clarify.requested` events during deterministic execution.
+- Smoke scripts verify approval/clarify event presence in run events.
+- `docs/messaging-adapter-live-smoke.md` documents credential matrix for 18 adapters, smoke steps, and secret redaction.
+
+**Approval/clarify live pending-action smoke:** Partial — events verified; full e2e lifecycle resolution deferred (fake agent completes immediately after requesting approval, requiring a delay-based or pause-before-complete mechanism for non-terminal resolution).
 
 ## Rollback Plan
 

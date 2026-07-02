@@ -48,12 +48,25 @@ def main():
 
     if args.fake:
         from gateway.runtime.executor import RuntimeExecutor, FakeAgentFactory
-        factory = FakeAgentFactory(result={
-            "final_response": "runtime executor cross repo smoke ok",
-            "completed": True,
-        })
+
+        def _fake_request_approval(run_id):
+            rm.request_approval(run_id, "apr-fake-001", payload={"command": "echo ok"})
+            logger.info("Fake approval requested for run %s", run_id)
+
+        def _fake_request_clarify(run_id):
+            rm.request_clarify(run_id, "clar-fake-001", payload={"question": "Proceed?"})
+            logger.info("Fake clarify requested for run %s", run_id)
+
+        factory = FakeAgentFactory(
+            result={
+                "final_response": "runtime executor cross repo smoke ok",
+                "completed": True,
+            },
+            request_approval=_fake_request_approval,
+            request_clarify=_fake_request_clarify,
+        )
         executor = RuntimeExecutor(rm, agent_factory=factory)
-        logger.info("Using FakeAgentFactory (deterministic mode)")
+        logger.info("Using FakeAgentFactory (deterministic mode with approval/clarify triggers)")
     else:
         from gateway.runtime.agent_factory import DefaultAgentFactory
         from gateway.runtime.executor import RuntimeExecutor

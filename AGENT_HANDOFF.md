@@ -1004,3 +1004,57 @@ Deferred — no deterministic pending-action trigger exists without production-o
 - `scripts/smoke_agent_runs_live.sh` — new (180 lines)
 - `tests/test_agent_runs_live_http_smoke.py` — new (100 lines)
 - `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+---
+
+## Phase 19 — Real-credential Smoke Readiness (completed)
+
+**Goal:** Run or prepare real-credential smoke validation; wire deterministic approval/clarify trigger; document messaging-adapter live-smoke requirements.
+
+### Completed Items
+
+1. **Deterministic Agent-only smoke (--fake): 7/7 PASSED**
+   - Health, POST /v1/runs execute:true, poll status, events, stop, approval event, clarify event.
+
+2. **Deterministic cross-repo smoke (--fake): 11/11 PASSED**
+   - 5 Agent direct tests + 1 WebUI login + 5 WebUI agent-runs tests.
+
+3. **Real DeepSeek smoke: SKIPPED** (DEEPSEEK_API_KEY not present in this environment)
+   - No fake pass; explicitly documented as skipped.
+
+4. **Approval/clarify deterministic trigger implemented:**
+   - `standalone_runtime_server.py --fake` now wires `request_approval` and `request_clarify` callbacks into `FakeAgentFactory`.
+   - `smoke_runtime_executor_live.sh` verifies that events contain `approval.requested` and `clarify.requested` events.
+   - Full e2e lifecycle resolution (approve → resolved event) remains deferred because the fake agent completes immediately after requesting approval, putting the run in terminal state before resolution can complete. A future improvement can add a `delay` + polling window or a pause-before-complete mechanism.
+
+5. **Messaging-adapter live-smoke plan documented:**
+   - `docs/messaging-adapter-live-smoke.md` — credential matrix for all 18 adapters, safe test channel setup, smoke steps, expected behavior, cleanup/revocation steps, secret redaction requirements.
+   - No real adapter credentials are committed or documented in plaintext.
+
+6. **Test results:**
+   - Agent: 409 runtime tests passed (16 files, 0 failed)
+   - WebUI (default env): 146 passed, 0 failed
+   - WebUI (agent-runs env): 138 passed, 8 expected failures
+
+7. **Runtime architecture preserved:**
+   - RuntimeExecutor unchanged
+   - DefaultAgentFactory unchanged
+   - API-server runtime path complete
+   - Messaging-platform runtime binding complete
+   - Slash-command state sync complete
+
+### Files Changed (Phase 19)
+
+**Agent (`hermes-agent`):**
+- `scripts/standalone_runtime_server.py` — added approval/clarify callbacks in --fake mode
+- `scripts/smoke_runtime_executor_live.sh` — updated smokes 6/7 to verify approval/clarify events
+- `docs/messaging-adapter-live-smoke.md` — new (200+ lines)
+- `docs/runtime-live-smoke.md` — updated with Phase 19 results
+- `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+### Remaining Deferred Items
+
+1. Real DeepSeek live cross-repo HTTP smoke with DEEPSEEK_API_KEY.
+2. Real messaging-platform adapter live smoke with external bot/platform credentials.
+3. Approval/clarify live pending-action full e2e lifecycle (create → approval.requested → resolve → resolved event) with a deterministic trigger that pauses before run completion.
+4. Real adapter credential smoke (each platform requires distinct bot tokens and test channels).

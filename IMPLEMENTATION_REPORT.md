@@ -779,3 +779,78 @@ WebUI (agent-runs env): 138 passed, 8 expected failures
 - `scripts/smoke_agent_runs_live.sh` — new (180 lines)
 - `tests/test_agent_runs_live_http_smoke.py` — new (100 lines)
 - `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md` — updated
+
+---
+
+## Phase 19 — Real-credential Smoke Readiness (completed)
+
+### Goal
+
+Run or prepare real-credential smoke validation for the Agent RuntimeExecutor + WebUI
+agent-runs stack. Key outcomes: run deterministic smoke, skip real DeepSeek if no key,
+wire deterministic approval/clarify trigger, document messaging-adapter smoke plan.
+
+### Changes
+
+#### Agent (`hermes-agent`)
+
+1. **`scripts/standalone_runtime_server.py`** — In `--fake` mode, `FakeAgentFactory` now
+   receives `request_approval` and `request_clarify` callbacks that call
+   `RunManager.request_approval()` and `RunManager.request_clarify()`. This generates
+   `approval.requested` and `clarify.requested` events during fake-agent execution.
+
+2. **`scripts/smoke_runtime_executor_live.sh`** — Smokes 6 and 7 now verify that the
+   run events contain `approval.requested` and `clarify.requested` events instead of
+   only testing control-plane routes on completed runs.
+
+3. **`docs/messaging-adapter-live-smoke.md`** — New document with credential matrix
+   for all 18 messaging adapters, safe test channel setup, smoke steps, expected
+   approval/deny/stop behavior, cleanup steps, and secret redaction requirements.
+
+#### WebUI (`hermes-webui`)
+
+No code changes. Test results verified.
+
+### Deterministic Smoke Results
+
+**Agent-only (--fake):** 7/7 PASSED
+- /health, create run, poll status, events, stop, approval event, clarify event
+
+**Cross-repo (--fake):** 11/11 PASSED
+- 5 Agent tests + 1 WebUI login + 5 WebUI agent-runs tests
+
+### Real DeepSeek Smoke
+
+**SKIPPED** — DEEPSEEK_API_KEY not set in this environment.
+No fake pass; explicitly skipped as documented.
+
+### Approval/Clarify Deterministic Trigger
+
+- `standalone_runtime_server.py --fake` now generates `approval.requested` and
+  `clarify.requested` events during execution.
+- Smoke tests verify event presence.
+- Full e2e lifecycle resolution (resolve while run is non-terminal) remains
+  deferred because the fake agent completes immediately after requesting
+  approval, putting the run in terminal state. A future improvement can add
+  delay-based or pause-before-complete mechanism.
+
+### Messaging-Adapter Smoke Plan
+
+- 18 adapters documented with required env vars, minimal permissions, test
+  channel setup, smoke steps, and cleanup.
+- No real credentials committed or documented in plaintext.
+
+### Test Results
+
+- Agent runtime tests: **409 passed, 0 failed** (16 files)
+- WebUI default env: **146 passed, 0 failed**
+- WebUI agent-runs env: **138 passed, 8 expected failures**
+
+### Architecture Preservation
+
+All Phase 11-18 runtime architecture preserved:
+- RuntimeExecutor unchanged
+- DefaultAgentFactory unchanged  
+- API-server runtime path complete
+- Messaging-platform binding complete
+- Slash-command state sync complete

@@ -291,6 +291,7 @@ class TestAdapterInit:
         assert adapter._host == "127.0.0.1"
         assert adapter._port == 8642
         assert adapter._api_key == ""
+        assert adapter._ws_enabled is False
         assert adapter.platform == Platform.API_SERVER
 
     def test_custom_config_from_extra(self):
@@ -301,6 +302,7 @@ class TestAdapterInit:
                 "port": 9999,
                 "key": "sk-test",
                 "cors_origins": ["http://localhost:3000"],
+                "ws_enabled": True,
             },
         )
         adapter = APIServerAdapter(config)
@@ -308,12 +310,14 @@ class TestAdapterInit:
         assert adapter._port == 9999
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
+        assert adapter._ws_enabled is True
 
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
         monkeypatch.setenv("API_SERVER_KEY", "sk-env")
         monkeypatch.setenv("API_SERVER_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:3000")
+        monkeypatch.setenv("API_SERVER_WS_ENABLED", "true")
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "10.0.0.1"
@@ -323,6 +327,7 @@ class TestAdapterInit:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         )
+        assert adapter._ws_enabled is True
 
     def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_PORT", "not-a-port")
@@ -885,10 +890,22 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["websocket_bridge"] is False
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_websocket_when_enabled(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"ws_enabled": True}))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["websocket_bridge"] is True
+            assert data["endpoints"]["websocket_bridge"] == {"method": "GET", "path": "/v1/ws"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -2706,6 +2723,14 @@ class TestConfigIntegration:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         ]
+
+    def test_env_override_websocket_enabled(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_WS_ENABLED", "true")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER in config.platforms
+        assert config.platforms[Platform.API_SERVER].enabled is True
+        assert config.platforms[Platform.API_SERVER].extra.get("ws_enabled") is True
 
     def test_api_server_in_connected_platforms(self):
         config = GatewayConfig()

@@ -17,8 +17,9 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
-- POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/approval  — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- GET  /v1/ws                      — optional JSON-frame WebSocket bridge
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -46,10 +47,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
-    from aiohttp import web
+    from aiohttp import WSMsgType, web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+    WSMsgType = None  # type: ignore[assignment]
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
@@ -93,6 +95,7 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+WS_CONVERSATION_HISTORY_ROLES = frozenset({"user", "assistant", "system"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -129,6 +132,27 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
         return default
     if isinstance(value, (int, float)):
         return bool(value)
+    return default
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Parse common env/config boolean spellings.
+
+    Used for env/config flags such as ``API_SERVER_WS_ENABLED`` that gate the
+    optional WebSocket bridge.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
     return default
 
 
@@ -783,6 +807,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._ws_enabled: bool = _coerce_bool(
+            extra.get("ws_enabled", os.getenv("API_SERVER_WS_ENABLED")),
+            default=False,
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1237,6 +1265,32 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        endpoints = {
+            "health": {"method": "GET", "path": "/health"},
+            "health_detailed": {"method": "GET", "path": "/health/detailed"},
+            "models": {"method": "GET", "path": "/v1/models"},
+            "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+            "responses": {"method": "POST", "path": "/v1/responses"},
+            "runs": {"method": "POST", "path": "/v1/runs"},
+            "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+            "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+            "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+            "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+            "skills": {"method": "GET", "path": "/v1/skills"},
+            "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+            "sessions": {"method": "GET", "path": "/api/sessions"},
+            "session_create": {"method": "POST", "path": "/api/sessions"},
+            "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
+            "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+            "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+            "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+            "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+            "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+            "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+        }
+        if self._ws_enabled:
+            endpoints["websocket_bridge"] = {"method": "GET", "path": "/v1/ws"}
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1277,33 +1331,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
+                "websocket_bridge": self._ws_enabled,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
             },
-            "endpoints": {
-                "health": {"method": "GET", "path": "/health"},
-                "health_detailed": {"method": "GET", "path": "/health/detailed"},
-                "models": {"method": "GET", "path": "/v1/models"},
-                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
-                "responses": {"method": "POST", "path": "/v1/responses"},
-                "runs": {"method": "POST", "path": "/v1/runs"},
-                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
-                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
-                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
-                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "skills": {"method": "GET", "path": "/v1/skills"},
-                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
-                "sessions": {"method": "GET", "path": "/api/sessions"},
-                "session_create": {"method": "POST", "path": "/api/sessions"},
-                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
-                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
-                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
-                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
-                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
-                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
-                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
-            },
+            "endpoints": endpoints,
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
@@ -1829,6 +1862,303 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    @staticmethod
+    def _ws_error(frame_id: Any, code: str, message: str) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "type": "agent.message.error",
+            "code": code,
+            "message": message,
+        }
+        if frame_id is not None:
+            payload["id"] = frame_id
+        return payload
+
+    @staticmethod
+    def _ws_frame_id(frame: Any) -> Any:
+        return frame.get("id") if isinstance(frame, dict) else None
+
+    async def _ws_send_error(self, ws: "web.WebSocketResponse", frame_id: Any, code: str, message: str) -> None:
+        await ws.send_json(self._ws_error(frame_id, code, message))
+
+    async def _handle_ws_status(self, ws: "web.WebSocketResponse", frame: Dict[str, Any]) -> None:
+        await ws.send_json({
+            "id": frame.get("id"),
+            "type": "status.result",
+            "status": "ok",
+            "platform": "hermes-agent",
+            "model": self._model_name,
+            "auth_required": bool(self._api_key),
+            "websocket_bridge": True,
+        })
+
+    async def _handle_ws_session_list(self, ws: "web.WebSocketResponse", frame: Dict[str, Any]) -> None:
+        db = self._ensure_session_db()
+        if db is None:
+            await self._ws_send_error(ws, frame.get("id"), "session_db_unavailable", "Session database unavailable")
+            return
+
+        limit_value = frame.get("limit", 20)
+        offset_value = frame.get("offset", 0)
+        if not isinstance(limit_value, int):
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "limit must be an integer")
+            return
+        if not isinstance(offset_value, int):
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "offset must be an integer")
+            return
+
+        limit = max(1, min(100, limit_value))
+        offset = max(0, offset_value)
+        sessions = db.list_sessions_rich(limit=limit, offset=offset)
+        await ws.send_json({
+            "id": frame.get("id"),
+            "type": "session.list.result",
+            "sessions": sessions,
+        })
+
+    async def _handle_ws_session_get(self, ws: "web.WebSocketResponse", frame: Dict[str, Any]) -> None:
+        session_id = str(frame.get("session_id") or "").strip()
+        if not session_id:
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "session_id is required")
+            return
+
+        db = self._ensure_session_db()
+        if db is None:
+            await self._ws_send_error(ws, frame.get("id"), "session_db_unavailable", "Session database unavailable")
+            return
+
+        session = db.get_session(session_id)
+        if not session:
+            await self._ws_send_error(ws, frame.get("id"), "session_not_found", "Session not found")
+            return
+
+        await ws.send_json({
+            "id": frame.get("id"),
+            "type": "session.get.result",
+            "session": session,
+            "messages": db.get_messages(session_id),
+        })
+
+    async def _handle_ws_session_reset(self, ws: "web.WebSocketResponse", frame: Dict[str, Any]) -> None:
+        session_id = str(frame.get("session_id") or "").strip()
+        if not session_id:
+            await self._ws_send_error(ws, frame.get("id"), "invalid_request", "session_id is required")
+            return
+
+        db = self._ensure_session_db()
+        if db is None:
+            await self._ws_send_error(ws, frame.get("id"), "session_db_unavailable", "Session database unavailable")
+            return
+
+        if not db.get_session(session_id):
+            await self._ws_send_error(ws, frame.get("id"), "session_not_found", "Session not found")
+            return
+
+        db.clear_messages(session_id)
+        await ws.send_json({
+            "id": frame.get("id"),
+            "type": "session.reset.result",
+            "session_id": session_id,
+            "ok": True,
+        })
+
+    async def _run_ws_agent_message(
+        self,
+        ws: "web.WebSocketResponse",
+        frame: Dict[str, Any],
+        active_agents: Dict[str, Any],
+    ) -> None:
+        frame_id = frame.get("id")
+        text = frame.get("text")
+        if not isinstance(text, str) or not text.strip():
+            await self._ws_send_error(ws, frame_id, "invalid_request", "text is required")
+            return
+
+        session_id = str(frame.get("session_id") or "").strip() or f"ws_{uuid.uuid4().hex}"
+        raw_history = frame.get("conversation_history") or []
+        if not isinstance(raw_history, list):
+            await self._ws_send_error(ws, frame_id, "invalid_request", "conversation_history must be an array")
+            return
+
+        conversation_history: List[Dict[str, str]] = []
+        for i, entry in enumerate(raw_history):
+            if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                await self._ws_send_error(
+                    ws,
+                    frame_id,
+                    "invalid_request",
+                    f"conversation_history[{i}] must have role and content",
+                )
+                return
+            role = str(entry["role"])
+            if role not in WS_CONVERSATION_HISTORY_ROLES:
+                await self._ws_send_error(
+                    ws,
+                    frame_id,
+                    "invalid_request",
+                    f"conversation_history[{i}] role must be one of {sorted(WS_CONVERSATION_HISTORY_ROLES)}",
+                )
+                return
+            conversation_history.append({"role": role, "content": str(entry["content"])})
+
+        loop = asyncio.get_running_loop()
+        delta_q: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
+
+        def _text_cb(delta: Optional[str]) -> None:
+            if delta is None:
+                return
+            try:
+                loop.call_soon_threadsafe(delta_q.put_nowait, {
+                    "id": frame_id,
+                    "type": "agent.message.delta",
+                    "session_id": session_id,
+                    "delta": delta,
+                })
+            except Exception:
+                pass
+
+        async def _drain_deltas() -> None:
+            while True:
+                item = await delta_q.get()
+                if item is None:
+                    return
+                if not ws.closed:
+                    await ws.send_json(item)
+
+        drain_task = asyncio.create_task(_drain_deltas())
+        agent_key = str(frame_id or session_id)
+
+        try:
+            agent_ref = [None]
+            active_agents[agent_key] = agent_ref
+            result, usage = await self._run_agent(
+                user_message=text,
+                conversation_history=conversation_history,
+                ephemeral_system_prompt=frame.get("instructions") or None,
+                session_id=session_id,
+                stream_delta_callback=_text_cb,
+                agent_ref=agent_ref,
+                gateway_session_key=frame.get("session_key") or None,
+            )
+            await delta_q.put(None)
+            await drain_task
+
+            if isinstance(result, dict) and result.get("failed"):
+                await self._ws_send_error(
+                    ws,
+                    frame_id,
+                    "agent_run_failed",
+                    str(result.get("error") or "agent run failed"),
+                )
+                return
+
+            output = result.get("final_response", "") if isinstance(result, dict) else ""
+            await ws.send_json({
+                "id": frame_id,
+                "type": "agent.message.done",
+                "session_id": session_id,
+                "output": output,
+                "usage": usage,
+            })
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("[api_server] WebSocket agent message failed")
+            if not ws.closed:
+                await self._ws_send_error(ws, frame_id, "agent_run_failed", str(exc))
+        finally:
+            active_agents.pop(agent_key, None)
+            try:
+                delta_q.put_nowait(None)
+            except Exception:
+                pass
+            if not drain_task.done():
+                drain_task.cancel()
+                try:
+                    await drain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def _handle_ws(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/ws — JSON-frame WebSocket bridge for local/mobile clients."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        origin = request.headers.get("Origin", "")
+        if not self._origin_allowed(origin):
+            return web.json_response(
+                {"error": {"message": "Origin not allowed", "type": "invalid_request_error"}},
+                status=403,
+            )
+
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+
+        active_tasks: set[asyncio.Task] = set()
+        active_agents: Dict[str, Any] = {}
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    try:
+                        frame = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        await self._ws_send_error(ws, None, "invalid_json", "Invalid JSON frame")
+                        continue
+
+                    if not isinstance(frame, dict):
+                        await self._ws_send_error(ws, None, "invalid_frame", "Frame must be a JSON object")
+                        continue
+
+                    frame_type = frame.get("type")
+                    if frame_type == "status.get":
+                        await self._handle_ws_status(ws, frame)
+                    elif frame_type == "session.list":
+                        await self._handle_ws_session_list(ws, frame)
+                    elif frame_type == "session.get":
+                        await self._handle_ws_session_get(ws, frame)
+                    elif frame_type == "session.reset":
+                        await self._handle_ws_session_reset(ws, frame)
+                    elif frame_type == "agent.message.send":
+                        task = asyncio.create_task(self._run_ws_agent_message(ws, frame, active_agents))
+                        active_tasks.add(task)
+                        task.add_done_callback(active_tasks.discard)
+                    else:
+                        await self._ws_send_error(
+                            ws,
+                            self._ws_frame_id(frame),
+                            "unknown_type",
+                            f"Unknown frame type: {frame_type}",
+                        )
+                elif msg.type == WSMsgType.ERROR:
+                    logger.debug("[api_server] WebSocket closed with exception: %s", ws.exception())
+                    if not ws.closed:
+                        try:
+                            await self._ws_send_error(
+                                ws,
+                                None,
+                                "connection_error",
+                                str(ws.exception() or "WebSocket connection error"),
+                            )
+                        except Exception:
+                            pass
+        finally:
+            for agent_ref in list(active_agents.values()):
+                try:
+                    agent = agent_ref[0] if isinstance(agent_ref, list) else agent_ref
+                    if agent is None:
+                        continue
+                    agent.interrupt("WebSocket client disconnected")
+                except Exception:
+                    pass
+            for task in list(active_tasks):
+                if not task.done():
+                    task.cancel()
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+
+        return ws
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -4557,6 +4887,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Optional WebSocket bridge for local/mobile clients (gated by API_SERVER_WS_ENABLED)
+            if self._ws_enabled:
+                self._app.router.add_get("/v1/ws", self._handle_ws)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

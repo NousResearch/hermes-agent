@@ -3850,8 +3850,14 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
                 include_unconfigured=True,
                 picker_hints=True,
                 canonical_order=True,
-                pricing=True,
-                capabilities=True,
+                # Normal picker opens must return the routable model list fast.
+                # Pricing/capability badges are best-effort metadata and may hit
+                # models.dev / Portal tier checks / provider catalogs; only do
+                # that work on an explicit refresh, with a short degradation
+                # budget so the desktop IPC layer does not hit its 15s timeout.
+                pricing=bool(refresh),
+                capabilities=bool(refresh),
+                enrichment_timeout=2.0 if refresh else None,
                 refresh=bool(refresh),
             )
     except HTTPException:

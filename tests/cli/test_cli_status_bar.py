@@ -164,6 +164,64 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_deep_prefix_expands_to_real_skill_invocation(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "sid"
+
+        with patch("agent.skill_commands.build_skill_invocation_message", return_value="DEEP_SCAFFOLD") as mock_build:
+            prompt, payload = cli_obj._prepare_deep_prompt_for_cli("deep: explain this")
+
+        assert prompt == "DEEP_SCAFFOLD"
+        assert payload == {
+            "key": "skill:deep",
+            "kind": "skill",
+            "label": "deep",
+            "name": "deep",
+            "phase": "start",
+            "scope": "turn",
+            "source": "explicit_skill_invocation",
+        }
+        mock_build.assert_called_once_with("/deep", user_instruction="explain this", task_id="sid")
+
+    def test_plain_deep_mention_does_not_expand(self):
+        cli_obj = _make_cli()
+
+        prompt, payload = cli_obj._prepare_deep_prompt_for_cli("why did deep not show?")
+
+        assert prompt == "why did deep not show?"
+        assert payload is None
+
+    def test_cli_status_bar_shows_observed_deep(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._observe_cli_mechanism(cli_obj._deep_mechanism_payload("explicit_skill_invocation"))
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "deep" in text
+
+    def test_cli_status_bar_does_not_show_unobserved_deep(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "deep" not in text
+
     def test_compression_count_shown_in_wide_status_bar(self):
         cli_obj = _attach_agent(
             _make_cli(),

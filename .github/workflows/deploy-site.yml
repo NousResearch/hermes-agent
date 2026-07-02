@@ -171,6 +171,12 @@ jobs:
           if [ -f website/build/llms-full.txt ]; then
             cp website/build/llms-full.txt _site/llms-full.txt
           fi
+          if [ -f website/build/robots.txt ]; then
+            cp website/build/robots.txt _site/robots.txt
+          fi
+          if [ -f website/build/sitemap.xml ]; then
+            cp website/build/sitemap.xml _site/sitemap.xml
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

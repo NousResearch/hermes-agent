@@ -117,6 +117,7 @@ hermes doctor       # Diagnose any issues
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+🧠 **LLM entry points:** [`/llms.txt`](https://hermes-agent.nousresearch.com/llms.txt) · [`/llms-full.txt`](https://hermes-agent.nousresearch.com/llms-full.txt) · docs mirrors at [`/docs/llms.txt`](https://hermes-agent.nousresearch.com/docs/llms.txt)
 
 ---
 

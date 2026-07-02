@@ -1003,10 +1003,13 @@ def test_bulk_status_done_forwards_completion_summary(client):
         for tid in (a["id"], b["id"]):
             task = kb.get_task(conn, tid)
             run = kb.latest_run(conn, tid)
+            assert run is not None
             assert task.status == "done"
             assert task.result == "DECIDED: ship it"
             assert run.summary == "DECIDED: ship it"
-            assert run.metadata == {"source": "dashboard"}
+            assert run.metadata is not None
+            assert run.metadata["source"] == "dashboard"
+            assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 
@@ -1233,7 +1236,8 @@ def test_task_detail_includes_runs(client):
     assert run["outcome"] == "completed"
     assert run["profile"] == "worker"
     assert run["summary"] == "tested on rate limiter"
-    assert run["metadata"] == {"changed_files": ["limiter.py"]}
+    assert run["metadata"]["changed_files"] == ["limiter.py"]
+    assert len(run["metadata"].get("evidence_refs", [])) == 1
     assert run["ended_at"] is not None
 
 
@@ -1272,9 +1276,13 @@ def test_patch_status_done_with_summary_and_metadata(client):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, tid)
+        assert run is not None
         assert run.outcome == "completed"
         assert run.summary == "shipped the thing"
-        assert run.metadata == {"changed_files": ["a.py", "b.py"], "tests_run": 7}
+        assert run.metadata is not None
+        assert run.metadata["changed_files"] == ["a.py", "b.py"]
+        assert run.metadata["tests_run"] == 7
+        assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 

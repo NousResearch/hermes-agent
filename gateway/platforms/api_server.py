@@ -2353,6 +2353,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -2633,11 +2634,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        fallback_model = (
-            None
-            if confirmed_runtime_lock
-            else GatewayRunner._load_fallback_model()
-        )
+        fallback_model = GatewayRunner._load_fallback_model()
 
         agent_kwargs = {
             "model": model,
@@ -2654,6 +2651,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "reasoning_callback": reasoning_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -3916,6 +3914,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning content as a tagged tuple for the SSE writer."""
+                _stream_q.put(("__reasoning__", text))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -3933,6 +3935,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
@@ -4043,6 +4046,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": finish_reason,
                 }
             ],
+            "reasoning_content": result.get("last_reasoning") or None,
             "usage": {
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
@@ -4112,17 +4116,32 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples:
+
+                - ``("__reasoning__", text)`` are sent as
+                  ``delta.reasoning_content`` chunks for Open WebUI's native
+                  thoughts panel (and any other frontend that supports the
+                  OpenAI ``reasoning_content`` SSE extension).
+                - ``("__tool_progress__", payload)`` are sent as a custom
+                  ``event: hermes.tool.progress`` SSE event so frontends
+                  can display them without storing the markers in
+                  conversation history.  See #6972 for the original event,
+                  #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
+                if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                    tag, payload = item
+                    if tag == "__tool_progress__":
+                        event_data = json.dumps(payload)
+                        await response.write(
+                            f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                        )
+                    elif tag == "__reasoning__":
+                        reasoning_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": payload}, "finish_reason": None}],
+                        }
+                        await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -4574,6 +4593,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
+            # Accumulated reasoning text for inclusion in terminal message
+            reasoning_parts: List[str] = []
+
+            async def _emit_reasoning_delta(text: str) -> None:
+                """Emit a response.reasoning.delta event."""
+                nonlocal reasoning_parts
+                reasoning_parts.append(text)
+                await _write_event("response.reasoning.delta", {
+                    "type": "response.reasoning.delta",
+                    "delta": text,
+                    "item_id": message_item_id,
+                })
+
             # Main drain loop — thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
@@ -4582,7 +4614,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
                 prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                before emitting. ``__reasoning__`` tuples fire a custom
+                ``response.reasoning.delta`` event.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
@@ -4594,6 +4627,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        await _emit_reasoning_delta(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -5031,6 +5066,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning content as a tagged tuple for the SSE writer."""
+                _stream_q.put(("__reasoning__", text))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -5041,6 +5080,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
@@ -5764,6 +5804,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
@@ -5809,154 +5850,154 @@ class APIServerAdapter(BasePlatformAdapter):
         def _run():
             from gateway.session_context import clear_session_vars
 
-            with self._profile_scope(request_profile):
-                tokens = self._bind_api_server_session(
-                    chat_id=session_id or "",
-                    session_key=gateway_session_key or session_id or "",
-                    session_id=session_id or "",
+            tokens = self._bind_api_server_session(
+                chat_id=session_id or "",
+                session_key=gateway_session_key or session_id or "",
+                session_id=session_id or "",
+            )
+            try:
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                    reasoning_callback=reasoning_callback,
+                    gateway_session_key=gateway_session_key,
+                    requested_model=requested_model,
+                    requested_provider=requested_provider,
+                    model_options=model_options,
+                    route=route,
+                    session_model=session_model,
+                    confirmed_runtime_lock=confirmed_runtime_lock,
                 )
-                try:
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=stream_delta_callback,
-                        tool_progress_callback=tool_progress_callback,
-                        tool_start_callback=tool_start_callback,
-                        tool_complete_callback=tool_complete_callback,
-                        gateway_session_key=gateway_session_key,
-                        requested_model=requested_model,
-                        requested_provider=requested_provider,
-                        model_options=model_options,
-                        route=route,
-                        session_model=session_model,
-                        confirmed_runtime_lock=confirmed_runtime_lock,
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                # Signal whether context compression occurred during this turn
+                # so _build_response_conversation_history can skip the
+                # prior-concatenation path and store the compressed transcript
+                # directly.  Rotation mode changes agent.session_id; in-place
+                # mode sets _last_compaction_in_place (see #38763).
+                _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+                _session_rotated = (
+                    isinstance(_eff_sid, str) and isinstance(session_id, str)
+                    and _eff_sid != session_id
+                )
+                if _compacted_in_place or _session_rotated:
+                    result["_compressed"] = True
+                include_runtime = bool(
+                    requested_runtime
+                    or route
+                    or confirmed_runtime_lock
+                    or (route_source and route_source != "global")
+                )
+                if include_runtime:
+                    runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
+                    raw_provider = getattr(agent, "provider", "")
+                    raw_model = getattr(agent, "model", "")
+                    actual_provider = (
+                        self._clean_runtime_id(raw_provider, max_len=80)
+                        if isinstance(raw_provider, str)
+                        else ""
                     )
-                    if agent_ref is not None:
-                        agent_ref[0] = agent
-                    effective_task_id = session_id or str(uuid.uuid4())
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
+                    actual_model = (
+                        self._clean_runtime_id(raw_model)
+                        if isinstance(raw_model, str)
+                        else ""
                     )
-                    usage = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
-                    # Include the effective session ID in the result so callers
-                    # (e.g. X-Hermes-Session-Id header) can track compression-
-                    # triggered session rotations. (#16938)
-                    _eff_sid = getattr(agent, "session_id", session_id)
-                    if isinstance(_eff_sid, str) and _eff_sid:
-                        result["session_id"] = _eff_sid
-                    # Signal whether context compression occurred during this turn
-                    # so _build_response_conversation_history can skip the
-                    # prior-concatenation path and store the compressed transcript
-                    # directly.  Rotation mode changes agent.session_id; in-place
-                    # mode sets _last_compaction_in_place (see #38763).
-                    _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
-                    _session_rotated = (
-                        isinstance(_eff_sid, str) and isinstance(session_id, str)
-                        and _eff_sid != session_id
-                    )
-                    if _compacted_in_place or _session_rotated:
-                        result["_compressed"] = True
-                    include_runtime = bool(
-                        requested_runtime
-                        or route
-                        or confirmed_runtime_lock
-                        or (route_source and route_source != "global")
-                    )
-                    if include_runtime:
-                        runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
-                        raw_provider = getattr(agent, "provider", "")
-                        raw_model = getattr(agent, "model", "")
-                        actual_provider = (
-                            self._clean_runtime_id(raw_provider, max_len=80)
-                            if isinstance(raw_provider, str)
-                            else ""
+                    if actual_provider:
+                        runtime["provider"] = actual_provider
+                    else:
+                        runtime.setdefault("provider", "")
+                    if actual_model:
+                        runtime["model"] = actual_model
+                    else:
+                        runtime.setdefault("model", "")
+                    if confirmed_runtime_lock:
+                        expected_provider = self._clean_runtime_id(
+                            (route or {}).get("provider")
+                            or (requested_runtime or {}).get("provider"),
+                            max_len=80,
                         )
-                        actual_model = (
-                            self._clean_runtime_id(raw_model)
-                            if isinstance(raw_model, str)
-                            else ""
+                        expected_model = self._clean_runtime_id(
+                            (route or {}).get("model")
+                            or (requested_runtime or {}).get("model")
                         )
-                        if actual_provider:
-                            runtime["provider"] = actual_provider
-                        else:
-                            runtime.setdefault("provider", "")
-                        if actual_model:
-                            runtime["model"] = actual_model
-                        else:
-                            runtime.setdefault("model", "")
-                        if confirmed_runtime_lock:
-                            expected_provider = self._clean_runtime_id(
-                                (route or {}).get("provider")
-                                or (requested_runtime or {}).get("provider"),
-                                max_len=80,
-                            )
-                            expected_model = self._clean_runtime_id(
-                                (route or {}).get("model")
-                                or (requested_runtime or {}).get("model")
-                            )
-                            mismatched = (
-                                (expected_provider and actual_provider != expected_provider)
-                                or (expected_model and actual_model != expected_model)
-                            )
-                            if mismatched:
-                                raise RuntimeError(
-                                    "confirmed model lock runtime mismatch: "
-                                    f"expected provider={expected_provider or '<unspecified>'} "
-                                    f"model={expected_model or '<unspecified>'}; "
-                                    f"actual provider={actual_provider or '<unknown>'} "
-                                    f"model={actual_model or '<unknown>'}"
-                                )
-                        if requested_runtime:
-                            runtime["requested"] = {
-                                "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
-                                "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
-                            }
-                        runtime["route_source"] = route_source or runtime.get("route_source") or "global"
-                        runtime = self._sanitize_runtime_metadata(
-                            runtime=runtime,
-                            requested_runtime=requested_runtime,
-                            route_source=route_source or "global",
-                            model_lock=("confirmed" if confirmed_runtime_lock else ""),
+                        mismatched = (
+                            (expected_provider and actual_provider != expected_provider)
+                            or (expected_model and actual_model != expected_model)
                         )
-                        if isinstance(result, dict):
-                            result["runtime"] = runtime
-                        usage["runtime"] = runtime
-                    return result, usage
-                except _ProviderAuthResolutionError as exc:
-                    # Only _ProviderAuthResolutionError — raised exclusively
-                    # where _resolve_runtime_agent_kwargs() is called inside
-                    # _create_agent() — means a provider auth/credential
-                    # failure.  Catching bare RuntimeError here would
-                    # mislabel unrelated RuntimeErrors from
-                    # run_conversation() (e.g. "Failed to recreate closed
-                    # OpenAI client") as auth failures.  Matches run.py's
-                    # response shape (final_response text, no HTTP error).
-                    # Previously this propagated unhandled:
-                    # /v1/chat/completions caught it as an undifferentiated
-                    # "Internal server error" 500, and
-                    # /api/sessions/{id}/chat[/stream] didn't catch it at
-                    # all (raw aiohttp 500, no JSON body).  Handling it
-                    # here, once, covers every _run_agent() caller;
-                    # /v1/runs has its own branch in its executor.
-                    logger.warning("Provider authentication failed for session=%s: %s",
-                                   session_id or "", exc)
-                    return (
-                        {
-                            "final_response": f"⚠️ Provider authentication failed: {exc}",
-                            "messages": [],
-                            "api_calls": 0,
-                            "tools": [],
-                        },
-                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                        if mismatched:
+                            raise RuntimeError(
+                                "confirmed model lock runtime mismatch: "
+                                f"expected provider={expected_provider or '<unspecified>'} "
+                                f"model={expected_model or '<unspecified>'}; "
+                                f"actual provider={actual_provider or '<unknown>'} "
+                                f"model={actual_model or '<unknown>'}"
+                            )
+                    if requested_runtime:
+                        runtime["requested"] = {
+                            "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
+                            "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
+                        }
+                    runtime["route_source"] = route_source or runtime.get("route_source") or "global"
+                    runtime = self._sanitize_runtime_metadata(
+                        runtime=runtime,
+                        requested_runtime=requested_runtime,
+                        route_source=route_source or "global",
+                        model_lock=("confirmed" if confirmed_runtime_lock else ""),
                     )
-                finally:
-                    clear_session_vars(tokens)
+                    if isinstance(result, dict):
+                        result["runtime"] = runtime
+                    usage["runtime"] = runtime
+                return result, usage
+            except _ProviderAuthResolutionError as exc:
+                # Only _ProviderAuthResolutionError — raised exclusively
+                # where _resolve_runtime_agent_kwargs() is called inside
+                # _create_agent() — means a provider auth/credential
+                # failure.  Catching bare RuntimeError here would
+                # mislabel unrelated RuntimeErrors from
+                # run_conversation() (e.g. "Failed to recreate closed
+                # OpenAI client") as auth failures.  Matches run.py's
+                # response shape (final_response text, no HTTP error).
+                # Previously this propagated unhandled:
+                # /v1/chat/completions caught it as an undifferentiated
+                # "Internal server error" 500, and
+                # /api/sessions/{id}/chat[/stream] didn't catch it at
+                # all (raw aiohttp 500, no JSON body).  Handling it
+                # here, once, covers every _run_agent() caller;
+                # /v1/runs has its own branch in its executor.
+                logger.warning("Provider authentication failed for session=%s: %s",
+                               session_id or "", exc)
+                return (
+                    {
+                        "final_response": f"⚠️ Provider authentication failed: {exc}",
+                        "messages": [],
+                        "api_calls": 0,
+                        "tools": [],
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+            finally:
+                clear_session_vars(tokens)
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1

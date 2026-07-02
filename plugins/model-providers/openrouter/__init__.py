@@ -51,6 +51,7 @@ class OpenRouterProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch from public OpenRouter catalog — no auth required.
@@ -64,7 +65,7 @@ class OpenRouterProfile(ProviderProfile):
         if _CACHE is not None:
             return _CACHE
         try:
-            result = super().fetch_models(api_key=None, timeout=timeout)
+            result = super().fetch_models(api_key=None, base_url=base_url, timeout=timeout)
             if result is not None:
                 _CACHE = result
             return result

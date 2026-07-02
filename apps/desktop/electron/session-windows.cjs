@@ -10,6 +10,29 @@ const { pathToFileURL } = require('node:url')
 const SESSION_WINDOW_MIN_WIDTH = 420
 const SESSION_WINDOW_MIN_HEIGHT = 620
 
+// Shared webPreferences for every window that renders the chat transcript — the
+// primary window AND the secondary session windows. Keeping it in one place is
+// the whole point: the two BrowserWindow definitions in main.cjs used to be
+// hand-copied, and the secondary windows silently lost `backgroundThrottling:
+// false`, so a streamed answer stalled until the window regained focus.
+//
+// `backgroundThrottling: false` is load-bearing: the transcript streams to the
+// screen through a requestAnimationFrame-gated flush, which Chromium pauses for
+// blurred/occluded windows. A streaming chat app must keep painting in the
+// background, so every chat window opts out. The preload path is injected
+// because it depends on the Electron entry's __dirname.
+function chatWindowWebPreferences(preloadPath) {
+  return {
+    preload: preloadPath,
+    contextIsolation: true,
+    webviewTag: true,
+    sandbox: true,
+    nodeIntegration: false,
+    devTools: true,
+    backgroundThrottling: false
+  }
+}
+
 // Build the renderer URL for a secondary window. The renderer uses a
 // HashRouter, so the session route lives after the '#'. The `?win=secondary`
 // flag MUST sit in the query string BEFORE the '#': anything after the '#' is
@@ -94,6 +117,7 @@ function createSessionWindowRegistry() {
 
 module.exports = {
   buildSessionWindowUrl,
+  chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH

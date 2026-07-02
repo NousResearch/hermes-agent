@@ -214,7 +214,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -309,7 +309,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                       </Badge>
                     ) : (
                       <Button
-                        size="xs"
+                        size="sm"
                         outlined
                         onClick={() => void handleSelectProvider(provider)}
                         disabled={selecting !== null}
@@ -376,7 +376,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                         </div>
                       ))}
                       <Button
-                        size="xs"
+                        size="sm"
                         onClick={() => void handleSaveKeys(provider)}
                         disabled={savingProvider !== null}
                       >
@@ -401,22 +401,28 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                         . Runs on this host — may take a few minutes.
                       </p>
                       <Button
-                        size="xs"
+                        size="sm"
                         outlined
+                        className={cn(
+                          postSetupRunning &&
+                            postSetupKey === provider.post_setup &&
+                            "[&_svg]:animate-spin",
+                        )}
                         onClick={() => void handleRunPostSetup(provider)}
                         disabled={postSetupRunning}
+                        prefix={
+                          postSetupRunning &&
+                          postSetupKey === provider.post_setup ? (
+                            <Loader2 />
+                          ) : (
+                            <Terminal />
+                          )
+                        }
                       >
                         {postSetupRunning &&
-                        postSetupKey === provider.post_setup ? (
-                          <>
-                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                            Installing…
-                          </>
-                        ) : (
-                          <>
-                            <Terminal className="h-3 w-3 mr-1" /> Run setup
-                          </>
-                        )}
+                        postSetupKey === provider.post_setup
+                          ? "Installing…"
+                          : "Run setup"}
                       </Button>
                     </div>
                   )}

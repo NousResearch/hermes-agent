@@ -13,39 +13,16 @@ the realistic runtime context. See the conftest module docstring.
 from __future__ import annotations
 
 import json
-import subprocess
 import time
 
-from tests.docker.conftest import docker_exec, docker_exec_sh
-
-
-def _poll(container: str, probe: str, *, deadline_s: float = 30.0,
-          interval_s: float = 0.5) -> tuple[bool, str]:
-    """Repeatedly run ``probe`` inside the container until it exits 0 or
-    ``deadline_s`` elapses. Returns (success, last stdout)."""
-    end = time.monotonic() + deadline_s
-    last = ""
-    while time.monotonic() < end:
-        r = docker_exec_sh(container, probe, timeout=10)
-        last = r.stdout
-        if r.returncode == 0:
-            return True, last
-        time.sleep(interval_s)
-    return False, last
+from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, poll_container
 
 
 def test_dashboard_not_running_by_default(
     built_image: str, container_name: str,
 ) -> None:
     """Without HERMES_DASHBOARD, no dashboard process should be running."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "60"],
-        check=True, capture_output=True, timeout=30,
-    )
-    # Give the entrypoint enough time to finish bootstrap; if a dashboard
-    # were going to start it'd be visible by now.
-    time.sleep(5)
+    start_container(built_image, container_name, cmd="sleep 60")
     r = docker_exec(container_name, "pgrep", "-f", "hermes dashboard")
     # pgrep exits non-zero when no match found
     assert r.returncode != 0, (
@@ -64,12 +41,7 @@ def test_dashboard_slot_reports_down_when_disabled(
     writes a `down` marker file in the live service-dir when
     HERMES_DASHBOARD is unset, so the slot reflects reality.
     """
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "60"],
-        check=True, capture_output=True, timeout=30,
-    )
-    time.sleep(5)
+    start_container(built_image, container_name, cmd="sleep 60")
     # /command/ isn't on PATH for docker-exec sessions, so call by
     # absolute path.
     r = docker_exec(
@@ -86,53 +58,42 @@ def test_dashboard_slot_reports_up_when_enabled(
     built_image: str, container_name: str,
 ) -> None:
     """Symmetry: with HERMES_DASHBOARD=1, s6-svstat reports the slot as up."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1",
-         # The default dashboard host is 0.0.0.0, which now engages the
-         # OAuth auth gate. Without a provider registered (no
-         # HERMES_DASHBOARD_OAUTH_CLIENT_ID in this test env), start_server
-         # would fail closed and the slot would never come up. Pin the
-         # explicit insecure opt-in to keep this test focused on the s6
-         # supervision contract, not the auth gate.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    # The default dashboard host is 0.0.0.0, which now engages the
+    # OAuth auth gate. Without a provider registered (no
+    # HERMES_DASHBOARD_OAUTH_CLIENT_ID in this test env), start_server
+    # would fail closed and the slot would never come up. Pin the
+    # explicit insecure opt-in to keep this test focused on the s6
+    # supervision contract, not the auth gate.
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
+        cmd="sleep 120",
     )
     # uvicorn takes a moment to bind; poll svstat.
-    deadline = time.monotonic() + 30.0
-    last = ""
-    while time.monotonic() < deadline:
-        r = docker_exec(
-            container_name, "/command/s6-svstat", "/run/service/dashboard",
-        )
-        last = r.stdout
-        if r.returncode == 0 and "up " in r.stdout:
-            return  # success
-        time.sleep(0.5)
-    raise AssertionError(
-        f"Dashboard slot never reached up state; last svstat: {last!r}"
-    )
+    poll_container(container_name, "/command/s6-svstat /run/service/dashboard | grep -q 'up '")
 
 
 def test_dashboard_opt_in_starts(
     built_image: str, container_name: str,
 ) -> None:
     """With HERMES_DASHBOARD=1, a dashboard process should be visible."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the process can come up. See
-         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    # Default bind is 0.0.0.0, which engages the auth gate. Register the
+    # bundled basic password provider so the gate has a provider and the
+    # dashboard binds (vs fail-closed). Keeps the test focused on s6
+    # supervision, not auth.
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
+        cmd="sleep 120",
     )
     # Poll for the dashboard subprocess to appear — the entrypoint
     # backgrounds it and bootstrap (skills sync etc.) can take a few
     # seconds before the python process actually launches.
-    ok, _ = _poll(
+    ok, _ = poll_container(
         container_name, "pgrep -f 'hermes dashboard'", deadline_s=30.0,
     )
     assert ok, "Dashboard should be running with HERMES_DASHBOARD=1"
@@ -142,21 +103,22 @@ def test_dashboard_port_override(
     built_image: str, container_name: str,
 ) -> None:
     """HERMES_DASHBOARD_PORT changes the dashboard's listen port."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1", "-e", "HERMES_DASHBOARD_PORT=9120",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the port is bound. See
-         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    # Default bind is 0.0.0.0; register the basic password provider so
+    # the auth gate has a provider and the dashboard binds. See
+    # test_dashboard_slot_reports_up_when_enabled for the full rationale.
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_PORT=9120",
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
+        cmd="sleep 120",
     )
     # The dashboard process appearing in pgrep doesn't mean it's bound
     # to the port yet — uvicorn takes another second or two to come up.
     # The image doesn't ship ss/netstat, so probe /proc/net/tcp directly:
     # port 9120 = 0x23A0, state 0A = LISTEN.
-    ok, stdout = _poll(
+    ok, stdout = poll_container(
         container_name,
         "grep -E ' 0+:23A0 .* 0A ' /proc/net/tcp /proc/net/tcp6 "
         "2>/dev/null",
@@ -176,19 +138,19 @@ def test_dashboard_restarts_after_crash(
     dashboard runs as a longrun s6-rc service and s6-supervise restarts
     it after a ~1s backoff (the default).
     """
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the supervised dashboard can come up.
-         # See test_dashboard_slot_reports_up_when_enabled for the full
-         # rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    # Default bind is 0.0.0.0; register the basic password provider so
+    # the auth gate has a provider and the supervised dashboard binds.
+    # See test_dashboard_slot_reports_up_when_enabled for the full
+    # rationale.
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
+        cmd="sleep 120",
     )
     # Wait for the first dashboard to come up.
-    ok, _ = _poll(
+    ok, _ = poll_container(
         container_name, "pgrep -f 'hermes dashboard'", deadline_s=30.0,
     )
     assert ok, "Dashboard never started initially"
@@ -333,13 +295,12 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
        responds 200 without a cookie under both gates, so it cannot
        distinguish "gate on" from "gate off".
     """
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1",
-         "-e", "HERMES_DASHBOARD_HOST=0.0.0.0",
-         "-e", "HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test-instance",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_HOST=0.0.0.0",
+        "HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test-instance",
+        cmd="sleep 120",
     )
 
     # (1) Provider registry visible via the public bootstrap endpoint.
@@ -383,33 +344,33 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
     )
 
 
-def test_dashboard_insecure_env_var_opts_out_of_gate(
+def test_dashboard_insecure_env_var_no_longer_bypasses_gate(
     built_image: str, container_name: str,
 ) -> None:
-    """``HERMES_DASHBOARD_INSECURE=1`` re-enables the legacy no-gate mode
-    for operators running on trusted LANs behind a reverse proxy without
-    the OAuth contract. Same opt-out shape as the rest of the s6 boolean
-    envs (e.g. ``HERMES_DASHBOARD``).
-
-    With the gate off, ``/api/status`` (a public endpoint under the
-    legacy ``_SESSION_TOKEN`` middleware) returns 200 with the
-    ``auth_required: false`` body — proves the gate is bypassed.
+    """``HERMES_DASHBOARD_INSECURE=1`` NO LONGER disables the auth gate
+    (June 2026 hardening). With insecure set on a 0.0.0.0 bind and NO auth
+    provider registered, start_server fails closed — the dashboard never
+    binds, so ``/api/status`` is unreachable. This proves the unauthenticated
+    public-dashboard escape hatch is gone: there is no env that serves the
+    dashboard on a public bind without an auth provider.
     """
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name,
-         "-e", "HERMES_DASHBOARD=1",
-         "-e", "HERMES_DASHBOARD_HOST=0.0.0.0",
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
-         built_image, "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
+    start_container(
+        built_image, container_name,
+        "HERMES_DASHBOARD=1",
+        "HERMES_DASHBOARD_HOST=0.0.0.0",
+        "HERMES_DASHBOARD_INSECURE=1",
+        cmd="sleep 120",
     )
-    status_code, body = _http_probe(container_name, "/api/status")
-    assert status_code == 200, (
-        f"/api/status should return 200 with the auth gate disabled; "
-        f"got {status_code} body={body!r}"
+    # Fail-closed: the dashboard process must NOT successfully serve. Probe
+    # for a few seconds; /api/status should never become reachable because
+    # start_server raised SystemExit before binding.
+    ok, _ = poll_container(
+        container_name,
+        "curl -fsS -m 2 http://127.0.0.1:9119/api/status >/dev/null 2>&1",
+        deadline_s=12.0,
     )
-    status = json.loads(body)
-    assert status.get("auth_required") is False, (
-        "HERMES_DASHBOARD_INSECURE=1 must disable the auth gate (explicit "
-        f"opt-in for trusted-LAN deployments). Got: {status!r}"
+    assert not ok, (
+        "Dashboard must NOT serve on a public bind with --insecure and no "
+        "auth provider — the gate fails closed. /api/status became reachable, "
+        "meaning the unauthenticated escape hatch is still open."
     )

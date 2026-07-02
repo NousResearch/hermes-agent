@@ -5733,7 +5733,12 @@ def _build_call_kwargs(
         # models reject it entirely with error 1210). Omitting it sidesteps all of
         # those wire-format quirks at once.
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
+        # OpenRouter is an exception: its fallback default can be the model's
+        # full output window, so explicit auxiliary caps (notably short title
+        # generation) must survive. Use the shared helper because OpenRouter can
+        # proxy models with different token-parameter spellings.
+        #
+        # Anthropic Messages wire (MiniMax and any
         # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
         # there.
@@ -5751,7 +5756,13 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
-        if (
+        _is_openrouter = (
+            _provider_norm == "openrouter"
+            or base_url_host_matches(_effective_base, "openrouter.ai")
+        )
+        if _is_openrouter:
+            kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))
+        elif (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
         ):

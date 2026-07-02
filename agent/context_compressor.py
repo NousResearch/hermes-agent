@@ -655,6 +655,78 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            if self._log_init_summary:
+                # Emit once, on first resolution, so the informative startup
+                # line survives without forcing a synchronous probe in
+                # __init__ (#32221). Reads via the properties below are safe
+                # here because _resolved_context_length is already set.
+                self._log_init_summary = False
+                logger.info(
+                    "Context compressor initialized: model=%s context_length=%d "
+                    "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                    "provider=%s base_url=%s",
+                    self.model, self._resolved_context_length, self.threshold_tokens,
+                    self.threshold_percent * 100, self.summary_target_ratio * 100,
+                    self.tail_token_budget,
+                    self.provider or "none", self.base_url or "none",
+                )
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        self._resolved_context_length = value
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            self._threshold_tokens = self._compute_threshold_tokens(
+                self.context_length, self.threshold_percent, self.max_tokens,
+            )
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -950,39 +1022,20 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
-            config_context_length=config_context_length,
-            provider=provider,
-        )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum. _compute_threshold_tokens also
-        # guards the degenerate case where the floor would equal/exceed the
-        # window (small models), so auto-compression can still fire (#14690).
-        self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
-        )
+        # Defer context-length resolution to first access (#32221).
+        self._config_context_length = config_context_length
+        self._resolved_context_length: int | None = None
+        self._threshold_tokens: int | None = None
+        self._tail_token_budget: int | None = None
+        self._max_summary_tokens: int | None = None
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
-
-        if not quiet_mode:
-            logger.info(
-                "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
-                model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
-                self.tail_token_budget,
-                provider or "none", base_url or "none",
-            )
+        # The "initialized" log reports resolved token budgets, which would
+        # force the deferred get_model_context_length() probe to run inside
+        # __init__ and re-introduce the exact synchronous blocking this change
+        # removes (#32221). Emit it on first context-length resolution instead
+        # so construction stays non-blocking on every path (not just quiet).
+        self._log_init_summary = not quiet_mode
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0

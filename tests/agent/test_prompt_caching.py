@@ -3,6 +3,7 @@
 
 from agent.prompt_caching import (
     _apply_cache_marker,
+    _build_marker,
     apply_anthropic_cache_control,
 )
 
@@ -75,6 +76,90 @@ class TestApplyAnthropicCacheControl:
         assert result[0] is not msgs[0]
         # Original should be unmodified
         assert "cache_control" not in msgs[0].get("content", "")
+
+    def test_caller_list_not_mutated_and_unmarked_msgs_shared(self):
+        """Guard the shallow-copy change (was full deepcopy).
+
+        The optimization returns ``list(api_messages)`` and deep-copies ONLY
+        the <=4 messages that receive a cache_control marker. This test pins
+        two invariants that a "deep-copies too little / too much" regression
+        would break (prompt caching is sacred — the caller's history must
+        never be mutated):
+
+        1. The caller's original list and every message dict in it is left
+           byte-identical after the call (no in-place marker leaks upstream).
+        2. Un-marked messages in the middle are returned as the SAME object
+           (shared reference) — proving we did not needlessly deep-copy the
+           whole history — while marked messages are fresh copies.
+        """
+        import copy
+
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "middle-unmarked-1"},
+            {"role": "assistant", "content": "middle-unmarked-2"},
+            {"role": "user", "content": "m3"},
+            {"role": "assistant", "content": "m4"},
+            {"role": "user", "content": "m5"},
+        ]
+        before = copy.deepcopy(msgs)
+        result = apply_anthropic_cache_control(msgs, cache_ttl="5m")
+
+        # (1) caller list + every element unchanged after the call.
+        assert msgs == before, "apply_anthropic_cache_control mutated the caller's list"
+
+        # System (0) + last 3 non-system (3,4,5) get markers => index 1 and 2
+        # are un-marked and must be the SAME objects (shallow, not deep-copied).
+        assert result[1] is msgs[1]
+        assert result[2] is msgs[2]
+        # Marked messages must be fresh copies (never the caller's objects).
+        assert result[0] is not msgs[0]
+        assert result[-1] is not msgs[-1]
+
+        # Mutating a returned marked message must not bleed into the caller.
+        result[0]["content"] = "TAMPERED"
+        assert msgs[0]["content"] == "System"
+
+    def test_output_equivalent_to_full_deepcopy_impl(self):
+        """Byte-equivalence: shallow-copy output structurally matches what a
+        naive full-deepcopy implementation would produce (same breakpoints,
+        same TTL, same positions) for both native_anthropic modes."""
+        import copy
+
+        def _reference_full_deepcopy(api_messages, cache_ttl, native_anthropic):
+            # Mirror of the pre-optimization implementation: deepcopy the whole
+            # list, then apply markers to system + last (4 - used) non-system.
+            messages = copy.deepcopy(api_messages)
+            if not messages:
+                return messages
+            marker = _build_marker(cache_ttl)
+            used = 0
+            if messages[0].get("role") == "system":
+                _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+                used += 1
+            remaining = 4 - used
+            non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
+            for idx in non_sys[-remaining:]:
+                _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
+            return messages
+
+        base = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        for native in (True, False):
+            for ttl in ("5m", "1h"):
+                got = apply_anthropic_cache_control(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                want = _reference_full_deepcopy(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                assert got == want, f"structural mismatch native={native} ttl={ttl}"
 
     def test_system_message_gets_marker(self):
         msgs = [

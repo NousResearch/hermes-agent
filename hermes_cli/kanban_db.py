@@ -2680,6 +2680,13 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3251,6 +3258,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       ``hermes kanban block <id>``).  This is a deliberate handoff that
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
+
+    * **Creator-initiated hold** — a creator passed
+      ``initial_status="blocked"`` to park a task for human review.  Task
+      creation emits the same ``"blocked"`` event so the hold is sticky
+      until an explicit unblock.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits

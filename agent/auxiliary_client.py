@@ -427,7 +427,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
-    "tencent-tokenhub": "hy3",
+    "tencent-tokenhub": "hy3-preview",
     "tencent-tokenplan": "hy3",
 }
 

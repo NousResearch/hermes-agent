@@ -156,6 +156,10 @@ class TestTencentTokenhubModelCatalog:
         from hermes_cli.models import _PROVIDER_MODELS
         assert "hy3" in _PROVIDER_MODELS["tencent-tokenhub"]
 
+    def test_hy3_preview_in_model_list(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "hy3-preview" in _PROVIDER_MODELS["tencent-tokenhub"]
+
     def test_default_model(self):
         from hermes_cli.models import get_default_model_for_provider
         assert get_default_model_for_provider("tencent-tokenhub") == "hy3"
@@ -225,6 +229,12 @@ class TestTencentTokenhubNormalization:
         result = normalize_model_for_provider("hy3", "tencent-tokenhub")
         assert result == "hy3"
 
+    def test_bare_name_preview_passthrough(self):
+        """hy3-preview should remain unchanged when targeting tencent-tokenhub."""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        result = normalize_model_for_provider("hy3-preview", "tencent-tokenhub")
+        assert result == "hy3-preview"
+
     def test_vendor_prefixed_passthrough(self):
         """tencent/hy3 is not stripped since tencent-tokenhub is not in
         _MATCHING_PREFIX_STRIP_PROVIDERS — the slash survives."""
@@ -234,8 +244,7 @@ class TestTencentTokenhubNormalization:
         assert result == "tencent/hy3"
 
     def test_not_in_matching_prefix_strip_set(self):
-        """tencent-tokenhub does NOT need prefix stripping — it only has
-        one model (hy3) and users won't copy vendor/ form."""
+        """tencent-tokenhub does NOT need prefix stripping."""
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "tencent-tokenhub" not in _MATCHING_PREFIX_STRIP_PROVIDERS
 
@@ -303,7 +312,7 @@ class TestTencentTokenhubURLMapping:
 
 
 class TestTencentTokenhubContextLength:
-    """hy3 has a context-length entry registered.
+    """hy3 and hy3-preview have context-length entries registered.
 
     Asserting the relationship (registered + ≥ 4096) instead of a
     specific value, per AGENTS.md "Don't write change-detector tests".
@@ -317,6 +326,12 @@ class TestTencentTokenhubContextLength:
         ctx = get_model_context_length("hy3")
         assert isinstance(ctx, int)
         assert ctx >= 4096, f"hy3 context length looks unset/wrong: {ctx}"
+
+    def test_hy3_preview_has_registered_context_length(self):
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length("hy3-preview")
+        assert isinstance(ctx, int)
+        assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
 
 # =============================================================================
@@ -367,7 +382,7 @@ class TestTencentTokenhubAuxiliary:
     def test_aux_model_registered(self):
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "tencent-tokenhub" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["tencent-tokenhub"] == "hy3"
+        assert _API_KEY_PROVIDER_AUX_MODELS["tencent-tokenhub"] == "hy3-preview"
 
     def test_aux_aliases(self):
         from agent.auxiliary_client import _PROVIDER_ALIASES

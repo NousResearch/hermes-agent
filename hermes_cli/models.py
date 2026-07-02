@@ -368,9 +368,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "tencent-tokenhub": [
         "hy3",
+        "hy3-preview",
     ],
     "tencent-tokenplan": [
         "hy3",
+        "hy3-preview",
     ],
     "arcee": [
         "trinity-large-thinking",

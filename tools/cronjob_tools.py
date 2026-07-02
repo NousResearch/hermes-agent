@@ -650,6 +650,7 @@ def cronjob(
     action: str,
     job_id: Optional[str] = None,
     prompt: Optional[str] = None,
+    prompt_file: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
     repeat: Optional[int] = None,
@@ -692,8 +693,17 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            elif not prompt and not canonical_skills:
-                return tool_error("create requires either prompt or at least one skill", success=False)
+            elif not prompt and not prompt_file and not canonical_skills:
+                return tool_error("create requires prompt, prompt_file, or at least one skill", success=False)
+            if prompt_file:
+                try:
+                    from agent.prompt_loader import load_prompt_text
+                except Exception as exc:
+                    return tool_error(f"prompt_file lookup failed: {exc}", success=False)
+                loaded = load_prompt_text(prompt_file, fallback_text=None)
+                if not loaded:
+                    return tool_error(f"prompt_file not found: {prompt_file!r}", success=False)
+                prompt = loaded if prompt is None else prompt
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -851,6 +861,18 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
                 updates["prompt"] = prompt
+            if prompt_file is not None:
+                if prompt_file:
+                    try:
+                        from agent.prompt_loader import load_prompt_text
+                    except Exception as exc:
+                        return tool_error(f"prompt_file lookup failed: {exc}", success=False)
+                    loaded = load_prompt_text(prompt_file, fallback_text=None)
+                    if not loaded:
+                        return tool_error(f"prompt_file not found: {prompt_file!r}", success=False)
+                    updates["prompt"] = loaded
+                else:
+                    updates["prompt"] = ""
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
@@ -990,6 +1012,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "prompt": {
                 "type": "string",
                 "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+            },
+            "prompt_file": {
+                "type": "string",
+                "description": "Optional path to a prompt text file to load when creating/updating a cron job. Resolved against cwd, cwd/prompts, HERMES_PROMPTS_ROOT, and HERMES_HOME/prompts. Inline `prompt` takes precedence when both are supplied on update; on create, file contents are used as the prompt text when no inline prompt is present."
             },
             "schedule": {
                 "type": "string",

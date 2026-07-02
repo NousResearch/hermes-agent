@@ -306,6 +306,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
     p_create.add_argument("title", help="Task title")
+    p_create.add_argument("--board", default=argparse.SUPPRESS, metavar="<slug>",
+                          help="Board slug. Same as top-level `--board`; "
+                               "accepted here too so `hermes kanban create "
+                               "... --board <slug>` works.")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],

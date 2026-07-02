@@ -414,6 +414,8 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     resp.raise_for_status()
     data = resp.json()
     session["tab_id"] = data.get("tabId")
+    if data.get("url"):
+        session["_last_url"] = data.get("url")
     return session
 
 
@@ -497,7 +499,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             # Create tab with the target URL directly
             session = _ensure_tab(task_id, browser_url)
-            data = {"ok": True, "url": browser_url}
+            data = {"ok": True, "url": session.get("_last_url") or browser_url}
         else:
             # Navigate existing tab — recover from stale tab 404
             try:
@@ -518,9 +520,15 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     data = {"ok": True, "url": browser_url}
                 else:
                     raise
+        final_url = data.get("url", browser_url)
+        blocked_redirect = _camofox_blocked_redirect_url(final_url, task_id)
+        if blocked_redirect:
+            _camofox_navigate_blank(session)
+            return blocked_redirect
+
         result = {
             "success": True,
-            "url": data.get("url", browser_url),
+            "url": final_url,
             "title": data.get("title", ""),
         }
         if rewrite_info:
@@ -568,6 +576,45 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         })
     except Exception as e:
         return tool_error(str(e), success=False)
+
+
+def _camofox_navigate_blank(session: Dict[str, Any]) -> None:
+    """Best-effort clear of a blocked Camofox tab."""
+    try:
+        if session.get("tab_id"):
+            _post(
+                f"/tabs/{session['tab_id']}/navigate",
+                {"userId": session["user_id"], "url": "about:blank"},
+                timeout=10,
+            )
+    except Exception as exc:
+        logger.debug("Camofox blocked-page clear failed: %s", exc)
+
+
+def _camofox_blocked_redirect_url(final_url: str, task_id: Optional[str]) -> Optional[str]:
+    """Return a blocked payload when Camofox navigation lands on a private URL."""
+    if not final_url:
+        return None
+
+    from tools.browser_tool import (
+        _eval_ssrf_guard_active,
+        _is_always_blocked_url,
+        _is_safe_url,
+    )
+
+    if _is_always_blocked_url(final_url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: redirect landed on a cloud metadata endpoint",
+        }, ensure_ascii=False)
+
+    if _eval_ssrf_guard_active(task_id or "default") and not _is_safe_url(final_url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: redirect landed on a private/internal address",
+        }, ensure_ascii=False)
+
+    return None
 
 
 def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:

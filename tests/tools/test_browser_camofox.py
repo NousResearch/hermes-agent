@@ -171,6 +171,57 @@ class TestCamofoxNavigate:
         assert result["success"] is True
         assert result["url"] == "https://b.com"
 
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_blocks_metadata_redirect_before_auto_snapshot(self, mock_post, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.side_effect = [
+            _mock_response(json_data={
+                "tabId": "tab_meta",
+                "url": "http://169.254.169.254/latest/meta-data/",
+            }),
+            _mock_response(json_data={"ok": True, "url": "about:blank"}),
+        ]
+
+        def fail_snapshot(*_args, **_kwargs):
+            raise AssertionError("Camofox auto-snapshot must not run after a blocked redirect")
+
+        mock_get.side_effect = fail_snapshot
+
+        result = json.loads(camofox_navigate("https://example.com/redirect", task_id="t_meta"))
+
+        assert result["success"] is False
+        assert "cloud metadata endpoint" in result["error"]
+        assert mock_post.call_args_list[-1].kwargs["json"]["url"] == "about:blank"
+        mock_get.assert_not_called()
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_blocks_private_redirect_when_guard_active(self, mock_post, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from tools import browser_tool
+
+        monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+        mock_post.side_effect = [
+            _mock_response(json_data={
+                "tabId": "tab_private",
+                "url": "http://10.0.0.5/admin",
+            }),
+            _mock_response(json_data={"ok": True, "url": "about:blank"}),
+        ]
+
+        def fail_snapshot(*_args, **_kwargs):
+            raise AssertionError("Camofox auto-snapshot must not run after a blocked redirect")
+
+        mock_get.side_effect = fail_snapshot
+
+        result = json.loads(camofox_navigate("https://example.com/redirect", task_id="t_private"))
+
+        assert result["success"] is False
+        assert "private/internal address" in result["error"]
+        assert mock_post.call_args_list[-1].kwargs["json"]["url"] == "about:blank"
+        mock_get.assert_not_called()
+
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))

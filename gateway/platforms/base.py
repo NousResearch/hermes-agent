@@ -2234,6 +2234,36 @@ def resolve_channel_skills(
     return None
 
 
+# Defense-in-depth for group/forum delivery only: even though extract_media
+# and _strip_media_directives normally remove MEDIA:<path> / [[audio_as_voice]]
+# tags, the extraction pipeline has an intermittent failure mode (observed on
+# a live deployment: a TTS MEDIA: tag survived into a live Telegram group
+# message, exposing the local OS username and install path to every group
+# member). Rather than chase every possible upstream miss, this unconditional
+# last-line scrub runs immediately before send for group/forum chat_type only
+# (DMs are operator-only and unaffected) and redacts anything that still
+# looks like a local absolute filesystem path, regardless of why the earlier
+# cleanup missed it.
+_LOCAL_ABS_PATH_RE = re.compile(
+    r'''(?:[A-Za-z]:[\\/]|~/|/home/|/Users/)[^\s`"']+'''
+)
+
+
+def _scrub_local_paths_for_group_delivery(text: str, chat_type: str) -> str:
+    if chat_type not in ("group", "forum") or not text:
+        return text
+    cleaned = _strip_media_directives(text)
+    if _LOCAL_ABS_PATH_RE.search(cleaned):
+        logger.warning(
+            "Redacted a local filesystem path from a group/forum-bound message "
+            "(chat_type=%s) that survived the normal MEDIA-tag cleanup — "
+            "investigate the extraction miss.",
+            chat_type,
+        )
+        cleaned = _LOCAL_ABS_PATH_RE.sub("[file]", cleaned)
+    return cleaned
+
+
 def _strip_media_directives(text: str) -> str:
     """Strip internal delivery directives ([[audio_as_voice]], [[as_document]],
     MEDIA:<path>) so they never render as visible text.
@@ -5000,6 +5030,9 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
+                text_content = _scrub_local_paths_for_group_delivery(
+                    text_content, getattr(event.source, "chat_type", "dm")
+                )
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)

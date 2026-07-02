@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import threading
 import time
 from typing import get_args
 from urllib.parse import quote
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli.telegram_miniapp.models import ActionDecisionValue
 from hermes_cli.telegram_miniapp.previews import build_logs_snapshot, build_sessions_snapshot
-from hermes_cli.telegram_miniapp.server import MiniAppSettings, create_app
+from hermes_cli.telegram_miniapp.server import MiniAppSettings, RateLimiter, create_app
 
 
 BOT_TOKEN = "123456:test-token"
@@ -449,3 +450,64 @@ def test_non_loopback_bind_fails_closed():
     assert response.status_code == 503
     assert "/Volumes/Diver Pro/hermes" not in response.text
     assert BOT_TOKEN not in response.text
+
+
+def test_loopback_auth_is_rate_limited_per_minute_without_lifetime_cap():
+    current_time = [1_700_000_100]
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        auth_rate_limit_per_minute=2,
+        auth_global_limit=1,
+        now=lambda: current_time[0],
+    )
+    client = make_client(settings=settings)
+    payload = {"initData": build_init_data(auth_date=1_700_000_000)}
+    headers = {"origin": "http://127.0.0.1:5175"}
+
+    first = client.post("/api/auth/telegram", json=payload, headers=headers)
+    second = client.post("/api/auth/telegram", json=payload, headers=headers)
+    limited = client.post("/api/auth/telegram", json=payload, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert limited.status_code == 429
+    assert "Too many requests" in limited.text
+    assert BOT_TOKEN not in limited.text
+
+    # Next minute window: the per-minute limiter resets, and the public-smoke
+    # lifetime cap (auth_global_limit=1 already exceeded above) must not lock
+    # out auth on a long-lived loopback sidecar.
+    current_time[0] += 61
+    recovered = client.post("/api/auth/telegram", json=payload, headers=headers)
+    assert recovered.status_code == 200
+
+
+def test_rate_limiter_evicts_stale_minute_buckets():
+    limiter = RateLimiter()
+
+    assert limiter.check("auth:a", limit=5, now=0)
+    assert limiter.check("auth:b", limit=5, now=30)
+    assert limiter.check("auth:a", limit=5, now=61)
+
+    assert set(limiter._counts) == {("auth:a", 1)}
+
+
+def test_rate_limiter_is_thread_safe_across_bucket_rollover():
+    limiter = RateLimiter()
+    errors: list[Exception] = []
+
+    def worker(idx: int) -> None:
+        try:
+            for step in range(500):
+                limiter.check(f"auth:{idx % 3}", limit=1_000_000, now=step * 0.5)
+        except Exception as exc:  # noqa: BLE001 - the test asserts no exception at all
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []

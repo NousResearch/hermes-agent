@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import secrets
+import threading
 import time
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -92,6 +93,9 @@ class SessionStore:
 
 class RateLimiter:
     def __init__(self) -> None:
+        # FastAPI runs sync handlers in a threadpool, so the shared counters
+        # must be mutated under a lock.
+        self._lock = threading.Lock()
         self._counts: dict[tuple[str, int], int] = {}
         self._absolute_counts: dict[str, int] = {}
 
@@ -99,16 +103,24 @@ class RateLimiter:
         if limit <= 0:
             return False
         bucket = int(now // 60)
-        counter_key = (key, bucket)
-        count = self._counts.get(counter_key, 0) + 1
-        self._counts[counter_key] = count
+        with self._lock:
+            # Only the current minute bucket is ever read; evict older buckets
+            # so a long-lived loopback sidecar does not accumulate stale
+            # counters.
+            stale = [entry for entry in self._counts if entry[1] < bucket]
+            for entry in stale:
+                del self._counts[entry]
+            counter_key = (key, bucket)
+            count = self._counts.get(counter_key, 0) + 1
+            self._counts[counter_key] = count
         return count <= limit
 
     def check_absolute(self, key: str, *, limit: int) -> bool:
         if limit <= 0:
             return False
-        count = self._absolute_counts.get(key, 0) + 1
-        self._absolute_counts[key] = count
+        with self._lock:
+            count = self._absolute_counts.get(key, 0) + 1
+            self._absolute_counts[key] = count
         return count <= limit
 
 
@@ -319,17 +331,21 @@ def create_app(
 
     @app.post("/api/auth/telegram")
     def auth_telegram(payload: TelegramAuthRequest, request: Request):
-        if settings.public_smoke:
-            host = _host_only(request.headers.get("host", ""))
-            client_host = request.client.host if request.client else "unknown"
-            if not rate_limiter.check(
-                f"auth:{client_host}:{host}",
-                limit=settings.auth_rate_limit_per_minute,
-                now=settings.now(),
-            ):
-                raise HTTPException(status_code=429, detail="Too many requests")
-            if not rate_limiter.check_absolute("auth:global", limit=settings.auth_global_limit):
-                raise HTTPException(status_code=429, detail="Too many requests")
+        host = _host_only(request.headers.get("host", ""))
+        client_host = request.client.host if request.client else "unknown"
+        if not rate_limiter.check(
+            f"auth:{client_host}:{host}",
+            limit=settings.auth_rate_limit_per_minute,
+            now=settings.now(),
+        ):
+            raise HTTPException(status_code=429, detail="Too many requests")
+        # The absolute lifetime cap is a blast-radius guard for short public
+        # smoke runs only; on a long-lived loopback sidecar it would lock out
+        # auth entirely once exhausted.
+        if settings.public_smoke and not rate_limiter.check_absolute(
+            "auth:global", limit=settings.auth_global_limit
+        ):
+            raise HTTPException(status_code=429, detail="Too many requests")
         try:
             verified = verify_init_data(
                 payload.initData,

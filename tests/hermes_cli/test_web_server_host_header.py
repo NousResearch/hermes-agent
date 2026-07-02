@@ -215,3 +215,23 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_configured_public_url_origin_is_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(ws, "_public_url_netloc", lambda: "kfam-dashboard.tightship.run")
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "localhost:9119",
+                "Origin": "https://kfam-dashboard.tightship.run",
+            },
+        ):
+            pass

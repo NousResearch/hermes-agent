@@ -447,6 +447,40 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     return host_only == bound_lc
 
 
+def _public_url_netloc() -> str:
+    """Return the configured dashboard public URL authority, if any.
+
+    Reverse-proxy deployments commonly keep the dashboard bound to loopback
+    while exposing it at a declared HTTPS hostname. That public origin is an
+    operator-owned authority, not a DNS-rebinding attacker hostname, so the WS
+    Origin guard can accept it when it matches ``dashboard.public_url`` /
+    ``HERMES_DASHBOARD_PUBLIC_URL``.
+    """
+    try:
+        from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    except Exception:
+        return ""
+    try:
+        public_url = resolve_public_url()
+    except Exception:
+        return ""
+    if not public_url:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(public_url)
+    except ValueError:
+        return ""
+    return (parsed.netloc or "").lower()
+
+
+def _is_accepted_public_origin(origin_netloc: str) -> bool:
+    """True when ``origin_netloc`` matches the configured public URL."""
+    if not origin_netloc:
+        return False
+    public_netloc = _public_url_netloc()
+    return bool(public_netloc) and origin_netloc.lower() == public_netloc
+
+
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
@@ -12204,7 +12238,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host) and not _is_accepted_public_origin(parsed.netloc):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

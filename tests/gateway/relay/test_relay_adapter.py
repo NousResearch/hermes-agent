@@ -302,3 +302,76 @@ async def test_no_revocation_no_fatal():
     except asyncio.CancelledError:
         pass
     assert a.has_fatal_error is False
+
+
+def _make_event_with_platform(platform, chat_id="chat-1", user_id="user-1"):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=platform,
+        chat_id=chat_id,
+        chat_type="dm",
+        user_id=user_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
+@pytest.mark.asyncio
+async def test_on_inbound_rejects_platform_not_advertised_at_hello():
+    """A relay-delivered event claiming a platform this connection never
+    advertised at hello must be rejected, not routed. Without this guard,
+    a mis-stamped (or malicious) platform value on a single inbound frame
+    collides build_session_key() with a different platform's real chat_id
+    — build_session_key() is a pure function of the SessionSource fields
+    and has no way to know which transport actually delivered the event."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "app-1")]
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+
+    routed = []
+    a.handle_message = lambda event: routed.append(event) or _async_none()
+
+    # This connection only fronts discord — an event claiming to be a real
+    # Telegram chat must not be routed through.
+    await a._on_inbound(_make_event_with_platform(Platform.TELEGRAM, chat_id="12345"))
+
+    assert routed == []
+
+
+@pytest.mark.asyncio
+async def test_on_inbound_allows_platform_advertised_at_hello():
+    """An event claiming a platform this connection DID advertise at hello
+    must still be routed normally — the guard must not break the
+    documented multi-platform-per-connection (N hellos) design."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "app-1"), ("telegram", "app-2")]
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+
+    routed = []
+    a.handle_message = lambda event: routed.append(event) or _async_none()
+
+    await a._on_inbound(_make_event_with_platform(Platform.TELEGRAM, chat_id="12345"))
+
+    assert len(routed) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_inbound_allows_bare_relay_platform():
+    """The generic 'relay' platform (used when the connector doesn't tag a
+    concrete platform) must always pass through regardless of the
+    advertised identity set — it isn't impersonating a fronted platform."""
+    t = _CaptureTransport()
+    t._identities = [("discord", "app-1")]
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+
+    routed = []
+    a.handle_message = lambda event: routed.append(event) or _async_none()
+
+    await a._on_inbound(_make_event_with_platform(Platform.RELAY, chat_id="chan-1"))
+
+    assert len(routed) == 1
+
+
+async def _async_none():
+    return None

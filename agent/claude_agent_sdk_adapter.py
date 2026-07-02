@@ -487,12 +487,102 @@ def _run_async(coro):
     return box["result"]
 
 
-async def _collect_query(sdk, prompt: str, options) -> Dict[str, Any]:
+class _StreamBridge:
+    """Forward Claude Agent SDK stream events to Hermes' live-progress callbacks.
+
+    In delegate/hybrid the SDK loop runs many model turns and tool executions
+    inside ONE Hermes API call, and SDK mode disables Hermes' own streaming
+    path (``_disable_streaming``) — without this bridge the user stares at a
+    silent screen until the whole turn finishes.  With
+    ``include_partial_messages=True`` the SDK yields ``StreamEvent`` messages
+    wrapping raw Anthropic stream events; this bridge mirrors the semantics of
+    the native streaming paths (``_call_anthropic`` /
+    ``stream_converse_with_callbacks``): text deltas → ``_fire_stream_delta``,
+    tool starts → ``_fire_tool_gen_started`` +
+    ``tool_progress_callback("tool.started", …)`` (same contract the codex
+    app-server route bridges in #38835), thinking deltas →
+    ``_fire_reasoning_delta``.
+    """
+
+    def __init__(self, agent):
+        self._agent = agent
+        has_stream = getattr(agent, "_has_stream_consumers", None)
+        self._wants_text = bool(has_stream()) if callable(has_stream) else False
+        self._wants_tools = (
+            getattr(agent, "tool_progress_callback", None) is not None
+            or getattr(agent, "tool_gen_callback", None) is not None
+        )
+        self._wants_reasoning = getattr(agent, "reasoning_callback", None) is not None
+
+    @property
+    def active(self) -> bool:
+        return self._wants_text or self._wants_tools or self._wants_reasoning
+
+    def handle(self, event: Dict[str, Any]) -> None:
+        """Dispatch one raw Anthropic stream event to the agent callbacks."""
+        agent = self._agent
+        # Keep the stale-call detector fed during long SDK turns — the
+        # non-streaming path Hermes uses for SDK mode otherwise sees zero
+        # activity while the SDK loop is busy running tools.
+        touch = getattr(agent, "_touch_activity", None)
+        if callable(touch):
+            try:
+                touch("receiving claude-agent-sdk stream")
+            except Exception:
+                pass
+        etype = event.get("type")
+        if etype == "content_block_start":
+            block = event.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                self._on_tool_start(str(block.get("name") or ""))
+        elif etype == "content_block_delta":
+            delta = event.get("delta") or {}
+            dtype = delta.get("type")
+            if dtype == "text_delta":
+                text = delta.get("text") or ""
+                fire = getattr(agent, "_fire_stream_delta", None)
+                if text and self._wants_text and callable(fire):
+                    fire(text)
+            elif dtype == "thinking_delta":
+                thinking = delta.get("thinking") or ""
+                fire = getattr(agent, "_fire_reasoning_delta", None)
+                if thinking and self._wants_reasoning and callable(fire):
+                    fire(thinking)
+
+    def _on_tool_start(self, tool_name: str) -> None:
+        agent = self._agent
+        # Hybrid tools arrive as "mcp__hermes__<name>" — show the bare name.
+        display = tool_name.rsplit("__", 1)[-1] if tool_name else "tool"
+        if self._wants_text:
+            # Close the open streaming display segment so tool chrome doesn't
+            # wrap into the text bubble. Same contract as the pre-tool flush in
+            # conversation_loop: display callback gets None; the TTS callback
+            # must NOT (it treats None as end-of-stream).
+            cb = getattr(agent, "stream_delta_callback", None)
+            if cb is not None:
+                try:
+                    cb(None)
+                except Exception:
+                    pass
+            agent._stream_needs_break = True
+        gen = getattr(agent, "_fire_tool_gen_started", None)
+        if callable(gen):
+            gen(display)
+        progress = getattr(agent, "tool_progress_callback", None)
+        if progress is not None:
+            try:
+                progress("tool.started", display, display, None)
+            except Exception:
+                logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
+
+
+async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBridge] = None) -> Dict[str, Any]:
     """Run ``query(prompt, options)`` and collect text, usage and session id."""
     AssistantMessage = sdk.AssistantMessage
     ResultMessage = sdk.ResultMessage
     TextBlock = getattr(sdk, "TextBlock", None)
     ThinkingBlock = getattr(sdk, "ThinkingBlock", None)
+    StreamEvent = getattr(sdk, "StreamEvent", None)
 
     assistant_text: List[str] = []
     thinking_text: List[str] = []
@@ -506,6 +596,16 @@ async def _collect_query(sdk, prompt: str, options) -> Dict[str, Any]:
     errors: List[str] = []
 
     async for message in sdk.query(prompt=prompt, options=options):
+        if StreamEvent is not None and isinstance(message, StreamEvent):
+            # Live progress only — never part of the collected result. Skip
+            # subagent streams (parent_tool_use_id set) so their text doesn't
+            # interleave with the top-level response.
+            if bridge is not None and not getattr(message, "parent_tool_use_id", None):
+                try:
+                    bridge.handle(getattr(message, "event", None) or {})
+                except Exception:
+                    logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
+            continue
         if isinstance(message, AssistantMessage):
             for block in getattr(message, "content", []) or []:
                 if TextBlock is not None and isinstance(block, TextBlock):
@@ -645,6 +745,14 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     if mode in ("delegate", "hybrid") and settings.get("max_budget_usd") is not None:
         opt_kwargs["max_budget_usd"] = settings["max_budget_usd"]
 
+    # Live progress: when a display/TTS/tool-progress consumer is attached,
+    # ask the SDK for raw stream events so the user sees text/thinking/tool
+    # activity in real time instead of a silent wait. _build_options drops the
+    # flag on older SDKs that don't know it.
+    bridge = _StreamBridge(agent)
+    if bridge.active:
+        opt_kwargs["include_partial_messages"] = True
+
     options = _build_options(sdk, opt_kwargs)
 
     logger.debug(
@@ -653,7 +761,9 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     )
 
     try:
-        collected = _run_async(_collect_query(sdk, prompt, options))
+        collected = _run_async(
+            _collect_query(sdk, prompt, options, bridge=bridge if bridge.active else None)
+        )
     except Exception as exc:  # noqa: BLE001
         _friendly = _classify_sdk_error(exc)
         if _friendly:

@@ -69,12 +69,22 @@ class _FakeResultMessage:
         self.errors = errors
 
 
-def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None):
+class _FakeStreamEvent:
+    def __init__(self, event, parent_tool_use_id=None):
+        self.uuid = "ev-1"
+        self.session_id = "sess-1"
+        self.event = event
+        self.parent_tool_use_id = parent_tool_use_id
+
+
+def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_events=None):
     """Build a fake claude_agent_sdk module."""
     async def _query(*, prompt, options):
         if capture is not None:
             capture["prompt"] = prompt
             capture["options"] = options
+        for ev in stream_events or []:
+            yield ev
         yield _FakeAssistantMessage(assistant_blocks)
         yield _FakeResultMessage(**result_kwargs)
 
@@ -86,6 +96,7 @@ def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None):
         ThinkingBlock=_FakeThinkingBlock,
         ToolUseBlock=_FakeToolUseBlock,
         HookMatcher=_FakeHookMatcher,
+        StreamEvent=_FakeStreamEvent,
         query=_query,
         tool=lambda name, desc, schema: (lambda fn: {"name": name, "schema": schema, "fn": fn}),
         create_sdk_mcp_server=lambda *, name, version, tools: {"name": name, "tools": tools},
@@ -417,3 +428,84 @@ def test_refusal_maps_to_content_filter(monkeypatch):
     assert msg.stop_reason == "refusal"
     from agent.transports.anthropic import AnthropicTransport
     assert AnthropicTransport().normalize_response(msg).finish_reason == "content_filter"
+
+
+# ---------------------------------------------------------------------------
+# Streaming bridge (include_partial_messages → live progress callbacks)
+# ---------------------------------------------------------------------------
+def _streaming_agent(**over):
+    """Agent double with live-progress consumers attached."""
+    seen = {"text": [], "tools": [], "gen": [], "reasoning": [], "flushes": 0}
+
+    def _delta_cb(text):
+        if text is None:
+            seen["flushes"] += 1
+        else:
+            seen["text"].append(text)
+
+    agent = _agent(
+        stream_delta_callback=_delta_cb,
+        _has_stream_consumers=lambda: True,
+        _fire_stream_delta=lambda t: seen["text"].append(t),
+        _fire_reasoning_delta=lambda t: seen["reasoning"].append(t),
+        _fire_tool_gen_started=lambda name: seen["gen"].append(name),
+        tool_progress_callback=lambda ev, name, preview, args: seen["tools"].append((ev, name)),
+        reasoning_callback=lambda t: None,
+        **over,
+    )
+    return agent, seen
+
+
+def _stream_events():
+    return [
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "text_delta", "text": "Hel"}}),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "text_delta", "text": "lo"}}),
+        _FakeStreamEvent({"type": "content_block_start",
+                          "content_block": {"type": "tool_use", "name": "mcp__hermes__terminal"}}),
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
+        # Subagent event — must be ignored (would interleave with top-level).
+        _FakeStreamEvent({"type": "content_block_delta",
+                          "delta": {"type": "text_delta", "text": "SUBAGENT"}},
+                         parent_tool_use_id="tu-1"),
+    ]
+
+
+def test_stream_bridge_fires_live_callbacks(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("Hello")],
+                          result_kwargs={"result": "Hello"},
+                          capture=capture, stream_events=_stream_events())
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent, seen = _streaming_agent()
+
+    msg = adp.create_claude_agent_message(agent, _api_kwargs())
+
+    # Live progress reached the callbacks…
+    assert seen["text"] == ["Hel", "lo"]
+    assert seen["reasoning"] == ["hmm"]
+    # …tool start surfaced with the mcp__ prefix stripped, via BOTH channels.
+    assert seen["gen"] == ["terminal"]
+    assert seen["tools"] == [("tool.started", "terminal")]
+    # The open display segment was flushed before tool chrome.
+    assert seen["flushes"] == 1
+    # Streaming was requested from the SDK.
+    assert capture["options"].include_partial_messages is True
+    # …and the final collected message is unaffected by stream events.
+    assert msg.content[-1].text == "Hello"
+
+
+def test_stream_events_ignored_without_consumers(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("Hi")],
+                          result_kwargs={"result": "Hi"},
+                          capture=capture, stream_events=_stream_events())
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+
+    msg = adp.create_claude_agent_message(_agent(), _api_kwargs())
+
+    # No consumers → partial messages not requested, result still clean.
+    assert not hasattr(capture["options"], "include_partial_messages")
+    assert msg.content[-1].text == "Hi"

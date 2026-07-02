@@ -232,10 +232,9 @@ def _cmd_archive_old(session_db: Any, args: argparse.Namespace) -> int:
             f"would be archived."
         )
         for c in candidates[:10]:
-            print(
-                f"  {(c.get('title') or '\u2014')[:50]:<50}  "
-                f"{(c.get('source') or ''):<10}  {c.get('id', '')}"
-            )
+            title = (c.get("title") or "\u2014")[:50]
+            source = c.get("source") or ""
+            print(f"  {title:<50}  {source:<10}  {c.get('id', '')}")
         if len(candidates) > 10:
             print(f"  ... and {len(candidates) - 10} more")
         return 0

@@ -109,6 +109,26 @@ def _fmt_gross_frac(gross_tok: int, pre_tok: int) -> str:
     return f"{frac:.1%}"
 
 
+def _inturn_stats_render_eligible(status, pre_tokens, post_tokens) -> bool:
+    """True iff the LCM announce will actually RENDER for ``status`` — the P1 gate
+    for the in-turn stats block (spec 2026-07-02, D-1/§5A).
+
+    Mirrors ``_format_compaction_announce``'s LCM gating exactly, by consuming the
+    SAME module-level allow-lists (single source of truth — no copied literals):
+    unconditional statuses always render; conditional statuses render only when
+    the token render-condition (``post < pre``, both truthy) holds; everything
+    else (noop/idle/running/bypassed/unknown) is default-denied. Building stats —
+    and emitting COMPACTION_STATS_* degrade WARNINGs — for a non-rendering status
+    is pure log noise: the ~100%-kept_tail APPROX_ATTRIBUTION markers on no-op
+    compactions that polluted the daily watcher report (2026-07-02 #logs).
+    """
+    if status in _ANNOUNCE_STATUS_UNCONDITIONAL:
+        return True
+    if status in _ANNOUNCE_STATUS_CONDITIONAL:
+        return bool(pre_tokens and post_tokens and post_tokens < pre_tokens)
+    return False
+
+
 def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) -> None:
     """Emit a compaction-stats degrade ``warning`` at most once per (cause, session).
 
@@ -119,6 +139,12 @@ def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) 
     persistent reconcile bug can't flood the gateway log every turn. The throttle
     state lives on the agent (``_compaction_stats_warned``); if the agent can't
     hold it (no attribute), we still warn (fail-loud over fail-silent).
+
+    Self-identification (spec 2026-07-02, D-4): every marker carries
+    ``session=<id>`` so the daily watcher can attribute it without fragile
+    proximity joins, plus ``src=test`` when running under pytest
+    (``PYTEST_CURRENT_TEST``) so test-suite runs that write through the live
+    logging config are excludable from production counts.
     """
     try:
         seen = getattr(agent, "_compaction_stats_warned", None)
@@ -139,6 +165,13 @@ def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) 
             seen.add(key)
     except Exception:
         pass  # never let throttle bookkeeping break the reply path
+    try:
+        _sid = getattr(agent, "session_id", None) or "-"
+        message = f"{message} session={_sid}"
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            message = f"{message} src=test"
+    except Exception:
+        pass  # marker suffix is best-effort; never break the warn itself
     logger.warning(message, exc_info=exc_info)
 
 
@@ -1553,78 +1586,101 @@ def compress_context(
             # Built inside try/except; validate()+degrade so a reconcile bug never
             # ships wrong math or breaks the turn. Guarded by hasattr so built-in /
             # overflow / manual paths (no LCM marker shape) simply degrade.
-            _inturn_stats = None
-            try:
-                from agent.compaction_stats import build_inturn_stats
-                from agent.model_metadata import estimate_messages_tokens_rough as _est
-                _why2 = "build raised"  # bound before build so the warning %s can't be unbound
-                _cand = build_inturn_stats(
-                    messages=messages,
-                    compressed=compressed,
-                    estimator=_est,
-                    engine_is_lcm=(_engine_name == "lcm"),
-                    sanitize=getattr(_cc, "_sanitize_active_context_messages", None),
-                    fresh_tail_count=getattr(_cc, "protect_last_n", None),
-                    on_tag_missing=lambda: _warn_compaction_stats_once(
-                        agent, "COMPACTION_STATS_TAG_MISSING in-turn"
-                    ),
+            #
+            # P1 render gate (spec 2026-07-02, D-1/§5A): for the LCM path, only build
+            # stats — and only emit COMPACTION_STATS_* degrade markers — when the
+            # announce will actually RENDER. The formatter default-denies noop/idle/
+            # running/bypassed and conditional statuses whose post<pre check fails;
+            # building stats for those emitted ~100%-kept_tail APPROX_ATTRIBUTION noise
+            # on every LCM no-op. The NON-LCM (built-in compressor) path is UNCHANGED:
+            # it always attempted the build before this PR and its announce gating is
+            # the sid-rotation logic in _format_compaction_announce, not a status
+            # allow-list; suppressing its stats here would silently degrade every
+            # built-in announce to two-line (Greptile #177). The gate consumes the
+            # EXACT variables the announce call passes as pre_tokens/post_tokens
+            # (_pre_request_est / _compressed_est) so gate and render can't straddle
+            # an estimate boundary.
+            if _engine_name == "lcm":
+                _inturn_stats_eligible = _inturn_stats_render_eligible(
+                    _status,
+                    locals().get("_pre_request_est"),
+                    _compressed_est,
                 )
-                _ok2, _why2 = _cand.validate()
-                if _ok2:
-                    # A-floor (approx_attribution) reconciles by construction but its
-                    # kept/folded SPLIT is signature-approximate. The split error is
-                    # bounded by the kept-tail fraction (the folded bulk is a contiguous
-                    # prefix and always classifies correctly), so a kept-tail that is a
-                    # large fraction of pre is the only case where the displayed split
-                    # could be materially wrong. Degrade THAT render to two-line when the
-                    # kept tail exceeds the gross-error threshold; otherwise show the
-                    # granular split LABELED approximate + emit the observability marker.
-                    if getattr(_cand, "approx_attribution", False):
-                        # Gross-error magnitude = the RAW kept-tail size
-                        # (estimator(messages[-fresh_tail_count:]) — match- AND
-                        # sanitize-independent). kept_tokens (comp-side) is stripped small
-                        # on a heavily-sanitized tail and _kept_pre_tokens is 0 when the
-                        # signature match fails, so BOTH can under-report the true raw tail
-                        # (Greptile P1 ×2, PR #109). Use raw_tail_tokens as the primary
-                        # bound, with the other two as a floor in case it's unavailable.
-                        _gross_tok = max(
-                            _cand.raw_tail_tokens or 0,
-                            _cand.kept_tokens or 0,
-                            _cand._kept_pre_tokens or 0,
-                        )
-                        _pre_tok = _cand.pre_tokens or 0
-                        _gross_frac = (_gross_tok / _pre_tok) if _pre_tok > 0 else 0.0
-                        if _gross_frac > _APPROX_GROSS_MAX_FRAC:
-                            # split could be materially wrong → honest two-line degrade
-                            _warn_compaction_stats_once(
-                                agent,
-                                f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
-                                f"degraded (kept_tail {_gross_tok} / pre {_pre_tok} "
-                                f"= {_fmt_gross_frac(_gross_tok, _pre_tok)} "
-                                f"> {_APPROX_GROSS_MAX_FRAC:.0%}); two-line",
+            else:
+                _inturn_stats_eligible = True  # built-in path: unchanged (always attempt)
+            _inturn_stats = None
+            if _inturn_stats_eligible:
+                try:
+                    from agent.compaction_stats import build_inturn_stats
+                    from agent.model_metadata import estimate_messages_tokens_rough as _est
+                    _why2 = "build raised"  # bound before build so the warning %s can't be unbound
+                    _cand = build_inturn_stats(
+                        messages=messages,
+                        compressed=compressed,
+                        estimator=_est,
+                        engine_is_lcm=(_engine_name == "lcm"),
+                        sanitize=getattr(_cc, "_sanitize_active_context_messages", None),
+                        fresh_tail_count=getattr(_cc, "protect_last_n", None),
+                        on_tag_missing=lambda: _warn_compaction_stats_once(
+                            agent, "COMPACTION_STATS_TAG_MISSING in-turn"
+                        ),
+                    )
+                    _ok2, _why2 = _cand.validate()
+                    if _ok2:
+                        # A-floor (approx_attribution) reconciles by construction but its
+                        # kept/folded SPLIT is signature-approximate. The split error is
+                        # bounded by the kept-tail fraction (the folded bulk is a contiguous
+                        # prefix and always classifies correctly), so a kept-tail that is a
+                        # large fraction of pre is the only case where the displayed split
+                        # could be materially wrong. Degrade THAT render to two-line when the
+                        # kept tail exceeds the gross-error threshold; otherwise show the
+                        # granular split LABELED approximate + emit the observability marker.
+                        if getattr(_cand, "approx_attribution", False):
+                            # Gross-error magnitude = the RAW kept-tail size
+                            # (estimator(messages[-fresh_tail_count:]) — match- AND
+                            # sanitize-independent). kept_tokens (comp-side) is stripped small
+                            # on a heavily-sanitized tail and _kept_pre_tokens is 0 when the
+                            # signature match fails, so BOTH can under-report the true raw tail
+                            # (Greptile P1 ×2, PR #109). Use raw_tail_tokens as the primary
+                            # bound, with the other two as a floor in case it's unavailable.
+                            _gross_tok = max(
+                                _cand.raw_tail_tokens or 0,
+                                _cand.kept_tokens or 0,
+                                _cand._kept_pre_tokens or 0,
                             )
-                            _inturn_stats = None
+                            _pre_tok = _cand.pre_tokens or 0
+                            _gross_frac = (_gross_tok / _pre_tok) if _pre_tok > 0 else 0.0
+                            if _gross_frac > _APPROX_GROSS_MAX_FRAC:
+                                # split could be materially wrong → honest two-line degrade
+                                _warn_compaction_stats_once(
+                                    agent,
+                                    f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
+                                    f"degraded (kept_tail {_gross_tok} / pre {_pre_tok} "
+                                    f"= {_fmt_gross_frac(_gross_tok, _pre_tok)} "
+                                    f"> {_APPROX_GROSS_MAX_FRAC:.0%}); two-line",
+                                )
+                                _inturn_stats = None
+                            else:
+                                _inturn_stats = _cand
+                                # observability: the floor produced the numbers (not exact
+                                # alignment / engine record). A heavy LCM session running the
+                                # floor is now visible (watcher rate-alerts), never silent.
+                                _warn_compaction_stats_once(
+                                    agent,
+                                    f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
+                                    f"(engine={_engine_name}; kept_tail {_gross_tok} / "
+                                    f"pre {_pre_tok} = {_fmt_gross_frac(_gross_tok, _pre_tok)})",
+                                )
                         else:
                             _inturn_stats = _cand
-                            # observability: the floor produced the numbers (not exact
-                            # alignment / engine record). A heavy LCM session running the
-                            # floor is now visible (watcher rate-alerts), never silent.
-                            _warn_compaction_stats_once(
-                                agent,
-                                f"COMPACTION_STATS_APPROX_ATTRIBUTION in-turn "
-                                f"(engine={_engine_name}; kept_tail {_gross_tok} / "
-                                f"pre {_pre_tok} = {_fmt_gross_frac(_gross_tok, _pre_tok)})",
-                            )
                     else:
-                        _inturn_stats = _cand
-                else:
+                        _warn_compaction_stats_once(
+                            agent, f"COMPACTION_STATS_RECONCILE_FAILED in-turn {_why2}"
+                        )
+                except Exception:
                     _warn_compaction_stats_once(
-                        agent, f"COMPACTION_STATS_RECONCILE_FAILED in-turn {_why2}"
+                        agent, "COMPACTION_STATS_BUILD_FAILED in-turn", exc_info=True
                     )
-            except Exception:
-                _warn_compaction_stats_once(
-                    agent, "COMPACTION_STATS_BUILD_FAILED in-turn", exc_info=True
-                )
             _reasoning_inturn = None
             try:
                 from gateway.run import _load_gateway_config as _lgc

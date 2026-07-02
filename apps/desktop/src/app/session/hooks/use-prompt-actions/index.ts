@@ -2,7 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { transcribeAudio, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
@@ -158,6 +158,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -185,6 +186,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -447,6 +449,7 @@ export function usePromptActions({
     createBackendSessionForSend,
     handleSkinCommand,
     handoffSession,
+    openMemoryGraph,
     refreshSessions,
     requestGateway,
     resumeStoredSession,

@@ -54,6 +54,7 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -63,6 +64,7 @@ function Harness({
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -91,6 +93,7 @@ function Harness({
     busyRef: localBusyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
     handleSkinCommand: () => '',
+    openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
@@ -367,6 +370,29 @@ describe('usePromptActions desktop slash pickers', () => {
 
     expect(resumeStoredSession).toHaveBeenCalledWith('20260610_130000_123abc')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('opens the memory graph overlay for /journey and its aliases instead of hitting the backend', async () => {
+    const openMemoryGraph = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        openMemoryGraph={openMemoryGraph}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/journey')
+    await handle!.submitText('/memory-graph')
+    await handle!.submitText('/learning')
+
+    expect(openMemoryGraph).toHaveBeenCalledTimes(3)
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {

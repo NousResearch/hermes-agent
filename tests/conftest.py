@@ -22,6 +22,7 @@ test runner at ``scripts/run_tests.sh``.
 import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,24 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ── Import-time HERMES_HOME sandbox ─────────────────────────────────────────
+# The per-test fixture below redirects HERMES_HOME, but it runs AFTER test
+# modules are imported. Several modules resolve ``get_hermes_home()`` at
+# import time (``run_agent._hermes_home``, ``cli._hermes_home``, dotenv
+# loading) and anything derived from those frozen paths — most visibly the
+# root-logger file handlers that ``setup_logging()`` attaches — then points
+# at the developer's REAL Hermes home for the rest of the process. On
+# native Windows that meant ``pytest tests/`` appended mock-provider
+# records to the live ``%LOCALAPPDATA%\hermes\logs\agent.log``.
+#
+# Point HERMES_HOME at a session tempdir HERE, before pytest imports any
+# test module, so import-time consumers freeze a sandbox path instead.
+# Deliberately unconditional: a HERMES_HOME inherited from a developer
+# shell or Docker deployment must not leak into tests either.
+_IMPORT_TIME_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+os.environ["HERMES_HOME"] = _IMPORT_TIME_HERMES_HOME
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────

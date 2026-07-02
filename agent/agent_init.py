@@ -702,8 +702,14 @@ def init_agent(
     # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
     # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
     # (which creates a new AIAgent per message) won't duplicate handlers.
+    # No hermes_home= override: ``run_agent._hermes_home`` is frozen at
+    # import time, so passing it here pins the log files to whatever
+    # HERMES_HOME resolved to when run_agent was first imported — under
+    # pytest that is the developer's real Hermes home, not the per-test
+    # sandbox. ``setup_logging()`` defaults to ``get_hermes_home()``,
+    # which reads the env var live.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    setup_logging()
 
     if agent.verbose_logging:
         setup_verbose_logging()

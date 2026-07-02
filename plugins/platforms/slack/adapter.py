@@ -16,7 +16,10 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, Any, Tuple, List
+
+from utils import atomic_json_write
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -294,6 +297,11 @@ _SLACK_PROLONGED_DISCONNECT_WARNING_ATTEMPTS: int = 6
 _SLACK_PROLONGED_DISCONNECT_THRESHOLD_S: float = 300.0  # 5 minutes
 _SLACK_AUTO_RESTART_THRESHOLD_S: float = 900.0  # 15 minutes
 
+# File the external health-check observer reads to decide whether the
+# gateway is still receiving Slack events. Path is relative to HERMES_HOME
+# so it stays correct across default/profile deployments.
+_SLACK_LAST_EVENT_HEARTBEAT_FILE = Path("runtime") / "slack-last-event"
+
 
 def _resolve_slack_proxy_url() -> Optional[str]:
     """Resolve a proxy URL that Slack SDK clients can safely use."""
@@ -508,6 +516,30 @@ class SlackAdapter(BasePlatformAdapter):
         self._auto_restart_threshold_s: float = _SLACK_AUTO_RESTART_THRESHOLD_S
         self._auto_restart_on_prolonged_disconnect: bool = True
         self._prolonged_disconnect_escalation_command: str = ""
+        # Heartbeat path for the external systemd-based health observer.
+        self._heartbeat_path: Path | None = None
+
+    def _record_slack_event_heartbeat(self) -> None:
+        """Write the current timestamp to the external health-check file.
+
+        This is a best-effort, fire-and-forget heartbeat: even if the write
+        fails, the event is still processed normally. The file lives under
+        ``HERMES_HOME/runtime/slack-last-event`` so the systemd timer (which
+        runs outside the gateway process) can judge how long it has been since
+        the gateway last received a real Slack event.
+        """
+        if self._heartbeat_path is None:
+            try:
+                from hermes_constants import get_hermes_home
+
+                self._heartbeat_path = get_hermes_home() / _SLACK_LAST_EVENT_HEARTBEAT_FILE
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("[Slack] Could not resolve heartbeat path", exc_info=True)
+                return
+        try:
+            atomic_json_write(self._heartbeat_path, {"last_event_ts": time.time()})
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to write event heartbeat", exc_info=True)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -2754,6 +2786,11 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
+        # Update the external health-check observer on every real event.
+        # This intentionally happens *before* dedup/filtering so redelivered
+        # or bot-filtered events still prove the socket is alive.
+        self._record_slack_event_heartbeat()
+
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):

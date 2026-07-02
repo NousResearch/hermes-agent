@@ -454,6 +454,14 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_command_line_belongs_to_profile_normalizes_separators(self):
+        """A Windows argv renders HERMES_HOME with backslashes while the
+        profile's Path may carry forward slashes (and, on Windows, vice
+        versa).  The separator difference must not defeat the match."""
+        home = Path("c:/opt/data/profiles/coder")
+        cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
+        assert status._command_line_belongs_to_profile(cmdline, home) is True
+
     def test_runtime_status_running_pid_default_profile_rejects_named_cmdline(self, monkeypatch):
         """The default/root profile runs a bare gateway (no profile flag).  A
         recycled PID now hosting a *named* profile gateway must not be reported

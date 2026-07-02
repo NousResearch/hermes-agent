@@ -1350,6 +1350,13 @@ class TestParseContextLimitFromError:
         msg = "context_length_exceeded: maximum context length is 131072"
         assert parse_context_limit_from_error(msg) == 131072
 
+    def test_context_length_exceeded_short_form(self):
+        """Docstring lists 'context_length_exceeded: 131072' as a supported
+        format. The underscore-joined ``context_length`` token must be
+        matched even without the wordy 'maximum context length is' prefix
+        (regression for OpenAI-style short error codes)."""
+        assert parse_context_limit_from_error("context_length_exceeded: 131072") == 131072
+
     def test_context_size_exceeded(self):
         msg = "Maximum context size 65536 exceeded"
         assert parse_context_limit_from_error(msg) == 65536

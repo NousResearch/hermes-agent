@@ -1006,8 +1006,8 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
-        r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
-        r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
+        r'(?:max(?:imum)?|limit)\s*(?:context[\s_]*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
+        r'context[\s_]*(?:length|size|window)(?:_\w+)*\s*(?::|\s+is\s+|\s+of\s+)\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"

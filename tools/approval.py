@@ -12,6 +12,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -21,11 +22,13 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
-from utils import env_var_enabled, is_truthy_value
+from utils import atomic_json_write, env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1507,6 +1510,140 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
+# ---------------------------------------------------------------------------
+# Cross-process approval handshake (#21563)
+#
+# The gateway's pending-approval state lives in-process (_gateway_queues +
+# threading.Event), so an external supervisor process — e.g. the MCP bridge
+# (`hermes mcp serve`), a separate stdio subprocess — can neither see nor
+# resolve approvals. The gateway therefore mirrors every pending gateway
+# approval to <HERMES_HOME>/approvals/pending/<approval_id>.json and, on
+# every tick of the approval wait loop below, consumes decisions written to
+# <HERMES_HOME>/approvals/responses/<approval_id>.json. Writes are atomic
+# (atomic_json_write: temp file + os.replace), the mirror is removed on
+# every wait-loop exit path, and leftovers from a crashed gateway are
+# neutralized by ``expires_at`` (readers skip them, the next publish sweeps
+# them). Files stay inside HERMES_HOME — the same trust domain as state.db.
+# ---------------------------------------------------------------------------
+
+_EXTERNAL_DECISIONS = frozenset({"once", "session", "always", "deny"})
+_RESPONSE_STALE_SECONDS = 3600  # orphaned response files are swept after this
+
+
+def approvals_pending_dir() -> Path:
+    """Directory where the gateway mirrors pending approvals (#21563)."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "approvals" / "pending"
+
+
+def approvals_responses_dir() -> Path:
+    """Directory where external supervisors write approval decisions."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "approvals" / "responses"
+
+
+def _publish_pending_approval(approval_id: str, session_key: str,
+                              approval_data: dict, timeout_s: float,
+                              surface: str) -> None:
+    """Mirror one pending gateway approval for external supervisors.
+
+    Best-effort: a publish failure must never break the in-process approval
+    flow, so errors are logged and swallowed.
+    """
+    try:
+        now = time.time()
+        primary_key = approval_data.get("pattern_key", "")
+        record = {
+            "id": approval_id,
+            "session_key": session_key,
+            "command": str(approval_data.get("command", "")),
+            "description": str(approval_data.get("description", "")),
+            "pattern_keys": [str(k) for k in
+                             (approval_data.get("pattern_keys")
+                              or ([primary_key] if primary_key else []))],
+            "surface": surface,
+            "created_at": now,
+            "expires_at": now + max(float(timeout_s), 0.0),
+        }
+        _sweep_stale_handshake_files(now)
+        atomic_json_write(approvals_pending_dir() / f"{approval_id}.json",
+                          record)
+    except Exception as exc:
+        # Degrades external supervisors (MCP bridge) only — the in-process
+        # approval flow is unaffected, so warn rather than raise.
+        logger.warning("Could not publish pending approval %s: %s",
+                       approval_id, exc)
+
+
+def _retract_pending_approval(approval_id: str) -> None:
+    """Remove the mirrored record (and any unconsumed response) for an entry."""
+    for path in (approvals_pending_dir() / f"{approval_id}.json",
+                 approvals_responses_dir() / f"{approval_id}.json"):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _consume_external_decision(approval_id: str) -> Optional[str]:
+    """Read-and-delete an external decision for *approval_id*, if present.
+
+    Returns a decision from ``_EXTERNAL_DECISIONS``, or None when there is
+    no (valid) response. Invalid payloads are logged and discarded — fail
+    closed, never resolve on garbage.
+    """
+    path = approvals_responses_dir() / f"{approval_id}.json"
+    try:
+        if not path.exists():
+            return None
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    try:
+        decision = json.loads(raw).get("decision")
+    except (ValueError, AttributeError):
+        decision = None
+    if decision not in _EXTERNAL_DECISIONS:
+        logger.warning("Ignoring invalid external approval decision %r for %s",
+                       decision, approval_id)
+        return None
+    return decision
+
+
+def _sweep_stale_handshake_files(now: float) -> None:
+    """Drop expired/garbled pending mirrors and orphaned responses.
+
+    Runs on each publish so leftovers from a crashed gateway cannot
+    accumulate or confuse supervisors. Live records have a future
+    ``expires_at`` and are never touched.
+    """
+    try:
+        for path in approvals_pending_dir().glob("*.json"):
+            try:
+                expires_at = json.loads(
+                    path.read_text(encoding="utf-8")).get("expires_at")
+                if not isinstance(expires_at, (int, float)) \
+                        or expires_at <= now:
+                    path.unlink()
+            except (OSError, ValueError):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        for path in approvals_responses_dir().glob("*.json"):
+            try:
+                if now - path.stat().st_mtime > _RESPONSE_STALE_SECONDS:
+                    path.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
@@ -2523,6 +2660,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     thread until the request is resolved or the gateway approval timeout
     elapses — firing pre/post approval hooks and cleaning up the queue entry.
 
+    While waiting, the request is also mirrored to the cross-process
+    handshake dir so external supervisors (e.g. the MCP bridge) can list and
+    resolve it; their decision is consumed on each wait tick (#21563).
+
     Shared by the terminal command guard (``check_all_command_guards``) and
     the execute_code guard (``check_execute_code_guard``) so the fiddly
     heartbeat-polling wait loop lives in one place.
@@ -2537,6 +2678,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
+    approval_id = uuid.uuid4().hex[:12]
     entry = _ApprovalEntry(approval_data)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
@@ -2548,6 +2690,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 queue.remove(entry)
             if not queue:
                 _gateway_queues.pop(session_key, None)
+        # Keep the cross-process mirror in sync on every exit path (#21563).
+        _retract_pending_approval(approval_id)
 
     # Notify plugins that an approval is being requested. Fires before the
     # gateway notify callback so observers get the event in real time.
@@ -2575,6 +2719,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # watchdog kills the agent while the user is still responding. Mirrors
     # _wait_for_process() cadence.
     timeout = _get_approval_timeout()
+
+    # Mirror the pending approval for external supervisors (e.g. the MCP
+    # bridge) now that the user has been notified and the timeout is known;
+    # the wait loop below consumes their decision each tick (#21563).
+    _publish_pending_approval(approval_id, session_key, approval_data,
+                              timeout, surface)
 
     try:
         from tools.environments.base import touch_activity_if_due
@@ -2607,6 +2757,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         if _remaining <= 0:
             break
         if entry.event.wait(timeout=min(1.0, _remaining)):
+            resolved = True
+            break
+        external_choice = _consume_external_decision(approval_id)
+        if external_choice is not None:
+            entry.result = external_choice
+            entry.event.set()
             resolved = True
             break
         if touch_activity_if_due is not None:

@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -77,6 +78,55 @@ def _get_session_db():
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
+
+
+def _approvals_pending_dir() -> Path:
+    """Where the gateway mirrors pending approvals (see tools/approval.py)."""
+    try:
+        from tools.approval import approvals_pending_dir
+        return approvals_pending_dir()
+    except ImportError:
+        return _fallback_hermes_home() / "approvals" / "pending"
+
+
+def _approvals_responses_dir() -> Path:
+    """Where supervisors (this bridge) write approval decisions (#21563)."""
+    try:
+        from tools.approval import approvals_responses_dir
+        return approvals_responses_dir()
+    except ImportError:
+        return _fallback_hermes_home() / "approvals" / "responses"
+
+
+def _fallback_hermes_home() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home()
+    except ImportError:
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def _write_approval_response(path: Path, payload: dict) -> None:
+    """Atomically write a decision file (temp file + os.replace)."""
+    try:
+        from utils import atomic_json_write
+        atomic_json_write(path, payload)
+        return
+    except ImportError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent),
+                                    prefix=f".{path.stem}_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _load_sessions_index() -> dict:
@@ -314,10 +364,13 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        # In-memory approval tracking (populated from events)
+        # Pending gateway approvals, synced from the cross-process mirror the
+        # gateway maintains under <HERMES_HOME>/approvals/pending (#21563).
         self._pending_approvals: Dict[str, dict] = {}
+        self._approvals_sync_lock = threading.Lock()
         # mtime cache — skip expensive work when state.db hasn't changed
         self._state_db_mtime: float = 0.0
+        self._approvals_dir_mtime: float = -1.0
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -389,30 +442,139 @@ class EventBridge:
 
         return None
 
+    def _poll_approvals(self) -> None:
+        """Sync pending gateway approvals from the cross-process mirror.
+
+        The gateway mirrors its in-process pending approvals to
+        ``<HERMES_HOME>/approvals/pending/`` while an agent thread is blocked
+        waiting for a decision (#21563). New records emit an
+        ``approval_requested`` event; records that disappear (resolved,
+        denied, timed out, or interrupted on the gateway side) emit
+        ``approval_resolved``. A directory-mtime check keeps the 200ms poll
+        essentially free; the protocol only ever creates/deletes files, so
+        every change bumps the directory mtime.
+        """
+        with self._approvals_sync_lock:
+            pending_dir = _approvals_pending_dir()
+            try:
+                dir_mtime = pending_dir.stat().st_mtime
+            except OSError:
+                dir_mtime = 0.0
+            # Skip only when nothing changed AND nothing is pending: with a
+            # live approval we always resync, because on filesystems with
+            # coarse (1s) mtime granularity a create+delete pair inside the
+            # same second would otherwise go unnoticed.
+            if dir_mtime == self._approvals_dir_mtime \
+                    and not self._pending_approvals:
+                return
+            self._approvals_dir_mtime = dir_mtime
+
+            now = time.time()
+            seen: Dict[str, dict] = {}
+            try:
+                paths = list(pending_dir.iterdir())
+            except OSError:
+                paths = []
+            for path in paths:
+                if path.suffix != ".json":
+                    continue
+                try:
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                approval_id = str(record.get("id") or path.stem)
+                expires_at = record.get("expires_at")
+                if isinstance(expires_at, (int, float)) and expires_at <= now:
+                    continue  # stale leftover from a dead gateway — ignore
+                seen[approval_id] = record
+
+            events = []
+            with self._lock:
+                known = set(self._pending_approvals)
+                for approval_id, record in seen.items():
+                    if approval_id in known:
+                        continue
+                    self._pending_approvals[approval_id] = record
+                    events.append(QueueEvent(
+                        cursor=0,
+                        type="approval_requested",
+                        session_key=record.get("session_key", ""),
+                        data=record,
+                    ))
+                for approval_id in known - set(seen):
+                    record = self._pending_approvals.pop(approval_id)
+                    events.append(QueueEvent(
+                        cursor=0,
+                        type="approval_resolved",
+                        session_key=record.get("session_key", ""),
+                        data={"approval_id": approval_id},
+                    ))
+        for event in events:
+            self._enqueue(event)
+
     def list_pending_approvals(self) -> List[dict]:
-        """List approval requests observed during this bridge session."""
+        """List gateway approvals currently awaiting a decision.
+
+        Reads the gateway's cross-process approval mirror, so it reflects
+        live gateway state — including approvals that predate this bridge
+        process (#21563).
+        """
+        def _created_at(record: dict) -> float:
+            try:
+                return float(record.get("created_at") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        self._poll_approvals()  # refresh eagerly — callers want live state
         with self._lock:
-            return sorted(
-                self._pending_approvals.values(),
-                key=lambda a: a.get("created_at", ""),
+            return sorted(self._pending_approvals.values(), key=_created_at)
+
+    def respond_to_approval(self, approval_id: str, decision: str,
+                            confirm_timeout: float = 3.0) -> dict:
+        """Resolve a pending gateway approval via the cross-process handshake.
+
+        Writes the decision where the gateway's approval wait loop consumes
+        it (see tools/approval.py), then confirms the gateway picked it up
+        by watching the pending record disappear (#21563). Unknown or
+        already-resolved approvals return an error instead of the silent
+        fake success the bridge used to report.
+        """
+        if decision not in {"once", "session", "always", "deny"}:
+            return {"error": f"Invalid decision: {decision}"}
+
+        self._poll_approvals()
+        pending_path = _approvals_pending_dir() / f"{approval_id}.json"
+        if not pending_path.exists():
+            return {"error": "Approval not found (unknown, expired, or "
+                             f"already resolved): {approval_id}"}
+
+        try:
+            _write_approval_response(
+                _approvals_responses_dir() / f"{approval_id}.json",
+                {"id": approval_id, "decision": decision,
+                 "created_at": time.time(), "source": "mcp-bridge"},
             )
+        except OSError as exc:
+            return {"error": f"Could not write approval response: {exc}"}
 
-    def respond_to_approval(self, approval_id: str, decision: str) -> dict:
-        """Resolve a pending approval (best-effort without gateway IPC)."""
-        with self._lock:
-            approval = self._pending_approvals.pop(approval_id, None)
-
-        if not approval:
-            return {"error": f"Approval not found: {approval_id}"}
-
-        self._enqueue(QueueEvent(
-            cursor=0,  # Will be set by _enqueue
-            type="approval_resolved",
-            session_key=approval.get("session_key", ""),
-            data={"approval_id": approval_id, "decision": decision},
-        ))
-
-        return {"resolved": True, "approval_id": approval_id, "decision": decision}
+        # The gateway wait loop polls every ≤1s; wait briefly for it to
+        # consume the decision so we can report an honest resolution.
+        deadline = time.monotonic() + max(confirm_timeout, 0.0)
+        while time.monotonic() < deadline:
+            if not pending_path.exists():
+                return {"resolved": True, "approval_id": approval_id,
+                        "decision": decision}
+            time.sleep(0.1)
+        return {
+            "resolved": False,
+            "submitted": True,
+            "approval_id": approval_id,
+            "decision": decision,
+            "detail": "Decision written, but the gateway has not consumed "
+                      "it yet; it applies on the gateway's next wait tick.",
+        }
 
     def _enqueue(self, event: QueueEvent) -> None:
         """Add an event to the queue and wake any waiters."""
@@ -450,6 +612,7 @@ class EventBridge:
         eliminating the old dual-file (sessions.json + state.db) race that
         could drop brand-new conversations (#8925).
         """
+        self._poll_approvals()
         try:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
@@ -915,11 +1078,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     @mcp.tool()
     def permissions_list_open() -> str:
-        """List pending approval requests observed during this bridge session.
+        """List gateway approval requests currently awaiting a decision.
 
-        Returns exec and plugin approval requests that the bridge has seen
-        since it started. Approvals are live-session only — older approvals
-        from before the bridge connected are not included.
+        Reads the gateway's live pending-approval state (cross-process
+        mirror), so approvals raised before this bridge connected are
+        included. Each entry carries the approval id, session_key, command,
+        description, and pattern_keys needed to decide and respond.
         """
         approvals = bridge.list_pending_approvals()
         return json.dumps({
@@ -936,17 +1100,27 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     ) -> str:
         """Respond to a pending approval request.
 
+        The decision is delivered to the gateway process, which unblocks the
+        agent thread waiting on the approval (#21563).
+
         Args:
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
-        if decision not in {"allow-once", "allow-always", "deny"}:
+        # Map the MCP tool vocabulary onto the gateway's native choices
+        # (same values the /approve and /deny handlers use).
+        decision_map = {
+            "allow-once": "once",
+            "allow-always": "always",
+            "deny": "deny",
+        }
+        if decision not in decision_map:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "
                          f"Must be allow-once, allow-always, or deny"
             })
 
-        result = bridge.respond_to_approval(id, decision)
+        result = bridge.respond_to_approval(id, decision_map[decision])
         return json.dumps(result, indent=2)
 
     return mcp

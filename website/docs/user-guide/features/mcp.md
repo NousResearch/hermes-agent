@@ -756,8 +756,8 @@ The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus
 | `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
 | `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
 | `channels_list` | List available messaging targets across all platforms. |
-| `permissions_list_open` | List pending approval requests observed during this bridge session. |
-| `permissions_respond` | Allow or deny a pending approval request. |
+| `permissions_list_open` | List gateway approval requests currently awaiting a decision. |
+| `permissions_respond` | Allow or deny a pending approval request (unblocks the waiting agent). |
 
 ### Event system
 

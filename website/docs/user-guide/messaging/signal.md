@@ -109,6 +109,7 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
+SIGNAL_ALLOW_DMS=false                           # Block direct messages (group-only mode)
 ```
 
 Then start the gateway:
@@ -228,6 +229,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
+| **Bot responds to DMs but should be group-only** | Set `SIGNAL_ALLOW_DMS=false` to drop all direct messages at the adapter level |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 
 ---
@@ -256,3 +258,4 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |
+| `SIGNAL_ALLOW_DMS` | No | `true` | Set to `false` to block all direct messages (group-only mode) |

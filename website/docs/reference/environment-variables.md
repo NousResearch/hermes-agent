@@ -340,6 +340,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SIGNAL_HOME_CHANNEL_NAME` | Display name for the Signal home channel |
 | `SIGNAL_IGNORE_STORIES` | Ignore Signal stories/status updates |
 | `SIGNAL_ALLOW_ALL_USERS` | Allow all Signal users without an allowlist |
+| `SIGNAL_ALLOW_DMS` | Set to `false` to block all direct messages; users in `SIGNAL_ALLOWED_USERS` can still use allowed group chats |
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID (shared with telephony skill) |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token (shared with telephony skill; also used for webhook signature validation) |
 | `TWILIO_PHONE_NUMBER` | Twilio phone number in E.164 format (shared with telephony skill) |

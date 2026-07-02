@@ -2899,12 +2899,13 @@ class GatewaySlashCommandsMixin:
             return t("gateway.verbose.not_enabled")
 
         # --- cycle mode (per-platform) ----------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["off", "new", "all", "verbose", "log"]
         descriptions = {
             "off": t("gateway.verbose.mode_off"),
             "new": t("gateway.verbose.mode_new"),
             "all": t("gateway.verbose.mode_all"),
             "verbose": t("gateway.verbose.mode_verbose"),
+            "log": t("gateway.verbose.mode_log"),
         }
 
         # Read current effective mode for this platform via the resolver
@@ -3043,12 +3044,43 @@ class GatewaySlashCommandsMixin:
         # Parse args: either a focus topic (full compress) or the
         # boundary-aware "here [N]" form (partial compress).
         from hermes_cli.partial_compress import (
+            extract_compress_flags,
             parse_partial_compress_args,
             rejoin_compressed_head_and_tail,
             split_history_for_partial_compress,
+            summarize_compress_preview,
         )
         _raw_args = (event.get_command_args() or "").strip()
+        # Strip --preview/--dry-run/--aggressive before positional parsing
+        # so the flags coexist with 'here [N]' / focus-topic forms.
+        _raw_args, _preview, _aggressive = extract_compress_flags(_raw_args)
         partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
+
+        _agg_note = ""
+        if _aggressive:
+            # LLM-free hard truncation is not supported on this surface —
+            # it would need its own transcript-persistence branch outside
+            # the guarded _compress_context rotation machinery (#44794).
+            _agg_note = t("gateway.compress.aggressive_unsupported")
+            if not _preview:
+                return _agg_note
+
+        if _preview:
+            # Report what WOULD be compressed — no agent, no writes.
+            from agent.model_metadata import estimate_request_tokens_rough
+            _pv_msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in {"user", "assistant"} and m.get("content")
+            ]
+            approx_tokens = estimate_request_tokens_rough(_pv_msgs)
+            report = summarize_compress_preview(
+                _pv_msgs, partial, keep_last, focus_topic, approx_tokens
+            )
+            lines = [f"🗜️ {line}" for line in report["lines"]]
+            if _aggressive:
+                lines.append(_agg_note)
+            return "\n".join(lines)
 
         try:
             from run_agent import AIAgent
@@ -3056,6 +3088,17 @@ class GatewaySlashCommandsMixin:
             from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
+            # Preserve the same platform + stable gateway session identity that a
+            # normal gateway turn passes (gateway/run.py main turn), so external
+            # context engines bind this temporary compression agent to the
+            # original platform conversation instead of falling back to an
+            # unbound/default "cli" host source — see #50422. _platform_config_key
+            # maps LOCAL->"cli" exactly like the live turn, avoiding a new
+            # "local" vs "cli" mismatch.
+            from gateway.run import _platform_config_key
+            platform_key = (
+                _platform_config_key(source.platform) if source.platform else None
+            )
             model, runtime_kwargs = self._resolve_session_agent_runtime(
                 source=source,
                 session_key=session_key,
@@ -3082,6 +3125,21 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
+            # Bind the temporary compression agent to the originating source's
+            # platform + stable gateway session key. These are *authoritative*
+            # identity invariants (derived from `source`), so assign them into
+            # runtime_kwargs directly rather than via setdefault: a value already
+            # present there from the resolver would be a placeholder/stale
+            # identity and must not win. Assigning (vs passing a second explicit
+            # kwarg) also keeps each key single-valued, avoiding a "got multiple
+            # values for keyword argument" TypeError. platform is only set when
+            # known: for a source without platform metadata we leave it unset so
+            # AIAgent's default (platform=None -> source "cli") applies, exactly
+            # the prior behavior. _resolve_session_agent_runtime does not set
+            # either key today, so in practice this just adds them.
+            if platform_key is not None:
+                runtime_kwargs["platform"] = platform_key
+            runtime_kwargs["gateway_session_key"] = session_key
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,

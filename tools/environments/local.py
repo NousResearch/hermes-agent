@@ -152,7 +152,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
         # Path to a GCP service-account JSON, not a bare key, so
@@ -212,6 +211,16 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
     })
+    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
+    # owned by the user's Claude Code install (subscription OAuth), not a
+    # Hermes-managed inference credential — Claude subscription auth is not a
+    # working Hermes provider path.  Stripping it broke agent-spawned
+    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
+    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
+    # logging the user out of their interactive Claude sessions (#55878).
+    # It arrives via the registry loop above (anthropic api_key_env_vars),
+    # so remove it explicitly.
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     return frozenset(blocked)
 
 

@@ -5,6 +5,7 @@ import os
 from unittest.mock import patch
 
 from gateway.config import (
+    ChannelOverride,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -89,6 +90,54 @@ class TestPlatformConfigRoundtrip:
         # extra; from_dict must honor it there too (mirrors _grn fallback).
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
+    def test_channel_overrides_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            channel_overrides={
+                "1234567890": ChannelOverride(
+                    model="openrouter/healer-alpha",
+                    provider="openrouter",
+                    system_prompt="You are a daily news summarizer.",
+                ),
+                "9876543210": ChannelOverride(
+                    model="anthropic/claude-opus-4.6",
+                    provider="anthropic",
+                    system_prompt="You are a coding assistant.",
+                ),
+            },
+        )
+        d = pc.to_dict()
+        assert "channel_overrides" in d
+        assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
+        restored = PlatformConfig.from_dict(d)
+        assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["9876543210"].provider == "anthropic"
+
+    def test_channel_overrides_from_dict_normalizes_channel_id_to_str(self):
+        """YAML may have numeric channel IDs; we store as str."""
+        data = {
+            "enabled": True,
+            "channel_overrides": {
+                1234567890: {"model": "openrouter/healer-alpha"},
+            },
+        }
+        pc = PlatformConfig.from_dict(data)
+        assert "1234567890" in pc.channel_overrides
+        assert pc.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+
+
+class TestChannelOverride:
+    def test_from_dict_empty(self):
+        assert ChannelOverride.from_dict({}).model is None
+        assert ChannelOverride.from_dict(None).model is None
+
+    def test_to_dict_omits_none(self):
+        ov = ChannelOverride(model="gpt-4", provider=None, system_prompt="Hi")
+        d = ov.to_dict()
+        assert d["model"] == "gpt-4"
+        assert "provider" not in d
+        assert d["system_prompt"] == "Hi"
 
 
 class TestGetConnectedPlatforms:
@@ -781,6 +830,31 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.always_log_local is False
+
+    def test_bridges_discord_channel_overrides_from_top_level_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_overrides:\n"
+            '    "1234567890":\n'
+            "      model: openrouter/healer-alpha\n"
+            "      provider: openrouter\n"
+            "      system_prompt: Daily news summarizer\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord = config.platforms[Platform.DISCORD]
+        assert "1234567890" in discord.channel_overrides
+        ov = discord.channel_overrides["1234567890"]
+        assert ov.model == "openrouter/healer-alpha"
+        assert ov.provider == "openrouter"
+        assert ov.system_prompt == "Daily news summarizer"
 
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

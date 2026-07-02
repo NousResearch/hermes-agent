@@ -976,15 +976,28 @@ def init_agent(
 
         try:
             from hermes_cli.config import (
+                apply_custom_provider_extra_headers_to_client_kwargs,
                 apply_custom_provider_tls_to_client_kwargs,
                 get_compatible_custom_providers,
                 load_config,
             )
 
+            _cp_config = load_config()
+            _cp_entries = get_compatible_custom_providers(_cp_config)
+            _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
             apply_custom_provider_tls_to_client_kwargs(
                 client_kwargs,
-                str(client_kwargs.get("base_url") or agent.base_url or ""),
-                get_compatible_custom_providers(load_config()),
+                _cp_base_url,
+                _cp_entries,
+            )
+            # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+            # custom_providers[].extra_headers) — proxies, gateways, custom
+            # auth. Applied last so the most specific config level wins.
+            # SECURITY: values may carry credentials — never log them.
+            apply_custom_provider_extra_headers_to_client_kwargs(
+                client_kwargs,
+                _cp_base_url,
+                _cp_entries,
             )
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)

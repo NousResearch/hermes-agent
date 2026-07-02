@@ -152,12 +152,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Content that genuinely benefits from interactive card rendering:
+# tables, code blocks, multi-level headings, or 3+ list items.
+_STRUCTURED_MD_RE = re.compile(
+    r"(^\|.+\|$\n^\|[-|: ]+\|$)"           # table
+    r"|(```)"                                 # code block
+    r"|(^#{2,3}\s)"                           # h2/h3 (h1 is rare in messages)
+    r"|((?:^\s*[-*]\s.*$\n?){3,})"           # 3+ bullet items
+    r"|((?:^\s*\d+\.\s.*$\n?){3,})",         # 3+ numbered items
+    re.MULTILINE,
+)
+# Heading line for interactive card header extraction.
+_HEADING_RE = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -547,6 +556,52 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
+
+_MAX_CARD_HEADER_LEN = 60
+
+
+def _extract_card_header(content: str) -> Optional[str]:
+    """Extract the first h1/h2/h3 heading from content for use as card header.
+
+    Falls back to ``None`` (no header) for content without a suitable heading.
+    Interactive cards with no header still render markdown correctly.
+    """
+    for line in content.splitlines():
+        m = _HEADING_RE.match(line.strip())
+        if m:
+            title = m.group(1).strip()
+            if len(title) > _MAX_CARD_HEADER_LEN:
+                idx = _MAX_CARD_HEADER_LEN
+                # Avoid splitting a multi-byte character
+                while idx > 0:
+                    try:
+                        title[:idx].encode("utf-8")
+                        break
+                    except UnicodeEncodeError:
+                        idx -= 1
+                title = title[:idx] + "…"
+            return title
+    return None
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    """Build an interactive card payload for full markdown rendering.
+
+    Interactive cards support: tables, lists, code blocks with syntax
+    highlighting, bold, italic, strikethrough, links, images, and
+    @mentions — everything the ``post`` + ``md`` path cannot render.
+    """
+    header_title = _extract_card_header(content)
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "elements": [{"tag": "markdown", "content": content or "…"}],
+    }
+    if header_title:
+        card["header"] = {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": "blue",
+        }
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1859,9 +1914,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type not in ("post", "interactive") or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1870,11 +1925,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in ("post", "interactive")
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1908,8 +1963,8 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                logger.warning("[Feishu] Invalid %s update payload rejected by API; falling back to plain text", msg_type)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4468,14 +4523,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Interactive card for structured content (tables, code blocks,
+        # multi-level headings, 3+ list items) — full GFM rendering.
+        if _STRUCTURED_MD_RE.search(content):
+            return "interactive", _build_interactive_card_payload(content)
+        # Post + md for simple markdown (bold, italic, links, inline code).
+        # Renders inline styles correctly without the card wrapper.
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
+        # Plain text for everything else — no markdown needed.
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
@@ -4762,7 +4818,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type in ("post", "interactive") and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

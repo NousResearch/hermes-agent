@@ -16022,6 +16022,8 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/assets/', f'href="{prefix}/assets/')
             html = html.replace('src="/assets/', f'src="{prefix}/assets/')
             html = html.replace('href="/favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="/manifest.webmanifest"', f'href="{prefix}/manifest.webmanifest"')
+            html = html.replace('href="/pwa-icon-', f'href="{prefix}/pwa-icon-')
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
@@ -16055,6 +16057,33 @@ def mount_spa(application: FastAPI):
         return Response(content=css, media_type="text/css")
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+
+    @application.get("/manifest.webmanifest")
+    async def serve_webmanifest():
+        manifest_path = WEB_DIST / "manifest.webmanifest"
+        if not manifest_path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(
+            manifest_path,
+            media_type="application/manifest+json",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    @application.get("/sw.js")
+    async def serve_service_worker(request: Request):
+        sw_path = WEB_DIST / "sw.js"
+        if not sw_path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        allowed_scope = f"{prefix}/" if prefix else "/"
+        return FileResponse(
+            sw_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache",
+                "Service-Worker-Allowed": allowed_scope,
+            },
+        )
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

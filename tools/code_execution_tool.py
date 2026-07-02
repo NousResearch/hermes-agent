@@ -1328,7 +1328,7 @@ def execute_code(
         # Env scrubbing and tool whitelist apply identically in both modes.
         _mode = _get_execution_mode()
         _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1734,17 +1734,28 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
-      Falls back to the staging tmpdir as a last resort so we never invoke
-      Popen with a nonexistent cwd.
+    - ``project``: the raw per-session cwd override registered via
+      ``session.cwd.set`` / ``register_task_env_overrides`` when available,
+      then the session's TERMINAL_CWD (same as the terminal tool), or
+      ``os.getcwd()`` if neither points at a real dir. Falls back to the
+      staging tmpdir as a last resort so we never invoke Popen with a
+      nonexistent cwd.
     """
     if mode != "project":
         return staging_dir
+    if task_id:
+        try:
+            from tools.file_tools import _registered_task_cwd_override
+
+            session_cwd = _registered_task_cwd_override(task_id)
+        except Exception:
+            session_cwd = None
+        if session_cwd and os.path.isdir(session_cwd):
+            return session_cwd
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)

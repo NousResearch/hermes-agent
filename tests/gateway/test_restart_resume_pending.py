@@ -1893,7 +1893,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     # Count how many times an actual agent run is started for this session.
     agent_runs: list[str] = []
 
-    async def _fake_run(event, source, _quick_key, run_generation):
+    async def _fake_run(event, source, _quick_key, run_generation, **kwargs):
         agent_runs.append(_quick_key)
         return "RESUMED OK"
 

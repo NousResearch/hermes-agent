@@ -59,6 +59,8 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 from agent.redact import redact_sensitive_text
+from gateway.runtime.routes import register_runtime_routes
+from gateway.runtime.control_bridge import RuntimeControlBridge
 
 logger = logging.getLogger(__name__)
 
@@ -4233,6 +4235,19 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
+        control_bridge = self._app.get("runtime_control_bridge") if self._app is not None else None
+        if control_bridge is not None:
+            run_manager = self._app.get("runtime_run_manager")
+            if run_manager is not None:
+                run_manager.create_run(
+                    session_id=session_id,
+                    run_id=run_id,
+                    message=user_message,
+                    model=body.get("model"),
+                    toolsets=body.get("toolsets"),
+                    metadata=body.get("metadata"),
+                )
+
         event_cb = self._make_run_event_callback(run_id, loop)
 
         # Also wire stream_delta_callback so message.delta events flow through.
@@ -4272,6 +4287,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     route=route,
                 )
                 self._active_run_agents[run_id] = agent
+
+                if control_bridge is not None:
+                    try:
+                        control_bridge.bind_run(run_id, approval_session_key, agent)
+                    except Exception:
+                        pass
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -4432,6 +4453,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+
+                if control_bridge is not None:
+                    try:
+                        control_bridge.unbind_run(run_id)
+                    except Exception:
+                        pass
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4669,6 +4696,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                try:
+                    control_bridge = self._app.get("runtime_control_bridge") if self._app else None
+                    if control_bridge is not None:
+                        control_bridge.unbind_run(run_id)
+                except Exception:
+                    pass
 
             stale_statuses = [
                 run_id
@@ -4776,12 +4809,67 @@ class APIServerAdapter(BasePlatformAdapter):
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
             if _CRON_AVAILABLE:
                 self._app.router.add_post("/api/cron/fire", self._handle_cron_fire)
-            # Structured event streaming
-            self._app.router.add_post("/v1/runs", self._handle_runs)
-            self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
-            self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
-            self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
-            self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # /v1/runs — agent lifecycle endpoint.
+            # When HERMES_USE_RUNTIME_RUNS is truthy the runtime-backed
+            # route module (gateway.runtime.routes) replaces the legacy
+            # embedded handlers.  The runtime module is a standalone
+            # RunManager-backed implementation suitable for WebUI smoke
+            # testing and future gateways.
+            _extra = self.config.extra or {}
+            _use_runtime_raw = os.getenv("HERMES_USE_RUNTIME_RUNS") or _extra.get(
+                "use_runtime_runs"
+            )
+            _use_runtime = (
+                str(_use_runtime_raw).strip().lower() in {"1", "true", "yes", "on"}
+            )
+            if _use_runtime:
+                run_manager = register_runtime_routes(
+                    self._app,
+                    error_formatter=_openai_error,
+                    register_create=False,
+                    register_status=False,
+                    register_events=False,
+                )
+                try:
+                    from gateway.run import _gateway_runner_ref as _gw_ref
+
+                    def _session_key_for_run(run_id: str) -> Optional[str]:
+                        status = run_manager.get_status(run_id)
+                        return status.get("session_id") if status else None
+
+                    control_bridge = RuntimeControlBridge(
+                        run_manager,
+                        get_session_key_for_run=_session_key_for_run,
+                        gateway_runner_ref=_gw_ref,
+                    )
+                    self._app["runtime_control_bridge"] = control_bridge
+                    self._app["runtime_run_manager"] = run_manager
+
+                    try:
+                        runner = _gw_ref() if _gw_ref is not None else None
+                        if runner is not None:
+                            runner.set_runtime_control_bridge(control_bridge)
+                    except Exception:
+                        logger.debug(
+                            "[%s] Failed to set runtime control bridge on GatewayRunner",
+                            self.name, exc_info=True,
+                        )
+                except Exception:
+                    control_bridge = None
+                self._app.router.add_post("/v1/runs", self._handle_runs)
+                self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
+                self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+                logger.info(
+                    "[%s] /v1/runs using runtime-backed RunManager route module "
+                    "(agent-run controller with live bridge)",
+                    self.name,
+                )
+            else:
+                self._app.router.add_post("/v1/runs", self._handle_runs)
+                self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
+                self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+                self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+                self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

@@ -45,6 +45,8 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "koho.jung@outlook.com": "kohoj",  # PR #57046 salvage (prompt caching: selective copy instead of deepcopy entire history)
+    "tutors1997@outlook.com": "Stoltemberg",  # PR #56081 salvage (pre-compute sorted reasoning timeout floors at module level)
     "louis@letsfive.io": "Mibayy",  # PR #3243 salvage (/compact alias + preview/aggressive flags for /compress)
     "louis@letsfive.io": "Mibayy",  # PR #3176 salvage (api-server: per-client model routing via model_routes)
     "jneeee@outlook.com": "jneeee",  # PR #3526 salvage (extra HTTP headers for LLM API calls via config.yaml)

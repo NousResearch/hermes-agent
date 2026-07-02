@@ -4661,46 +4661,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
             if _CRON_AVAILABLE:
                 self._app.router.add_post("/api/cron/fire", self._handle_cron_fire)
-            # Kanban board API (read/write the shared kanban over bearer auth).
-            # Handlers live in a dedicated module; registered here so the
-            # change to this file is additive (import + routes only).
-            from functools import partial
-            from gateway.platforms import kanban_api
-            self._app.router.add_get("/api/kanban/tasks", partial(kanban_api.handle_list_tasks, self))
-            self._app.router.add_post("/api/kanban/tasks", partial(kanban_api.handle_create_task, self))
-            self._app.router.add_get("/api/kanban/assignees", partial(kanban_api.handle_assignees, self))
-            self._app.router.add_get("/api/kanban/dispatch/state", partial(kanban_api.handle_dispatch_state, self))
-            self._app.router.add_get("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_get_task, self))
-            self._app.router.add_patch("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_patch_task, self))
-            self._app.router.add_post("/api/kanban/tasks/{task_id}/assign", partial(kanban_api.handle_assign_task, self))
-            self._app.router.add_post("/api/kanban/tasks/{task_id}/comment", partial(kanban_api.handle_comment_task, self))
-            # Tool-approval action API (resolve deferred outbound actions over
-            # bearer auth). Handlers live in a dedicated module; profile-scoped
-            # (the pending store + one-shot replay are in this profile's home).
-            from gateway.platforms import actions_api
-            self._app.router.add_get("/v1/actions", partial(actions_api.handle_list_actions, self))
-            self._app.router.add_get("/v1/actions/{pending_id}", partial(actions_api.handle_get_action, self))
-            self._app.router.add_post("/v1/actions/{pending_id}/approve", partial(actions_api.handle_approve_action, self))
-            self._app.router.add_post("/v1/actions/{pending_id}/reject", partial(actions_api.handle_reject_action, self))
-            # Config + profile API (read/write config.yaml, list/create profiles,
-            # reload the gateway) over bearer auth — lets the master console drive
-            # capability provisioning through one API instead of the dashboard's
-            # session auth. Handlers live in a dedicated module; additive here.
-            from gateway.platforms import config_api
-            self._app.router.add_get("/api/config", partial(config_api.handle_get_config, self))
-            self._app.router.add_put("/api/config", partial(config_api.handle_put_config, self))
-            self._app.router.add_get("/api/profiles", partial(config_api.handle_list_profiles, self))
-            self._app.router.add_post("/api/profiles", partial(config_api.handle_create_profile, self))
-            self._app.router.add_post("/api/gateway/restart", partial(config_api.handle_restart_gateway, self))
-            self._app.router.add_post("/api/gateway/start", partial(config_api.handle_start_gateway, self))
-            self._app.router.add_post("/api/gateway/stop", partial(config_api.handle_stop_gateway, self))
-            self._app.router.add_post("/api/profiles/{name}/archive", partial(config_api.handle_archive_profile, self))
-            # Versioned write path — commit a fleet-state snapshot (master_console P8 M0)
-            self._app.router.add_post("/api/snapshot", partial(config_api.handle_snapshot, self))
-            # SOUL.md read/write (capability-growth projection — Phase 6)
-            from gateway.platforms import soul_api
-            self._app.router.add_get("/api/soul", partial(soul_api.handle_get_soul, self))
-            self._app.router.add_put("/api/soul", partial(soul_api.handle_put_soul, self))
+            # Console API routes (kanban, actions, config/profiles, soul) are
+            # registered via a fork-private seam module so future upstream edits
+            # to connect() never conflict with this block.
+            from gateway.platforms import _console_routes
+            _console_routes.register(self)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

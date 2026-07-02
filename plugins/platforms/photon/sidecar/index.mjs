@@ -420,16 +420,27 @@ function advancedTargetMessage(messageId) {
   };
 }
 
-async function withAdvancedIMessageClient(space, fn) {
-  if (!advancedCreateClient) {
-    throw new Error(
-      "advanced iMessage poll actions require @photon-ai/advanced-imessage"
-    );
+// The advanced client resolves its `token` callback per RPC (auth
+// middleware), so the gRPC channels can stay open for the sidecar's lifetime
+// while token issuance is memoized briefly — instead of issuing tokens and
+// building + tearing down every channel on each advanced action.
+const ADVANCED_TOKEN_TTL_MS = 45_000;
+let advancedTokenCache = null; // { data, fetchedAt }
+let advancedClients = null; // [{ phone, client }]
+
+async function issueAdvancedTokens() {
+  const now = Date.now();
+  if (advancedTokenCache && now - advancedTokenCache.fetchedAt < ADVANCED_TOKEN_TTL_MS) {
+    return advancedTokenCache.data;
   }
-  if (typeof cloud?.issueImessageTokens !== "function") {
-    throw new Error("advanced iMessage poll actions require cloud token support");
-  }
-  const tokenData = await cloud.issueImessageTokens(projectId, projectSecret);
+  const data = await cloud.issueImessageTokens(projectId, projectSecret);
+  advancedTokenCache = { data, fetchedAt: now };
+  return data;
+}
+
+async function getAdvancedClients() {
+  if (advancedClients) return advancedClients;
+  const tokenData = await issueAdvancedTokens();
   const clients = [];
   if (tokenData?.type === "shared") {
     const address =
@@ -439,13 +450,12 @@ async function withAdvancedIMessageClient(space, fn) {
       client: advancedCreateClient({
         address,
         tls: true,
-        token: async () => tokenData.token,
+        token: async () => (await issueAdvancedTokens()).token,
       }),
     });
   } else {
-    const auth = tokenData?.auth ?? {};
     const numbers = tokenData?.numbers ?? {};
-    for (const [instanceId, token] of Object.entries(auth)) {
+    for (const instanceId of Object.keys(tokenData?.auth ?? {})) {
       const phone = String(numbers[instanceId] ?? "");
       if (!phone) continue;
       clients.push({
@@ -453,7 +463,7 @@ async function withAdvancedIMessageClient(space, fn) {
         client: advancedCreateClient({
           address: `${instanceId}.imsg.photon.codes:443`,
           tls: true,
-          token: async () => String(token),
+          token: async () => String((await issueAdvancedTokens())?.auth?.[instanceId] ?? ""),
         }),
       });
     }
@@ -461,6 +471,41 @@ async function withAdvancedIMessageClient(space, fn) {
   if (clients.length === 0) {
     throw new Error("could not create an advanced iMessage client");
   }
+  advancedClients = clients;
+  return clients;
+}
+
+async function closeAdvancedClients() {
+  const clients = advancedClients;
+  advancedClients = null;
+  advancedTokenCache = null;
+  if (clients) {
+    await Promise.allSettled(clients.map(({ client }) => client.close()));
+  }
+}
+
+function isAdvancedTransportError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return (
+    message.includes("ECONNRESET") ||
+    message.includes("UNAVAILABLE") ||
+    message.includes("DEADLINE_EXCEEDED") ||
+    message.includes("ConnectionError") ||
+    message.includes("Connection dropped") ||
+    message.includes("stream interrupted")
+  );
+}
+
+async function withAdvancedIMessageClient(space, fn) {
+  if (!advancedCreateClient) {
+    throw new Error(
+      "advanced iMessage poll actions require @photon-ai/advanced-imessage"
+    );
+  }
+  if (typeof cloud?.issueImessageTokens !== "function") {
+    throw new Error("advanced iMessage poll actions require cloud token support");
+  }
+  const clients = await getAdvancedClients();
   const phone = advancedSpacePhone(space);
   const entry =
     clients.length === 1 || clients[0]?.phone === "shared"
@@ -473,8 +518,12 @@ async function withAdvancedIMessageClient(space, fn) {
   }
   try {
     return await fn(entry.client);
-  } finally {
-    await Promise.allSettled(clients.map(({ client }) => client.close()));
+  } catch (error) {
+    // A dead channel would poison every later action; reconnect fresh next
+    // call. Dedicated-mode instance ids can also change when a line moves, so
+    // rebuilding on transport failure covers re-routing too.
+    if (isAdvancedTransportError(error)) await closeAdvancedClients();
+    throw error;
   }
 }
 
@@ -1361,7 +1410,7 @@ async function shutdown(signal) {
   console.error(`photon-sidecar: received ${signal}, stopping...`);
   try {
     await Promise.race([
-      app.stop(),
+      Promise.allSettled([app.stop(), closeAdvancedClients()]),
       new Promise((resolve) => setTimeout(resolve, 3000)),
     ]);
   } catch (e) {

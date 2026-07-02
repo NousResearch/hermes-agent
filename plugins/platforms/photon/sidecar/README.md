@@ -12,6 +12,10 @@ The sidecar:
 - drains the inbound message stream so `spectrum-ts` keeps its
   reconnect/heartbeat machinery alive (real inbound delivery is via
   Photon's signed webhook hitting our Python aiohttp server)
+- keeps the advanced iMessage gRPC clients (polls, stickers, edit/unsend
+  fallbacks, text effects) open for the process lifetime with a short-TTL
+  token memo, instead of issuing tokens and rebuilding channels per action;
+  channels are rebuilt automatically after transport-flavoured failures
 
 ## Install
 

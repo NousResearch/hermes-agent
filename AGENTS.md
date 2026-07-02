@@ -393,6 +393,22 @@ versa), you're on the wrong loader. Check `DEFAULT_CONFIG` coverage.
   `.env`. Same for `TERMINAL_CWD` in `.env`; the canonical setting is
   `terminal.cwd` in `config.yaml`.
 
+### Config integrity seal and interprocess lock
+
+`save_config()` in `hermes_cli/config.py` automatically:
+- Acquires an exclusive OS file lock (`config_write_lock()`) on `~/.hermes/config.yaml.lock`
+- Writes `~/.hermes/config.yaml` atomically
+- Updates the SHA256 seal at `~/.hermes/config.yaml.sha256` via `seal_config()`
+- Releases the lock
+
+**Never bypass `save_config()` when writing config.** If you must write config directly (e.g. a restore script), call `seal_config()` afterward to keep the seal in sync.
+
+Public helpers:
+- `seal_config()` — recompute and write the SHA256 seal
+- `verify_config_integrity(locked=False)` — returns `(ok, current_digest, sealed_digest)`; pass `locked=True` from external processes to acquire a shared read lock first
+- `restore_config(content, *, reason="")` — lock → backup → write → reseal (use in restore scripts instead of direct file writes)
+- `config_read_lock()` — shared lock context manager for external readers (e.g. the Config Integrity Watchdog) to acquire before checking integrity
+
 ---
 
 ## Skin/Theme System
@@ -681,10 +697,7 @@ violate them.
    `## Prerequisites`.
 
 6. **Scripts go in `scripts/`, references in `references/`,
-   templates in `templates/`.** Don't expect the model to inline-write
-   parsers, XML walkers, or non-trivial logic every call — ship a
-   helper script. Reference it from SKILL.md by path relative to the
-   skill directory.
+   templates in `templates/`.** Ship helper scripts rather than expecting the model to inline-write non-trivial logic. Reference by path relative to the skill directory. `*.py` files in `scripts/` are automatically deployed to `~/.hermes/scripts/` on every Hermes startup (via `deploy_skill_scripts()` in `tools/skills_sync.py`) — use this for standalone scripts that cron jobs or users need to invoke by path (e.g. health-check scripts, restore utilities).
 
 7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only
    stdlib + pytest + `unittest.mock`. No live network calls. Run via

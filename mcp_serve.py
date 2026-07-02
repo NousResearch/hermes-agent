@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
+_APPROVAL_ID_RE = re.compile(r"[0-9a-f]{12}\Z")
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
@@ -98,6 +99,22 @@ def _approvals_responses_dir() -> Path:
         return _fallback_hermes_home() / "approvals" / "responses"
 
 
+def _approval_file_path(base_dir: Path, approval_id: str) -> Optional[Path]:
+    """Return the direct child JSON path for a generated approval id."""
+    if not _APPROVAL_ID_RE.fullmatch(approval_id):
+        return None
+    candidate = base_dir / f"{approval_id}.json"
+    try:
+        base_resolved = base_dir.resolve(strict=False)
+        candidate_resolved = candidate.resolve(strict=False)
+        candidate_resolved.relative_to(base_resolved)
+    except (OSError, ValueError):
+        return None
+    if candidate_resolved.parent != base_resolved:
+        return None
+    return candidate
+
+
 def _fallback_hermes_home() -> Path:
     try:
         from hermes_constants import get_hermes_home
@@ -106,27 +123,26 @@ def _fallback_hermes_home() -> Path:
         return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 
 
-def _write_approval_response(path: Path, payload: dict) -> None:
-    """Atomically write a decision file (temp file + os.replace)."""
-    try:
-        from utils import atomic_json_write
-        atomic_json_write(path, payload)
-        return
-    except ImportError:
-        pass
+def _write_approval_response(path: Path, payload: dict) -> bool:
+    """Publish a complete decision without replacing an earlier response."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent),
                                     prefix=f".{path.stem}_", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
-        os.replace(tmp_path, path)
-    except OSError:
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-        raise
 
 
 def _load_sessions_index() -> dict:
@@ -478,13 +494,22 @@ class EventBridge:
             for path in paths:
                 if path.suffix != ".json":
                     continue
+                file_id = path.stem
+                if not _APPROVAL_ID_RE.fullmatch(file_id):
+                    continue
                 try:
                     record = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
                 if not isinstance(record, dict):
                     continue
-                approval_id = str(record.get("id") or path.stem)
+                approval_id = str(record.get("id") or file_id)
+                if approval_id != file_id \
+                        or not _APPROVAL_ID_RE.fullmatch(approval_id):
+                    continue
+                if record.get("id") is None:
+                    record = dict(record)
+                    record["id"] = approval_id
                 expires_at = record.get("expires_at")
                 if isinstance(expires_at, (int, float)) and expires_at <= now:
                     continue  # stale leftover from a dead gateway — ignore
@@ -543,21 +568,35 @@ class EventBridge:
         """
         if decision not in {"once", "session", "always", "deny"}:
             return {"error": f"Invalid decision: {decision}"}
+        pending_path = _approval_file_path(_approvals_pending_dir(),
+                                           approval_id)
+        response_path = _approval_file_path(_approvals_responses_dir(),
+                                            approval_id)
+        if pending_path is None or response_path is None:
+            return {"error": f"Invalid approval id: {approval_id}"}
 
         self._poll_approvals()
-        pending_path = _approvals_pending_dir() / f"{approval_id}.json"
         if not pending_path.exists():
             return {"error": "Approval not found (unknown, expired, or "
                              f"already resolved): {approval_id}"}
 
         try:
-            _write_approval_response(
-                _approvals_responses_dir() / f"{approval_id}.json",
+            submitted = _write_approval_response(
+                response_path,
                 {"id": approval_id, "decision": decision,
                  "created_at": time.time(), "source": "mcp-bridge"},
             )
         except OSError as exc:
             return {"error": f"Could not write approval response: {exc}"}
+        if not submitted:
+            return {
+                "resolved": False,
+                "submitted": False,
+                "already_submitted": True,
+                "approval_id": approval_id,
+                "detail": "A decision has already been submitted for this "
+                          "approval.",
+            }
 
         # The gateway wait loop polls every ≤1s; wait briefly for it to
         # consume the decision so we can report an honest resolution.

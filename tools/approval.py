@@ -1586,11 +1586,13 @@ def _retract_pending_approval(approval_id: str) -> None:
 
 
 def _consume_external_decision(approval_id: str) -> Optional[str]:
-    """Read-and-delete an external decision for *approval_id*, if present.
+    """Read an external decision for *approval_id*, if present.
 
     Returns a decision from ``_EXTERNAL_DECISIONS``, or None when there is
-    no (valid) response. Invalid payloads are logged and discarded — fail
-    closed, never resolve on garbage.
+    no (valid) response. A valid response remains in place as the first-writer
+    claim until the wait loop retracts the handshake. Invalid payloads are
+    discarded so a supervisor can retry — fail closed, never resolve on
+    garbage.
     """
     path = approvals_responses_dir() / f"{approval_id}.json"
     try:
@@ -1600,14 +1602,14 @@ def _consume_external_decision(approval_id: str) -> Optional[str]:
     except OSError:
         return None
     try:
-        path.unlink()
-    except OSError:
-        pass
-    try:
         decision = json.loads(raw).get("decision")
     except (ValueError, AttributeError):
         decision = None
     if decision not in _EXTERNAL_DECISIONS:
+        try:
+            path.unlink()
+        except OSError:
+            pass
         logger.warning("Ignoring invalid external approval decision %r for %s",
                        decision, approval_id)
         return None

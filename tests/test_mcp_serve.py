@@ -482,8 +482,9 @@ class TestEventBridge:
         from mcp_serve import EventBridge
         pending_dir = tmp_path / "approvals" / "pending"
         pending_dir.mkdir(parents=True)
-        (pending_dir / "a1.json").write_text(json.dumps({
-            "id": "a1", "description": "rm -rf /tmp",
+        approval_id = "a00000000001"
+        (pending_dir / f"{approval_id}.json").write_text(json.dumps({
+            "id": approval_id, "description": "rm -rf /tmp",
             "session_key": "test", "created_at": _time.time(),
             "expires_at": _time.time() + 300,
         }))
@@ -491,25 +492,27 @@ class TestEventBridge:
         assert len(b.list_pending_approvals()) == 1
 
         def _gateway_consumes():
-            response = tmp_path / "approvals" / "responses" / "a1.json"
+            response = (
+                tmp_path / "approvals" / "responses" / f"{approval_id}.json"
+            )
             deadline = _time.monotonic() + 3
             while _time.monotonic() < deadline:
                 if response.exists():
                     response.unlink()
-                    (pending_dir / "a1.json").unlink()
+                    (pending_dir / f"{approval_id}.json").unlink()
                     return
                 _time.sleep(0.02)
 
         consumer = threading.Thread(target=_gateway_consumes, daemon=True)
         consumer.start()
-        result = b.respond_to_approval("a1", "deny")
+        result = b.respond_to_approval(approval_id, "deny")
         consumer.join(timeout=4)
         assert result["resolved"] is True
         assert len(b.list_pending_approvals()) == 0
 
     def test_respond_nonexistent(self):
         from mcp_serve import EventBridge
-        r = EventBridge().respond_to_approval("nope", "deny")
+        r = EventBridge().respond_to_approval("ffffffffffff", "deny")
         assert "error" in r
 
 
@@ -936,18 +939,19 @@ class TestE2EPermissions:
 
     def test_list_with_approvals(self, mcp_server_e2e, _event_loop, tmp_path):
         server, _ = mcp_server_e2e
-        _place_pending_approval(tmp_path, "a1")
+        _place_pending_approval(tmp_path, "a00000000001")
         result = _run_tool(server, "permissions_list_open")
         assert result["count"] == 1
-        assert result["approvals"][0]["id"] == "a1"
+        assert result["approvals"][0]["id"] == "a00000000001"
         assert result["approvals"][0]["command"] == "sudo rm -rf /"
 
     def test_respond_allow(self, mcp_server_e2e, _event_loop, tmp_path):
         server, _ = mcp_server_e2e
-        _place_pending_approval(tmp_path, "a1")
-        consumer = _consume_approval_like_gateway(tmp_path, "a1")
+        approval_id = "a00000000001"
+        _place_pending_approval(tmp_path, approval_id)
+        consumer = _consume_approval_like_gateway(tmp_path, approval_id)
         result = _run_tool(server, "permissions_respond",
-                          {"id": "a1", "decision": "allow-once"})
+                          {"id": approval_id, "decision": "allow-once"})
         consumer.join(timeout=4)
         assert result["resolved"] is True
         assert result["decision"] == "once"  # gateway-native choice
@@ -957,10 +961,11 @@ class TestE2EPermissions:
 
     def test_respond_deny(self, mcp_server_e2e, _event_loop, tmp_path):
         server, _ = mcp_server_e2e
-        _place_pending_approval(tmp_path, "a2")
-        consumer = _consume_approval_like_gateway(tmp_path, "a2")
+        approval_id = "a00000000002"
+        _place_pending_approval(tmp_path, approval_id)
+        consumer = _consume_approval_like_gateway(tmp_path, approval_id)
         result = _run_tool(server, "permissions_respond",
-                          {"id": "a2", "decision": "deny"})
+                          {"id": approval_id, "decision": "deny"})
         consumer.join(timeout=4)
         assert result["resolved"] is True
 

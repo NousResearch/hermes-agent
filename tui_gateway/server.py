@@ -4256,6 +4256,10 @@ def _repair_aggregator_model_id(model: str, provider: str | None) -> str:
                 return cand
         return model
     except Exception:
+        # "Never raises" contract: a repair failure must not break agent
+        # builds — but leave a trace, otherwise a broken import silently
+        # keeps the unrepaired (404-prone) id.
+        logger.exception("aggregator model-id repair failed; keeping %r", model)
         return model
 
 

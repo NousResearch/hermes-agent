@@ -341,6 +341,16 @@ class TestSearch:
             _assert_clean(f)
             assert Path(f).exists(), f"Search returned non-existent path: {f}"
 
+    def test_file_search_includes_empty_directories(self, ops, tmp_path):
+        root = tmp_path / "repo"
+        empty_dir = root / "vault"
+        empty_dir.mkdir(parents=True)
+
+        result = ops.search("*", str(root), target="files")
+
+        assert result.error is None
+        assert str(empty_dir) in result.files
+
     def test_content_search_with_glob_filter(self, ops, populated_dir):
         result = ops.search("return", str(populated_dir), target="content", file_glob="*.py")
         assert result.error is None

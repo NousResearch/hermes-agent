@@ -2152,7 +2152,8 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        type_expr = r"\( -type f -o -type d \)"
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} {type_expr} -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -2160,7 +2161,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} {type_expr} -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2214,7 +2215,11 @@ class ShellFileOperations(FileOperations):
         else:
             glob_pattern = pattern
 
-        fetch_limit = limit + offset
+        can_find = self._has_command('find')
+        # The overflow row is needed only when directory candidates will be
+        # merged into the page. Preserve the established rg-only pipeline
+        # size (offset + limit) when find is unavailable.
+        fetch_limit = limit + offset + (1 if can_find else 0)
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
@@ -2236,12 +2241,113 @@ class ShellFileOperations(FileOperations):
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
 
-        page = all_files[offset:offset + limit]
+        # A timed-out rg traversal is already incomplete.  Do not launch a
+        # second full-tree walk for directories and present the union as if it
+        # were a coherent page.
+        if limit_reason or not can_find:
+            page = all_files[offset:offset + limit]
+            return SearchResult(
+                files=page,
+                total_count=len(all_files),
+                truncated=(
+                    len(all_files) > offset + limit
+                    if can_find
+                    else len(all_files) >= offset + limit
+                ) or bool(limit_reason),
+                limit_reason=limit_reason,
+            )
+
+        all_paths = list(all_files)
+        path_mtimes = {}
+        if can_find:
+            search_root = Path(path)
+            has_hidden_path_ancestor = any(
+                part not in {".", ".."} and part.startswith(".")
+                for part in search_root.parts
+            )
+            hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
+            hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
+            # Collect both kinds so files and directories can be globally
+            # ordered before pagination.  rg remains authoritative for which
+            # files survive ignore processing; find adds directory entries.
+            dir_cmd = (
+                f"find {self._escape_shell_arg(path)}{hidden_filter_expr} "
+                f"\\( -type f -o -type d \\) -name {self._escape_shell_arg(pattern)} "
+                f"-printf '%y %T@ %p\\n' 2>/dev/null"
+            )
+            dir_result = self._exec(dir_cmd, timeout=60)
+            dir_stdout, dir_limit_reason = _search_stdout_and_limit(dir_result)
+            if not dir_stdout.strip() and not dir_limit_reason:
+                dir_cmd_simple = (
+                    f"find {self._escape_shell_arg(path)}{hidden_filter_expr} "
+                    f"-type d -name {self._escape_shell_arg(pattern)} "
+                    f"-exec stat -f 'd %m %N' {{}} \\; 2>/dev/null"
+                )
+                dir_result = self._exec(dir_cmd_simple, timeout=60)
+                dir_stdout, dir_limit_reason = _search_stdout_and_limit(dir_result)
+
+            found_dirs = []
+            for line in dir_stdout.strip().split('\n'):
+                if not line:
+                    continue
+                parts = line.split(' ', 2)
+                if len(parts) == 3 and parts[1].replace('.', '').isdigit():
+                    path_type, timestamp, found_path = parts
+                    path_mtimes[found_path] = float(timestamp)
+                    if path_type == "d":
+                        found_dirs.append(found_path)
+            limit_reason = limit_reason or dir_limit_reason
+
+            # `find` does not understand git ignore rules.  In a worktree,
+            # batch its directory candidates through git's ignore engine so
+            # ignored empty directories do not leak into rg-backed results.
+            if found_dirs and self._has_command('git'):
+                git_probe = self._exec(
+                    f"git -C {self._escape_shell_arg(path)} rev-parse --is-inside-work-tree 2>/dev/null"
+                )
+                if git_probe.exit_code == 0 and "true" in git_probe.stdout.lower():
+                    ignored_cmd = (
+                        f"find {self._escape_shell_arg(path)}{hidden_filter_expr} "
+                        f"-type d -name {self._escape_shell_arg(pattern)} -print0 2>/dev/null "
+                        f"| git -C {self._escape_shell_arg(path)} check-ignore "
+                        f"--stdin -z -v --non-matching"
+                    )
+                    ignored_result = self._exec(ignored_cmd, timeout=60)
+                    if ignored_result.exit_code == 0:
+                        fields = ignored_result.stdout.split("\0")
+                        allowed_dirs = {
+                            fields[i + 3]
+                            for i in range(0, len(fields) - 3, 4)
+                            if not fields[i]
+                        }
+                        found_dirs = [d for d in found_dirs if d in allowed_dirs]
+
+            all_paths.extend(found_dirs)
+
+        deduped_paths = list(dict.fromkeys(all_paths))
+        if can_find and has_hidden_path_ancestor:
+            normalized_root = Path(path).resolve()
+            filtered_paths = []
+            for found_path in deduped_paths:
+                try:
+                    rel_parts = Path(found_path).resolve().relative_to(normalized_root).parts
+                except ValueError:
+                    rel_parts = Path(found_path).parts
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+                    continue
+                filtered_paths.append(found_path)
+            deduped_paths = filtered_paths
+        # rg already produced files in mtime order.  When find supplied
+        # timestamps, use them to merge directories into that same ordering
+        # before applying offset/limit.
+        if path_mtimes:
+            deduped_paths.sort(key=lambda p: path_mtimes.get(p, float("-inf")), reverse=True)
+        page = deduped_paths[offset:offset + limit]
 
         return SearchResult(
             files=page,
-            total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            total_count=len(deduped_paths),
+            truncated=len(deduped_paths) > offset + limit or bool(limit_reason),
             limit_reason=limit_reason,
         )
     

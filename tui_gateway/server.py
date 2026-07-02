@@ -4203,6 +4203,62 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _repair_aggregator_model_id(model: str, provider: str | None) -> str:
+    """Repair a native-dialect model id shipped to an aggregator provider.
+
+    The desktop composer persists its model pick as sticky UI state and ships
+    it verbatim on every ``session.create``. A pick made while the profile ran
+    a direct provider (e.g. anthropic's ``claude-opus-4-8``) survives a later
+    switch to an aggregator (nous/openrouter), whose catalogs serve
+    vendor-slugged dot-form ids (``anthropic/claude-opus-4.8``) — the raw
+    request then 404s on every turn. Generic normalization cannot restore the
+    dots, so repair by canonical-form matching against known catalog ids and
+    the configured default. Unknown ids pass through untouched; any failure
+    falls back to the original value (never raises).
+    """
+    try:
+        if not model or not provider:
+            return model
+        from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS
+
+        if provider not in _AGGREGATOR_PROVIDERS:
+            return model
+
+        def _canon(mid: str) -> str:
+            bare = mid.split("/", 1)[-1] if "/" in mid else mid
+            return bare.strip().lower().replace(".", "-")
+
+        candidates: list[str] = []
+        try:
+            cfg_model = ((_load_cfg().get("model") or {}).get("default") or "").strip()
+            if cfg_model:
+                candidates.append(cfg_model)
+        except Exception:
+            pass
+        if provider == "nous":
+            try:
+                from hermes_cli.models import get_curated_nous_model_ids
+
+                candidates.extend(get_curated_nous_model_ids() or [])
+            except Exception:
+                pass
+
+        # Already a known catalog id — nothing to repair.
+        if model in candidates:
+            return model
+        target = _canon(model)
+        for cand in candidates:
+            if "/" in cand and _canon(cand) == target:
+                logger.info(
+                    "session model %r repaired to %r for aggregator provider %s",
+                    model, cand, provider,
+                )
+                return cand
+        return model
+    except Exception:
+        return model
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -4317,6 +4373,10 @@ def _make_agent(
             "requested": requested_provider,
             "target_model": model or None,
         })
+    # Repair sticky/persisted model ids that don't match the resolved
+    # aggregator provider's dialect (composer picks from a direct-provider
+    # era, pre-switch DB rows) — see _repair_aggregator_model_id.
+    model = _repair_aggregator_model_id(model, runtime.get("provider"))
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,

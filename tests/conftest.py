@@ -360,6 +360,20 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
+    #     at import time. When the module is first imported at collection (any
+    #     test file with a top-level ``from hermes_state import ...``) that
+    #     happens BEFORE this fixture ever runs, so every argless
+    #     ``SessionDB()`` in every test opens the developer's REAL state.db —
+    #     reading real sessions into assertions and writing test rows into the
+    #     real profile. Re-pin the constant to this test's home. (Several test
+    #     files already do this locally; this makes it an invariant.)
+    hermes_state_mod = sys.modules.get("hermes_state")
+    if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
+        monkeypatch.setattr(
+            hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
+        )
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")
@@ -417,6 +431,109 @@ def _isolate_hermes_home(_hermetic_environment):
 # this replaces; the running example was ``test_command_guards`` failing
 # 12/15 CI runs because ``tools.approval._session_approved`` carried
 # approvals from one test's session into another's.
+
+
+# ── tui_gateway.server shared-module state isolation ───────────────────────
+#
+# ``tui_gateway.server`` registers its RPC handlers in a module-level
+# ``_methods`` dict at import time and keeps per-session state in module
+# globals (sessions, child-run registry, config cache, DB handle). The
+# canonical per-file process isolation above hides any leakage, but a direct
+# multi-file invocation (``pytest tests/tui_gateway/ tests/test_tui_gateway_server.py``,
+# or plain ``pytest tests/``) shares one interpreter: a test that stubs
+# ``_methods["slash.exec"]`` or leaves an active-session lease behind breaks
+# unrelated tests in later files. This fixture snapshots the cheap-to-copy
+# globals before each test and restores them after, so any file combination
+# is order-independent. It is a near no-op (one sys.modules lookup) while
+# the module has not been imported.
+#
+# The case this cannot cover — the module is first imported *during* a test
+# that also mutates ``_methods`` — is handled by the importing files' own
+# ``server`` fixtures (tests/tui_gateway/test_protocol.py and friends), which
+# snapshot immediately after the import.
+
+_TUI_SERVER_MODULE = "tui_gateway.server"
+
+
+def _release_tui_server_leases(sessions: dict) -> None:
+    """Release active-session leases held by leftover server sessions.
+
+    Clearing ``_sessions`` without releasing leaks the lease's registry
+    entry; with the test process alive it is never pruned, so later tests
+    hit a phantom 'active session limit' against stale entries.
+    """
+    for session in list(sessions.values()):
+        lease = session.get("active_session_lease") if isinstance(session, dict) else None
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_tui_gateway_server_state():
+    mod = sys.modules.get(_TUI_SERVER_MODULE)
+    snapshot = None
+    if mod is not None:
+        snapshot = {
+            "methods": dict(mod._methods),
+            "cfg": (mod._cfg_cache, mod._cfg_mtime, mod._cfg_path),
+            "db": (mod._db, mod._db_error),
+            "real_stdout": mod._real_stdout,
+        }
+
+    yield
+
+    mod = sys.modules.get(_TUI_SERVER_MODULE)
+    if mod is None:
+        return
+
+    # This finalizer can run before the test's own monkeypatch undo, so a
+    # global may still be replaced with a non-dict test double — skip those
+    # (monkeypatch restores the real, pre-test object afterwards anyway).
+    sessions = mod._sessions
+    if isinstance(sessions, dict):
+        _release_tui_server_leases(sessions)
+        sessions.clear()
+    for name in (
+        "_pending",
+        "_pending_prompt_payloads",
+        "_answers",
+        "_child_mirrors",
+        "_active_child_runs",
+    ):
+        obj = getattr(mod, name, None)
+        if isinstance(obj, dict):
+            obj.clear()
+
+    if snapshot is not None:
+        mod._methods.clear()
+        mod._methods.update(snapshot["methods"])
+        mod._cfg_cache, mod._cfg_mtime, mod._cfg_path = snapshot["cfg"]
+        mod._db, mod._db_error = snapshot["db"]
+        mod._real_stdout = snapshot["real_stdout"]
+    else:
+        # First imported during this test — reset to import-time defaults
+        # for the globals we could not snapshot (``_methods`` is left to
+        # the importing file's fixture, see block comment above).
+        mod._cfg_cache = None
+        mod._cfg_mtime = None
+        mod._cfg_path = None
+        mod._db = None
+        mod._db_error = None
+
+    # A leaked context-local Hermes home override redirects every later
+    # ``get_hermes_home()`` call (active-session registry, config paths)
+    # to a stale per-test tmpdir. Force the main-thread ContextVar back
+    # to its default.
+    try:
+        from hermes_constants import get_hermes_home_override, set_hermes_home_override
+
+        if get_hermes_home_override() is not None:
+            set_hermes_home_override(None)
+    except Exception:
+        pass
 
 
 @pytest.fixture()

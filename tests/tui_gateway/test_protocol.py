@@ -21,6 +21,12 @@ def _restore_stdout():
 
 @pytest.fixture()
 def server():
+    # The sys.modules mocks only need to cover the *initial* import — once
+    # tui_gateway.server is cached, they are inert. Keeping them active for
+    # the whole test poisons any module first imported inside a test body:
+    # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
+    # (a fixed shared path) forever, leaking active-session registry entries
+    # across every later test in the process. Scope the patch to the import.
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -29,18 +35,25 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        # Reset module-level session state without re-importing. importlib.reload
-        # would re-register the module's atexit hooks (ThreadPoolExecutor
-        # shutdown, _shutdown_sessions); the duplicates race the stderr
-        # buffer at interpreter shutdown and surface as Fatal Python error:
-        # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
+
+    # Snapshot the RPC registry: several tests below stub handlers
+    # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
+    # which is shared with every other test file in the process.
+    methods = dict(mod._methods)
+    real_stdout = mod._real_stdout
+    yield mod
+    # Reset module-level state without re-importing. importlib.reload
+    # would re-register the module's atexit hooks (ThreadPoolExecutor
+    # shutdown, _shutdown_sessions); the duplicates race the stderr
+    # buffer at interpreter shutdown and surface as Fatal Python error:
+    # _enter_buffered_busy. Restoring the dicts in place gives the next
+    # test a clean slate.
+    mod._methods.clear()
+    mod._methods.update(methods)
+    mod._real_stdout = real_stdout
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
 
 
 @pytest.fixture()

@@ -4,7 +4,8 @@ Registers a single LLM-callable tool ``crwd_db`` (gated on ``CRWD_MONGO_URI``)
 that reads CRWD's MongoDB data through a handful of purpose-built actions plus
 one guarded custom-query escape hatch:
 
-- ``list_active_gigs`` -- open gigs sorted by soonest end_date
+- ``list_active_gigs`` -- open gigs sorted by soonest end_date; pass ``user_id`` to
+  exclude gigs the member already has a membership for
 - ``get_gig_details``  -- fuzzy-match gigs by name / free text, ranked candidates
 - ``get_user``         -- look up one user by email, phone, or _id
 - ``get_user_gigs``    -- campaigns a user is an active member of
@@ -210,18 +211,67 @@ def _slim_gig(gig: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- Actions ---
 
-def _list_active_gigs(limit: int = 5) -> str:
+def _get_enrolled_gig_ids(user_id: str) -> set[str]:
+    """Gig _ids the user has any non-deleted membership row for."""
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return set()
+    id_values = _id_values(user_id)
+    member_filter = {
+        "$or": [
+            {"member": {"$in": id_values}},
+            {"user_id": {"$in": id_values}},
+            {"worker_id": {"$in": id_values}},
+        ],
+        "isDeleted": {"$ne": True},
+    }
+    cursor = _db()[_COLL_MEMBERS].find(
+        member_filter, {"crwd_id": 1}, max_time_ms=_MAX_TIME_MS
+    )
+    enrolled: set[str] = set()
+    for row in cursor:
+        crwd_id = row.get("crwd_id")
+        if crwd_id is not None:
+            enrolled.add(str(crwd_id))
+    return enrolled
+
+
+def _list_active_gigs(limit: int = 5, user_id: str = "", offset: int = 0) -> str:
     row_limit = max(1, min(int(limit or 5), _HARD_LIMIT))
+    row_offset = max(0, int(offset or 0))
+    query: Dict[str, Any] = dict(_open_gig_filter())
+    user_id = (user_id or "").strip()
+    excluded_count = 0
+    if user_id:
+        enrolled_ids = _get_enrolled_gig_ids(user_id)
+        excluded_count = len(enrolled_ids)
+        enrolled_oids = [oid for gid in enrolled_ids if (oid := _oid(gid)) is not None]
+        if enrolled_oids:
+            query["_id"] = {"$nin": enrolled_oids}
+    coll = _db()[_COLL_CRWDS]
+    total = coll.count_documents(query, maxTimeMS=_MAX_TIME_MS)
     cursor = (
-        _db()[_COLL_CRWDS]
-        .find(_open_gig_filter(), _GIG_FIELDS, max_time_ms=_MAX_TIME_MS)
+        coll.find(query, _GIG_FIELDS, max_time_ms=_MAX_TIME_MS)
         .sort("end_date", 1)
+        .skip(row_offset)
         .limit(row_limit)
     )
     items = [_slim_gig(g) for g in cursor]
-    return json.dumps(
-        {"_type": "gig_list", "items": items, "error": None}, ensure_ascii=False
-    )
+    next_offset = row_offset + len(items)
+    has_more = next_offset < total
+    payload: Dict[str, Any] = {
+        "_type": "gig_list",
+        "items": items,
+        "error": None,
+        "offset": row_offset,
+        "limit": row_limit,
+        "total": total,
+        "has_more": has_more,
+        "next_offset": next_offset if has_more else None,
+    }
+    if user_id:
+        payload["excluded_enrolled_count"] = excluded_count
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _normalize(text: str) -> str:
@@ -502,7 +552,11 @@ def crwd_db_tool(args: Dict[str, Any], **_kw: Any) -> str:
     action = str(args.get("action", "")).strip()
     try:
         if action == "list_active_gigs":
-            return _list_active_gigs(limit=args.get("limit", 5))
+            return _list_active_gigs(
+                limit=args.get("limit", 5),
+                user_id=args.get("user_id", ""),
+                offset=args.get("offset", 0),
+            )
         if action == "get_gig_details":
             return _get_gig_details(query=args.get("query", ""), top_n=args.get("top_n", 3))
         if action == "get_user":
@@ -547,9 +601,11 @@ CRWD_DB_SCHEMA = {
         "the specific action if it fits (list_active_gigs, get_gig_details, "
         "get_user, get_user_gigs, get_user_products, get_user_receipts, "
         "get_user_notifications); use custom_query only when none of the "
-        "others answer the question. get_gig_details fuzzy-matches gig names "
-        "and returns ranked candidates -- pick the _id you mean before using "
-        "it elsewhere."
+        "others answer the question. list_active_gigs accepts user_id to "
+        "exclude gigs the member already has a membership for, and offset for "
+        "pagination; it returns has_more and next_offset for the next page. "
+        "get_gig_details fuzzy-matches gig names and returns ranked candidates "
+        "-- pick the _id you mean before using it elsewhere."
     ),
     "parameters": {
         "type": "object",
@@ -562,9 +618,23 @@ CRWD_DB_SCHEMA = {
                     "get_user_notifications", "custom_query",
                 ],
             },
-            "limit": {"type": "integer", "description": "max rows (capped at 20)"},
+            "limit": {"type": "integer", "description": "max rows per page (capped at 20; list_active_gigs default 5)"},
+            "offset": {
+                "type": "integer",
+                "description": (
+                    "skip N results for pagination (list_active_gigs). "
+                    "Use next_offset from the previous result to get the next page."
+                ),
+            },
             "identifier": {"type": "string", "description": "email, phone, or user _id (get_user)"},
-            "user_id": {"type": "string", "description": "users._id (get_user_gigs, get_user_products, get_user_receipts, get_user_notifications)"},
+            "user_id": {
+                "type": "string",
+                "description": (
+                    "users._id. For list_active_gigs: exclude gigs the member "
+                    "already has a membership for. Also used by get_user_gigs, "
+                    "get_user_products, get_user_receipts, get_user_notifications."
+                ),
+            },
             "query": {"type": "string", "description": "gig _id, name, or free text to fuzzy-match (get_gig_details)"},
             "top_n": {"type": "integer", "description": "max candidates to return, default 3, max 10 (get_gig_details)"},
             "collection": {"type": "string", "enum": [

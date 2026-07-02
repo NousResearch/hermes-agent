@@ -205,6 +205,129 @@ class TestNewUserActions:
         assert out["items"] == [{"title": "hi"}]
 
 
+class TestEnrolledGigExclusion:
+    def test_get_enrolled_gig_ids_collects_crwd_ids(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        enrolled_oid = t._oid("69e6a4d6cea992cbda22b381")
+        coll = MagicMock()
+        coll.find.return_value = [{"crwd_id": enrolled_oid}]
+        with patch.object(t, "_db", return_value=_fake_db({"added_crwd_members": coll})):
+            enrolled = t._get_enrolled_gig_ids("69a6f191cb29b0b371b3a156")
+        assert enrolled == {"69e6a4d6cea992cbda22b381"}
+
+    def test_list_active_gigs_with_user_id_excludes_enrolled(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        enrolled_oid = t._oid("69e6a4d6cea992cbda22b381")
+        available_oid = t._oid("69b8614f1083b9302fd0a9a7")
+        mock_members = MagicMock()
+        mock_members.find.return_value = [{"crwd_id": enrolled_oid}]
+        mock_crwds = MagicMock()
+        cursor = MagicMock()
+        mock_crwds.find.return_value = cursor
+        mock_crwds.count_documents.return_value = 1
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = [
+            {"_id": available_oid, "name": "New Gig", "gig_stores": []},
+        ]
+        with patch.object(t, "_db", return_value=_fake_db({
+            "added_crwd_members": mock_members,
+            "crwds": mock_crwds,
+        })):
+            out = json.loads(t.crwd_db_tool({
+                "action": "list_active_gigs",
+                "user_id": "69a6f191cb29b0b371b3a156",
+            }))
+        assert out["_type"] == "gig_list"
+        assert out["excluded_enrolled_count"] == 1
+        assert len(out["items"]) == 1
+        assert out["has_more"] is False
+        assert out["next_offset"] is None
+        query_used = mock_crwds.find.call_args[0][0]
+        assert enrolled_oid in query_used["_id"]["$nin"]
+        cursor.skip.assert_called_with(0)
+
+    def test_list_active_gigs_without_user_id_no_exclusion(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        mock_crwds = MagicMock()
+        cursor = MagicMock()
+        mock_crwds.find.return_value = cursor
+        mock_crwds.count_documents.return_value = 0
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = []
+        with patch.object(t, "_db", return_value=_fake_db({"crwds": mock_crwds})):
+            out = json.loads(t.crwd_db_tool({"action": "list_active_gigs"}))
+        assert "excluded_enrolled_count" not in out
+        assert out["has_more"] is False
+        query_used = mock_crwds.find.call_args[0][0]
+        assert "$nin" not in query_used.get("_id", {})
+
+
+class TestListActiveGigsPagination:
+    def _gig_doc(self, hex_id: str, name: str):
+        return {"_id": t._oid(hex_id), "name": name, "gig_stores": []}
+
+    def test_pagination_first_page_has_more(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        mock_crwds = MagicMock()
+        cursor = MagicMock()
+        mock_crwds.find.return_value = cursor
+        mock_crwds.count_documents.return_value = 12
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = [self._gig_doc(f"69b8614f1083b9302fd0a9{i:02x}", f"Gig {i}") for i in range(5)]
+        with patch.object(t, "_db", return_value=_fake_db({"crwds": mock_crwds})):
+            out = json.loads(t.crwd_db_tool({"action": "list_active_gigs", "limit": 5}))
+        assert out["total"] == 12
+        assert out["offset"] == 0
+        assert out["limit"] == 5
+        assert len(out["items"]) == 5
+        assert out["has_more"] is True
+        assert out["next_offset"] == 5
+        cursor.skip.assert_called_with(0)
+
+    def test_pagination_second_page_uses_offset(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        mock_crwds = MagicMock()
+        cursor = MagicMock()
+        mock_crwds.find.return_value = cursor
+        mock_crwds.count_documents.return_value = 12
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = [self._gig_doc("69b8614f1083b9302fd0a9a7", "Gig 6")]
+        with patch.object(t, "_db", return_value=_fake_db({"crwds": mock_crwds})):
+            out = json.loads(t.crwd_db_tool({
+                "action": "list_active_gigs",
+                "limit": 5,
+                "offset": 5,
+            }))
+        assert out["offset"] == 5
+        assert out["has_more"] is True
+        assert out["next_offset"] == 6
+        cursor.skip.assert_called_with(5)
+
+    def test_last_page_has_more_false(self, monkeypatch):
+        monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")
+        mock_crwds = MagicMock()
+        cursor = MagicMock()
+        mock_crwds.find.return_value = cursor
+        mock_crwds.count_documents.return_value = 10
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = [self._gig_doc("69b8614f1083b9302fd0a9a7", "Gig 10")]
+        with patch.object(t, "_db", return_value=_fake_db({"crwds": mock_crwds})):
+            out = json.loads(t.crwd_db_tool({
+                "action": "list_active_gigs",
+                "limit": 5,
+                "offset": 9,
+            }))
+        assert out["offset"] == 9
+        assert len(out["items"]) == 1
+        assert out["has_more"] is False
+        assert out["next_offset"] is None
+
+
 class TestRouter:
     def test_unknown_action(self, monkeypatch):
         monkeypatch.setenv("CRWD_MONGO_URI", "mongodb://x/")

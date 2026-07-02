@@ -188,7 +188,8 @@ def member_context_hook(**kwargs: Any) -> Optional[Dict[str, str]]:
             return None
         context = (
             f"[CRWD member] This member's CRWD user_id is {crwd_id}. Use it directly as the "
-            "user_id for crwd_db get_user_gigs / get_user_receipts / get_user_products. "
+            "user_id for crwd_db list_active_gigs (available gigs to apply for), "
+            "get_user_gigs, get_user_receipts, and get_user_products. "
             "Only call get_user when you need to look up a different person."
         )
         return {"context": context}

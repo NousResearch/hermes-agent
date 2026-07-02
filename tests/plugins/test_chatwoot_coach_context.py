@@ -73,6 +73,7 @@ class TestHook:
             out = cc.member_context_hook(platform="chatwoot", sender_id="55")
         assert out is not None
         assert "abc123" in out["context"]
+        assert "list_active_gigs" in out["context"]
         assert "get_user_gigs" in out["context"]
 
     def test_none_off_chatwoot(self, chatwoot_env):

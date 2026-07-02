@@ -270,11 +270,20 @@ def _run_reference(
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
         messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Optional per-slot reasoning effort (preset key ``reasoning_effort``
+        # on a reference slot, preserved by moa_config._clean_slot). References
+        # are advisors, so presets commonly dial their thinking down ("low")
+        # without touching the acting aggregator's reasoning config. Passed via
+        # extra_body so backends that don't support it simply reject/ignore it
+        # per their normal handling — and a rejected reference degrades to a
+        # labelled note, never aborting the MoA turn.
+        effort = str(slot.get("reasoning_effort") or "").strip().lower()
         response = call_llm(
             task="moa_reference",
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            extra_body={"reasoning_effort": effort} if effort else None,
             **runtime,
         )
         usage = CanonicalUsage()

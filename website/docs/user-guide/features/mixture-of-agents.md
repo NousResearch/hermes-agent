@@ -130,6 +130,33 @@ moa:
       reference_max_tokens: 600   # concise advice → faster turns
 ```
 
+### Dialing down advisor thinking with `reasoning_effort`
+
+Reasoning models spend most of their advisor turn *thinking* rather than
+writing. For models that accept a reasoning-effort parameter (gpt-oss,
+o-series-style backends), you can set `reasoning_effort` **per reference
+slot** to cap that spend without touching the acting aggregator's own
+reasoning configuration:
+
+```yaml
+moa:
+  presets:
+    fast:
+      reference_models:
+        - provider: openrouter
+          model: openai/gpt-5.5
+          reasoning_effort: low   # advisors think briefly; aggregator unaffected
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+```
+
+The value is passed through to the slot's backend as-is (`low` / `medium` /
+`high` on most providers). Backends that don't support the parameter reject or
+ignore it per their normal handling — a rejected reference degrades to a
+labelled note for the aggregator, never aborting the turn. Slots without the
+key behave exactly as before.
+
 Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
 ## Terminal preset management

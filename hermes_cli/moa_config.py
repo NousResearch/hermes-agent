@@ -87,7 +87,16 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    cleaned = {"provider": provider, "model": model}
+    # Optional per-slot reasoning effort for models that accept it (gpt-oss,
+    # o-series-style backends). References are advisors — their long thinking
+    # chains are usually wasted spend, so presets often want e.g. "low" on a
+    # reference slot while the acting aggregator keeps its own default. Kept
+    # as an opaque lowercased string: backends validate the actual value.
+    effort = str(slot.get("reasoning_effort") or "").strip().lower()
+    if effort:
+        cleaned["reasoning_effort"] = effort
+    return cleaned
 
 
 def _default_preset() -> dict[str, Any]:

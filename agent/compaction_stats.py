@@ -353,7 +353,14 @@ def _is_summary_message(content) -> bool:
             r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
         )
     text = _content_to_text(content)
-    return bool(text) and bool(_LCM_SUMMARY_RE.search(text))
+    if not text:
+        return False
+    # Built-in compressor summary marker (context_compressor.SUMMARY_PREFIX).
+    # Without this, a built-in-engine summary row classifies as "kept chat"
+    # and the Messages line miscounts (kept N instead of kept N-1 + 1 summary).
+    if "[CONTEXT COMPACTION — REFERENCE ONLY]" in text:
+        return True
+    return bool(_LCM_SUMMARY_RE.search(text))
 
 
 # Internal scaffolding marker the LCM engine sets on the summary message it

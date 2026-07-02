@@ -2940,6 +2940,7 @@ class GatewaySlashCommandsMixin:
                 # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
+                _old_session_id = session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
                 if rotated:
                     session_entry.session_id = new_session_id
@@ -3039,6 +3040,78 @@ class GatewaySlashCommandsMixin:
                     transcript_rewritten=_rewritten,
                     full_before_count=len(history),
                 )
+                # Granular reconciling breakdown (the same CompactionStats +
+                # renderer the auto-compaction announce uses): Messages /
+                # Context / per-bucket "Removed from live context" lines with
+                # the tool-vs-other sub-split. Built ONLY when the rewrite
+                # actually happened; degrades to the enhanced two-line form on
+                # ANY failure — a reconcile bug must never break /compress or
+                # ship wrong math (same contract as the hygiene announce).
+                _granular = None
+                if _rewritten and len(compressed) != len(history):
+                    try:
+                        from agent.compaction_stats import build_hygiene_stats
+                        from agent.conversation_compression import (
+                            _format_granular_announce,
+                        )
+                        from agent.provider_model_util import format_provider_model
+
+                        _engine_name = getattr(compressor, "name", None)
+                        _stats = build_hygiene_stats(
+                            raw_history=history,
+                            eligible_msgs=msgs,
+                            compressed=compressed,
+                            estimator=estimate_messages_tokens_rough,
+                            engine_is_lcm=(_engine_name == "lcm"),
+                        )
+                        _s_ok, _s_why = _stats.validate()
+                        if _s_ok:
+                            _prov = (
+                                runtime_kwargs.get("provider")
+                                if isinstance(runtime_kwargs, dict)
+                                else None
+                            )
+                            _model_part = (
+                                format_provider_model(_prov, model) if model else ""
+                            )
+                            if _engine_name == "lcm":
+                                _model_part = (
+                                    f"{_model_part} · engine: lcm"
+                                    if _model_part
+                                    else "engine: lcm"
+                                )
+                            _granular = _format_granular_announce(
+                                f"🗜️ {summary['headline']}",
+                                _stats,
+                                _model_part,
+                                False,
+                                None,
+                                None,
+                            )
+                            # Honest, store-correct recovery pointer.
+                            if _engine_name == "lcm":
+                                _granular += (
+                                    "\n↩ Nothing lost — original messages preserved "
+                                    "in lcm.db (recover with lcm_grep / lcm_expand)"
+                                )
+                            elif rotated:
+                                _granular += (
+                                    f"\n↩ previous transcript preserved: "
+                                    f"{_old_session_id} (searchable via session_search)"
+                                )
+                        else:
+                            logger.warning(
+                                "Manual /compress granular stats reconcile "
+                                "failed (%s) — using two-line form",
+                                _s_why,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Manual /compress granular stats build failed "
+                            "(non-fatal, using two-line form)",
+                            exc_info=True,
+                        )
+                        _granular = None
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
                 # path (otherwise the failure is silently logged).
@@ -3058,31 +3131,43 @@ class GatewaySlashCommandsMixin:
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
-            lines = [f"🗜️ {summary['headline']}"]
-            if focus_topic:
-                lines.append(t("gateway.compress.focus_line", topic=focus_topic))
-
-            # Line 1 — Chat size. Enhanced mode (tool-heavy stored transcript)
-            # renders the reconciling per-axis lines from the summary helper:
-            # the chat line + the dropped tool/system rows line. Classic mode
-            # keeps the original chat_size locale lines.
-            if summary.get("enhanced"):
-                if summary.get("chat_line"):
-                    lines.append(summary["chat_line"])
-                if summary.get("dropped_line"):
-                    lines.append(summary["dropped_line"])
-            elif summary["noop"] and chat_after_tokens == chat_before_tokens:
-                lines.append(
-                    t("gateway.compress.chat_size_unchanged", before=chat_before_tokens)
-                )
+            # Headline + per-axis lines. When the granular reconciling
+            # breakdown built successfully (rewrite happened, stats validated),
+            # it REPLACES the headline/chat/dropped lines with the full
+            # Messages/Context/Removed-buckets block — the same renderer the
+            # auto-compaction announce uses. The Full-request line below still
+            # appends (its scope is chat+system+tools, complementary to the
+            # granular block's transcript-only Context line).
+            if _granular:
+                lines = [_granular]
+                if focus_topic:
+                    lines.append(t("gateway.compress.focus_line", topic=focus_topic))
             else:
-                lines.append(
-                    t(
-                        "gateway.compress.chat_size",
-                        before=chat_before_tokens,
-                        after=chat_after_tokens,
+                lines = [f"🗜️ {summary['headline']}"]
+                if focus_topic:
+                    lines.append(t("gateway.compress.focus_line", topic=focus_topic))
+
+                # Line 1 — Chat size. Enhanced mode (tool-heavy stored transcript)
+                # renders the reconciling per-axis lines from the summary helper:
+                # the chat line + the dropped tool/system rows line. Classic mode
+                # keeps the original chat_size locale lines.
+                if summary.get("enhanced"):
+                    if summary.get("chat_line"):
+                        lines.append(summary["chat_line"])
+                    if summary.get("dropped_line"):
+                        lines.append(summary["dropped_line"])
+                elif summary["noop"] and chat_after_tokens == chat_before_tokens:
+                    lines.append(
+                        t("gateway.compress.chat_size_unchanged", before=chat_before_tokens)
                     )
-                )
+                else:
+                    lines.append(
+                        t(
+                            "gateway.compress.chat_size",
+                            before=chat_before_tokens,
+                            after=chat_after_tokens,
+                        )
+                    )
 
             # Line 2 — Full request size: what the model is actually sent
             # (chat + system + tools + tool results). The "before" is the REAL

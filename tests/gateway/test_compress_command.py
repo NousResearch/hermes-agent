@@ -553,3 +553,113 @@ async def test_compress_command_true_noop_preserves_measured_tokens():
     runner.session_store.update_session.assert_not_called()
     # Transcript must not have been overwritten either.
     runner.session_store.rewrite_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_renders_granular_breakdown_on_real_compression():
+    """When the rewrite happened AND the compressor actually changed the
+    transcript, /compress renders the full granular CompactionStats block
+    (Messages / Context / Removed-buckets with the tool sub-split) — the same
+    renderer the auto-compaction announce uses — instead of the two-line form.
+    """
+    history = _make_tool_heavy_history()
+    chat = _tool_heavy_chat(history)
+    # Real compression shape: first chat row kept + 1 summary + last row kept.
+    compressed = [
+        dict(chat[0]),
+        {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] summary of older turns"},
+        dict(chat[-1]),
+    ]
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.name = "builtin"
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        agent_instance.session_id = "sess-2"  # rotation → rewrite
+        return compressed, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k", "provider": "test-prov"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Granular block present: Messages/Context axis lines + removed buckets.
+    assert "Messages:" in result
+    # The summary row must be classified as summary, not "kept chat"
+    # (built-in SUMMARY_PREFIX marker → kept 2 recent chat + 1 summary).
+    assert "kept 2 recent chat + 1 summary" in result
+    assert "Context:" in result
+    assert "Removed from live context" in result
+    # Tool sub-split names the tool-result rows explicitly.
+    assert "tool-result message" in result
+    # Model line carries provider/model.
+    assert "Model: test-prov/test-model" in result
+    # Recovery pointer for the rotated (non-LCM) store.
+    assert "previous transcript preserved: sess-1" in result
+    # Full-request line still appended (complementary scope).
+    assert "Full request size: 453,542" in result
+    # And it must never claim "No changes".
+    assert "No changes" not in result
+
+
+@pytest.mark.asyncio
+async def test_compress_command_granular_failure_degrades_to_two_line():
+    """If the granular stats build fails, /compress must fall back to the
+    two-line enhanced form — never crash, never suppress feedback."""
+    history = _make_tool_heavy_history()
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.name = "builtin"
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance.session_id = "sess-1"
+
+    chat = _tool_heavy_chat(history)
+    compressed = [dict(chat[0]), {"role": "assistant", "content": "s"}, dict(chat[-1])]
+
+    def _compress(messages, *_args, **_kwargs):
+        agent_instance.session_id = "sess-2"
+        return compressed, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch(
+            "agent.compaction_stats.build_hygiene_stats",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Fell back to the enhanced two-line form.
+    assert "Compressed:" in result and "stored messages" in result
+    assert "Dropped: 3 stored tool/system messages" in result
+    assert "Messages:" not in result  # granular block absent

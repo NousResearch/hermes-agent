@@ -8362,6 +8362,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _dispatch_plugin_command(
+        self,
+        command: str,
+        event: MessageEvent,
+        session_key: str,
+    ) -> Optional[str]:
+        """Dispatch a plugin slash command with gateway context, if registered."""
+        try:
+            from hermes_cli.plugins import invoke_plugin_command
+
+            plugin_result = invoke_plugin_command(
+                command.replace("_", "-"),
+                event.get_command_args().strip(),
+                event=event,
+                gateway=self,
+                source=event.source,
+                session_key=session_key,
+            )
+            if asyncio.iscoroutine(plugin_result):
+                plugin_result = await plugin_result
+            return str(plugin_result) if plugin_result else None
+        except Exception as e:
+            logger.warning("Plugin command dispatch failed: %s", e)
+            return None
+
+    async def _dispatch_active_session_plugin_command(
+        self,
+        command: str,
+        event: MessageEvent,
+        session_key: str,
+    ) -> Optional[str]:
+        """Dispatch a plugin command during an active session when it opts in."""
+        try:
+            from hermes_cli.plugins import plugin_command_allows_active_session_bypass
+
+            normalized = command.replace("_", "-")
+            if not plugin_command_allows_active_session_bypass(normalized):
+                return None
+            return await self._dispatch_plugin_command(normalized, event, session_key)
+        except Exception as e:
+            logger.warning("Active-session plugin command dispatch failed: %s", e)
+            return None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -8739,6 +8782,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            if _evt_cmd:
+                _plugin_busy_result = await self._dispatch_active_session_plugin_command(
+                    _evt_cmd,
+                    event,
+                    _quick_key,
+                )
+                if _plugin_busy_result is not None:
+                    return _plugin_busy_result
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -9552,20 +9604,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Plugin-registered slash commands
         if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return str(result) if result else None
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+            # Normalize underscores to hyphens so Telegram's underscored
+            # autocomplete form matches plugin commands registered with
+            # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
+            plugin_result = await self._dispatch_plugin_command(
+                command,
+                event,
+                _quick_key,
+            )
+            if plugin_result is not None:
+                return plugin_result
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen

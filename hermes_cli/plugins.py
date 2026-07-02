@@ -530,10 +530,15 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        *,
+        active_session_bypass: bool = False,
+        wants_context: bool = False,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None``.
+        The default handler signature is ``fn(raw_args: str) -> str | None``.
+        Commands that set ``wants_context=True`` are called as
+        ``fn(raw_args: str, **gateway_context)`` by gateway dispatchers.
         It may also be an async callable — the gateway dispatch handles both.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
@@ -575,6 +580,8 @@ class PluginContext:
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "active_session_bypass": bool(active_session_bypass),
+            "wants_context": bool(wants_context),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -2162,10 +2169,39 @@ def get_plugin_context_engine():
     return _ensure_plugins_discovered()._context_engine
 
 
+def get_plugin_command_entry(name: str) -> Optional[dict]:
+    """Return metadata for a plugin-registered slash command, if present."""
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    return dict(entry) if entry else None
+
+
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    entry = get_plugin_command_entry(name)
     return entry["handler"] if entry else None
+
+
+def plugin_command_allows_active_session_bypass(name: str) -> bool:
+    """Return True when a plugin command may run while a session is busy."""
+    entry = get_plugin_command_entry(name)
+    return bool(entry and entry.get("active_session_bypass"))
+
+
+def invoke_plugin_command(name: str, raw_args: str, **gateway_context: Any) -> Any:
+    """Invoke a plugin slash command with optional gateway context.
+
+    Legacy commands receive only ``raw_args``. Commands registered with
+    ``wants_context=True`` receive ``raw_args`` plus the provided keyword
+    context, allowing gateway plugins to inspect the triggering event without
+    changing the default one-argument command contract.
+    """
+    entry = get_plugin_command_entry(name)
+    if not entry:
+        return None
+    handler = entry["handler"]
+    if entry.get("wants_context"):
+        return handler(raw_args, **gateway_context)
+    return handler(raw_args)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

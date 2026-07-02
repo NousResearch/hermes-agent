@@ -2495,6 +2495,34 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a Slack message previously sent by this bot.
+
+        Used by gateway progress cleanup so temporary "Working"/tool-progress
+        bubbles do not remain after a successful final response.
+        """
+        if not self._app:
+            return False
+        try:
+            response = await self._get_client(chat_id).chat_delete(channel=chat_id, ts=message_id)
+            if hasattr(response, "get") and response.get("ok") is False:
+                logger.debug(
+                    "[Slack] chat.delete returned ok=false for message %s in channel %s: %s",
+                    message_id,
+                    chat_id,
+                    response.get("error", "unknown"),
+                )
+                return False
+            return True
+        except Exception as e:  # pragma: no cover - best-effort cleanup
+            logger.debug(
+                "[Slack] Failed to delete message %s in channel %s: %s",
+                message_id,
+                chat_id,
+                e,
+            )
+            return False
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 

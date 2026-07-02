@@ -2734,6 +2734,55 @@ _restore_electron_dist_with_fallback() {
         || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
 }
 
+_desktop_run_logged() {
+    local log_file="$1"
+    shift
+
+    set +e
+    "$@" 2>&1 | tee -a "$log_file"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    return "$rc"
+}
+
+_desktop_workspace_npm_install_attempt() {
+    local install_dir="$1"
+    local timeout_budget="$2"
+    local log_file="$3"
+    local deps_start deps_remaining
+
+    : > "$log_file"
+    deps_start=$(date +%s)
+    if _desktop_run_logged "$log_file" run_with_timeout "$timeout_budget" bash -c 'cd "$1" && npm ci' _ "$install_dir"; then
+        return 0
+    fi
+
+    deps_remaining=$(( timeout_budget - ($(date +%s) - deps_start) ))
+    [ "$deps_remaining" -lt 30 ] && deps_remaining=30
+    _desktop_run_logged "$log_file" run_with_timeout "$deps_remaining" bash -c 'cd "$1" && npm install' _ "$install_dir"
+}
+
+_desktop_npm_log_has_tree_corruption() {
+    local log_file="$1"
+    [ -f "$log_file" ] || return 1
+
+    grep -Eiq 'ENOTEMPTY|directory not empty, rename .*node_modules|node_modules/\.[^[:space:]/]+-[^[:space:]/]+' "$log_file"
+}
+
+_purge_desktop_npm_artifacts() {
+    local install_dir="$1"
+    local desktop_dir="$install_dir/apps/desktop"
+
+    log_warn "Detected a corrupted desktop dependency tree; clearing generated npm/build artifacts and retrying once..."
+    log_info "Removing: $install_dir/node_modules, $desktop_dir/node_modules, $desktop_dir/dist, $desktop_dir/release"
+    rm -rf \
+        "$install_dir/node_modules" \
+        "$desktop_dir/node_modules" \
+        "$desktop_dir/dist" \
+        "$desktop_dir/release" \
+        2>/dev/null || true
+}
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2789,19 +2838,33 @@ install_desktop() {
     #    the remaining seconds to the fallback (min 30s so it still gets a real
     #    attempt if `npm ci` failed fast rather than stalling).
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    local _deps_start _deps_remaining
-    _deps_start=$(date +%s)
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci' _ "$INSTALL_DIR"; then
+    local _deps_log _deps_ok=false
+    _deps_log="$(mktemp "${TMPDIR:-/tmp}/hermes-desktop-npm.XXXXXX.log")"
+    if _desktop_workspace_npm_install_attempt "$INSTALL_DIR" "$DESKTOP_BUILD_TIMEOUT" "$_deps_log"; then
+        _deps_ok=true
+    elif _desktop_npm_log_has_tree_corruption "$_deps_log"; then
+        _purge_desktop_npm_artifacts "$INSTALL_DIR"
+        if _desktop_workspace_npm_install_attempt "$INSTALL_DIR" "$DESKTOP_BUILD_TIMEOUT" "$_deps_log"; then
+            _deps_ok=true
+        fi
+    fi
+
+    if [ "$_deps_ok" = true ]; then
         log_success "Desktop workspace dependencies installed"
-    elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
-         [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
-         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install' _ "$INSTALL_DIR"; then
-        log_success "Desktop workspace dependencies installed"
+        rm -f "$_deps_log" 2>/dev/null || true
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
         _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+        rm -f "$_deps_log" 2>/dev/null || true
     else
         log_error "Desktop workspace npm install failed"
+        if _desktop_npm_log_has_tree_corruption "$_deps_log"; then
+            log_info "npm reported a corrupted node_modules rename (for example ENOTEMPTY while"
+            log_info "renaming node_modules/<package> to node_modules/.<package>-*). The installer"
+            log_info "already removed generated desktop dependency/build artifacts and retried once."
+            log_info "If this persists, quit all Hermes/Node/npm processes and remove generated artifacts manually:"
+            log_info "  rm -rf \"$INSTALL_DIR/node_modules\" \"$desktop_dir/node_modules\" \"$desktop_dir/dist\" \"$desktop_dir/release\""
+        fi
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
         # ~/.npm, so this non-root install can't write the shared cache. npm hides
         # it behind a confusing EEXIST / "File exists" message while the real errno
@@ -2812,6 +2875,7 @@ install_desktop() {
         log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
         log_info "Then re-run this installer, or build manually:"
         log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+        rm -f "$_deps_log" 2>/dev/null || true
         return 1
     fi
 

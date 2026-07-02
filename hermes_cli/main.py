@@ -6394,16 +6394,112 @@ def _update_via_zip(args):
     _kill_stale_dashboard_processes()
 
 
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
+}
+
+
+def _windows_reserved_component(path: str) -> Optional[str]:
+    normalized = path.replace("\\", "/")
+    for part in normalized.split("/"):
+        if not part or part in {".", ".."}:
+            continue
+
+        cleaned = part.rstrip(" .").lower()
+        stem = cleaned.split(".", 1)[0]
+
+        if stem in _WINDOWS_RESERVED_NAMES:
+            return part
+
+    return None
+
+
+def _iter_status_porcelain_z_paths(output: str):
+    entries = output.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2] != " ":
+            continue
+
+        status = entry[:2]
+        path = entry[3:]
+        if path:
+            yield path
+
+        if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
+            if i < len(entries) and entries[i]:
+                yield entries[i]
+            i += 1
+
+
+def _abort_update_on_windows_reserved_status_paths(status_output: str) -> None:
+    if sys.platform != "win32":
+        return
+
+    for path in _iter_status_porcelain_z_paths(status_output):
+        reserved = _windows_reserved_component(path)
+        if reserved is None:
+            continue
+
+        print(f"ERROR: Windows reserved filename detected before update: {path}")
+        print()
+        print("Git cannot safely stash or unlink this path on Windows, which can cause")
+        print("`hermes update` to hang during the auto-stash step.")
+        print()
+        print("Workaround:")
+        print('  cd "$env:LOCALAPPDATA\\hermes\\hermes-agent"')
+        print('  Add-Content .git\\info\\exclude "`n/nul"')
+        print("  hermes update")
+        print()
+        print("Warning:")
+        print(
+            "  Avoid `git reset --hard`, `git clean -fdx`, or discarding update "
+            "stashes"
+        )
+        print(
+            "  unless you are okay losing uncommitted local changes inside this "
+            "Hermes"
+        )
+        print("  install directory.")
+        sys.exit(2)
+
+
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
-        git_cmd + ["status", "--porcelain"],
+        git_cmd + ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
     )
-    if not status.stdout.strip():
+    if not status.stdout:
         return None
+    _abort_update_on_windows_reserved_status_paths(status.stdout)
 
     # If the index has unmerged entries (e.g. from an interrupted merge/rebase),
     # git stash will fail with "needs merge / could not write index".  Clear the

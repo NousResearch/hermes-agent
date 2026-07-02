@@ -39,12 +39,74 @@ def _patch_managed_uv(request):
          patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
 
+
+@pytest.mark.parametrize(
+    ("path", "component"),
+    [
+        ("nul", "nul"),
+        ("NUL", "NUL"),
+        ("nul.txt", "nul.txt"),
+        ("dir/nul", "nul"),
+        (r"dir\nul", "nul"),
+        ("con", "con"),
+        ("aux.log", "aux.log"),
+        ("COM1", "COM1"),
+        ("LPT9.txt", "LPT9.txt"),
+        ("dir/nul. ", "nul. "),
+    ],
+)
+def test_windows_reserved_component_detects_device_names(path, component):
+    assert hermes_main._windows_reserved_component(path) == component
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "normal.txt",
+        "annul",
+        "console",
+        "company1",
+        "lpt10",
+        "com10",
+    ],
+)
+def test_windows_reserved_component_ignores_normal_paths(path):
+    assert hermes_main._windows_reserved_component(path) is None
+
+
+def test_stash_local_changes_if_needed_aborts_before_stash_for_windows_reserved_path(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[-4:] == ["status", "--porcelain=v1", "-z", "--untracked-files=all"]:
+            return SimpleNamespace(stdout="?? nul\0", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_main.sys, "platform", "win32")
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+
+    assert exc_info.value.code == 2
+    assert not any(
+        cmd[1:4] == ["stash", "push", "--include-untracked"]
+        for cmd, _ in calls
+    )
+    out = capsys.readouterr().out
+    assert "Windows reserved filename detected before update: nul" in out
+    assert "git reset --hard" in out
+
+
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
-        if cmd[-2:] == ["status", "--porcelain"]:
+        if cmd[-4:] == ["status", "--porcelain=v1", "-z", "--untracked-files=all"]:
             return SimpleNamespace(stdout="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -53,7 +115,9 @@ def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch,
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
 
     assert stash_ref is None
-    assert [cmd[-2:] for cmd, _ in calls] == [["status", "--porcelain"]]
+    assert [cmd[-4:] for cmd, _ in calls] == [
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+    ]
 
 
 def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch, tmp_path):
@@ -61,8 +125,8 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
-        if cmd[-2:] == ["status", "--porcelain"]:
-            return SimpleNamespace(stdout=" M hermes_cli/main.py\n?? notes.txt\n", returncode=0)
+        if cmd[-4:] == ["status", "--porcelain=v1", "-z", "--untracked-files=all"]:
+            return SimpleNamespace(stdout=" M hermes_cli/main.py\0?? notes.txt\0", returncode=0)
         if cmd[-2:] == ["ls-files", "--unmerged"]:
             return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:
@@ -306,8 +370,8 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
 
 def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch, tmp_path):
     def fake_run(cmd, **kwargs):
-        if cmd[-2:] == ["status", "--porcelain"]:
-            return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
+        if cmd[-4:] == ["status", "--porcelain=v1", "-z", "--untracked-files=all"]:
+            return SimpleNamespace(stdout=" M hermes_cli/main.py\0", returncode=0)
         if cmd[-2:] == ["ls-files", "--unmerged"]:
             return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:

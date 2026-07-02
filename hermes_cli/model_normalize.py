@@ -18,6 +18,9 @@ Different LLM providers expect model identifiers in different formats:
   Hermes revisions folded every non-reasoner input into
   ``deepseek-chat``, which on aggregators routes to V3 — so a user
   picking V4 Pro was silently downgraded.
+- **Vertex AI** requires the mandatory ``<publisher>/<model>`` form
+  (e.g. ``google/gemini-2.5-flash``); bare names gain a ``google/``
+  publisher prefix, explicit publisher prefixes pass through unchanged.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -374,6 +377,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("deepseek-r1", "deepseek")
         'deepseek-reasoner'
 
+        >>> normalize_model_for_provider("gemini-3.1-flash-lite", "vertex")
+        'google/gemini-3.1-flash-lite'
+
+        >>> normalize_model_for_provider("anthropic/claude-sonnet-4.6", "vertex")
+        'anthropic/claude-sonnet-4.6'
+
         >>> normalize_model_for_provider("my-model", "custom")
         'my-model'
 
@@ -442,6 +451,20 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             # openai-codex maps openai/gpt-5.4 -> gpt-5.4
             return name.split("/", 1)[1]
         return stripped
+
+    # --- Vertex AI: the OpenAI-compat endpoint requires the mandatory
+    #     ``<publisher>/<model>`` form and rejects bare names with HTTP 400
+    #     INVALID_ARGUMENT ("Malformed publisher model").  Bare names get the
+    #     ``google/`` publisher prefix; explicit publisher prefixes are
+    #     authoritative and pass through unchanged, because Vertex hosts
+    #     non-Google publishers too (anthropic, meta, mistralai, ...).
+    #     A matching ``vertex/`` provider prefix (copied from config) is
+    #     repaired to the ``google/`` publisher form.  See issue #56778. ---
+    if provider == "vertex":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        return f"google/{bare}"
 
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":

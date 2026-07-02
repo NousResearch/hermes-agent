@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
+_SIDECAR_TOKEN_STATE = "photon/sidecar-token.json"
 
 # Photon iMessage messages from the SDK side have no documented hard
 # limit, but the underlying iMessage protocol limits practical message
@@ -121,6 +122,85 @@ def _coerce_port(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _sidecar_token_state_path() -> Path:
+    """Profile-local runtime token used by out-of-process Photon senders."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _SIDECAR_TOKEN_STATE
+
+
+def _write_sidecar_token_state(*, bind: str, port: int, token: str, pid: int) -> None:
+    """Persist the live sidecar token for same-user helpers like `hermes send`.
+
+    The token is not a Photon credential; it only authenticates loopback HTTP
+    calls to the currently running sidecar. Store it under the active Hermes
+    profile with 0600 permissions so cron / `hermes send` processes can reuse
+    the gateway-owned sidecar without weakening the sidecar's auth boundary.
+    """
+    path = _sidecar_token_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        payload = {
+            "bind": bind,
+            "port": int(port),
+            "token": token,
+            "pid": int(pid),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(path)
+    except Exception as exc:
+        logger.debug("[photon] could not write sidecar token state: %s", exc)
+
+
+def _read_sidecar_token_state(*, bind: str, port: int) -> Optional[str]:
+    """Read a live sidecar token written by the gateway, if it is still valid."""
+    try:
+        data = json.loads(_sidecar_token_state_path().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if str(data.get("bind") or _DEFAULT_SIDECAR_BIND) != bind:
+        return None
+    try:
+        if int(data.get("port")) != int(port):
+            return None
+    except (TypeError, ValueError):
+        return None
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        return None
+    # Avoid handing out a stale token from a dead/replaced sidecar. POSIX can
+    # verify the pid cheaply; other platforms fall back to the loopback request.
+    try:
+        pid = int(data.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid and sys.platform != "win32" and not PhotonAdapter._pid_is_sidecar(pid):
+        return None
+    return token
+
+
+def _clear_sidecar_token_state(token: str) -> None:
+    """Remove the runtime token state if it still belongs to this adapter."""
+    path = _sidecar_token_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("token") != token:
+            return
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def check_requirements() -> bool:
@@ -907,6 +987,12 @@ class PhotonAdapter(BasePlatformAdapter):
                         headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
                     )
                     if resp.status_code == 200:
+                        _write_sidecar_token_state(
+                            bind=self._sidecar_bind,
+                            port=self._sidecar_port,
+                            token=self._sidecar_token,
+                            pid=self._sidecar_proc.pid,
+                        )
                         return
                 except httpx.RequestError as e:
                     last_err = e
@@ -983,6 +1069,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 except subprocess.TimeoutExpired:
                     proc.kill()
         finally:
+            _clear_sidecar_token_state(self._sidecar_token)
             self._sidecar_proc = None
             if self._sidecar_supervisor_task is not None:
                 self._sidecar_supervisor_task.cancel()
@@ -1584,13 +1671,16 @@ async def _standalone_send(
         (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
-    token = os.getenv("PHOTON_SIDECAR_TOKEN")
+    token = os.getenv("PHOTON_SIDECAR_TOKEN") or _read_sidecar_token_state(
+        bind=_DEFAULT_SIDECAR_BIND,
+        port=port,
+    )
     if not token:
         return {
             "error": (
-                "Photon standalone send requires a running sidecar with "
-                "PHOTON_SIDECAR_TOKEN set in the environment. Cron processes "
-                "cannot spawn the sidecar themselves."
+                "Photon standalone send requires a running gateway-owned "
+                "sidecar. Start or restart the gateway so it can publish "
+                "the local sidecar token for this Hermes profile."
             )
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"

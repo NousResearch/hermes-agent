@@ -612,6 +612,36 @@ function ok(res, data) {
   res.end(JSON.stringify({ ok: true, ...data }));
 }
 
+function isTransientPhotonError(e) {
+  const text = (e && (e.stack || e.message) ? e.stack || e.message : String(e || "")).toLowerCase();
+  return (
+    text.includes("econnreset") ||
+    text.includes("connection dropped") ||
+    text.includes("unavailable") ||
+    text.includes("upstream") ||
+    text.includes("internalerror")
+  );
+}
+
+async function withTransientRetry(label, fn, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e;
+      if (attempt >= attempts || !isTransientPhotonError(e)) throw e;
+      const delay = 250 * 2 ** (attempt - 1);
+      console.error(
+        `photon-sidecar: transient ${label} failure (${attempt}/${attempts}); retrying in ${delay}ms: ` +
+          (e && e.message ? e.message : String(e))
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 function handleInbound(req, res) {
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/x-ndjson");
@@ -732,7 +762,7 @@ const server = http.createServer(async (req, res) => {
       // readable plain text on platforms that don't.
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      const result = await space.send(builder);
+      const result = await withTransientRetry("send", () => space.send(builder));
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
@@ -835,7 +865,7 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "state must be start or stop");
       }
       const space = await resolveSpace(spaceId);
-      await space.send(spectrumTyping(state));
+      await withTransientRetry("typing", () => space.send(spectrumTyping(state)), 2);
       return ok(res, {});
     }
     res.statusCode = 404;

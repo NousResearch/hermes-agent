@@ -1677,6 +1677,7 @@ class PluginManager:
         loaded = LoadedPlugin(manifest=manifest, enabled=True)
         loaded.deferred = True
         self._plugins[lookup_key] = loaded
+        self._register_deferred_platform_cli(manifest)
 
         def _loader(_manifest: PluginManifest = manifest) -> None:
             self._load_plugin(_manifest)
@@ -1699,6 +1700,66 @@ class PluginManager:
                 exc_info=True,
             )
             self._load_plugin(manifest)
+
+    def _register_deferred_platform_cli(self, manifest: PluginManifest) -> None:
+        """Expose lightweight CLI commands shipped by deferred platform plugins.
+
+        Bundled platform adapters are lazy-loaded to keep ordinary `hermes`
+        startup fast, but some of them also ship small management CLIs
+        (`hermes photon ...`). Import only `<plugin>/cli.py` when present so
+        argparse can see the command without importing the heavy adapter SDKs.
+        """
+        plugin_dir = Path(manifest.path or "")
+        cli_file = plugin_dir / "cli.py"
+        if not cli_file.exists():
+            return
+        try:
+            if _NS_PARENT not in sys.modules:
+                ns_pkg = types.ModuleType(_NS_PARENT)
+                ns_pkg.__path__ = []  # type: ignore[attr-defined]
+                ns_pkg.__package__ = _NS_PARENT
+                sys.modules[_NS_PARENT] = ns_pkg
+
+            key = manifest.key or manifest.name
+            slug = key.replace("/", "__").replace("-", "_")
+            package_name = f"{_NS_PARENT}.{slug}"
+            if package_name not in sys.modules:
+                pkg = types.ModuleType(package_name)
+                pkg.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
+                pkg.__package__ = package_name
+                sys.modules[package_name] = pkg
+
+            cli_module_name = f"{package_name}.cli"
+            spec = importlib.util.spec_from_file_location(cli_module_name, cli_file)
+            if spec is None or spec.loader is None:
+                return
+            module = importlib.util.module_from_spec(spec)
+            module.__package__ = package_name
+            sys.modules[cli_module_name] = module
+            spec.loader.exec_module(module)
+
+            setup_fn = getattr(module, "register_cli", None)
+            if setup_fn is None:
+                return
+            handler_fn = getattr(module, "dispatch", None)
+            command_name = self._platform_name_from_manifest(manifest)
+            self._cli_commands.setdefault(
+                command_name,
+                {
+                    "name": command_name,
+                    "help": f"Set up and manage {manifest.name}",
+                    "description": manifest.description or "",
+                    "setup_fn": setup_fn,
+                    "handler_fn": handler_fn,
+                    "plugin": manifest.name,
+                },
+            )
+        except Exception:
+            logger.debug(
+                "Deferred platform CLI registration failed for '%s'",
+                manifest.key or manifest.name,
+                exc_info=True,
+            )
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""

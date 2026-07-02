@@ -195,8 +195,13 @@ class TestCodexBuildKwargs:
         )
 
         headers = kw.get("extra_headers", {})
+        # For ChatGPT/Codex, keep the raw session_id header for transcript
+        # identity, but route x-client-request-id to the same content-addressed
+        # value as prompt_cache_key so repeated stable prefixes get cache
+        # affinity across resumed turns and recurring jobs.
         assert headers.get("session_id") == "conv-codex-1"
-        assert headers.get("x-client-request-id") == "conv-codex-1"
+        assert headers.get("x-client-request-id") == kw["prompt_cache_key"]
+        assert headers.get("x-client-request-id") != "conv-codex-1"
 
     def test_codex_backend_no_headers_without_session_id(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -224,8 +229,30 @@ class TestCodexBuildKwargs:
 
         headers = kw.get("extra_headers", {})
         assert headers.get("x-test") == "1"
+        # For ChatGPT/Codex, keep the raw session_id header for transcript
+        # identity, but route x-client-request-id to the same content-addressed
+        # value as prompt_cache_key so repeated stable prefixes get cache
+        # affinity across resumed turns and recurring jobs.
         assert headers.get("session_id") == "conv-codex-1"
-        assert headers.get("x-client-request-id") == "conv-codex-1"
+        assert headers.get("x-client-request-id") == kw["prompt_cache_key"]
+        assert headers.get("x-client-request-id") != "conv-codex-1"
+
+    def test_codex_backend_x_client_request_id_follows_prompt_cache_override(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="conv-codex-1",
+            is_codex_backend=True,
+            request_overrides={"prompt_cache_key": "manual-cache-key"},
+        )
+
+        headers = kw.get("extra_headers", {})
+        assert kw["prompt_cache_key"] == "manual-cache-key"
+        assert headers.get("session_id") == "conv-codex-1"
+        assert headers.get("x-client-request-id") == "manual-cache-key"
 
     def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

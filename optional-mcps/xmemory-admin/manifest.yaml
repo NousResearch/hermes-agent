@@ -1,0 +1,22 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+# OPTIONAL admin (control-plane) connection — destructive ops. Drop this entry
+# if a memory-only listing is preferred.
+manifest_version: 1
+
+name: xmemory-admin
+description: Manage xmemory instances — create, list, and delete instances and their schemas (control plane).
+source: https://xmemory.ai
+
+transport:
+  type: http
+  url: https://mcp.xmemory.ai/admin
+
+auth:
+  type: oauth
+  # Native MCP OAuth. Browser flow on first connect.
+
+post_install: |
+  Admin (control-plane) connection. On first connection, Hermes opens a browser
+  to authenticate with xmemory. This surface includes destructive operations
+  such as deleting an instance — use with care.

@@ -4258,7 +4258,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
-    # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
+    # now configured via display.tool_progress in config.yaml (off|new|all|verbose|log).
     # The gateway still falls back to these env vars for backward compatibility,
     # so they live in _EXTRA_ENV_KEYS (known to .env sanitization/reload) but
     # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing

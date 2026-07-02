@@ -117,8 +117,8 @@ class TestVerboseCommand:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         runner = _make_runner()
 
-        # off -> new -> all -> verbose -> off
-        expected = ["new", "all", "verbose", "off"]
+        # off -> new -> all -> verbose -> log -> off
+        expected = ["new", "all", "verbose", "log", "off"]
         for mode in expected:
             result = await runner._handle_verbose_command(_make_event())
             saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))

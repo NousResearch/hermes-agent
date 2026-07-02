@@ -1536,10 +1536,11 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()

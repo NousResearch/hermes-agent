@@ -54,6 +54,7 @@ import {
   USER_BUBBLE_BASE_CLASS
 } from '@/components/assistant-ui/thread/user-message'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
@@ -677,22 +678,23 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 {copy.attachingFile}
               </span>
             )}
-            <button
-              aria-label={copy.sendEdited}
-              className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-              disabled={!canSubmit || submitting || staging}
-              onClick={() => {
-                const editor = editorRef.current
+            <Tip label={copy.sendEdited} side="top">
+              <button
+                aria-label={copy.sendEdited}
+                className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                disabled={!canSubmit || submitting || staging}
+                onClick={() => {
+                  const editor = editorRef.current
 
-                if (editor) {
-                  submitEdit(editor)
-                }
-              }}
-              title={copy.sendEdited}
-              type="button"
-            >
-              {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}
-            </button>
+                  if (editor) {
+                    submitEdit(editor)
+                  }
+                }}
+                type="button"
+              >
+                {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}
+              </button>
+            </Tip>
           </div>
         </div>
       </StickyHumanMessageContainer>

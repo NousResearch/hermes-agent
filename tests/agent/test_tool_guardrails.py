@@ -37,6 +37,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     cfg = ToolCallGuardrailConfig()
 
     assert cfg.warnings_enabled is True
+    assert cfg.block_enabled is True
     assert cfg.hard_stop_enabled is False
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
@@ -74,7 +75,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
-def test_default_repeated_identical_failed_call_warns_without_blocking():
+def test_default_repeated_identical_failed_call_warns_then_soft_blocks():
     controller = ToolCallGuardrailController()
     args = {"query": "same"}
 
@@ -88,8 +89,91 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert decisions[0].action == "allow"
     assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn", "warn"]
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
+
+    # 6th identical attempt: soft-blocked without executing, turn keeps going.
+    blocked = controller.before_call("web_search", args)
+    assert blocked.action == "block"
+    assert blocked.code == "repeated_exact_failure_block"
+    assert blocked.soft is True
+    assert blocked.allows_execution is False
+    assert blocked.should_halt is False
+    assert controller.halt_decision is None
+
+
+def test_warn_only_legacy_behavior_when_block_disabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(block_enabled=False)
+    )
+    args = {"query": "same"}
+
+    for _ in range(8):
+        assert controller.before_call("web_search", args).action == "allow"
+        controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
+
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
+
+
+def test_consecutive_soft_blocks_escalate_count_and_vary_message():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_block_after=2)
+    )
+    args = {"command": "npm run dev"}
+
+    controller.after_call("terminal", args, '{"exit_code":-1,"error":"boom"}', failed=True)
+    controller.after_call("terminal", args, '{"exit_code":-1,"error":"boom"}', failed=True)
+
+    first = controller.before_call("terminal", args)
+    second = controller.before_call("terminal", args)
+    third = controller.before_call("terminal", args)
+
+    assert [d.action for d in (first, second, third)] == ["block", "block", "block"]
+    assert [d.soft for d in (first, second, third)] == [True, True, True]
+    # Blocked attempts count as failed attempts so the streak keeps escalating.
+    assert [d.count for d in (first, second, third)] == [3, 4, 5]
+    # Wording must differ between consecutive blocks — uniform guidance gets
+    # absorbed into the loop pattern instead of breaking it.
+    assert len({first.message, second.message, third.message}) == 3
+    assert controller.halt_decision is None
+
+
+def test_soft_block_success_after_changed_args_resets_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_block_after=2)
+    )
+    bad = {"command": "npm run dev"}
+    fixed = {"command": "npm run dev", "background": True}
+
+    controller.after_call("terminal", bad, '{"exit_code":-1,"error":"boom"}', failed=True)
+    controller.after_call("terminal", bad, '{"exit_code":-1,"error":"boom"}', failed=True)
+    assert controller.before_call("terminal", bad).action == "block"
+
+    # A different call is never blocked.
+    assert controller.before_call("terminal", fixed).action == "allow"
+    controller.after_call("terminal", fixed, '{"exit_code":0}', failed=False)
+
+    # The old signature stays blocked until its streak is cleared by a success.
+    assert controller.before_call("terminal", bad).action == "block"
+    controller.after_call("terminal", bad, '{"exit_code":0}', failed=False)
+    assert controller.before_call("terminal", bad).action == "allow"
+
+
+def test_soft_block_metadata_marks_decision_as_soft():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_block_after=1)
+    )
+    controller.after_call("web_search", {"q": "x"}, '{"error":"boom"}', failed=True)
+    blocked = controller.before_call("web_search", {"q": "x"})
+
+    metadata = blocked.to_metadata()
+    assert metadata["soft"] is True
+    assert metadata["action"] == "block"
+
+
+def test_config_parses_block_enabled_flag():
+    cfg = ToolCallGuardrailConfig.from_mapping({"block_enabled": False})
+    assert cfg.block_enabled is False
+    assert ToolCallGuardrailConfig.from_mapping({}).block_enabled is True
 
 
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():
@@ -188,19 +272,44 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
     assert third.count == 3
 
 
-def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_default():
+def test_idempotent_no_progress_repeated_result_warns_then_soft_blocks_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
     args = {"path": "/tmp/same.txt"}
     result = "same file contents"
 
-    for _ in range(4):
-        assert controller.before_call("read_file", args).action == "allow"
-        decision = controller.after_call("read_file", args, result, failed=False)
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.after_call("read_file", args, result, failed=False).action == "allow"
+    assert controller.before_call("read_file", args).action == "allow"
+    warn = controller.after_call("read_file", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "idempotent_no_progress_warning"
 
-    assert decision.action == "warn"
-    assert decision.code == "idempotent_no_progress_warning"
+    # Threshold reached: identical read is soft-blocked, turn keeps going.
+    first = controller.before_call("read_file", args)
+    second = controller.before_call("read_file", args)
+    assert [d.action for d in (first, second)] == ["block", "block"]
+    assert [d.soft for d in (first, second)] == [True, True]
+    assert first.code == "idempotent_no_progress_block"
+    assert first.message != second.message
+    assert controller.halt_decision is None
+
+    # A changed result clears the streak.
+    controller.after_call("read_file", args, "new contents", failed=False)
+    assert controller.before_call("read_file", args).action == "allow"
+
+
+def test_no_progress_soft_block_disabled_with_block_enabled_false():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(block_enabled=False, no_progress_warn_after=2, no_progress_block_after=2)
+    )
+    args = {"path": "/tmp/same.txt"}
+
+    for _ in range(5):
+        assert controller.before_call("read_file", args).action == "allow"
+        controller.after_call("read_file", args, "same file contents", failed=False)
+
     assert controller.before_call("read_file", args).action == "allow"
     assert controller.halt_decision is None
 

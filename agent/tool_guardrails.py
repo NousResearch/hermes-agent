@@ -4,6 +4,19 @@ The controller in this module is intentionally side-effect free: it tracks
 per-turn tool-call observations and returns decisions. Runtime code owns whether
 those decisions become warning guidance, synthetic tool results, or controlled
 turn halts.
+
+Escalation tiers:
+
+1. **Warnings** (default on) — guidance appended to failing tool results.
+2. **Soft blocks** (default on) — after ``exact_failure_block_after`` identical
+   failed calls, the exact same call is no longer executed; a synthetic error
+   result is returned instead and the turn continues. Soft-block messages are
+   deliberately *varied* between attempts: smaller models loop precisely
+   because the context fills with byte-identical call/error rounds, and
+   uniform guidance gets absorbed into the repeated pattern instead of
+   breaking it.
+3. **Hard stops** (explicit opt-in via ``hard_stop_enabled``) — blocks also
+   end the turn with a controlled halt response.
 """
 
 from __future__ import annotations
@@ -64,12 +77,17 @@ MUTATING_TOOL_NAMES = frozenset(
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
-    Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    Warnings are enabled by default and never prevent tool execution. Soft
+    blocks (``block_enabled``) are also on by default: once the exact same
+    call has failed ``exact_failure_block_after`` times, the guardrail stops
+    executing it and returns a synthetic error result instead — the turn
+    continues, so the model can recover. Hard stops (ending the turn) remain
+    explicit opt-in so interactive CLI/TUI sessions keep control unless the
+    user enables circuit-breaker behavior in config.yaml.
     """
 
     warnings_enabled: bool = True
+    block_enabled: bool = True
     hard_stop_enabled: bool = False
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
@@ -96,6 +114,7 @@ class ToolCallGuardrailConfig:
         defaults = cls()
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
+            block_enabled=_as_bool(data.get("block_enabled"), defaults.block_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
@@ -151,6 +170,9 @@ class ToolGuardrailDecision:
     tool_name: str = ""
     count: int = 0
     signature: ToolCallSignature | None = None
+    # Soft decisions skip execution but never end the turn: the runtime
+    # synthesizes a tool result and the model continues with fresh context.
+    soft: bool = False
 
     @property
     def allows_execution(self) -> bool:
@@ -158,7 +180,7 @@ class ToolGuardrailDecision:
 
     @property
     def should_halt(self) -> bool:
-        return self.action in {"block", "halt"}
+        return self.action in {"block", "halt"} and not self.soft
 
     def to_metadata(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -168,6 +190,8 @@ class ToolGuardrailDecision:
             "tool_name": self.tool_name,
             "count": self.count,
         }
+        if self.soft:
+            data["soft"] = True
         if self.signature is not None:
             data["signature"] = self.signature.to_metadata()
         return data
@@ -240,45 +264,81 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        if not self.config.hard_stop_enabled:
+        if not (self.config.hard_stop_enabled or self.config.block_enabled):
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
-            decision = ToolGuardrailDecision(
+            if self.config.hard_stop_enabled:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="repeated_exact_failure_block",
+                    message=(
+                        f"Blocked {tool_name}: the same tool call failed {exact_count} "
+                        "times with identical arguments. Stop retrying it unchanged; "
+                        "change strategy or explain the blocker."
+                    ),
+                    tool_name=tool_name,
+                    count=exact_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+
+            # Soft block: skip execution but keep the turn alive. Blocked
+            # attempts never reach after_call, so record the attempt here —
+            # consecutive blocks must keep escalating, and the streak must
+            # stay accurate for the message rotation below.
+            blocked_count = exact_count + 1
+            self._exact_failure_counts[signature] = blocked_count
+            self._same_tool_failure_counts[tool_name] = (
+                self._same_tool_failure_counts.get(tool_name, 0) + 1
+            )
+            attempt = blocked_count - self.config.exact_failure_block_after
+            return ToolGuardrailDecision(
                 action="block",
                 code="repeated_exact_failure_block",
-                message=(
-                    f"Blocked {tool_name}: the same tool call failed {exact_count} "
-                    "times with identical arguments. Stop retrying it unchanged; "
-                    "change strategy or explain the blocker."
-                ),
+                message=_soft_block_message(tool_name, blocked_count, attempt),
                 tool_name=tool_name,
-                count=exact_count,
+                count=blocked_count,
                 signature=signature,
+                soft=True,
             )
-            self._halt_decision = decision
-            return decision
 
         if self._is_idempotent(tool_name):
             record = self._no_progress.get(signature)
             if record is not None:
-                _result_hash, repeat_count = record
+                result_hash, repeat_count = record
                 if repeat_count >= self.config.no_progress_block_after:
-                    decision = ToolGuardrailDecision(
+                    if self.config.hard_stop_enabled:
+                        decision = ToolGuardrailDecision(
+                            action="block",
+                            code="idempotent_no_progress_block",
+                            message=(
+                                f"Blocked {tool_name}: this read-only call returned the same "
+                                f"result {repeat_count} times. Stop repeating it unchanged; "
+                                "use the result already provided or try a different query."
+                            ),
+                            tool_name=tool_name,
+                            count=repeat_count,
+                            signature=signature,
+                        )
+                        self._halt_decision = decision
+                        return decision
+
+                    # Soft block, same bookkeeping rationale as above.
+                    blocked_count = repeat_count + 1
+                    self._no_progress[signature] = (result_hash, blocked_count)
+                    attempt = blocked_count - self.config.no_progress_block_after
+                    return ToolGuardrailDecision(
                         action="block",
                         code="idempotent_no_progress_block",
-                        message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
-                        ),
+                        message=_soft_no_progress_message(tool_name, blocked_count, attempt),
                         tool_name=tool_name,
-                        count=repeat_count,
+                        count=blocked_count,
                         signature=signature,
+                        soft=True,
                     )
-                    self._halt_decision = decision
-                    return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -401,6 +461,50 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
         f"{decision.code}; count={decision.count}; {decision.message}]"
     )
     return (result or "") + suffix
+
+
+# Rotated between consecutive soft blocks on purpose: a context full of
+# byte-identical call/error rounds is what sustains a tool-call loop, and
+# guidance repeated verbatim gets absorbed into that pattern. Distinct
+# wording per attempt is a load-bearing part of breaking the loop.
+_SOFT_BLOCK_MESSAGES = (
+    "Not executed: this exact {tool} call already failed {count} times with "
+    "identical arguments, so re-sending it unchanged cannot succeed. Re-read "
+    "the error in the earlier tool results and change the argument(s) it "
+    "points at, or take a different approach.",
+    "Still not executing this ({count} identical failures so far). The call "
+    "is byte-identical to the ones that already failed — nothing has changed, "
+    "so nothing different can happen. Change at least one argument of the "
+    "{tool} call, switch to a different tool, or report the blocker.",
+    "STOP: identical {tool} call, attempt #{count}. Compare your call against "
+    "the earlier error message field by field — at least one argument must "
+    "change before this can be executed again. If you cannot determine what "
+    "to change, stop calling tools and explain the blocker in plain text.",
+)
+
+
+def _soft_block_message(tool_name: str, count: int, attempt: int) -> str:
+    template = _SOFT_BLOCK_MESSAGES[(max(attempt, 1) - 1) % len(_SOFT_BLOCK_MESSAGES)]
+    return template.format(tool=tool_name, count=count)
+
+
+_SOFT_NO_PROGRESS_MESSAGES = (
+    "Not executed: this exact {tool} call already ran {count} times and "
+    "returned the same result every time. The answer is already in the "
+    "earlier tool results — use it, or change the query/path if it wasn't "
+    "what you needed.",
+    "Skipped (attempt #{count}, identical result each time). Running the same "
+    "{tool} call again cannot produce new information. Work with the result "
+    "you already have, broaden or narrow the query, or try a different tool.",
+    "STOP repeating this {tool} call — {count} identical runs, identical "
+    "output. If the earlier result didn't answer your question, the fix is a "
+    "DIFFERENT call (other arguments or another tool), not the same one again.",
+)
+
+
+def _soft_no_progress_message(tool_name: str, count: int, attempt: int) -> str:
+    template = _SOFT_NO_PROGRESS_MESSAGES[(max(attempt, 1) - 1) % len(_SOFT_NO_PROGRESS_MESSAGES)]
+    return template.format(tool=tool_name, count=count)
 
 
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:

@@ -370,11 +370,18 @@ browser:
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed
-# or non-progressing tool results but still let the tool execute. Hard stops are
-# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
-# preferable to spending the full iteration budget.
+# or non-progressing tool results but still let the tool execute. Soft blocks
+# (block_enabled) are also on by default: once the exact same call has failed
+# hard_stop_after.exact_failure times with identical arguments (or a read-only
+# call has returned an identical result hard_stop_after.idempotent_no_progress
+# times), it is no longer executed — the model gets a synthetic error result
+# (with wording that varies between attempts) and the turn continues. Hard
+# stops are opt-in circuit
+# breakers for autonomous/cron sessions where stopping a loop is preferable to
+# spending the full iteration budget.
 tool_loop_guardrails:
   warnings_enabled: true
+  block_enabled: true
   hard_stop_enabled: false
   warn_after:
     exact_failure: 2

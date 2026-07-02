@@ -1260,21 +1260,51 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "spaceId and pollMessageId are required");
       }
       const space = await resolveSpace(spaceId);
-      const pollState = await withAdvancedIMessageClient(space, (client) => {
-        const opts = { clientMessageId: clientMessageId(targetPollId) };
-        if (req.url === "/poll-add-option") {
-          const option = typeof body?.option === "string" ? body.option.trim() : "";
-          if (!option) return Promise.reject(new Error("option is required"));
-          return client.polls.addOption(targetPollId, option, opts);
+      let pollState;
+      try {
+        pollState = await withAdvancedIMessageClient(space, (client) => {
+          const opts = { clientMessageId: clientMessageId(targetPollId) };
+          if (req.url === "/poll-add-option") {
+            const option = typeof body?.option === "string" ? body.option.trim() : "";
+            if (!option) return Promise.reject(new Error("option is required"));
+            return client.polls.addOption(targetPollId, option, opts);
+          }
+          if (req.url === "/poll-vote") {
+            const optionId =
+              typeof body?.optionId === "string" ? body.optionId.trim() : "";
+            if (!optionId) return Promise.reject(new Error("optionId is required"));
+            return client.polls.vote(targetPollId, optionId, opts);
+          }
+          return client.polls.unvote(targetPollId, opts);
+        });
+      } catch (error) {
+        // Photon's shared-line gateway routes PollService mutations by
+        // pollMessageGuid lookup and currently fails to route even the guid
+        // its own CreatePoll returned ("No instance routed for this
+        // request"). Classify it so callers see the upstream category
+        // instead of a generic 500 — the raw text still only goes to logs.
+        if (/No instance routed/i.test(String(error?.message ?? error))) {
+          console.error(
+            "photon-sidecar: poll mutation unroutable upstream: " +
+              (error && error.stack ? error.stack : String(error))
+          );
+          res.statusCode = 502;
+          res.setHeader("Content-Type", "application/json");
+          res.end(
+            JSON.stringify({
+              ok: false,
+              code: "poll_mutation_unroutable",
+              error:
+                "Photon could not route this poll mutation to an iMessage " +
+                "instance (PollService lookup by pollMessageGuid failed " +
+                "upstream). Poll creation and inbound votes are unaffected; " +
+                "report the pollMessageId to Photon.",
+            })
+          );
+          return;
         }
-        if (req.url === "/poll-vote") {
-          const optionId =
-            typeof body?.optionId === "string" ? body.optionId.trim() : "";
-          if (!optionId) return Promise.reject(new Error("optionId is required"));
-          return client.polls.vote(targetPollId, optionId, opts);
-        }
-        return client.polls.unvote(targetPollId, opts);
-      });
+        throw error;
+      }
       return ok(res, {
         pollMessageId: pollState?.pollMessageGuid || targetPollId,
         optionCount: Array.isArray(pollState?.options) ? pollState.options.length : null,

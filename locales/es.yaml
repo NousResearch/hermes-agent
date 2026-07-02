@@ -364,6 +364,7 @@ gateway:
     mode_new:              "⚙️ Progreso de herramientas: **NEW** — se muestra al cambiar de herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_all:              "⚙️ Progreso de herramientas: **ALL** — se muestra cada llamada a herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_verbose:          "⚙️ Progreso de herramientas: **VERBOSE** — cada llamada a herramienta con sus argumentos completos."
+    mode_log:              "⚙️ Progreso de herramientas: **LOG** — silencioso en el chat; las llamadas a herramientas se escriben en ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(guardado para **{platform}** — se aplica en el próximo mensaje)_"
     save_failed:           "_(no se pudo guardar en la configuración: {error})_"
 

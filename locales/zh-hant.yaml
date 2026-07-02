@@ -367,6 +367,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ 工具進度：**NEW** — 工具變更時顯示（預覽長度：`display.tool_preview_length`，預設 40）。"
     mode_all:              "⚙️ 工具進度：**ALL** — 顯示每次工具呼叫（預覽長度：`display.tool_preview_length`，預設 40）。"
     mode_verbose:          "⚙️ 工具進度：**VERBOSE** — 顯示每次工具呼叫及完整參數。"
+    mode_log:              "⚙️ 工具進度：**LOG** — 聊天中保持靜默；工具呼叫寫入 ~/.hermes/logs/tool_calls.log。"
     saved_suffix:          "_（已為 **{platform}** 儲存 — 下一則訊息生效）_"
     save_failed:           "_（無法儲存到設定：{error}）_"
 

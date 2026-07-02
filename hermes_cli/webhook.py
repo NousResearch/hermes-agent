@@ -169,10 +169,18 @@ def _cmd_subscribe(args):
 
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
+    actions = [a.strip() for a in args.actions.split(",")] if getattr(args, "actions", "") else []
+    ignore_senders = (
+        [s.strip() for s in args.ignore_senders.split(",")]
+        if getattr(args, "ignore_senders", "")
+        else []
+    )
 
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
+        "actions": actions,
+        "ignore_senders": ignore_senders,
         "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
@@ -192,6 +200,27 @@ def _cmd_subscribe(args):
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
+    if args.deliver_repo or args.deliver_pr_number:
+        deliver_extra = route.get("deliver_extra", {})
+        if args.deliver_repo:
+            deliver_extra["repo"] = args.deliver_repo
+        if args.deliver_pr_number:
+            deliver_extra["pr_number"] = args.deliver_pr_number
+        route["deliver_extra"] = deliver_extra
+
+    if (
+        route["deliver"] == "github_comment"
+        and "issue_comment" in events
+        and not ignore_senders
+    ):
+        print(
+            "  Warning: this route delivers via github_comment and listens for "
+            "issue_comment, but --ignore-senders is empty. GitHub will fire a "
+            "new webhook for the agent's own reply, and the agent can end up "
+            "replying to itself in a loop. Pass --ignore-senders <bot-login> "
+            "with the account 'gh' is authenticated as."
+        )
+
     subs[name] = route
     _save_subscriptions(subs)
 
@@ -205,6 +234,10 @@ def _cmd_subscribe(args):
         print(f"  Events: {', '.join(events)}")
     else:
         print("  Events: (all)")
+    if actions:
+        print(f"  Actions: {', '.join(actions)}")
+    if ignore_senders:
+        print(f"  Ignoring senders: {', '.join(ignore_senders)}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -228,6 +261,8 @@ def _cmd_list(args):
     print(f"\n  {len(subs)} webhook subscription(s):\n")
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
+        actions = ", ".join(route.get("actions", []))
+        ignore_senders = ", ".join(route.get("ignore_senders", []))
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
@@ -237,6 +272,10 @@ def _cmd_list(args):
             print(f"    {desc}")
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
+        if actions:
+            print(f"    Actions: {actions}")
+        if ignore_senders:
+            print(f"    Ignoring senders: {ignore_senders}")
         print(f"    Deliver: {deliver}")
         print()
 

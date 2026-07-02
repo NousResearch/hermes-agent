@@ -29,10 +29,14 @@ def _make_args(**kwargs):
         "name": "",
         "prompt": "",
         "events": "",
+        "actions": "",
+        "ignore_senders": "",
         "description": "",
         "skills": "",
         "deliver": "log",
         "deliver_chat_id": "",
+        "deliver_repo": "",
+        "deliver_pr_number": "",
         "secret": "",
         "payload": "",
     }
@@ -89,6 +93,47 @@ class TestSubscribe:
         out = capsys.readouterr().out
         assert "Error" in out or "Invalid" in out
         assert _load_subscriptions() == {}
+
+    def test_actions_and_ignore_senders_stored(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            events="issue_comment",
+            actions="created",
+            ignore_senders="hermes-bot, Other-Bot",
+            deliver="github_comment",
+        ))
+        route = _load_subscriptions()["gh-issues"]
+        assert route["actions"] == ["created"]
+        assert route["ignore_senders"] == ["hermes-bot", "Other-Bot"]
+
+    def test_no_actions_or_ignore_senders_defaults_empty(self):
+        webhook_command(_make_args(webhook_action="subscribe", name="s"))
+        route = _load_subscriptions()["s"]
+        assert route["actions"] == []
+        assert route["ignore_senders"] == []
+
+    def test_github_comment_without_ignore_senders_warns(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            events="issue_comment",
+            deliver="github_comment",
+        ))
+        out = capsys.readouterr().out
+        assert "Warning" in out
+        assert "ignore-senders" in out.lower() or "ignore_senders" in out.lower()
+
+    def test_github_comment_with_ignore_senders_no_warning(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gh-issues",
+            events="issue_comment",
+            deliver="github_comment",
+            ignore_senders="hermes-bot",
+        ))
+        out = capsys.readouterr().out
+        assert "Warning" not in out
 
 
 class TestList:

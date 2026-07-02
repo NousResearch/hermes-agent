@@ -468,6 +468,355 @@ class TestEventFilter:
             assert resp.status == 202
 
 
+class TestActionAndSenderFilter:
+    """Tests for the actions whitelist and ignore_senders self-loop guard."""
+
+    @pytest.mark.asyncio
+    async def test_action_filter_accepts_matching(self):
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "actions": ["opened", "synchronize"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "opened"},
+                headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_action_filter_rejects_non_matching(self):
+        """closed/labeled/review re-fires are dropped before the agent runs."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "actions": ["opened", "synchronize"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "closed"},
+                headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["action"] == "closed"
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_action_filter_empty_allows_all(self):
+        """No actions list -> accept any action (existing behaviour)."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "closed"},
+                headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_ignore_senders_drops_self_events(self):
+        """The gateway must not reply to comments it posted itself."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "ignore_senders": ["hermes-bot"],
+                "prompt": "comment",
+                "deliver": "github_comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "hermes-bot"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["sender"] == "hermes-bot"
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ignore_senders_case_insensitive(self):
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "ignore_senders": ["Hermes-Bot"],
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "hermes-bot"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+
+    @pytest.mark.asyncio
+    async def test_ignore_senders_allows_other_senders(self):
+        """Comments from anyone else still reach the agent."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "ignore_senders": ["hermes-bot"],
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "a-human"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_ignore_senders_empty_allows_all(self):
+        """No ignore_senders configured -> existing behaviour, accept all."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "comment",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "hermes-bot"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+
+# ===================================================================
+# Loop breaker (second-layer failsafe on top of ignore_senders/actions)
+# ===================================================================
+
+
+class TestLoopBreaker:
+
+    @pytest.mark.asyncio
+    async def test_breaker_trips_after_threshold_and_disables_route(self):
+        """Once a route crosses max_sends within the window, further
+        deliveries are rejected until the cooldown elapses — even though
+        each individual request is otherwise valid and unfiltered."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "loop_breaker_max_sends": 2,
+                "loop_breaker_window_seconds": 300,
+                "loop_breaker_cooldown_seconds": 1800,
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # First 3 deliveries all complete normally — the 3rd is the one
+            # whose count crosses the threshold, but it still gets to run.
+            for i in range(3):
+                resp = await cli.post(
+                    "/webhooks/gh",
+                    json={"n": i},
+                    headers={"X-GitHub-Delivery": f"d-{i}"},
+                )
+                assert resp.status == 202, f"delivery {i} should be accepted"
+
+            # A 4th, distinct delivery hits the now-disabled route.
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"n": 99},
+                headers={"X-GitHub-Delivery": "d-99"},
+            )
+            assert resp.status == 403
+        assert adapter._routes["gh"]["enabled"] is False
+        assert "gh" in adapter._breaker_tripped_until
+
+    @pytest.mark.asyncio
+    async def test_breaker_does_not_trip_under_threshold(self):
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "loop_breaker_max_sends": 5,
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for i in range(4):
+                resp = await cli.post(
+                    "/webhooks/gh",
+                    json={"n": i},
+                    headers={"X-GitHub-Delivery": f"d-{i}"},
+                )
+                assert resp.status == 202
+        assert "gh" not in adapter._breaker_tripped_until
+        assert adapter._routes["gh"].get("enabled", True) is True
+
+    @pytest.mark.asyncio
+    async def test_breaker_can_be_disabled_per_route(self):
+        """loop_breaker_enabled: false opts a route out entirely."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "loop_breaker_enabled": False,
+                "loop_breaker_max_sends": 1,
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for i in range(5):
+                resp = await cli.post(
+                    "/webhooks/gh",
+                    json={"n": i},
+                    headers={"X-GitHub-Delivery": f"d-{i}"},
+                )
+                assert resp.status == 202
+        assert "gh" not in adapter._breaker_tripped_until
+
+    @pytest.mark.asyncio
+    async def test_breaker_auto_resets_after_cooldown(self):
+        """Once the cooldown window has elapsed, the route re-enables itself
+        on the next request instead of staying disabled forever."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "loop_breaker_max_sends": 1,
+                "loop_breaker_cooldown_seconds": 1800,
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for i in range(2):
+                resp = await cli.post(
+                    "/webhooks/gh",
+                    json={"n": i},
+                    headers={"X-GitHub-Delivery": f"d-{i}"},
+                )
+                assert resp.status == 202
+            assert adapter._routes["gh"]["enabled"] is False
+
+            # Simulate the cooldown having already elapsed.
+            adapter._breaker_tripped_until["gh"] = time.time() - 1
+
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"n": 100},
+                headers={"X-GitHub-Delivery": "d-100"},
+            )
+            assert resp.status == 202
+        assert "gh" not in adapter._breaker_tripped_until
+        assert adapter._routes["gh"]["enabled"] is True
+
+    def test_record_breaker_hit_persists_disable_for_dynamic_route(self, tmp_path, monkeypatch):
+        """A tripped dynamic route's enabled=false is written to disk so it
+        survives a gateway restart, and is annotated with why it was disabled."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.webhook import _save_subscriptions, _load_subscriptions
+
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "prompt": "test",
+            "loop_breaker_max_sends": 1,
+        }
+        _save_subscriptions({"gh": dict(route)})
+
+        adapter = _make_adapter()
+        adapter._dynamic_routes = {"gh": route}
+        adapter._routes = {"gh": route}
+
+        now = time.time()
+        adapter._record_breaker_hit("gh", route, now)
+        adapter._record_breaker_hit("gh", route, now + 1)
+
+        assert route["enabled"] is False
+        on_disk = _load_subscriptions()["gh"]
+        assert on_disk["enabled"] is False
+        assert on_disk["disabled_by"] == "loop_breaker_tripped"
+        assert "disabled_until" in on_disk
+
+    def test_static_route_breaker_trip_never_touches_config_file(self):
+        """Static (config.yaml) routes are only toggled in memory."""
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "prompt": "test",
+            "loop_breaker_max_sends": 1,
+        }
+        adapter = _make_adapter(routes={"gh": route})
+
+        now = time.time()
+        adapter._record_breaker_hit("gh", route, now)
+        adapter._record_breaker_hit("gh", route, now + 1)
+
+        assert adapter._static_routes["gh"]["enabled"] is False
+        assert adapter._routes["gh"]["enabled"] is False
+
+
 # ===================================================================
 # HTTP handling
 # ===================================================================

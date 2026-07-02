@@ -8,6 +8,20 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
+  - actions: optional whitelist of payload["action"] values to accept
+    (e.g. ["opened", "synchronize", "reopened"] for pull_request). Unlike
+    `events`, which filters on the coarse GitHub event header, this filters
+    on the fine-grained action within that event — the thing that lets a
+    route ignore "closed"/"labeled"/review re-fires without a full agent
+    turn. Omit to accept any action.
+  - ignore_senders: optional list of GitHub logins (case-insensitive) whose
+    events are dropped before the agent runs. Set this to the bot/PAT
+    identity used by `deliver: github_comment` on this same route so the
+    agent's own comments don't re-trigger themselves — GitHub fires
+    issue_comment/pull_request_review* webhooks for comments regardless of
+    who posted them, including the account this gateway posts as. Without
+    this, a github_comment route can loop: agent replies -> reply fires a
+    new webhook -> agent replies to itself -> ...
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
@@ -17,6 +31,17 @@ Each route defines:
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
     and sub-second delivery matter more than agent reasoning.
+  - loop_breaker_enabled / loop_breaker_max_sends / loop_breaker_window_seconds /
+    loop_breaker_cooldown_seconds: second-layer failsafe independent of
+    ignore_senders/actions. Tracks a rolling count of deliveries that did
+    real work (agent turn or direct delivery) per route; if more than
+    max_sends happen within window_seconds (default 8 / 300s), the route is
+    auto-disabled for cooldown_seconds (default 1800s) via the same
+    `enabled: false` flag used for manual disables, and it's logged loudly.
+    Catches loop patterns ignore_senders/actions don't anticipate — a second
+    bot replying to this one, a misconfigured filter, a retry storm that
+    slips past idempotency. Set loop_breaker_enabled: false to opt a route
+    out (e.g. a deliberately high-frequency deliver_only alert route).
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -74,6 +99,18 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+
+# Loop breaker defaults (see WebhookAdapter._record_breaker_hit). Unlike the
+# rate limiter above — which counts raw HTTP POSTs and resets every 60s — the
+# breaker counts only deliveries that actually did work (invoked the agent or
+# posted a direct delivery), over a longer window, and auto-disables the
+# route rather than just 429-ing individual requests. It's the failsafe for
+# loop patterns ignore_senders/actions don't anticipate: a second bot account
+# replying to this one, a misconfigured filter, a retry storm that slips past
+# idempotency, etc.
+_LOOP_BREAKER_DEFAULT_MAX_SENDS = 8
+_LOOP_BREAKER_DEFAULT_WINDOW_SECONDS = 300.0  # 5 minutes
+_LOOP_BREAKER_DEFAULT_COOLDOWN_SECONDS = 1800.0  # 30 minutes
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -139,6 +176,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries: Dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
+
+        # Loop breaker: rolling window of agent-invoking/delivery timestamps
+        # per route, plus which routes are currently auto-disabled and until
+        # when. See _record_breaker_hit / _check_breaker_tripped.
+        self._breaker_hits: Dict[str, Deque[float]] = {}
+        self._breaker_tripped_until: Dict[str, float] = {}
 
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, Deque[float]] = {}
@@ -340,6 +383,131 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    # ------------------------------------------------------------------
+    # Loop breaker
+    # ------------------------------------------------------------------
+
+    def _loop_breaker_config(self, route_config: dict) -> tuple:
+        """Resolve (enabled, max_sends, window_seconds, cooldown_seconds) for a route."""
+        enabled = route_config.get("loop_breaker_enabled", True)
+        max_sends = int(
+            route_config.get("loop_breaker_max_sends", _LOOP_BREAKER_DEFAULT_MAX_SENDS)
+        )
+        window = float(
+            route_config.get(
+                "loop_breaker_window_seconds", _LOOP_BREAKER_DEFAULT_WINDOW_SECONDS
+            )
+        )
+        cooldown = float(
+            route_config.get(
+                "loop_breaker_cooldown_seconds", _LOOP_BREAKER_DEFAULT_COOLDOWN_SECONDS
+            )
+        )
+        return enabled, max_sends, window, cooldown
+
+    def _check_breaker_tripped(self, route_name: str, now: float) -> Optional[float]:
+        """Return the cooldown-expiry timestamp if *route_name* is still tripped.
+
+        If the cooldown has elapsed, clears the trip and re-enables the route
+        (in memory, and on disk for dynamic routes) as a side effect.
+        """
+        tripped_until = self._breaker_tripped_until.get(route_name)
+        if tripped_until is None:
+            return None
+        if now < tripped_until:
+            return tripped_until
+        self._breaker_tripped_until.pop(route_name, None)
+        self._breaker_hits.pop(route_name, None)
+        self._set_route_enabled(route_name, True, reason="loop_breaker_reset")
+        logger.warning(
+            "[webhook] Loop breaker cooldown elapsed for route %s — re-enabled",
+            route_name,
+        )
+        return None
+
+    def _record_breaker_hit(self, route_name: str, route_config: dict, now: float) -> None:
+        """Record a unit of real work for *route_name* and trip the breaker if over threshold."""
+        enabled, max_sends, window, cooldown = self._loop_breaker_config(route_config)
+        if not enabled:
+            return
+        hits = self._breaker_hits.setdefault(route_name, deque())
+        hits.append(now)
+        cutoff = now - window
+        while hits and hits[0] < cutoff:
+            hits.popleft()
+        if len(hits) <= max_sends:
+            return
+        tripped_until = now + cooldown
+        self._breaker_tripped_until[route_name] = tripped_until
+        logger.error(
+            "[webhook] LOOP BREAKER TRIPPED for route %s: %d deliveries in "
+            "%.0fs (limit %d). Auto-disabling route until %s. This usually "
+            "means a self-reply loop — check ignore_senders/actions on this "
+            "route before re-enabling.",
+            route_name,
+            len(hits),
+            window,
+            max_sends,
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(tripped_until)),
+        )
+        self._set_route_enabled(
+            route_name, False, reason="loop_breaker_tripped", tripped_until=tripped_until
+        )
+
+    def _set_route_enabled(
+        self,
+        route_name: str,
+        enabled: bool,
+        *,
+        reason: str,
+        tripped_until: Optional[float] = None,
+    ) -> None:
+        """Flip a route's enabled flag in memory, and on disk for dynamic routes.
+
+        Static routes come from config.yaml, which the agent must never write
+        to — those are only toggled in memory and reset on gateway restart.
+        """
+        route = self._routes.get(route_name)
+        if route is not None:
+            route["enabled"] = enabled
+        if route_name in self._static_routes:
+            self._static_routes[route_name]["enabled"] = enabled
+            return
+        if route_name in self._dynamic_routes:
+            self._dynamic_routes[route_name]["enabled"] = enabled
+            self._persist_dynamic_route_state(route_name, enabled, reason, tripped_until)
+
+    def _persist_dynamic_route_state(
+        self,
+        route_name: str,
+        enabled: bool,
+        reason: str,
+        tripped_until: Optional[float],
+    ) -> None:
+        """Persist the enabled flag (+ breaker metadata) for a dynamic route to disk."""
+        try:
+            from hermes_cli.webhook import _load_subscriptions, _save_subscriptions
+
+            subs = _load_subscriptions()
+            if route_name not in subs:
+                return
+            subs[route_name]["enabled"] = enabled
+            if enabled:
+                subs[route_name].pop("disabled_by", None)
+                subs[route_name].pop("disabled_until", None)
+            else:
+                subs[route_name]["disabled_by"] = reason
+                if tripped_until is not None:
+                    subs[route_name]["disabled_until"] = time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(tripped_until)
+                    )
+            _save_subscriptions(subs)
+        except Exception:
+            logger.exception(
+                "[webhook] Failed to persist loop breaker state for route %s",
+                route_name,
+            )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -459,10 +627,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": f"Unknown route: {route_name}"}, status=404
             )
 
+        # Loop breaker: if this route's cooldown has elapsed, re-enable it
+        # before the enabled-check below runs. If still within cooldown, this
+        # is a no-op and the enabled-check rejects the request same as a
+        # manually-disabled route. See _record_breaker_hit for trip logic.
+        self._check_breaker_tripped(route_name, time.time())
+
         # Disabled routes are kept in the subscriptions file (so the dashboard
         # can re-enable them) but reject incoming events.  Default-enabled:
         # only an explicit ``enabled: false`` turns a route off, matching the
-        # mcp_servers ``enabled`` semantics.
+        # mcp_servers ``enabled`` semantics. A route can also land here via
+        # the loop breaker auto-disabling it — same mechanism, same message.
         if route_config.get("enabled", True) is False:
             return web.json_response(
                 {"error": f"Route disabled: {route_name}"}, status=403
@@ -549,6 +724,45 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        # Check action filter (fine-grained, within the event type — e.g.
+        # only "opened"/"synchronize"/"reopened" for pull_request, so
+        # "closed"/"labeled"/review re-fires don't burn an agent turn).
+        allowed_actions = route_config.get("actions", [])
+        action = payload.get("action", "") if isinstance(payload, dict) else ""
+        if allowed_actions and action not in allowed_actions:
+            logger.debug(
+                "[webhook] Ignoring action %s for route %s (allowed: %s)",
+                action,
+                route_name,
+                allowed_actions,
+            )
+            return web.json_response(
+                {"status": "ignored", "action": action}
+            )
+
+        # Self-loop guard: drop events whose sender is in ignore_senders.
+        # GitHub fires a fresh webhook for every comment, including ones
+        # this gateway just posted via `deliver: github_comment` — without
+        # this, a route can reply to its own reply forever.
+        ignore_senders = route_config.get("ignore_senders", [])
+        if ignore_senders and isinstance(payload, dict):
+            sender_login = (
+                payload.get("sender", {}).get("login", "")
+                if isinstance(payload.get("sender"), dict)
+                else ""
+            )
+            ignore_senders_lower = {s.lower() for s in ignore_senders if s}
+            if sender_login and sender_login.lower() in ignore_senders_lower:
+                logger.info(
+                    "[webhook] Ignoring event from self (sender=%s) on route %s "
+                    "— see ignore_senders",
+                    sender_login,
+                    route_name,
+                )
+                return web.json_response(
+                    {"status": "ignored", "sender": sender_login}
+                )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -604,6 +818,13 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
+
+        # ── Loop breaker bookkeeping ─────────────────────────────
+        # Count this as a unit of real work (agent turn or direct delivery)
+        # toward the per-route runaway-loop threshold. Deliberately placed
+        # after the idempotency check so webhook retries of the same
+        # delivery_id don't count twice.
+        self._record_breaker_hit(route_name, route_config, now)
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we

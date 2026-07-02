@@ -599,8 +599,10 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
 
     Returns:
         Dict: Toolset definition with description, tools, and includes
-        None: If toolset not found (registry-only toolsets have no static view,
-            so they return None when include_registry=False)
+        None: If toolset not found. With include_registry=False the static
+            view only recognizes names literally present in ``TOOLSETS``, so
+            registry/MCP-only toolsets AND registry-derived aliases return None
+            (they have no static counterpart).
     """
     toolset = TOOLSETS.get(name)
 

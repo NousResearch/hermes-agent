@@ -285,17 +285,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
         "kimi-k2.7-code",

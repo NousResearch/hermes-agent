@@ -247,10 +247,16 @@ The uninstaller gives you the option to keep your configuration files (`~/.herme
 
 ### Manual Uninstall
 
+#### MacOS & Linux
 ```bash
 rm -f ~/.local/bin/hermes
 rm -rf /path/to/hermes-agent
 rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
+```
+
+#### Windows
+```bash
+Remove-Item "$env:LOCALAPPDATA\hermes" -Recurse -Force
 ```
 
 :::info

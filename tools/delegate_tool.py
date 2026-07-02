@@ -1887,7 +1887,11 @@ def _run_single_child(
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(
+        # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
+        # below; a stdlib non-daemon worker would then block interpreter
+        # exit at atexit-join time if the child never unwinds.
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        _timeout_executor = DaemonThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
             # so dangerous-command prompts from the subagent don't fall back to
@@ -2535,7 +2539,11 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            # Daemon workers (tools.daemon_pool): the `with` block still joins
+            # normally, but if the parent is interrupted while a child is
+            # wedged, the abandoned worker must not block interpreter exit.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(

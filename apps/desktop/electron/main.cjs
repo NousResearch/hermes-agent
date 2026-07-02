@@ -115,6 +115,7 @@ const {
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
+  isNetworkSuspendError,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs
@@ -750,10 +751,26 @@ function registerMediaProtocol() {
     // Delegate to Electron's net stack on a file:// URL — it resolves the
     // content-type and honors Range requests so seeking works. Forward the
     // renderer's headers (notably Range) and skip custom-protocol re-entry.
-    return electronNet.fetch(pathToFileURL(resolvedPath).toString(), {
+    //
+    // electronNet.fetch returns a Promise. Chromium's net stack can synchronously
+    // reject with "ERR_NETWORK_IO_SUSPENDED" on resume from sleep/suspend when
+    // pending requests are aborted; without a catch, that rejection escapes the
+    // protocol handler and crashes the main process. Issue #56835.
+    const fetchPromise = electronNet.fetch(pathToFileURL(resolvedPath).toString(), {
       bypassCustomProtocolHandlers: true,
       headers: request.headers
     })
+    if (fetchPromise && typeof fetchPromise.catch === 'function') {
+      fetchPromise.catch(error => {
+        if (isNetworkSuspendError(error)) {
+          rememberLog(`[media] suppressing network-suspend error on fetch: ${error && error.message}`)
+          return null
+        }
+        rememberLog(`[media] fetch failed: ${error && error.message}`)
+        return null
+      })
+    }
+    return fetchPromise
   })
 }
 
@@ -4497,13 +4514,24 @@ function fetchJsonViaOauthSession(url, options = {}) {
     const body = serializeJsonBody(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    const request = electronNet.request({
-      method: options.method || 'GET',
-      url,
-      session: sess,
-      useSessionCookies: true,
-      redirect: 'follow'
-    })
+    let request
+    try {
+      request = electronNet.request({
+        method: options.method || 'GET',
+        url,
+        session: sess,
+        useSessionCookies: true,
+        redirect: 'follow'
+      })
+    } catch (error) {
+      // electronNet.request() can throw synchronously on network suspension
+      // (sleep/wake) when the underlying URLLoader rejects before the JS
+      // wrapper is wired up. Without this guard, the throw escapes the IPC
+      // handler and surfaces as an "Uncaught Exception" dialog (issue #56835).
+      rememberLog(`[net] electronNet.request threw synchronously: ${error && error.message}`)
+      reject(new Error(`Network request could not start: ${error && error.message}`))
+      return
+    }
     setJsonRequestHeaders(request)
 
     let timedOut = false
@@ -7548,6 +7576,37 @@ app.whenReady().then(() => {
     }
   })
 })
+
+// Last-line defense for OS-level network suspension (sleep/wake,
+// VPN drop, captive portal re-auth). Without this, a Chromium net request that
+// escapes its own request.on('error', …) handler — typical symptom:
+// ERR_NETWORK_IO_SUSPENDED from SimpleURLLoaderWrapper during a media-stream
+// reopen or a tail call issued right at the moment of resume — bubbles to the
+// main process as an uncaught exception and Electron pops a modal dialog that
+// bricks the desktop (issue #56835). Log, suppress, and tell the renderer to
+// reconnect; let everything else propagate normally.
+if (!process._hermesNetworkSuspendGuardInstalled) {
+  process._hermesNetworkSuspendGuardInstalled = true
+  process.on('uncaughtException', error => {
+    if (isNetworkSuspendError(error)) {
+      rememberLog(
+        `[net] suppressed uncaught network-suspend exception: ${error && (error.message || String(error))}`
+      )
+      try {
+        if (typeof sendPowerResume === 'function') sendPowerResume()
+      } catch {
+        // best-effort — we're already suppressing the underlying error
+      }
+      return
+    }
+    // Not a network-suspend case: re-throw so the regular crash reporter
+    // stack still fires. Without this we'd silently swallow unrelated bugs.
+    // Queue the original error onto next tick so we don't recurse.
+    setImmediate(() => {
+      throw error
+    })
+  })
+}
 
 // Seed Chromium's spellchecker with the system locale (falling back to en-US).
 // On macOS Electron uses the native spellchecker which ignores this list, but

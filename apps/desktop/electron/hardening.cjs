@@ -271,11 +271,36 @@ async function resolveReadableFileForIpc(filePath, options = {}) {
   return { realPath, resolvedPath, stat }
 }
 
+// Network errors that indicate the OS-level network stack was suspended
+// (sleep, hibernation, VPN disconnect). These are recoverable — they should
+// not crash the app; the caller should retry or surface a reconnect indicator.
+const NETWORK_SUSPEND_ERROR_CODES = new Set([
+  'ERR_NETWORK_IO_SUSPENDED',
+  'ERR_NETWORK_CHANGED',
+  'ERR_INTERNET_DISCONNECTED',
+  'ERR_NETWORK_ACCESS_DENIED'
+])
+
+function isNetworkSuspendError(error) {
+  if (!error || typeof error !== 'object') return false
+  // Electron wraps Chromium net errors; the code field is the canonical key.
+  const code = error.code
+  if (typeof code === 'string' && NETWORK_SUSPEND_ERROR_CODES.has(code)) return true
+  // Also check the message — some Electron versions surface the code only
+  // in the message string (e.g. "net::ERR_NETWORK_IO_SUSPENDED").
+  const message = typeof error.message === 'string' ? error.message : ''
+  for (const knownCode of NETWORK_SUSPEND_ERROR_CODES) {
+    if (message.includes(knownCode)) return true
+  }
+  return false
+}
+
 module.exports = {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret,
+  isNetworkSuspendError,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,

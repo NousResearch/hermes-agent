@@ -353,3 +353,40 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_telegram_auto_tts_passes_explicit_ogg_output_path(self, tmp_path):
+        """Auto-TTS must pass an explicit .ogg output_path on Telegram.
+
+        Regression test for #57049: the session contextvar
+        (HERMES_SESSION_PLATFORM) is not populated at the auto-TTS call
+        site in base.py, so text_to_speech_tool falls back to .mp3.
+        The fix passes an explicit output_path with the correct
+        extension based on self.platform.
+        """
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="Short reply"))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        captured_kwargs = {}
+
+        def capture_tts(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return json.dumps({"file_path": str(tts_path)})
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            side_effect=capture_tts,
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert "output_path" in captured_kwargs, "text_to_speech_tool should receive explicit output_path"
+        assert captured_kwargs["output_path"].endswith(".ogg"), (
+            f"Telegram auto-TTS must use .ogg extension, got: {captured_kwargs['output_path']}"
+        )

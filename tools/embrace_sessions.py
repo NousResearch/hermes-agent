@@ -33,19 +33,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+from secret_config import candidate_vars_paths, load_toml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_DIR / "logs"
 OUTPUTS_DIR = PROJECT_DIR / "outputs"
 LOCAL_STATE_DIR = PROJECT_DIR / ".local"
 AUTH_CACHE_PATH = LOCAL_STATE_DIR / "cache" / ".embrace_auth.json"
-LOCAL_VARS = PROJECT_DIR / "vars.toml"
-DEFAULT_SIBLING_VARS = PROJECT_DIR.parent / "yallaplay-analytics-agent-gpt" / "vars.toml"
-
 AUTH_REFRESH_MARGIN_S = 86400
 LOGIN_URL = "https://dash.embrace.io/login"
 API_BASE = "https://dash-api-us1.embrace.io"
@@ -112,23 +106,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--relogin", action="store_true", help="Ignore cached JWT and force a fresh dashboard login")
     parser.add_argument("--dry-run", action="store_true", help="Validate arguments and credential presence without logging in or calling Embrace")
     return parser.parse_args()
-
-
-def load_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def candidate_vars_paths(explicit: Path | None) -> list[Path]:
-    env = os.environ
-    candidates: list[Path | None] = [
-        explicit,
-        Path(env["HERMES_YALLAPLAY_VARS"]) if env.get("HERMES_YALLAPLAY_VARS") else None,
-        Path(env["YALLAPLAY_VARS_TOML"]) if env.get("YALLAPLAY_VARS_TOML") else None,
-        LOCAL_VARS if LOCAL_VARS.exists() else None,
-        DEFAULT_SIBLING_VARS if DEFAULT_SIBLING_VARS.exists() else None,
-    ]
-    return [path for path in candidates if path and path.exists()]
 
 
 def load_creds(vars_path: Path | None) -> tuple[str, str, str]:

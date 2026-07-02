@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import re
 import sys
 import urllib.error
@@ -30,16 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+from secret_config import pick_mapping_source
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_DIR / "logs"
-LOCAL_VARS = PROJECT_DIR / "vars.toml"
-DEFAULT_SIBLING_VARS = PROJECT_DIR.parent / "yallaplay-analytics-agent-gpt" / "vars.toml"
-
 # Verified in the legacy repo: the api.loganalytics.azure.com resource principal
 # is not registered in this tenant; keep scope and host paired.
 TOKEN_SCOPE = "https://api.loganalytics.io/.default"
@@ -104,39 +97,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def env_mapping() -> dict[str, Any] | None:
-    env = os.environ
-    if all(env.get(key) for key in REQUIRED_KEYS):
-        return dict(env)
-    return None
-
-
-def candidate_vars_paths(explicit: Path | None) -> list[Path]:
-    env = os.environ
-    candidates: list[Path | None] = [
-        explicit,
-        Path(env["HERMES_YALLAPLAY_VARS"]) if env.get("HERMES_YALLAPLAY_VARS") else None,
-        Path(env["YALLAPLAY_VARS_TOML"]) if env.get("YALLAPLAY_VARS_TOML") else None,
-        LOCAL_VARS if LOCAL_VARS.exists() else None,
-        DEFAULT_SIBLING_VARS if DEFAULT_SIBLING_VARS.exists() else None,
-    ]
-    return [path for path in candidates if path and path.exists()]
-
-
 def pick_config_source(vars_path: Path | None) -> tuple[str, dict[str, Any]]:
-    env = env_mapping()
-    if env is not None:
-        return "environment", env
-    for path in candidate_vars_paths(vars_path):
-        return str(path), load_toml(path)
-    raise SystemExit(
-        "No App Insights credential source found. Set AZURE_APPINSIGHTS_* env vars or pass --vars / "
-        "HERMES_YALLAPLAY_VARS pointing to a private TOML file."
+    return pick_mapping_source(
+        vars_path,
+        env_required=REQUIRED_KEYS,
+        missing_message=(
+            "No App Insights credential source found. Set AZURE_APPINSIGHTS_* env vars or pass --vars / "
+            "HERMES_YALLAPLAY_VARS pointing to a private TOML file."
+        ),
     )
 
 

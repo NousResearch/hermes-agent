@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -37,19 +36,13 @@ try:
 except ImportError:  # pragma: no cover - optional formatting helper
     sqlparse = None
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
-    import tomli as tomllib  # type: ignore[no-redef]
-
 from cryptography.hazmat.primitives import serialization
+
+from secret_config import pick_mapping_source
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_DIR / "logs"
-DEFAULT_SIBLING_VARS = PROJECT_DIR.parent / "yallaplay-analytics-agent-gpt" / "vars.toml"
-LOCAL_VARS = PROJECT_DIR / "vars.toml"
-
 ALLOWED_FIRST_KEYWORDS = {"SELECT", "WITH", "SHOW", "DESC", "DESCRIBE", "EXPLAIN"}
 BLOCKED_KEYWORDS = {
     "ALTER",
@@ -101,30 +94,15 @@ def read_sql(args: argparse.Namespace) -> str:
     raise SystemExit("Provide a SQL string or -f <file>")
 
 
-def load_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
 def pick_config_source(vars_path: Path | None) -> tuple[str, dict[str, Any]]:
-    env = os.environ
-    env_required = ["SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PRIVATE_KEY", "SNOWFLAKE_WAREHOUSE"]
-    if all(env.get(key) for key in env_required):
-        return "environment", dict(env)
-
-    candidates = [
+    return pick_mapping_source(
         vars_path,
-        Path(env["HERMES_SNOWFLAKE_VARS"]) if env.get("HERMES_SNOWFLAKE_VARS") else None,
-        Path(env["SNOWFLAKE_VARS_TOML"]) if env.get("SNOWFLAKE_VARS_TOML") else None,
-        LOCAL_VARS if LOCAL_VARS.exists() else None,
-        DEFAULT_SIBLING_VARS if DEFAULT_SIBLING_VARS.exists() else None,
-    ]
-    for candidate in candidates:
-        if candidate and candidate.exists():
-            return str(candidate), load_toml(candidate)
-    raise SystemExit(
-        "No Snowflake credentials found. Set env vars or HERMES_SNOWFLAKE_VARS "
-        "to a private vars.toml path."
+        env_required=("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PRIVATE_KEY", "SNOWFLAKE_WAREHOUSE"),
+        vars_env_names=("HERMES_SNOWFLAKE_VARS", "SNOWFLAKE_VARS_TOML"),
+        missing_message=(
+            "No Snowflake credentials found. Set env vars or HERMES_SNOWFLAKE_VARS "
+            "to a private vars.toml path."
+        ),
     )
 
 

@@ -29,17 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+from secret_config import candidate_vars_paths, load_toml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_DIR / "logs"
 OUTPUTS_DIR = PROJECT_DIR / "outputs"
-LOCAL_VARS = PROJECT_DIR / "vars.toml"
-DEFAULT_SIBLING_VARS = PROJECT_DIR.parent / "yallaplay-analytics-agent-gpt" / "vars.toml"
-
 BASE_URL = "https://api.embrace.io/metrics"
 
 PROD_APPS = {
@@ -76,23 +70,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", type=Path, help="Write CSV/raw output to this path")
     parser.add_argument("--raw", action="store_true", help="Emit raw JSON instead of CSV")
     return parser.parse_args()
-
-
-def load_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def candidate_vars_paths(explicit: Path | None) -> list[Path]:
-    env = os.environ
-    candidates: list[Path | None] = [
-        explicit,
-        Path(env["HERMES_YALLAPLAY_VARS"]) if env.get("HERMES_YALLAPLAY_VARS") else None,
-        Path(env["YALLAPLAY_VARS_TOML"]) if env.get("YALLAPLAY_VARS_TOML") else None,
-        LOCAL_VARS if LOCAL_VARS.exists() else None,
-        DEFAULT_SIBLING_VARS if DEFAULT_SIBLING_VARS.exists() else None,
-    ]
-    return [path for path in candidates if path and path.exists()]
 
 
 def load_token(vars_path: Path | None) -> tuple[str, str]:

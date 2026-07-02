@@ -28,15 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+from secret_config import candidate_vars_paths, first_value, load_toml
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 WIKI_CONFIG_ROOT = PROJECT_DIR / "yallaplay-wiki" / "operations" / "backend-config"
-LOCAL_VARS = PROJECT_DIR / "vars.toml"
-DEFAULT_SIBLING_VARS = PROJECT_DIR.parent / "yallaplay-analytics-agent-gpt" / "vars.toml"
 BASE_URL_KEYS = ("BACKEND_CONFIG_BASE_URL", "YALLAPLAY_CONFIG_BASE_URL", "CONFIG_SERVICE_BASE_URL")
 TOKEN_KEYS = ("BACKEND_CONFIG_SERVER_TOKEN", "YALLAPLAY_CONFIG_SERVER_TOKEN", "CONFIG_SERVICE_SERVER_TOKEN", "X_SERVER_TOKEN")
 
@@ -80,31 +75,6 @@ def slugify(value: str) -> str:
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-
-
-def load_toml(path: Path) -> dict[str, Any]:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def candidate_vars_paths(explicit: Path | None) -> list[Path]:
-    env = os.environ
-    candidates: list[Path | None] = [
-        explicit,
-        Path(env["HERMES_YALLAPLAY_VARS"]) if env.get("HERMES_YALLAPLAY_VARS") else None,
-        Path(env["YALLAPLAY_VARS_TOML"]) if env.get("YALLAPLAY_VARS_TOML") else None,
-        LOCAL_VARS if LOCAL_VARS.exists() else None,
-        DEFAULT_SIBLING_VARS if DEFAULT_SIBLING_VARS.exists() else None,
-    ]
-    return [path for path in candidates if path and path.exists()]
-
-
-def first_value(mapping: dict[str, Any], keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = mapping.get(key)
-        if value:
-            return str(value)
-    return None
 
 
 def credential_source(vars_path: Path | None, base_url_override: str | None = None) -> tuple[str, str | None, str | None]:

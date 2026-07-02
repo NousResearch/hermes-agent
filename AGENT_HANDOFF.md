@@ -740,3 +740,124 @@ Same flow as /approve but with `choice="deny"`, which follows the existing event
 
 ### Next task:
 Phase 15 — Cross-repo integration testing, remaining deferred items (execution plane for non-API-server runtime runs, or broader live verification with real adapters).
+
+---
+
+## Phase 15 — Cross-repo Runtime Integration Verification and /v1/runs Execution-Plane Gap Audit (completed)
+
+### State Before Phase 15
+- **Commit:** `c0027c6`
+- **Message:** `Wire non-API runtime execution controls`
+
+### What Was Done
+
+#### Part A — Architecture inspection and gap audit
+Inspected the Agent runtime architecture to determine whether POST /v1/runs (via the standalone `gateway/runtime/routes.py` module) can execute an AIAgent.
+
+**Findings:**
+1. **POST /v1/runs in routes.py is control-plane-only.** `_handle_create_run` calls `run_manager.create_run()` and returns a JSON response. No AIAgent is spawned, no message processed, no events beyond `run.started` emitted.
+2. **The API server adapter (`gateway/platforms/api_server.py`) has its OWN POST /v1/runs handler** that DOES create an AIAgent and execute it via `agent.run_conversation()`. This is a separate handler with its own route registration.
+3. **Execution requires:** AIAgent construction (with model credentials, session store, callbacks), background task/thread management, streaming SSE event management, approval/clarify/stop wiring through the bridge and tools modules, and a GatewayRunner or similar session context.
+4. **The architecture intentionally separates** control-plane run creation from execution. The GatewayRunner's `set_runtime_control_bridge()` can wire the bridge for live session control, but POST /v1/runs has no access to a GatewayRunner or AIAgent in the standalone case.
+
+**Decision: Option B — Safe implementation does not exist for the standalone runtime routes module.** Execution is deferred to a future "runtime executor" service.
+
+#### Part B — WebUI integration verification (inspection only)
+WebUI agent-runs adapter was verified to correctly proxy:
+- GET /api/runs/{run_id} → Agent GET /v1/runs/{run_id}
+- GET /api/runs/{run_id}/events → Agent GET /v1/runs/{run_id}/events
+- POST /api/runs/{run_id}/cancel → Agent POST /v1/runs/{run_id}/stop
+- POST /api/runs/{run_id}/approval → Agent POST /v1/runs/{run_id}/approval
+- POST /api/runs/{run_id}/clarify → Agent POST /v1/runs/{run_id}/clarify
+- Mobile pending action resolve → Agent approval/clarify endpoints
+- Runtime capabilities report correct adapter and features
+
+#### Part C — Cross-repo integration tests added
+
+**Agent (`hermes-agent`):**
+- `tests/gateway/test_runtime_cross_repo_contract.py` (25 tests) — Verifies Agent runtime response shapes match WebUI agent-runs adapter expectations:
+  - Run creation shape (run_id, session_id, status, controls)
+  - Run status shape (all RuntimeStatus fields)
+  - Events shape (event_id, seq, type, created_at, terminal, payload)
+  - Stop/cancel response shape
+  - Approval error mapping (not_found→404, conflict→409, success→resolved)
+  - Clarify error mapping (not_found→404, conflict→409, success→resolved)
+  - Secret redaction end-to-end (api_key, token, bearer)
+  - Non-secret data preservation
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` (16 tests) — Documents and tests the execution gap:
+  - POST /v1/runs is control-plane-only (status=queued, no done event, stays queued indefinitely)
+  - No AIAgent constructed on create
+  - No executor exists in standalone routes
+  - No execute flag, agent factory, background task manager, or streaming adapter
+  - Recommended future design documented
+
+#### Part D — Execution-plane decision
+**Option B selected.** The /v1/runs execution-plane gap is explicitly deferred.
+
+**Missing primitives (documented in test assertions):**
+1. `execute` flag on POST /v1/runs body for opt-in execution
+2. AIAgent factory accepting session_id, model, credentials
+3. Background task manager for non-blocking run execution
+4. Event streaming from AIAgent to RunManager
+5. Approval/clarify notification wiring from RunManager events to live agent primitives
+
+**Recommended future design:**
+A dedicated "runtime executor" service that watches RunManager for queued runs and executes them via a configurable AIAgent factory. This keeps execution separate from the route layer and allows multiple executor backends.
+
+#### Part E — Agent test results
+```
+scripts/run_tests.sh tests/gateway/test_runtime_models.py \
+  tests/gateway/test_runtime_run_manager.py \
+  tests/gateway/test_runtime_routes.py \
+  tests/gateway/test_runtime_server_mount.py \
+  tests/gateway/test_runtime_approval_clarify.py \
+  tests/gateway/test_runtime_control_bridge.py \
+  tests/gateway/test_runtime_gateway_binding.py \
+  tests/gateway/test_runtime_messaging_binding.py \
+  tests/gateway/test_runtime_non_api_execution.py \
+  tests/gateway/test_runtime_slash_approval.py \
+  tests/gateway/test_runtime_cross_repo_contract.py \
+  tests/gateway/test_runtime_v1_runs_execution_gap.py
+```
+Result: **345 passed, 0 failed** across 12 runtime test files (100%).
+
+#### Part F — WebUI test results
+```
+Default mode: 138 passed, 0 failed
+```
+```
+HERMES_WEBUI_RUNTIME_ADAPTER=agent-runs mode: 130 passed, 8 expected failures
+  (test_runtime_routes.py tests designed for legacy-direct/journal mode)
+```
+
+#### Part G — Live smoke
+Contract-level verification performed via 345 Agent runtime tests + 138 WebUI tests. Live cross-repo HTTP smoke deferred — requires AIAgent credentials (model API keys) to run real agent execution. Mock and unit-test verification covers all contract shapes end-to-end.
+
+### Files Changed in Phase 15
+
+**Agent (`hermes-agent`):**
+- `tests/gateway/test_runtime_cross_repo_contract.py` — new (25 tests)
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — new (16 tests)
+- `AGENT_HANDOFF.md` — Phase 15 section added
+- `IMPLEMENTATION_REPORT.md` — Phase 15 section added
+- `PR_DESCRIPTION.md` — Phase 15 changes added
+
+**WebUI (`hermes-webui`):**
+- No code changes needed — existing tests already cover agent-runs adapter comprehensively
+- Documentation updated
+
+### Remaining Deferred Items
+1. **/v1/runs execution-plane** — POST /v1/runs remains control-plane-only. A future "runtime executor" service could pick up queued runs and execute them via AIAgent. The `register_create=True` parameter exists for integration.
+2. **Real messaging-platform adapter live smoke** — Requires external credentials (Telegram bot token, etc.). Not performed in this phase.
+3. **Cross-repo live HTTP smoke** — Requires AIAgent credentials for real agent execution.
+
+### Files with line-level changes
+- Created: `tests/gateway/test_runtime_cross_repo_contract.py` (318 lines)
+- Created: `tests/gateway/test_runtime_v1_runs_execution_gap.py` (280 lines)
+- Updated: `AGENT_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`, `PR_DESCRIPTION.md`
+
+### Next task
+**Phase discussion required** — remaining deferred items involve either:
+1. A dedicated runtime executor service to close the /v1/runs execution gap
+2. Real cross-repo live smoke with AIAgent credentials
+3. Real messaging-platform adapter integration tests

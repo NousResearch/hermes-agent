@@ -583,3 +583,83 @@ Same flow as /approve but with `choice="deny"`. The event type is `approval.reso
 1. `_runtime_session_runs` is keyed by session_key — concurrent runs for the same session may see only the most recent run_id
 2. Full end-to-end testing with real messaging platform adapters blocked on external credentials
 3. Gateway `/approve` and `/deny` RunManager sync is best-effort FIFO; edge case ordering mismatches between gateway queue and RunManager are theoretically possible but unlikely in practice
+
+---
+
+## Phase 15 — Cross-repo Runtime Integration Verification (completed)
+
+### Summary
+
+Phase 15 verifies the completed runtime control plane across hermes-agent and hermes-webui, proves the API-server and messaging GatewayRunner paths work end-to-end via contract tests, and audits the /v1/runs execution-plane gap without destabilizing the runtime architecture.
+
+### /v1/runs Execution-Plane Audit
+
+**Decision: Option B — Control-plane-only. Execution is deferred.**
+
+The standalone `gateway/runtime/routes.py` POST /v1/runs handler is intentionally control-plane-only. It creates a RunManager entry and returns a run_id without spawning an AIAgent. The API server adapter (`gateway/platforms/api_server.py`) has its own POST /v1/runs handler that DOES execute an AIAgent, with its own route registration that sets `register_create=False` on the runtime routes module.
+
+**Missing primitives documented:**
+1. `execute` flag on POST /v1/runs body
+2. AIAgent factory accepting session_id, model, credentials
+3. Background task manager for run execution
+4. Event streaming from AIAgent to RunManager
+5. Approval/clarify notification wiring from RunManager events to live agent primitives
+
+**Recommended future design:** A dedicated "runtime executor" service watches RunManager for queued runs and executes them via a configurable AIAgent factory, keeping execution separate from the route layer.
+
+### Cross-Repo Contract Verification
+
+Two new test files verify the contract between Agent and WebUI:
+
+**`tests/gateway/test_runtime_cross_repo_contract.py`** (25 tests):
+- Run creation shape matches WebUI expectations
+- Run status shape matches WebUI expectations
+- Events shape matches WebUI expectations
+- Stop/cancel response matches WebUI expectations
+- Approval error mapping (not_found→404, conflict→409, success→resolved)
+- Clarify error mapping (not_found→404, conflict→409, success→resolved)
+- Secret redaction end-to-end
+- Non-secret data preservation
+
+**`tests/gateway/test_runtime_v1_runs_execution_gap.py`** (16 tests):
+- POST /v1/runs is control-plane-only (status=queued, no done event)
+- No AIAgent is constructed or referenced
+- No executor, background task manager, or streaming adapter exists
+- The API server adapter already has execution path (separate handler)
+- Recommended future design documented
+
+### What Remains Complete
+
+- API-server runtime path remains complete (Phase 12)
+- Messaging-platform runtime binding remains complete (Phase 13)
+- Non-API GatewayRunner runtime execution-plane remains complete (Phase 14)
+- /approve and /deny slash-command RunManager state sync remains complete (Phase 14)
+
+### What Remains Deferred
+
+1. /v1/runs execution-plane — POST /v1/runs remains control-plane-only in the standalone routes module
+2. Real messaging-platform adapter live smoke — requires external credentials
+3. Cross-repo live HTTP smoke with real AIAgent execution — requires model API credentials
+
+### Tests Run
+
+```
+12 runtime test files: 345 passed, 0 failed
+  - test_runtime_models.py: 20 tests
+  - test_runtime_run_manager.py: 40 tests
+  - test_runtime_routes.py: 23 tests
+  - test_runtime_server_mount.py: 42 tests
+  - test_runtime_approval_clarify.py: 38 tests
+  - test_runtime_control_bridge.py: 33 tests
+  - test_runtime_gateway_binding.py: 38 tests
+  - test_runtime_messaging_binding.py: 36 tests
+  - test_runtime_non_api_execution.py: 17 tests
+  - test_runtime_slash_approval.py: 17 tests
+  - test_runtime_cross_repo_contract.py: 25 tests (new)
+  - test_runtime_v1_runs_execution_gap.py: 16 tests (new)
+```
+
+### Files Changed
+
+- `tests/gateway/test_runtime_cross_repo_contract.py` — new (25 tests)
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — new (16 tests)

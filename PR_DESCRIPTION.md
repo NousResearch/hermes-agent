@@ -100,6 +100,29 @@ WebUI tests: no changes needed (Agent response shape unchanged)
 - 10 live smoke tests passed
 - All Phase 11B-13 tests continue to pass
 
+## Phase 15 Changes (this PR)
+
+### Cross-Repo Integration Verification
+
+Phase 15 audits the runtime architecture gap and adds integration contract tests between hermes-agent and hermes-webui.
+
+**Execution-plane gap audit:**
+- POST /v1/runs in the standalone `gateway/runtime/routes.py` module is control-plane-only
+- The API server adapter has its OWN execution handler (separate route registration)
+- No safe implementation exists for adding execution to the standalone routes module without an architecture change
+- Missing primitives documented: execute flag, AIAgent factory, background task manager, event streaming, live agent notification wiring
+- Option B selected — execution explicitly deferred to a future "runtime executor" service
+
+**New cross-repo contract tests:**
+- `tests/gateway/test_runtime_cross_repo_contract.py` — 25 tests verifying Agent response shapes match WebUI agent-runs adapter expectations
+- `tests/gateway/test_runtime_v1_runs_execution_gap.py` — 16 tests documenting the execution gap
+
+**Verification results:**
+- 345 tests passed, 0 failed across 12 runtime test files
+- WebUI: 138 passed, 0 failed (default mode); 130 passed, 8 expected failures (agent-runs mode)
+- All prior Phases 11B-14 behavior preserved
+- No regressions in runtime, API server, or messaging paths
+
 ## Rollback Plan
 
 ```bash

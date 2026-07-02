@@ -527,12 +527,19 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(explicit: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
+
+    Precedence: explicit caller override → config.yaml → env → default.
 
     Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
     configured model is unknown (logged as a warning).
     """
+    if isinstance(explicit, str):
+        explicit = explicit.strip()
+        if explicit in FAL_MODELS:
+            return explicit, FAL_MODELS[explicit]
+
     model_id = ""
     try:
         from hermes_cli.config import load_config
@@ -845,6 +852,7 @@ def image_generate_tool(
     seed: Optional[int] = None,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -861,7 +869,7 @@ def image_generate_tool(
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "modality": "text" | "image", "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model)
 
     # Collect any source images (primary + references) into one ordered list.
     source_images: list = []
@@ -1178,8 +1186,9 @@ IMAGE_GENERATE_SCHEMA = {
         "model supports it. Pass `image_url` to edit that image; add "
         "`reference_image_urls` for style/composition references; omit both "
         "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
-        "Returns the result in the `image` field — either a URL or an absolute "
+        "and model default to the user-configured route, but you may pass "
+        "optional `provider` / `model` overrides when one specific call must "
+        "hit a different image route. Returns the result in the `image` field "
         "file path. To show it to the user, reference that path/URL in your "
         "response using the file-delivery convention for the current platform "
         "(your platform guidance describes how files are delivered here). When "
@@ -1224,6 +1233,23 @@ IMAGE_GENERATE_SCHEMA = {
                     "(style, character, or composition references) to guide an "
                     "image-to-image edit. Supported only by some models and "
                     "capped per-model; the description above indicates the max."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional backend override for this one call (for example "
+                    "`fal`, `openai-codex`, `openrouter`, `xai`, `krea`, or "
+                    "another installed image provider). When omitted, Hermes "
+                    "uses the configured default image provider."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for this one call. Use a model id "
+                    "supported by the selected provider; when omitted, Hermes "
+                    "uses that provider's configured/default image model."
                 ),
             },
         },
@@ -1276,6 +1302,9 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    *,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1292,12 +1321,13 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured = provider_override or _read_configured_image_provider()
     if not configured:
         return None
 
-    # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    # Also read configured model so we can pass it to the plugin. A per-call
+    # model override wins over config.
+    configured_model = model_override or _read_configured_image_model()
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1433,6 +1463,8 @@ def _maybe_route_managed_krea(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    *,
+    model_override: Optional[str] = None,
 ) -> Optional[str]:
     """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode.
 
@@ -1450,7 +1482,9 @@ def _maybe_route_managed_krea(
     if _read_configured_image_provider() == "krea":
         return None
 
-    normalized = _normalize_krea_model(_read_configured_image_model())
+    normalized = _normalize_krea_model(model_override) or _normalize_krea_model(
+        _read_configured_image_model()
+    )
     if normalized is None:
         return None
 
@@ -1517,6 +1551,8 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    provider_override = (args.get("provider") or "").strip() or None
+    model_override = (args.get("model") or "").strip() or None
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
@@ -1526,6 +1562,8 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        provider_override=provider_override,
+        model_override=model_override,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1539,6 +1577,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        model_override=model_override,
     )
     if krea_routed is not None:
         return _postprocess_image_generate_result(krea_routed, task_id=task_id)
@@ -1548,6 +1587,7 @@ def _handle_image_generate(args, **kw):
         aspect_ratio=aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        model=model_override,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 

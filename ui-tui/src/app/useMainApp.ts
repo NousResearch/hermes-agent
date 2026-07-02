@@ -28,6 +28,7 @@ import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import { resetTerminalModes } from '../lib/terminalModes.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -476,6 +477,15 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
+    // Reset terminal modes BEFORE Ink's exit()/unmount to prevent a race:
+    // unmount may trigger a final reassert (POP+PUSH kitty keyboard) via
+    // stdout.write (async/buffered), and if process.exit fires the
+    // process.on('exit') handler before that buffer flushes, the PUSH lands
+    // AFTER our POP, leaving the terminal in kitty keyboard mode.
+    // Calling resetTerminalModes() here (with writeSync) guarantees the
+    // reset escape sequences are flushed to the terminal while we still
+    // control the event loop.  See #56759.
+    resetTerminalModes()
     gw.kill('app.die')
     exit()
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
@@ -489,6 +499,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const dieWithCode = useCallback(
     (code: number) => {
+      resetTerminalModes()
       gw.kill(`app.dieWithCode:${code}`)
       exit()
       process.exit(code)

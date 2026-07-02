@@ -16,11 +16,13 @@ import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
+import { DOMESTIC_PROVIDER_SLUGS, isPickerVisibleProvider } from '@/lib/provider-allowlist'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
+import { DOMESTIC_PROVIDER_PRIORITY_MAX } from './constants'
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
@@ -44,6 +46,22 @@ function GroupLabel({ children }: { children: ReactNode }) {
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
+
+// China-first consumer split: a Keys card renders only for providers usable
+// from the mainland. Domestic membership reuses the two existing sources —
+// the backend catalog slug (DOMESTIC_PROVIDER_SLUGS, same allowlist as the
+// model picker) and the PROVIDER_GROUPS priority split (1–9 = domestic).
+// Foreign vendors (OpenAI, Anthropic, Google, xAI, OpenRouter, Nous, …) and
+// unknown backend-tagged providers are hidden, keys set or not.
+function isDomesticKeyGroup(name: string, entries: [string, EnvVarInfo][]): boolean {
+  const domesticBackendSlug = entries.some(([, info]) => {
+    const slug = info.provider?.trim().toLowerCase()
+
+    return Boolean(slug && DOMESTIC_PROVIDER_SLUGS.has(slug))
+  })
+
+  return domesticBackendSlug || providerPriority(name) <= DOMESTIC_PROVIDER_PRIORITY_MAX
+}
 
 // Group the env catalog by provider — one ListRow per vendor plus optional
 // advanced overrides (base URL, region, etc.). Groups without a key field are
@@ -79,6 +97,11 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
   const groups: ProviderKeyGroup[] = []
 
   for (const [name, entries] of buckets) {
+    // Consumer build: foreign providers never render a key card.
+    if (!isDomesticKeyGroup(name, entries)) {
+      continue
+    }
+
     const primary = entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ?? entries.find(([k, i]) => isKeyVar(k, i))
 
     if (!primary) {
@@ -305,10 +328,13 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
+  // Accounts view is China-first too: only providers whose sign-in works from
+  // the mainland (domestic OAuth flows; same slug allowlist the model picker
+  // uses). Foreign accounts (Nous, OpenAI, Anthropic, xAI, …) never render.
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
     const { providers } = await listOAuthProviders()
-    setOauthProviders(providers)
+    setOauthProviders(providers.filter(p => isPickerVisibleProvider(p.id)))
   }, [])
 
   useEffect(() => {
@@ -323,7 +349,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
         const { providers } = await listOAuthProviders()
 
         if (!cancelled) {
-          setOauthProviders(providers)
+          setOauthProviders(providers.filter(p => isPickerVisibleProvider(p.id)))
         }
       } catch {
         // Ignore — the OAuth panel just won't render.
@@ -389,6 +415,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
 
   if (showApiKeys) {
     const q = keyQuery.trim().toLowerCase()
+
     const visibleGroups = q
       ? keyGroups.filter(group => {
           const haystack = [

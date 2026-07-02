@@ -288,6 +288,11 @@ export interface Translations {
       removeTheme: string
       importedBadge: string
     }
+    // 个性化 — the consumer landing section (人格 picker + the former About content).
+    personalization: {
+      personalityTitle: string
+      personalityIntro: string
+    }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     about: {

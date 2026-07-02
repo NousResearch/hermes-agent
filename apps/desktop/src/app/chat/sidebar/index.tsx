@@ -79,7 +79,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, CRON_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, CRON_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -94,8 +94,9 @@ const VIRTUALIZE_THRESHOLD = 25
 
 const NEW_SESSION_KBD = comboTokens('mod+n')
 
-// Codex-style first screen: 新对话 / 搜索 / 已安排 / 插件. Messaging and
-// artifacts moved off the first screen into Settings (设置 → 消息平台 / 产物).
+// Codex-style first screen: 新对话 / 搜索 / 已安排 / 插件 / 产物. Messaging
+// moved off the first screen; artifacts moved back here from Settings (its
+// settings nav entry is gone).
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
@@ -120,6 +121,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="extensions" {...props} />,
     route: SKILLS_ROUTE
+  },
+  {
+    id: 'artifacts',
+    label: '',
+    icon: props => <Codicon name="package" {...props} />,
+    route: ARTIFACTS_ROUTE
   }
 ]
 
@@ -671,6 +678,7 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'cron' && currentView === 'cron') ||
+                  (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'search' && searchOpen)
 
                 const isNewSession = item.id === 'new-session'

@@ -22,7 +22,6 @@ import {
   Download,
   Globe,
   type IconComponent,
-  Info,
   KeyRound,
   MessageCircle,
   Monitor,
@@ -59,7 +58,7 @@ import {
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
-import { FIELD_LABELS, SECTIONS } from '../settings/constants'
+import { FIELD_LABELS, isConsumerHiddenSection, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
@@ -142,6 +141,10 @@ type NonConfigSettingsLabel =
   | 'providerAccounts'
   | 'providerApiKeys'
 
+// Consumer-hidden sections (CONSUMER_HIDDEN_SECTIONS in settings/constants.ts)
+// are filtered out below by the entry's base tab, so the palette mirrors the
+// settings nav automatically. The 关于 entry is gone as a separate item — its
+// content lives inside 个性化 (config:personalization) now.
 const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
   keywords?: string[]
@@ -150,7 +153,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
 }> = [
   {
     icon: Zap,
-    keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models', 'anthropic', 'openai'],
+    keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models'],
     labelKey: 'providerAccounts',
     tab: 'providers&pview=accounts'
   },
@@ -174,9 +177,17 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     tab: 'keys&kview=settings'
   },
   { icon: Wrench, keywords: ['servers', 'tools'], labelKey: 'mcp', tab: 'mcp' },
-  { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
-  { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
+  { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' }
 ]
+
+/** The settings view a palette tab string lands on (`keys&kview=tools` → `keys`). */
+const settingsTabBaseView = (tab: string) => tab.split('&')[0]
+
+const VISIBLE_SECTIONS = SECTIONS.filter(section => !isConsumerHiddenSection(`config:${section.id}`))
+
+const VISIBLE_NON_CONFIG_SETTINGS = NON_CONFIG_SETTINGS.filter(
+  entry => !isConsumerHiddenSection(settingsTabBaseView(entry.tab))
+)
 
 const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
   { icon: Sun, mode: 'light' },
@@ -313,13 +324,19 @@ export function CommandPalette() {
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
           },
-          {
-            action: 'nav.messaging',
-            icon: MessageCircle,
-            id: 'nav-messaging',
-            label: cc.nav.messaging.title,
-            run: go(MESSAGING_ROUTE)
-          },
+          // 消息平台 follows the consumer-hidden set (the route itself stays
+          // functional when navigated directly).
+          ...(isConsumerHiddenSection('messaging')
+            ? []
+            : [
+                {
+                  action: 'nav.messaging',
+                  icon: MessageCircle,
+                  id: 'nav-messaging',
+                  label: cc.nav.messaging.title,
+                  run: go(MESSAGING_ROUTE)
+                }
+              ]),
           {
             action: 'nav.artifacts',
             icon: Package,
@@ -397,14 +414,14 @@ export function CommandPalette() {
       {
         heading: cc.settings,
         items: [
-          ...SECTIONS.map(section => ({
+          ...VISIBLE_SECTIONS.map(section => ({
             icon: section.icon,
             id: `set-config-${section.id}`,
             keywords: ['settings', section.label, settingsSectionLabel(section)],
             label: settingsSectionLabel(section),
             run: go(settingsTab(`config:${section.id}`))
           })),
-          ...NON_CONFIG_SETTINGS.map(entry => ({
+          ...VISIBLE_NON_CONFIG_SETTINGS.map(entry => ({
             icon: entry.icon,
             id: `set-${entry.tab}`,
             keywords: ['settings', ...(entry.keywords ?? [])],
@@ -457,7 +474,9 @@ export function CommandPalette() {
       })
     }
 
-    const fieldItems = SECTIONS.flatMap(section =>
+    // Settings-field search only indexes consumer-visible sections, so hidden
+    // pages (model, workspace, voice, …) can't be reached by typing either.
+    const fieldItems = VISIBLE_SECTIONS.flatMap(section =>
       section.keys.map(key => ({
         icon: section.icon,
         id: `field-${key}`,
@@ -469,7 +488,7 @@ export function CommandPalette() {
 
     result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
 
-    if (mcpServers.length > 0) {
+    if (mcpServers.length > 0 && !isConsumerHiddenSection('mcp')) {
       result.push({
         heading: t.commandCenter.mcpServers,
         items: mcpServers.map(name => ({

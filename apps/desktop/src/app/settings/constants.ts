@@ -13,8 +13,8 @@ import {
 } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -36,6 +36,30 @@ interface ProviderPrefix {
 
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
 export const CONTROL_TEXT = 'text-xs'
+
+// ── Consumer (China-first) settings surface ─────────────────────────────────
+// APEX Desktop ships a consumer-sized settings IA: 个性化 / 外观 / 提供方 /
+// 已归档对话. Every pro/technical section below is HIDDEN — not deleted — from
+// the settings nav, the settings-field search index and the ⌘K command
+// palette, all of which consult this one set. Pages and their `?tab=` deep
+// links keep working, so re-enabling a section later is a one-line delete
+// here.
+export const CONSUMER_HIDDEN_SECTIONS: ReadonlySet<string> = new Set([
+  'config:model', // 模型 — platform config drives model choice for now
+  'config:chat', // 对话 — 人格 moved into 个性化; the rest became defaults
+  'config:workspace', // 工作区
+  'config:safety', // 安全
+  'config:memory', // 记忆与上下文
+  'config:voice', // 语音
+  'config:advanced', // 高级
+  'notifications', // 通知
+  'gateway', // 网关
+  'keys', // 工具与密钥 (tools list + key settings)
+  'mcp', // MCP servers
+  'messaging' // 消息平台 jump entry inside settings
+])
+
+export const isConsumerHiddenSection = (view: string): boolean => CONSUMER_HIDDEN_SECTIONS.has(view)
 
 // ApexNodes (China-first) ordering: mainland-stable domestic providers get the
 // low priorities (1–9) so they float to the top of Settings → Keys, matching the
@@ -220,6 +244,12 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 24
   }
 ]
+
+// PROVIDER_GROUPS is priority-split: 1–9 are the mainland-China stable
+// (domestic, no-VPN) providers, 10+ are international. The consumer Providers
+// page keeps only groups at or below this priority (plus groups the backend
+// tags with a DOMESTIC_PROVIDER_SLUGS provider id).
+export const DOMESTIC_PROVIDER_PRIORITY_MAX = 9
 
 export const BUILTIN_PERSONALITIES = [
   'helpful',
@@ -507,16 +537,30 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
 // Curated desktop config surface: only fields a user might tune from the app.
 export const SECTIONS: DesktopConfigSection[] = [
   {
+    // 个性化 — the consumer landing section: the 人格 (personality) picker plus
+    // the former About content. Rendered by PersonalizationSettings (index.tsx
+    // routes `config:personalization` past ConfigSettings, same pattern as
+    // appearance); the key listed here feeds the ⌘K settings-field search.
+    id: 'personalization',
+    label: 'Personalization',
+    icon: Sparkles,
+    keys: ['display.personality']
+  },
+  {
     id: 'model',
     label: 'Model',
     icon: Sparkles,
     keys: ['model_context_length', 'fallback_providers']
   },
   {
+    // 人格 moved to the 个性化 section above. The remaining chat knobs are
+    // consumer defaults now (timezone → OS, show_reasoning → on, image mode →
+    // auto) and this whole section is consumer-hidden; the keys stay so the
+    // page still renders when deep-linked.
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: ['timezone', 'display.show_reasoning', 'agent.image_input_mode']
   },
   {
     id: 'appearance',

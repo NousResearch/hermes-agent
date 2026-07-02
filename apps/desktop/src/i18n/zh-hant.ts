@@ -231,6 +231,7 @@ export const zhHant = defineLocale({
       completionSoundPreview: '預覽'
     },
     sections: {
+      personalization: '個人化',
       model: '模型',
       chat: '聊天',
       appearance: '外觀',
@@ -255,7 +256,7 @@ export const zhHant = defineLocale({
     },
     appearance: {
       title: '外觀',
-      intro: '這些是僅限桌面端的顯示偏好。模式控制亮度；主題控制強調色與聊天介面樣式。',
+      intro: '僅限桌面端的顯示偏好：介面語言、明暗模式，以及工具呼叫的顯示方式。',
       colorMode: '色彩模式',
       colorModeDesc: '選擇固定模式，或讓 APEX 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
@@ -280,6 +281,10 @@ export const zhHant = defineLocale({
       installed: name => `已安裝「${name}」。`,
       removeTheme: '移除主題',
       importedBadge: '已匯入'
+    },
+    personalization: {
+      personalityTitle: '人格',
+      personalityIntro: '選擇 APEX 和你說話的風格，新對話會預設使用。'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -1310,7 +1315,8 @@ export const zhHant = defineLocale({
       'new-session': '新對話',
       search: '搜尋',
       cron: '已安排',
-      skills: '外掛'
+      skills: '外掛',
+      artifacts: '成品'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

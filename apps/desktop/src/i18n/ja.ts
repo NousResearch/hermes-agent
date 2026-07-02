@@ -238,6 +238,7 @@ export const ja = defineLocale({
       completionSoundPreview: '試聴'
     },
     sections: {
+      personalization: 'パーソナライズ',
       model: 'モデル',
       chat: 'チャット',
       appearance: '外観',
@@ -262,8 +263,7 @@ export const ja = defineLocale({
     },
     appearance: {
       title: '外観',
-      intro:
-        'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
+      intro: 'デスクトップ専用の表示設定です。インターフェース言語、ライト／ダークモード、ツール実行の表示方法を選べます。',
       colorMode: 'カラーモード',
       colorModeDesc: '固定モードを選ぶか、APEX をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
@@ -290,6 +290,10 @@ export const ja = defineLocale({
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
       importedBadge: 'インポート済み'
+    },
+    personalization: {
+      personalityTitle: '人格',
+      personalityIntro: 'APEX の話し方を選べます。新しいチャットはこのスタイルで始まります。'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -1341,7 +1345,8 @@ export const ja = defineLocale({
       'new-session': '新しいチャット',
       search: '検索',
       cron: '予定済み',
-      skills: 'プラグイン'
+      skills: 'プラグイン',
+      artifacts: 'アーティファクト'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

@@ -172,7 +172,11 @@ function EngineUpdateSection() {
   )
 }
 
-export function AboutSettings() {
+// The full About block (brand header, app updates, engine updates, uninstall)
+// WITHOUT the SettingsContent scroll wrapper, so 个性化 (PersonalizationSettings)
+// can embed it below the 人格 picker. AboutSettings keeps wrapping it for the
+// still-functional `?tab=about` deep link.
+export function AboutSettingsBody() {
   const { t } = useI18n()
   const a = t.settings.about
   const version = useStore($desktopVersion)
@@ -221,7 +225,7 @@ export function AboutSettings() {
   }
 
   return (
-    <SettingsContent>
+    <>
       <div className="flex flex-col items-center gap-3.5 pt-8 pb-3 text-center">
         <BrandMark className="size-16" />
         <div>
@@ -301,6 +305,14 @@ export function AboutSettings() {
 
         <UninstallSection />
       </div>
+    </>
+  )
+}
+
+export function AboutSettings() {
+  return (
+    <SettingsContent>
+      <AboutSettingsBody />
     </SettingsContent>
   )
 }

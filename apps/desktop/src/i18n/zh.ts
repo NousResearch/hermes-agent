@@ -319,6 +319,7 @@ export const zh: Translations = {
       completionSoundPreview: '预览'
     },
     sections: {
+      personalization: '个性化',
       model: '模型',
       chat: '对话',
       appearance: '外观',
@@ -343,7 +344,7 @@ export const zh: Translations = {
     },
     appearance: {
       title: '外观',
-      intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
+      intro: '仅桌面端的显示偏好：界面语言、明暗模式，以及工具调用的展示方式。',
       colorMode: '颜色模式',
       colorModeDesc: '选择固定模式，或让 APEX 跟随系统设置。',
       toolViewTitle: '工具调用显示',
@@ -368,6 +369,10 @@ export const zh: Translations = {
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
       importedBadge: '已导入'
+    },
+    personalization: {
+      personalityTitle: '人格',
+      personalityIntro: '选择 APEX 和你说话的风格，新对话会默认使用。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -1412,7 +1417,8 @@ export const zh: Translations = {
       'new-session': '新对话',
       search: '搜索',
       cron: '已安排',
-      skills: '插件'
+      skills: '插件',
+      artifacts: '产物'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

@@ -6,27 +6,31 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Bell, Globe, Info, KeyRound, MessageCircle, Package, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Bell, Globe, KeyRound, MessageCircle, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { ARTIFACTS_ROUTE, MESSAGING_ROUTE } from '../routes'
+import { MESSAGING_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
-import { SECTIONS } from './constants'
+import { isConsumerHiddenSection, SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
 import { NotificationsSettings } from './notifications-settings'
+import { PersonalizationSettings } from './personalization-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
+// Every view stays registered — consumer-hidden sections (CONSUMER_HIDDEN_SECTIONS
+// in constants.ts) disappear from the nav below but keep working when a `?tab=`
+// deep link lands on them.
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
@@ -41,7 +45,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:personalization' as SettingsViewId)
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
@@ -93,7 +97,11 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
-          {SECTIONS.map(s => {
+          {/* Consumer nav: 个性化 / 外观 / 提供方 / 已归档对话. Everything else is
+              gated through isConsumerHiddenSection (one set in constants.ts), so
+              restoring a section re-lights its nav row, its ⌘K entries and its
+              field search hits at once. */}
+          {SECTIONS.filter(s => !isConsumerHiddenSection(`config:${s.id}`)).map(s => {
             const view = `config:${s.id}` as SettingsViewId
 
             return (
@@ -106,12 +114,14 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               />
             )
           })}
-          <OverlayNavItem
-            active={activeView === 'notifications'}
-            icon={Bell}
-            label={t.settings.nav.notifications}
-            onClick={() => setActiveView('notifications')}
-          />
+          {!isConsumerHiddenSection('notifications') && (
+            <OverlayNavItem
+              active={activeView === 'notifications'}
+              icon={Bell}
+              label={t.settings.nav.notifications}
+              onClick={() => setActiveView('notifications')}
+            />
+          )}
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'providers'}
@@ -137,71 +147,70 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               />
             </div>
           )}
-          <OverlayNavItem
-            active={activeView === 'gateway'}
-            icon={Globe}
-            label={t.settings.nav.gateway}
-            onClick={() => setActiveView('gateway')}
-          />
-          <OverlayNavItem
-            active={activeView === 'keys'}
-            icon={KeyRound}
-            label={t.settings.nav.apiKeys}
-            onClick={() => setActiveView('keys')}
-          />
-          {activeView === 'keys' && (
-            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
-              <OverlayNavItem
-                active={keysView === 'tools'}
-                icon={Wrench}
-                label={t.settings.nav.keysTools}
-                nested
-                onClick={() => openKeysView('tools')}
-              />
-              <OverlayNavItem
-                active={keysView === 'settings'}
-                icon={Settings2}
-                label={t.settings.nav.keysSettings}
-                nested
-                onClick={() => openKeysView('settings')}
-              />
-            </div>
+          {!isConsumerHiddenSection('gateway') && (
+            <OverlayNavItem
+              active={activeView === 'gateway'}
+              icon={Globe}
+              label={t.settings.nav.gateway}
+              onClick={() => setActiveView('gateway')}
+            />
           )}
-          <OverlayNavItem
-            active={activeView === 'mcp'}
-            icon={Wrench}
-            label={t.settings.nav.mcp}
-            onClick={() => setActiveView('mcp')}
-          />
+          {!isConsumerHiddenSection('keys') && (
+            <>
+              <OverlayNavItem
+                active={activeView === 'keys'}
+                icon={KeyRound}
+                label={t.settings.nav.apiKeys}
+                onClick={() => setActiveView('keys')}
+              />
+              {activeView === 'keys' && (
+                <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+                  <OverlayNavItem
+                    active={keysView === 'tools'}
+                    icon={Wrench}
+                    label={t.settings.nav.keysTools}
+                    nested
+                    onClick={() => openKeysView('tools')}
+                  />
+                  <OverlayNavItem
+                    active={keysView === 'settings'}
+                    icon={Settings2}
+                    label={t.settings.nav.keysSettings}
+                    nested
+                    onClick={() => openKeysView('settings')}
+                  />
+                </div>
+              )}
+            </>
+          )}
+          {!isConsumerHiddenSection('mcp') && (
+            <OverlayNavItem
+              active={activeView === 'mcp'}
+              icon={Wrench}
+              label={t.settings.nav.mcp}
+              onClick={() => setActiveView('mcp')}
+            />
+          )}
           <OverlayNavItem
             active={activeView === 'sessions'}
             icon={Archive}
             label={t.settings.nav.archivedChats}
             onClick={() => setActiveView('sessions')}
           />
-          <div className="my-2 h-px bg-border/30" />
-          {/* 消息平台 / 产物 moved off the sidebar's first screen (Codex-style
-              restructure): they live here now, as plain jumps to their existing
-              full-screen routes. Navigating away closes the settings overlay. */}
-          <OverlayNavItem
-            active={false}
-            icon={MessageCircle}
-            label={t.commandCenter.nav.messaging.title}
-            onClick={() => navigate(MESSAGING_ROUTE)}
-          />
-          <OverlayNavItem
-            active={false}
-            icon={Package}
-            label={t.commandCenter.nav.artifacts.title}
-            onClick={() => navigate(ARTIFACTS_ROUTE)}
-          />
-          <div className="my-2 h-px bg-border/30" />
-          <OverlayNavItem
-            active={activeView === 'about'}
-            icon={Info}
-            label={t.settings.nav.about}
-            onClick={() => setActiveView('about')}
-          />
+          {/* 消息平台 jump to its full-screen route (navigating closes the
+              settings overlay). 产物 moved to the chat sidebar (below 插件);
+              关于 lives inside 个性化 now. */}
+          {!isConsumerHiddenSection('messaging') && (
+            <>
+              <div className="my-2 h-px bg-border/30" />
+              <OverlayNavItem
+                active={false}
+                icon={MessageCircle}
+                label={t.commandCenter.nav.messaging.title}
+                onClick={() => navigate(MESSAGING_ROUTE)}
+              />
+            </>
+          )}
           <div className="mt-auto flex items-center gap-1 pt-2">
             <Tip label={t.settings.exportConfig}>
               <OverlayIconButton onClick={() => void exportConfig()}>
@@ -233,7 +242,9 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
         </OverlaySidebar>
 
         <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
-          {activeView === 'config:appearance' ? (
+          {activeView === 'config:personalization' ? (
+            <PersonalizationSettings onConfigSaved={onConfigSaved} />
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />

@@ -324,6 +324,7 @@ export const en: Translations = {
       completionSoundPreview: 'Preview'
     },
     sections: {
+      personalization: 'Personalization',
       model: 'Model',
       chat: 'Chat',
       appearance: 'Appearance',
@@ -348,8 +349,7 @@ export const en: Translations = {
     },
     appearance: {
       title: 'Appearance',
-      intro:
-        'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
+      intro: 'Desktop-only display preferences: interface language, light or dark mode, and how tool activity is shown.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let APEX follow your system setting.',
       toolViewTitle: 'Tool Call Display',
@@ -375,6 +375,10 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported'
+    },
+    personalization: {
+      personalityTitle: 'Personality',
+      personalityIntro: 'Choose how APEX talks to you. New chats start with this style.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -1230,7 +1234,8 @@ export const en: Translations = {
       'new-session': 'New chat',
       search: 'Search',
       cron: 'Scheduled',
-      skills: 'Plugins'
+      skills: 'Plugins',
+      artifacts: 'Artifacts'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

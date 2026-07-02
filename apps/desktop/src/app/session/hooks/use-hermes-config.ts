@@ -1,6 +1,6 @@
 import { type MutableRefObject, useCallback, useState } from 'react'
 
-import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
+import { getHermesConfig, getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import {
   $currentCwd,
@@ -18,6 +18,27 @@ const FAST_TIERS = new Set(['fast', 'priority', 'on'])
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
+}
+
+// Consumer default: reasoning blocks (推理过程块) are ON. The runtime ships
+// display.show_reasoning=false and the gateway gates reasoning output on it
+// server-side, but the 对话 settings page that exposed the toggle is gone from
+// the consumer UI, so seed the value through the existing config persistence.
+// After the first write the config reads back true and this is a no-op —
+// nothing new is stored client-side.
+async function ensureReasoningBlocksOnByDefault(): Promise<void> {
+  const record = await getHermesConfigRecord()
+
+  const display =
+    record.display && typeof record.display === 'object' && !Array.isArray(record.display)
+      ? (record.display as Record<string, unknown>)
+      : {}
+
+  if (display.show_reasoning === true) {
+    return
+  }
+
+  await saveHermesConfig({ ...record, display: { ...display, show_reasoning: true } })
 }
 
 interface HermesConfigOptions {
@@ -65,6 +86,11 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+
+      // Steady state (value already true) skips the extra round-trip entirely.
+      if (config.display?.show_reasoning !== true) {
+        void ensureReasoningBlocksOnByDefault().catch(() => undefined)
+      }
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

@@ -98,3 +98,87 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+# --- new tests appended to tests/hermes_cli/test_vertex_provider.py ---
+# (These verify the PROVIDER_REGISTRY entry + list_authenticated_providers picker fix
+# that unblocks [#56687](https://github.com/NousResearch/hermes-agent/issues/56687) — the desktop provider-setup dead-end for Vertex.)
+
+
+def test_vertex_registered_in_provider_registry():
+    """Regression for [#56687](https://github.com/NousResearch/hermes-agent/issues/56687): PROVIDER_REGISTRY must include vertex so that
+    list_authenticated_providers's credential-detection loop can see it. Without
+    this row, `_auth_registry.get("vertex")` returns None and vertex never reaches
+    the auth_type branches at all.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    assert "vertex" in PROVIDER_REGISTRY, (
+        "vertex must be registered in PROVIDER_REGISTRY for the desktop model picker "
+        "to see it as an authenticated provider (see [#56687](https://github.com/NousResearch/hermes-agent/issues/56687))"
+    )
+    v = PROVIDER_REGISTRY["vertex"]
+    assert v.auth_type == "vertex", (
+        "auth_type must be 'vertex' so list_authenticated_providers dispatches to "
+        "the get_vertex_config() credential probe rather than falling through to "
+        "the default api_key path"
+    )
+    # Non-api_key providers should have empty env-var tuple (mirrors bedrock/aws_sdk)
+    assert v.api_key_env_vars == ()
+
+
+def test_vertex_appears_in_authenticated_providers_when_configured(monkeypatch):
+    """End-to-end contract for the desktop model picker.
+
+    When get_vertex_config() returns a live (token, base_url) tuple — i.e. ADC or a
+    service-account JSON is resolvable — list_authenticated_providers must emit a
+    vertex row with a non-empty models list. Without this, the desktop app renders
+    a "Set up Vertex" button whose target modal doesn't list Vertex, dead-ending
+    the user ([#56687](https://github.com/NousResearch/hermes-agent/issues/56687)).
+    """
+    import agent.vertex_adapter as va
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr(
+        va,
+        "get_vertex_config",
+        lambda: (
+            "ya29.TOKEN",
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi",
+        ),
+    )
+
+    rows = list_authenticated_providers()
+    vertex_rows = [r for r in rows if r.get("slug") == "vertex"]
+
+    assert vertex_rows, (
+        "vertex must appear in list_authenticated_providers() when credentials "
+        "resolve, otherwise the desktop picker renders a dead-end Set-up button"
+    )
+    row = vertex_rows[0]
+    assert row.get("models"), (
+        "vertex picker row must have a non-empty model list — the OpenAI-compat "
+        "endpoint has no /models route, so we fall back to a curated Gemini list"
+    )
+    # The fallback list must include the current-generation flagship
+    assert any("gemini" in m.lower() for m in row["models"])
+
+
+def test_vertex_hidden_from_picker_when_creds_unresolved(monkeypatch):
+    """Mirror-image contract: if credentials can't be resolved, vertex must NOT
+    appear as authenticated. This prevents false-positive picker rows that would
+    500 on first request.
+    """
+    import agent.vertex_adapter as va
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr(va, "get_vertex_config", lambda: (None, None))
+
+    rows = list_authenticated_providers()
+    vertex_rows = [r for r in rows if r.get("slug") == "vertex"]
+    # Absent is fine; if present, it must be marked as source=canonical skeleton
+    # (i.e. not surfaced as authenticated). We assert the strict "absent" contract
+    # because that's what desktop's isProviderReady() actually gates on.
+    assert not vertex_rows, (
+        "vertex must not appear as an authenticated provider when "
+        "get_vertex_config() returns (None, None)"
+    )

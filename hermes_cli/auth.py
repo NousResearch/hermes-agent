@@ -434,6 +434,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        inference_base_url="https://aiplatform.googleapis.com",
+        api_key_env_vars=(),
+        base_url_env_var="",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",

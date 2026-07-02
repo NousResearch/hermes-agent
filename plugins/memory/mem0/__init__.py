@@ -373,12 +373,16 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"channel": self._channel} if self._channel else {}
 
     def system_prompt_block(self) -> str:
-        if self._host:
-            mode_label = "self-hosted (HTTP API)"
-        elif self._mode == "platform":
-            mode_label = "platform (cloud API)"
-        else:
+        # Mirror the precedence in _create_backend (oss > host > platform) so
+        # the label always names the backend that actually runs. Checking
+        # ``host`` first here would mislabel an ``oss``+``host`` config as
+        # self-hosted HTTP even though OSS wins the routing.
+        if self._mode == "oss":
             mode_label = "OSS (self-hosted)"
+        elif self._host:
+            mode_label = "self-hosted (HTTP API)"
+        else:
+            mode_label = "platform (cloud API)"
         # Rerank is a Mem0 Platform feature only.
         rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
         return (

@@ -581,6 +581,16 @@ class TestCreateBackendRouting:
         provider = self._provider(monkeypatch, mode="oss", host="http://sh:8888")
         assert isinstance(provider._create_backend(), OB)
 
+    def test_prompt_label_matches_routing_when_oss_and_host_both_set(self, monkeypatch):
+        # system_prompt_block must mirror _create_backend precedence: with both
+        # mode=oss and host set, OSS wins the routing, so the prompt must label
+        # OSS — not "self-hosted (HTTP API)". Guards the prompt-vs-routing lie.
+        provider = self._provider(monkeypatch, mode="oss", host="http://sh:8888")
+        provider._user_id = "test"
+        block = provider.system_prompt_block()
+        assert "OSS" in block
+        assert "HTTP API" not in block
+
 
 class TestSelfHostedConfig:
     """Config plumbing for self-hosted (MEM0_HOST env + is_available)."""

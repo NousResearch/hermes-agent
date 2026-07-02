@@ -60,13 +60,17 @@ For repo files, use `search_files` and `read_file` first. Trace symbol definitio
 
 ## Sibling Source Edits
 
-Sibling backend/Unity checkouts are higher-risk than this pilot repo.
+Sibling backend/Unity checkouts are higher-risk than this pilot repo. Mimic the legacy Claudio workflow: never let parallel sessions collide in a shared sibling checkout.
 
 Rules:
 
-- Check dirty state and current branch before editing.
-- Prefer isolated worktrees for concurrent sibling work.
-- Do not commit, push, or rewrite history unless the user explicitly asks.
+- Before editing a sibling source repo, identify the target repo/path and check dirty state, branch, and existing worktrees.
+- For sibling C# repos (`yallaplay-services`, `SpadesUnity`, `GinRummyUnity`), default to an isolated per-session git worktree for write work, not the shared checkout. Use the legacy helper when available: `bash /home/ubuntu/git/yallaplay-analytics-agent-gpt/scripts/new_worktree.sh <backend|spades|rummy> <branch-slug>`.
+- If the helper is unavailable, create the worktree manually: fetch origin in the primary checkout, branch from the repo's default remote (`origin/master` for backend, `origin/development` for Unity clients), and place the worktree under `/mnt/ephemeral/git/<repo>-wt-<branch-slug>`.
+- Treat worktrees under `/mnt/ephemeral/git/` as ephemeral: commit and push the branch early when the work matters, and remove the worktree when done.
+- Use the shared sibling checkout for read-only source lookup only; do not edit it when another session/agent may be active.
+- Do not use plain directory copies for source edits; they drop git history and have no clean merge path.
+- Do not commit, push, or rewrite history in sibling repos unless the user explicitly asks or the PR workflow requires it.
 - Never print secrets or token-bearing config while inspecting.
 - Keep fixes minimal and verify with the target repo’s own tests/build commands where available.
 

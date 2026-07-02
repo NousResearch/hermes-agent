@@ -3297,17 +3297,19 @@ class APIServerAdapter(BasePlatformAdapter):
             response_env: Dict[str, Any],
             *,
             conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
+            session_id_snapshot: Optional[str] = None,
         ) -> None:
             if not store:
                 return
             if conversation_history_snapshot is None:
                 conversation_history_snapshot = list(conversation_history)
                 conversation_history_snapshot.append({"role": "user", "content": user_message})
+            stored_session_id = session_id_snapshot if session_id_snapshot is not None else session_id
             self._response_store.put(response_id, {
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": stored_session_id,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -3704,15 +3706,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
-                full_history = self._build_response_conversation_history(
+                effective_session_id = self._response_effective_session_id(result, session_id)
+                full_history = self._build_response_store_conversation_history(
                     conversation_history,
                     user_message,
                     result,
                     final_response_text,
+                    compression_occurred=bool(result.get("compression_occurred")),
                 )
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
+                    session_id_snapshot=effective_session_id,
                 )
                 terminal_snapshot_persisted = True
                 await _write_event("response.completed", {
@@ -4015,20 +4020,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
+        effective_session_id = self._response_effective_session_id(result, session_id)
 
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
-        full_history = self._build_response_conversation_history(
+        full_history = self._build_response_store_conversation_history(
             conversation_history,
             user_message,
             result,
             final_response,
+            compression_occurred=bool(result.get("compression_occurred")),
         )
 
         # Build output items from the current turn only.  AIAgent returns a
         # full transcript in result["messages"], while older/mocked paths may
         # return only the current turn suffix.
-        output_start_index = self._response_messages_turn_start_index(
+        output_start_index = self._response_current_turn_output_start_index(
             conversation_history,
             user_message,
             result,
@@ -4055,14 +4062,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -4444,6 +4451,40 @@ class APIServerAdapter(BasePlatformAdapter):
         return full_history
 
     @staticmethod
+    def _response_effective_session_id(result: Dict[str, Any], fallback: Optional[str]) -> Optional[str]:
+        """Return the session id that should anchor the next Responses turn."""
+        if isinstance(result, dict):
+            result_session_id = result.get("session_id")
+            if result_session_id:
+                return result_session_id
+        return fallback
+
+    @classmethod
+    def _build_response_store_conversation_history(
+        cls,
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+        final_response: Any,
+        *,
+        compression_occurred: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Build the transcript persisted for future ``previous_response_id`` calls."""
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if (
+            compression_occurred
+            and isinstance(agent_messages, list)
+            and cls._response_messages_include_current_user(agent_messages, user_message)
+        ):
+            return list(agent_messages)
+        return cls._build_response_conversation_history(
+            conversation_history,
+            user_message,
+            result,
+            final_response,
+        )
+
+    @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
@@ -4461,6 +4502,51 @@ class APIServerAdapter(BasePlatformAdapter):
             return len(expected_prefix)
         if prior and agent_messages[:len(prior)] == prior:
             return len(prior)
+        return 0
+
+    @staticmethod
+    def _response_messages_include_current_user(
+        agent_messages: List[Dict[str, Any]],
+        user_message: Any,
+    ) -> bool:
+        """Return whether agent messages contain the current user turn."""
+        return any(
+            APIServerAdapter._response_message_matches_user(msg, user_message)
+            for msg in agent_messages
+        )
+
+    @staticmethod
+    def _response_message_matches_user(message: Any, user_message: Any) -> bool:
+        """Match a user turn while ignoring persistence-only metadata."""
+        return (
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and message.get("content") == user_message
+        )
+
+    @classmethod
+    def _response_current_turn_output_start_index(
+        cls,
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+    ) -> int:
+        """Find the first result message that belongs in the current output."""
+        prefix_start = cls._response_messages_turn_start_index(
+            conversation_history,
+            user_message,
+            result,
+        )
+        if prefix_start:
+            return prefix_start
+
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return 0
+
+        for index in range(len(agent_messages) - 1, -1, -1):
+            if cls._response_message_matches_user(agent_messages[index], user_message):
+                return index + 1
         return 0
 
     @classmethod
@@ -4693,6 +4779,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                    result["compression_occurred"] = bool(
+                        getattr(agent, "_last_compaction_in_place", False)
+                        or (
+                            isinstance(session_id, str)
+                            and bool(session_id)
+                            and isinstance(_eff_sid, str)
+                            and bool(_eff_sid)
+                            and _eff_sid != session_id
+                        )
+                    )
                     return result, usage
                 finally:
                     clear_session_vars(tokens)

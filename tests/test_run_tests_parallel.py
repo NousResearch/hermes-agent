@@ -277,3 +277,66 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def _load_runner_module():
+    """Import scripts/run_tests_parallel.py as a module (it's not a package)."""
+    import importlib.util
+
+    runner = Path(__file__).resolve().parent.parent / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("_run_tests_parallel_under_test", runner)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_children_spawn_in_their_own_process_group(monkeypatch, tmp_path: Path) -> None:
+    """Every pytest child must be isolated from the runner's process group.
+
+    POSIX: ``start_new_session=True`` (os.setsid) so ``_kill_tree`` can
+    SIGKILL the group atomically.
+
+    Windows: ``start_new_session`` is silently IGNORED before CPython 3.12,
+    so the runner must pass ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW``
+    creationflags explicitly. Without them every child shares the runner's
+    console process group, and a single ``os.kill(pid, 0)`` liveness probe
+    anywhere in the run — which on Windows routes through
+    GenerateConsoleCtrlEvent (bpo-14484) — broadcasts KeyboardInterrupt to
+    every concurrent child AND the runner itself (observed: the runner died
+    at 100% completion with ~200 collateral KeyboardInterrupt failures).
+    """
+    mod = _load_runner_module()
+    captured: dict = {}
+
+    class _FakeProc:
+        pid = 99999
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("1 passed", None)
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+    # _kill_tree shells out to taskkill on Windows — neuter it so the fake
+    # pid can't hit a real process.
+    monkeypatch.setattr(mod, "_kill_tree", lambda proc, pgid=None: None)
+
+    probe = tmp_path / "test_probe.py"
+    probe.write_text("def test_ok():\n    assert True\n")
+    mod._run_one_file(probe, [], tmp_path, 30.0)
+
+    if sys.platform == "win32":
+        flags = captured.get("creationflags", 0)
+        assert flags & subprocess.CREATE_NEW_PROCESS_GROUP, captured
+        assert flags & subprocess.CREATE_NO_WINDOW, captured
+    else:
+        assert captured.get("start_new_session") is True, captured

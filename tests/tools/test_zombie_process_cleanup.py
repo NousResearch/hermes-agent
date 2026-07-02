@@ -5,12 +5,11 @@ Reproduction for issue #7131: zombie process accumulation on long-running
 gateway deployments.
 """
 
-import os
-import signal
 import subprocess
 import sys
 import threading
 
+import psutil
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -21,12 +20,15 @@ def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True if a process with the given PID is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+    """Return True if a process with the given PID is still running.
+
+    Never probe with ``os.kill(pid, 0)`` here: on Windows that is NOT a
+    no-op — it routes through GenerateConsoleCtrlEvent (bpo-14484) and
+    broadcasts Ctrl+C across the shared console, killing every concurrent
+    pytest child AND the parallel-runner process. psutil probes via
+    OpenProcess/GetExitCodeProcess on Windows (no signals involved).
+    """
+    return psutil.pid_exists(pid)
 
 
 class TestZombieReproduction:
@@ -36,13 +38,14 @@ class TestZombieReproduction:
         """REPRODUCTION: processes spawned directly survive if no one kills
         them — this models the gap that causes zombie accumulation when
         the gateway drops agent references without calling close()."""
-        pids = []
+        procs = []
 
         try:
             for _ in range(3):
                 proc = _spawn_sleep(60)
-                pids.append(proc.pid)
+                procs.append(proc)
 
+            pids = [p.pid for p in procs]
             for pid in pids:
                 assert _pid_alive(pid), f"PID {pid} should be alive after spawn"
 
@@ -56,10 +59,14 @@ class TestZombieReproduction:
                     f"expected it to survive (demonstrating the bug)"
                 )
         finally:
-            for pid in pids:
+            # Popen.kill() (TerminateProcess on Windows, SIGKILL on POSIX)
+            # instead of os.kill(pid, signal.SIGKILL): signal.SIGKILL does
+            # not exist on Windows, so the old cleanup raised AttributeError.
+            for p in procs:
                 try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                    p.kill()
+                    p.wait(timeout=5)
+                except Exception:
                     pass
 
     def test_explicit_terminate_reaps_processes(self):

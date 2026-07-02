@@ -1678,6 +1678,41 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _apply_journal_policy(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str,
+    default_delete: bool = False,
+) -> str:
+    """Apply the kanban journal policy and return SQLite's active mode."""
+    requested = (os.getenv("HERMES_KANBAN_JOURNAL") or "").strip().lower()
+    if not requested:
+        try:
+            import yaml
+
+            cfg_path = kanban_home() / "config.yaml"
+            if cfg_path.exists():
+                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+                kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else None
+                if isinstance(kanban_cfg, dict):
+                    requested = str(kanban_cfg.get("journal_mode") or "").strip().lower()
+        except Exception:
+            requested = ""
+    force_delete = requested in {"delete", "rollback"}
+    prefer_delete = default_delete and requested in {"", "auto"}
+    if force_delete or prefer_delete:
+        try:
+            row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+            return str(row[0]).lower() if row else "delete"
+        except sqlite3.OperationalError:
+            if force_delete:
+                raise
+    from hermes_state import apply_wal_with_fallback
+    apply_wal_with_fallback(conn, db_label=db_label)
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    return str(row[0]).lower() if row else "unknown"
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1723,8 +1758,11 @@ def connect(
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                _apply_journal_policy(
+                    conn,
+                    db_label=f"kanban.db ({path.name})",
+                    default_delete=db_path is not None,
+                )
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
@@ -1755,8 +1793,11 @@ def connect(
                 # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
                 # falls back to DELETE with one WARNING so kanban stays usable there.
                 # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                _apply_journal_policy(
+                    conn,
+                    db_label=f"kanban.db ({path.name})",
+                    default_delete=db_path is not None,
+                )
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")

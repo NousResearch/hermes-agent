@@ -754,6 +754,16 @@ def run_doctor(args):
                 _resolve_auth_provider = None
                 pass
             try:
+                from providers import list_providers as _list_provider_profiles
+
+                known_providers.update(
+                    str(profile.name).strip().lower()
+                    for profile in _list_provider_profiles()
+                    if str(getattr(profile, "name", "")).strip()
+                )
+            except Exception:
+                pass
+            try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
                     normalize_provider as _normalize_catalog_provider,
@@ -810,6 +820,12 @@ def run_doctor(args):
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
+                if catalog_provider is None and provider in known_providers:
+                    # Some runtime providers (for example Vertex) are registered
+                    # as ProviderProfile entries rather than model-catalog
+                    # providers. They are valid even when resolve_provider_full()
+                    # has no catalog object for them.
+                    catalog_provider = provider
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 

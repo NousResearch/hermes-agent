@@ -1099,6 +1099,22 @@ class SessionDB:
                 return False
             raise
 
+    @staticmethod
+    def _drop_orphaned_fts_shadow_tables(cursor: sqlite3.Cursor, table_name: str) -> None:
+        """Remove FTS5 shadow tables left behind without a virtual table.
+
+        SQLite normally drops an FTS5 virtual table and its shadow tables as one
+        operation. If a migration is interrupted after the virtual-table row is
+        gone from sqlite_master but before all shadows are cleaned up, the next
+        ``CREATE VIRTUAL TABLE`` fails permanently with e.g.
+        ``table messages_fts_data already exists``. This helper is only called
+        after probing has proved the virtual table itself is absent, so dropping
+        the deterministic FTS5 shadows is a safe self-repair step.
+        """
+        safe_prefix = table_name.replace('"', '""')
+        for suffix in ("content", "data", "docsize", "idx", "config"):
+            cursor.execute(f'DROP TABLE IF EXISTS "{safe_prefix}_{suffix}"')
+
     def _ensure_fts_schema(
         self,
         cursor: sqlite3.Cursor,
@@ -1108,6 +1124,8 @@ class SessionDB:
         status = self._fts_table_probe(cursor, table_name)
         if status is None:
             return False
+        if status is False:
+            self._drop_orphaned_fts_shadow_tables(cursor, table_name)
         try:
             # Run even when the virtual table exists so any dropped or missing
             # triggers are recreated after a previous no-FTS5 runtime disabled

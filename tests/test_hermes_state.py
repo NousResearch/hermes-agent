@@ -450,6 +450,36 @@ class TestSessionLifecycle:
         finally:
             db.close()
 
+    def test_orphaned_fts_shadow_tables_are_repaired(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="orphan shadow needle")
+        finally:
+            seeded.close()
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP TABLE IF EXISTS messages_fts")
+            # Simulate an interrupted migration where sqlite_master no longer
+            # has the virtual table, but one or more FTS5 shadow tables remain.
+            # A plain CREATE VIRTUAL TABLE would fail with
+            # "table messages_fts_data already exists" unless init cleans it.
+            conn.execute("CREATE TABLE messages_fts_data(id INTEGER PRIMARY KEY, block BLOB)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        repaired = SessionDB(db_path=db_path)
+        try:
+            assert repaired._fts_enabled is True
+            assert repaired._fts_table_exists("messages_fts") is True
+            repaired.append_message("s1", role="assistant", content="after orphan repair")
+            assert len(repaired.search_messages("repair")) == 1
+        finally:
+            repaired.close()
+
     def test_fts_runtime_restores_triggers_after_no_fts_open(
         self, tmp_path, monkeypatch
     ):

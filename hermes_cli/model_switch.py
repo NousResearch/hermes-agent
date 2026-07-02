@@ -1966,8 +1966,13 @@ def list_authenticated_providers(
                         models_list.append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    # Guard: list entries may be dicts (hand-edited config
+                    # or legacy format with per-model metadata).  Extract
+                    # the model id string so downstream .lower() calls
+                    # never receive a dict.  (#57405)
+                    mid = m.get("id") if isinstance(m, dict) else m
+                    if isinstance(mid, str) and mid and mid not in models_list:
+                        models_list.append(mid)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -2179,8 +2184,11 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    # Guard: list entries may be dicts (hand-edited config).
+                    # Extract the model id string.  (#57405)
+                    mid = m.get("id") if isinstance(m, dict) else m
+                    if isinstance(mid, str) and mid and mid not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(mid)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()

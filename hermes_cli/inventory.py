@@ -185,7 +185,11 @@ def build_models_payload(
         user_models: set[str] = set()
         for row in rows:
             if row.get("is_user_defined"):
-                user_models.update(m.lower() for m in (row.get("models") or []))
+                user_models.update(
+                    m.lower()
+                    for m in (row.get("models") or [])
+                    if isinstance(m, str)
+                )
         if user_models:
             for row in rows:
                 # A user's own configured provider is never an "aggregator
@@ -207,7 +211,7 @@ def build_models_payload(
                 if not _is_routing_aggregator(slug):
                     continue
                 original = row.get("models") or []
-                filtered = [m for m in original if m.lower() not in user_models]
+                filtered = [m for m in original if isinstance(m, str) and m.lower() not in user_models]
                 if len(filtered) < len(original):
                     row["models"] = filtered
                     row["total_models"] = len(filtered)

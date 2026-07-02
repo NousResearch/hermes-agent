@@ -191,6 +191,86 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 
 @pytest.mark.asyncio
+async def test_connect_warns_when_discord_access_policy_missing(monkeypatch, caplog):
+    """A fail-closed Discord bot should not look healthy-but-silent in logs."""
+    for name in (
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_ALLOWED_ROLES",
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda *, command_prefix, intents, proxy=None, allowed_mentions=None, **_: FakeBot(
+            intents=intents,
+            allowed_mentions=allowed_mentions,
+        ),
+    )
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    caplog.set_level("WARNING")
+    assert await adapter.connect() is True
+    assert "No Discord access policy configured" in caplog.text
+    assert "DISCORD_ALLOW_ALL_USERS=true" in caplog.text
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env_name", "env_value"),
+    [
+        ("DISCORD_ALLOWED_USERS", "769524422783664158"),
+        ("DISCORD_ALLOWED_ROLES", "123456789012345678"),
+        ("DISCORD_ALLOWED_CHANNELS", "987654321098765432"),
+        ("DISCORD_ALLOW_ALL_USERS", "true"),
+        ("GATEWAY_ALLOW_ALL_USERS", "yes"),
+    ],
+)
+async def test_connect_no_missing_policy_warning_when_discord_policy_configured(
+    monkeypatch,
+    caplog,
+    env_name,
+    env_value,
+):
+    for name in (
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_ALLOWED_ROLES",
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, env_value)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda *, command_prefix, intents, proxy=None, allowed_mentions=None, **_: FakeBot(
+            intents=intents,
+            allowed_mentions=allowed_mentions,
+        ),
+    )
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    caplog.set_level("WARNING")
+    assert await adapter.connect() is True
+    assert "No Discord access policy configured" not in caplog.text
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_allowed",
     [

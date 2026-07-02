@@ -328,6 +328,11 @@ def _build_allowed_mentions():
     )
 
 
+def _discord_env_truthy(name: str) -> bool:
+    """Return True for common opt-in boolean env-var spellings."""
+    return os.getenv(name, "").strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _discord_ready_timeout_seconds() -> float:
     """Return the Discord ready wait timeout during gateway startup."""
     raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
@@ -955,6 +960,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     int(rid.strip()) for rid in roles_env.split(",")
                     if rid.strip().isdigit()
                 }
+
+            if (
+                not self._allowed_user_ids
+                and not self._allowed_role_ids
+                and not os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
+                and not _discord_env_truthy("DISCORD_ALLOW_ALL_USERS")
+                and not _discord_env_truthy("GATEWAY_ALLOW_ALL_USERS")
+            ):
+                logger.warning(
+                    "[%s] No Discord access policy configured; inbound Discord messages will be denied by default. "
+                    "Set DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES, or explicitly opt in with "
+                    "DISCORD_ALLOW_ALL_USERS=true / GATEWAY_ALLOW_ALL_USERS=true, then restart the gateway.",
+                    self.name,
+                )
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -3150,9 +3169,9 @@ class DiscordAdapter(BasePlatformAdapter):
         has_users = bool(allowed_users)
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
-            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if _discord_env_truthy("DISCORD_ALLOW_ALL_USERS"):
                 return True
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if _discord_env_truthy("GATEWAY_ALLOW_ALL_USERS"):
                 return True
             # Channel-scoped guild access requires validated channel context.
             # Do not treat DISCORD_ALLOWED_CHANNELS alone as a user-wide bypass
@@ -6341,9 +6360,9 @@ def _component_check_auth(
     if user is None or getattr(user, "id", None) is None:
         return False
 
-    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    if _discord_env_truthy("DISCORD_ALLOW_ALL_USERS"):
         return True
-    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    if _discord_env_truthy("GATEWAY_ALLOW_ALL_USERS"):
         return True
 
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}

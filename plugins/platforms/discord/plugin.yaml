@@ -21,8 +21,8 @@ optional_env:
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: DISCORD_ALLOW_ALL_USERS
-    description: "Allow any Discord user to trigger the bot (dev only)"
-    prompt: "Allow all users? (true/false)"
+    description: "Explicitly allow any Discord user to trigger the bot (trusted/private guilds only)"
+    prompt: "Allow all Discord users? (true/false)"
     password: false
   - name: DISCORD_HOME_CHANNEL
     description: "Default channel ID for cron / notification delivery"

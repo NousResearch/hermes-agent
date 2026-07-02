@@ -741,6 +741,30 @@ class TestBodySize:
             )
             assert resp.status == 413
 
+    @pytest.mark.asyncio
+    async def test_oversized_body_without_content_length_rejected(self):
+        """A body over the limit is rejected even when Content-Length is absent.
+
+        Chunked transfer-encoding (or a spoofed small Content-Length) makes
+        ``request.content_length`` None, so the fast-path check is skipped.
+        The post-read length check must still reject the oversized body — else
+        the per-route max_body_bytes guard is trivially bypassable.
+        """
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=100)
+
+        body = json.dumps({"data": "x" * 500}).encode()
+        req = _mock_request(
+            headers={},
+            body=body,
+            match_info={"route_name": "big"},
+        )
+        # Simulate a chunked request: aiohttp reports no Content-Length.
+        req.content_length = None
+        with patch.object(adapter, "_reload_dynamic_routes"):
+            resp = await adapter._handle_webhook(req)
+        assert resp.status == 413
+
 
 # ===================================================================
 # INSECURE_NO_AUTH

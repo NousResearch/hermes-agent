@@ -22,7 +22,8 @@ Security:
   - HMAC secret is required per route (validated at startup)
   - Rate limiting per route (fixed-window, configurable)
   - Idempotency cache prevents duplicate agent runs on webhook retries
-  - Body size limits checked before reading payload
+  - Body size limits enforced both via Content-Length (fast path) and
+    against the bytes actually read (covers chunked / spoofed length)
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -469,7 +470,7 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         # ── Auth-before-body ─────────────────────────────────────
-        # Check Content-Length before reading the full payload.
+        # Fast path: reject via Content-Length before reading the payload.
         content_length = request.content_length or 0
         if content_length > self._max_body_bytes:
             return web.json_response(
@@ -482,6 +483,23 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
+
+        # Enforce the size limit on the ACTUAL body too. A request that omits
+        # Content-Length (HTTP chunked transfer-encoding) or spoofs a small
+        # value slips past the fast-path check above, so the limit must be
+        # re-checked against the bytes we actually read — otherwise the
+        # per-route ``max_body_bytes`` guard is trivially bypassable by an
+        # unauthenticated caller. Mirrors the Feishu / WeCom webhook adapters.
+        if len(raw_body) > self._max_body_bytes:
+            logger.warning(
+                "[webhook] Body exceeds max_body_bytes (%d > %d) on route %s",
+                len(raw_body),
+                self._max_body_bytes,
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
 
         # Validate HMAC signature FIRST (skip only for the explicit local-test
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,

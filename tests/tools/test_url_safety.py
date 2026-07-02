@@ -689,3 +689,253 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage for uncovered paths
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeUrlForRequestEdgeCases:
+    def test_non_string_returns_input(self):
+        """Non-string input is returned unchanged."""
+        assert normalize_url_for_request(42) == 42  # type: ignore[arg-type]
+        assert normalize_url_for_request(None) is None  # type: ignore[arg-type]
+
+    def test_empty_string_returns_empty(self):
+        assert normalize_url_for_request("") == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert normalize_url_for_request("   ") == ""
+
+    def test_non_http_scheme_returns_raw(self):
+        """Non-http/https schemes pass through unchanged."""
+        assert normalize_url_for_request("ftp://example.com/file") == "ftp://example.com/file"
+        assert normalize_url_for_request("file:///path") == "file:///path"
+
+    def test_urlsplit_value_error_returns_raw(self):
+        """When urlsplit raises ValueError, raw input is returned."""
+        with patch("tools.url_safety.urlsplit", side_effect=ValueError("bad")):
+            assert normalize_url_for_request("https://example.com") == "https://example.com"
+
+    def test_idna_unicode_error_falls_back(self):
+        """When IDNA encoding fails, the original hostname is kept."""
+        # A hostname that fails IDNA encoding (too long label)
+        long_label = "a" * 64
+        url = f"https://{long_label}.example.com/path"
+        result = normalize_url_for_request(url)
+        # Should not crash, should contain the original hostname
+        assert long_label in result
+
+    def test_no_hostname(self):
+        """URL without hostname (e.g. 'https:///path') still works."""
+        result = normalize_url_for_request("https:///path")
+        assert "path" in result
+
+    def test_ascii_hostname_unchanged(self):
+        """Pure-ASCII hostname is not modified."""
+        result = normalize_url_for_request("https://example.com/path")
+        assert result == "https://example.com/path"
+
+    def test_fragment_encoded(self):
+        """Fragment with non-ASCII is percent-encoded."""
+        result = normalize_url_for_request("https://example.com/page#Köln")
+        assert "%C3%B6" in result
+
+
+class TestGlobalAllowPrivateUrlsEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_env_var_0(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=0 keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "0")
+        assert _global_allow_private_urls() is False
+
+    def test_env_var_no(self, monkeypatch):
+        """HERMES_ALLOW_PRIVATE_URLS=no keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "no")
+        assert _global_allow_private_urls() is False
+
+    def test_env_var_empty_string(self, monkeypatch):
+        """Empty env var falls through to config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "")
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_private_urls() is False
+
+    def test_env_var_random_string(self, monkeypatch):
+        """Unrecognized env var value falls through to config."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "maybe")
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_private_urls() is False
+
+    def test_config_security_not_dict(self, monkeypatch):
+        """security section that's not a dict is ignored."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": "not a dict"}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_browser_not_dict(self, monkeypatch):
+        """browser section that's not a dict is ignored."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": "not a dict"}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_both_false(self, monkeypatch):
+        """Both security and browser set to false → disabled."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": False}, "browser": {"allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_reset_allow_private_cache(self, monkeypatch):
+        """_reset_allow_private_cache clears the cache so config is re-read."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        assert _global_allow_private_urls() is True
+        _reset_allow_private_cache()
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        assert _global_allow_private_urls() is False
+
+
+class TestIsAlwaysBlockedUrlEdgeCases:
+    def test_hostname_with_trailing_dot(self):
+        """Trailing dot on a blocked hostname is stripped before checking."""
+        assert is_always_blocked_url("http://metadata.google.internal./") is True
+
+    def test_literal_public_ip_not_blocked(self):
+        """A literal public IP is not in the always-blocked floor."""
+        assert is_always_blocked_url("http://93.184.216.34/") is False
+
+    def test_literal_private_ip_not_in_floor(self):
+        """A literal private IP (not metadata) is not in the floor."""
+        assert is_always_blocked_url("http://10.0.0.1/") is False
+
+    def test_dns_resolves_to_non_metadata_private_not_blocked(self):
+        """Hostname resolving to a private (non-metadata) IP is not in the floor."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_always_blocked_url("http://internal.example.com/") is False
+
+    def test_dns_resolves_to_multiple_ips_one_metadata(self):
+        """When DNS returns multiple IPs and one is metadata, it blocks."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker.example.com/") is True
+
+    def test_unparseable_resolved_ip_skipped(self):
+        """An unparseable IP in DNS results is skipped, not crashed."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("not-an-ip", 0)),
+        ]):
+            assert is_always_blocked_url("http://example.com/") is False
+
+    def test_unexpected_error_returns_false(self):
+        """Unexpected exceptions don't claim always-blocked status."""
+        with patch("tools.url_safety.urlparse", side_effect=RuntimeError("boom")):
+            assert is_always_blocked_url("http://example.com/") is False
+
+    def test_empty_hostname_returns_false(self):
+        """URL with no hostname returns False."""
+        assert is_always_blocked_url("http://") is False
+
+    def test_ipv6_literal_metadata_blocked(self):
+        """IPv6 metadata IP (fd00:ec2::254) is in the always-blocked set."""
+        assert is_always_blocked_url("http://[fd00:ec2::254]/") is True
+
+
+class TestIsSafeUrlEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_allow_private_logging_path(self, monkeypatch):
+        """When allow_private_urls is on, the debug log is emitted."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("192.168.1.1", 0)),
+        ]):
+            with patch("tools.url_safety.logger") as mock_logger:
+                assert is_safe_url("http://router.local") is True
+                mock_logger.debug.assert_called()
+
+    def test_trusted_hostname_logging_path(self):
+        """When a trusted hostname resolves to private IP, debug log is emitted."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            with patch("tools.url_safety.logger") as mock_logger:
+                assert is_safe_url("https://multimedia.nt.qq.com.cn/download") is True
+                mock_logger.debug.assert_called()
+
+    def test_multiple_ips_one_blocked(self):
+        """When DNS returns multiple IPs and one is blocked, the URL is blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            assert is_safe_url("http://example.com/") is False
+
+    def test_hostname_with_trailing_dot(self):
+        """Trailing dot on hostname is stripped."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert is_safe_url("https://example.com./path") is True
+
+    def test_unsupported_scheme_logs_warning(self):
+        """Unsupported scheme logs a warning."""
+        with patch("tools.url_safety.logger") as mock_logger:
+            assert is_safe_url("ftp://example.com/file") is False
+            mock_logger.warning.assert_called()
+
+    def test_uppercase_scheme(self):
+        """Uppercase HTTPS scheme is accepted."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert is_safe_url("HTTPS://example.com/path") is True
+
+
+class TestAsyncIsSafeUrlExtra:
+    @pytest.mark.asyncio
+    async def test_metadata_blocked(self):
+        """Cloud metadata hostname is blocked in async path too."""
+        assert await async_is_safe_url("http://metadata.google.internal/") is False
+
+    @pytest.mark.asyncio
+    async def test_dns_failure_blocked(self):
+        """DNS failure blocks in async path too."""
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
+            assert await async_is_safe_url("https://nonexistent.example.com") is False
+
+    @pytest.mark.asyncio
+    async def test_empty_url_blocked(self):
+        """Empty URL blocks in async path too."""
+        assert await async_is_safe_url("") is False
+
+
+class TestAllowsPrivateIpResolution:
+    def test_trusted_hostname_https(self):
+        """Trusted hostname with HTTPS scheme is allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("multimedia.nt.qq.com.cn", "https") is True
+
+    def test_trusted_hostname_http(self):
+        """Trusted hostname with HTTP scheme is NOT allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("multimedia.nt.qq.com.cn", "http") is False
+
+    def test_untrusted_hostname(self):
+        """Untrusted hostname is NOT allowed."""
+        from tools.url_safety import _allows_private_ip_resolution
+        assert _allows_private_ip_resolution("example.com", "https") is False

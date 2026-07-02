@@ -451,6 +451,18 @@ def render_blocks(
                         indent, ordered, txt = items[-1]
                         items[-1] = (indent, ordered, txt + " " + lines[i].strip())
                         i += 1
+                    elif not lines[i].strip() and items:
+                        # LLM-authored ordered lists often put a blank line
+                        # between items. Keep those items in one Slack
+                        # rich_text_list so ordered numbering continues instead
+                        # of restarting at 1 for each separated item.
+                        j = i + 1
+                        while j < n and not lines[j].strip():
+                            j += 1
+                        if j < n and (_BULLET_RE.match(lines[j]) or _ORDERED_RE.match(lines[j])):
+                            i = j
+                            continue
+                        break
                     else:
                         break
                 blocks.append(_list_block(items))

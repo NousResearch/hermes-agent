@@ -488,6 +488,14 @@ function isUpstreamMessageRpcError(error) {
   return /MessageService\/(Edit|Unsend)Message/.test(String(error?.message ?? error ?? ""));
 }
 
+// Spectrum's UnsupportedError is a deliberate capability refusal (e.g.
+// "iMessage polls cannot be unsent"), not a delivery failure. The advanced
+// fallback must never bypass it — an OpenClaw live smoke showed the
+// equivalent fallback unsending an active poll Spectrum had refused to.
+function isSpectrumCapabilityError(error) {
+  return error?.name === "UnsupportedError";
+}
+
 // Spectrum's inbound poll events carry synthetic message ids —
 // "<pollGuid>:<sender>:<optionId>:<vote|unvote>:<timestamp>" for votes and
 // "<pollGuid>:poll:<sequence>" for poll changes — while the advanced poll
@@ -1128,6 +1136,7 @@ const server = http.createServer(async (req, res) => {
         // when the failure names that RPC the upstream service itself failed
         // and the fallback would re-dial the identical endpoint.
         if (isUpstreamMessageRpcError(spectrumError)) throw spectrumError;
+        if (isSpectrumCapabilityError(spectrumError)) throw spectrumError;
         console.error(
           "photon-sidecar: Spectrum edit failed; trying advanced edit fallback: " +
             (spectrumError && spectrumError.stack
@@ -1188,6 +1197,7 @@ const server = http.createServer(async (req, res) => {
       } catch (spectrumError) {
         if (!advancedCreateClient) throw spectrumError;
         if (isUpstreamMessageRpcError(spectrumError)) throw spectrumError;
+        if (isSpectrumCapabilityError(spectrumError)) throw spectrumError;
         console.error(
           "photon-sidecar: Spectrum unsend failed; trying advanced unsend fallback: " +
             (spectrumError && spectrumError.stack

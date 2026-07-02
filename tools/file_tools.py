@@ -1759,6 +1759,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
+                include_hidden: bool = False,
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
@@ -1775,6 +1776,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             file_glob or "",
             limit,
             offset,
+            include_hidden,
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -1809,7 +1811,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            limit=limit, offset=offset, output_mode=output_mode, context=context,
+            include_hidden=include_hidden,
         )
         omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):
@@ -1822,6 +1825,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_dict["_omitted"] = (
                 f"{omitted} result(s) omitted because they target credential, "
                 "token, cache, or secret-bearing environment files."
+            )
+
+        if (not include_hidden
+                and not result_dict.get("error")
+                and result_dict.get("total_count") == 0):
+            # A silent 0 gaslights the model when the target lives under a
+            # dotdir (on agent installs the whole working tree may): say WHY
+            # nothing matched and name the escape hatches (#1558 keeps hidden
+            # exclusion the default; discoverability was the missing half).
+            result_dict["_note"] = (
+                "0 matches. Hidden directories below the search root are not "
+                "searched by default — if the target may live under a dotdir "
+                "(e.g. ~/.hermes), retry with include_hidden=true or pass that "
+                "directory as path=. If you already have an absolute path, use "
+                "read_file directly instead of searching."
             )
 
         if count >= 3:
@@ -1939,7 +1957,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Hidden directories (dotdirs) below the search root are NOT searched unless include_hidden=true — an explicitly hidden path (e.g. path='.hermes/skills') is always searched.\n\nContent search (target='content'): Regex search inside files (regex syntax — a glob like '*foo*' is a regex ERROR here; write 'foo'). Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1950,7 +1968,8 @@ SEARCH_FILES_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "include_hidden": {"type": "boolean", "description": "Also search hidden directories/dotfiles below the search root (default false). Use when the target may live under a dotdir; an explicitly hidden path= is searched without this.", "default": False}
         },
         "required": ["pattern"]
     }
@@ -2008,7 +2027,8 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
+        include_hidden=bool(args.get("include_hidden", False)), task_id=tid)
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)

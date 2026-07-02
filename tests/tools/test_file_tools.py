@@ -401,6 +401,7 @@ class TestSearchHandler:
         mock_ops.search.assert_called_once_with(
             pattern="class", path="/src", target="files", file_glob="*.py",
             limit=10, offset=5, output_mode="count", context=2,
+            include_hidden=False,
         )
 
     @patch("tools.file_tools._get_file_ops")
@@ -416,6 +417,7 @@ class TestSearchHandler:
         mock_ops.search.assert_called_once_with(
             pattern="class", path="/src", target="files", file_glob=None,
             limit=1, offset=0, output_mode="content", context=0,
+            include_hidden=False,
         )
 
     @patch("tools.file_tools._get_file_ops")

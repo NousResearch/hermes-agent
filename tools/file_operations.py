@@ -487,7 +487,8 @@ class FileOperations(ABC):
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               include_hidden: bool = False) -> SearchResult:
         """Search for content or files."""
         ...
 
@@ -1961,10 +1962,11 @@ class ShellFileOperations(FileOperations):
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               include_hidden: bool = False) -> SearchResult:
         """
         Search for content or files.
-        
+
         Args:
             pattern: Regex (for content) or glob pattern (for files)
             path: Directory/file to search (default: cwd)
@@ -1974,7 +1976,10 @@ class ShellFileOperations(FileOperations):
             offset: Skip first N results
             output_mode: "content", "files_only", or "count"
             context: Lines of context around matches
-        
+            include_hidden: Also search hidden directories/dotfiles. Off by
+                default (#1558 — hidden caches can carry adversarial text);
+                an explicit hidden *path* is always searched without it.
+
         Returns:
             SearchResult with matches or file list
         """
@@ -2017,30 +2022,60 @@ class ShellFileOperations(FileOperations):
             )
         
         if target == "files":
-            return self._search_files(pattern, path, limit, offset)
+            return self._search_files(pattern, path, limit, offset,
+                                      include_hidden=include_hidden)
         else:
-            return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+            return self._search_content(pattern, path, file_glob, limit, offset,
+                                        output_mode, context,
+                                        include_hidden=include_hidden)
     
-    def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """Search for files by name pattern (glob-like)."""
+    @staticmethod
+    def _drop_hidden_descendants(files: List[str], search_root: str) -> List[str]:
+        """Drop paths with a hidden component BELOW ``search_root``.
+
+        The hidden filter is applied relative to the search root, so an
+        explicitly given hidden root (``path='.hermes/skills'``) stays
+        searchable while its hidden *descendants* remain excluded — the same
+        semantics for every backend (rg / find / grep), closing the rg quirk
+        where a bare ``-g '*'`` (which matches a hidden directory's *name*
+        during traversal) descended into trees that every specific glob
+        pruned: the two answers contradicted each other, and the ``'*'``
+        listing leaked exactly the hidden files #1558 excludes.
+        """
+        root = Path(search_root).resolve()
+        out = []
+        for file_path in files:
+            try:
+                rel_parts = Path(file_path).resolve().relative_to(root).parts
+            except (ValueError, OSError):
+                rel_parts = Path(file_path).parts
+            if any(p not in {".", ".."} and p.startswith(".") for p in rel_parts):
+                continue
+            out.append(file_path)
+        return out
+
+    def _search_files(self, pattern: str, path: str, limit: int, offset: int,
+                      include_hidden: bool = False) -> SearchResult:
+        """Search for files by name pattern (glob-like).
+
+        Hidden directories below the search root are excluded unless
+        ``include_hidden`` (#1558: hidden caches can carry adversarial text).
+        An explicitly given hidden root is always searched. The exclusion is
+        enforced CONSISTENTLY for every pattern and backend — see
+        ``_drop_hidden_descendants``.
+        """
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
         else:
             search_pattern = pattern.split('/')[-1]
 
-        search_root = Path(path)
-        has_hidden_path_ancestor = any(
-            part not in {".", ".."} and part.startswith(".")
-            for part in search_root.parts
-        )
-
-        # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
-        # default, and has parallel directory traversal (~200x faster than
-        # find on wide trees).  Mirrors _search_content which already uses rg.
+        # Prefer ripgrep: respects .gitignore and has parallel directory
+        # traversal (~200x faster than find on wide trees).  Mirrors
+        # _search_content which already uses rg.
         if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+            return self._search_files_rg(search_pattern, path, limit, offset,
+                                         include_hidden=include_hidden)
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
@@ -2050,27 +2085,19 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
-        hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
-
-        # Use shell pagination for standard roots. For hidden roots, gather full
-        # output so we can re-apply hidden-descendant filtering while allowing
-        # explicit hidden-root searches.
-        pagination_expr = ""
-        if not has_hidden_path_ancestor:
-            pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
-
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
+        # Hidden filtering happens post-hoc in _drop_hidden_descendants (so an
+        # explicit hidden root works and semantics match the rg path); gather
+        # unpaginated output and page after filtering.
+        cmd = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
+              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn"
 
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | sort -rn{pagination_expr}"
+            cmd_simple = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
+                        f"2>/dev/null | sort -rn"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
 
@@ -2084,37 +2111,39 @@ class ShellFileOperations(FileOperations):
             else:
                 files.append(line)
 
-        # For explicit hidden roots, find's path-based filtering excludes every
-        # file under the hidden path. Apply descendant filtering after command
-        # execution so only the explicit root ancestry is bypassed.
-        if has_hidden_path_ancestor:
-            normalized_root = search_root.resolve()
-            filtered_files = []
-            for file_path in files:
-                try:
-                    rel_parts = Path(file_path).resolve().relative_to(normalized_root).parts
-                except ValueError:
-                    rel_parts = Path(file_path).parts
-                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
-                    continue
-                filtered_files.append(file_path)
-            files = filtered_files[offset:offset + limit]
-        # pagination for standard roots is already applied in shell
+        if not include_hidden:
+            files = self._drop_hidden_descendants(files, path)
+        page = files[offset:offset + limit]
 
         return SearchResult(
-            files=files,
+            files=page,
             total_count=len(files),
             truncated=bool(limit_reason),
             limit_reason=limit_reason,
         )
 
-    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int,
+                         include_hidden: bool = False) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
-        rg --files respects .gitignore and excludes hidden directories by
-        default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.  Results are sorted by modification time
-        (most recently edited first) when rg >= 13.0 supports --sortr.
+        rg --files respects .gitignore and uses parallel directory traversal
+        for ~200x speedup over find on wide trees.  Results are sorted by
+        modification time (most recently edited first) when rg >= 13.0
+        supports --sortr.
+
+        ``--hidden`` is always passed and the hidden filter applied POST-HOC
+        (``_drop_hidden_descendants``, skipped when ``include_hidden``): rg's
+        own hidden pruning is glob-dependent — a ``-g`` glob is also tested
+        against directory *names* during traversal, so a bare ``'*'``
+        descended into hidden trees (leaking exactly what #1558 excludes)
+        while a specific glob (``'*config*'``) pruned them, silently
+        returning 0 for files that a ``'*'`` listing had just shown. One
+        filter, every pattern, same answer; an explicit hidden root stays
+        searchable either way.
+
+        Diagnostics are surfaced rather than discarded: a glob parse error
+        (or any rg failure) must reach the model as an error, not read as
+        "no files matched".
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -2123,47 +2152,62 @@ class ShellFileOperations(FileOperations):
         else:
             glob_pattern = pattern
 
-        fetch_limit = limit + offset
+        # Over-fetch when we filter post-hoc so a hidden-heavy prefix can't
+        # starve the visible page (bounded; no unbounded slurp).
+        fetch_limit = (limit + offset) if include_hidden else max((limit + offset) * 4, 200)
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"rg --files --hidden --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
+            f"{self._escape_shell_arg(path)} "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.strip().split('\n') if f]
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+        all_files = [f for f in payload.strip().split('\n') if f]
 
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"rg --files --hidden -g {self._escape_shell_arg(glob_pattern)} "
+                f"{self._escape_shell_arg(path)} "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
-            all_files = [f for f in stdout.strip().split('\n') if f]
+            diagnostics, payload = _split_tool_diagnostics(stdout)
+            all_files = [f for f in payload.strip().split('\n') if f]
 
+        if not all_files and diagnostics and not limit_reason:
+            # Pure failure (e.g. a glob parse error): surface it. A silent 0
+            # here reads as "the file does not exist" and misleads the model.
+            return SearchResult(error=f"Search failed: {diagnostics}")
+
+        truncated_fetch = len(all_files) >= fetch_limit
+        if not include_hidden:
+            all_files = self._drop_hidden_descendants(all_files, path)
         page = all_files[offset:offset + limit]
 
         return SearchResult(
             files=page,
             total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            truncated=truncated_fetch or bool(limit_reason),
             limit_reason=limit_reason,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        include_hidden: bool = False) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
-                                          output_mode, context)
+                                          output_mode, context,
+                                          include_hidden=include_hidden)
         elif self._has_command('grep'):
             result = self._search_with_grep(pattern, path, file_glob, limit, offset,
-                                            output_mode, context)
+                                            output_mode, context,
+                                            include_hidden=include_hidden)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
@@ -2174,9 +2218,17 @@ class ShellFileOperations(FileOperations):
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """Search using ripgrep."""
+                        limit: int, offset: int, output_mode: str, context: int,
+                        include_hidden: bool = False) -> SearchResult:
+        """Search using ripgrep.
+
+        Hidden directories are skipped by rg's default (#1558) unless the
+        caller opts in with ``include_hidden``; an explicitly given hidden
+        root is searched by rg either way. ``.gitignore`` still applies.
+        """
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        if include_hidden:
+            cmd_parts.append("--hidden")
         
         # Add context if requested
         if context > 0:
@@ -2300,13 +2352,16 @@ class ShellFileOperations(FileOperations):
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
-                          limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                          limit: int, offset: int, output_mode: str, context: int,
+                          include_hidden: bool = False) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
-        
+
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # Skipped when the caller explicitly opts in via include_hidden.
+        if not include_hidden:
+            cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

@@ -589,7 +589,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
+def _execute_job_now(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
     """Execute a cron job immediately, outside the scheduler tick.
 
     Atomically claims the job first via ``claim_job_for_fire`` — the same
@@ -629,10 +631,12 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             pass
         return {"claimed": True, "success": False, "error": str(e)}
 
-    return _run_claimed_job(job)
+    return _run_claimed_job(job, extra_prompt=extra_prompt)
 
 
-def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _run_claimed_job(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body.
 
     Split out of ``_execute_job_now`` so the background dispatch path
@@ -745,7 +749,10 @@ def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             try:
-                processed = run_one_job(job, adapters=adapters, loop=gateway_loop)
+                processed = run_one_job(
+                    job, adapters=adapters, loop=gateway_loop,
+                    extra_prompt=extra_prompt,
+                )
             finally:
                 _heartbeat_stop.set()
                 if _heartbeat_thread is not None:
@@ -806,7 +813,8 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
 
 
 def _try_dispatch_background_run(
-    job: Dict[str, Any], session_id: Optional[str] = None
+    job: Dict[str, Any], session_id: Optional[str] = None,
+    extra_prompt: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Claim ``job`` now, then fire it on the async-delegation daemon executor.
 
@@ -935,7 +943,7 @@ def _try_dispatch_background_run(
             "cronjob run: async delegation registry unavailable (%s); "
             "running job '%s' inline.", e, job_name,
         )
-        result = _run_claimed_job(job)
+        result = _run_claimed_job(job, extra_prompt=extra_prompt)
         result["dispatched"] = False
         return result
 
@@ -950,7 +958,7 @@ def _try_dispatch_background_run(
     deliver = job.get("deliver", "local")
 
     def _runner() -> Dict[str, Any]:
-        res = _run_claimed_job(job)
+        res = _run_claimed_job(job, extra_prompt=extra_prompt)
         duration = round(time.time() - started_at, 2)
         refreshed = get_job(job_id) or {}
         lines = [
@@ -1008,7 +1016,7 @@ def _try_dispatch_background_run(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name,
     )
-    result = _run_claimed_job(job)
+    result = _run_claimed_job(job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 
@@ -1194,6 +1202,16 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
+            # Per-run context (#57331, salvaged from #57342/@liuhao1024 and
+            # #57360/@ghedeselmabot): `prompt` on the run action is transient
+            # context appended to the stored prompt for THIS fire only, never
+            # persisted. It goes through the same strict injection scan as
+            # stored prompts before firing.
+            extra_prompt = prompt or None
+            if extra_prompt:
+                scan_error = _scan_cron_prompt(extra_prompt)
+                if scan_error:
+                    return tool_error(scan_error, success=False)
             # Execute the job immediately rather than only scheduling it for the
             # next scheduler tick — a manual `run` should actually run, even when
             # no gateway/ticker is active (the #41037 case). The claim (taken
@@ -1208,7 +1226,9 @@ def cronjob(
             # batches of manual runs (#80xxx — the "stuck Telegram session"
             # incident). Falls back to inline execution when the session
             # runtime can't receive detached completions.
-            bg = _try_dispatch_background_run(job, session_id=session_id)
+            bg = _try_dispatch_background_run(
+                job, session_id=session_id, extra_prompt=extra_prompt
+            )
             if bg is not None and bg.get("dispatched"):
                 _notify_provider_jobs_changed_safe()
                 result = _format_job(get_job(job_id) or {"id": job_id})
@@ -1231,7 +1251,10 @@ def cronjob(
             # bg carries a terminal result (claim lost, or inline fallback
             # after pool rejection); None means background delivery is
             # unsupported here — run synchronously as before.
-            exec_result = bg if bg is not None else _execute_job_now(job)
+            exec_result = (
+                bg if bg is not None
+                else _execute_job_now(job, extra_prompt=extra_prompt)
+            )
             # A claimed direct run advances next_run_at and may race the
             # external one-shot for the same occurrence. If Chronos loses that
             # claim, its consumed fire cannot re-arm itself; reconcile from the
@@ -1371,7 +1394,7 @@ Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
-action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue.
+action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue. Optionally pass 'prompt' with action='run' to inject transient per-run context (appended to the job's stored prompt for that single fire only, never persisted).
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
@@ -1397,7 +1420,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
             },
             "schedule": {
                 "type": "string",

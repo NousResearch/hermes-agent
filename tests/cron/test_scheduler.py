@@ -1268,7 +1268,7 @@ class TestParallelTick:
         barrier = threading.Barrier(2, timeout=5)
         call_order = []
 
-        def mock_run_job(job, *, defer_agent_teardown=None):
+        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
             """Each job hits a barrier — both must be active simultaneously."""
             call_order.append(("start", job["id"]))
             barrier.wait()  # blocks until both threads reach here
@@ -1302,7 +1302,7 @@ class TestParallelTick:
         from gateway.session_context import get_session_env
         seen = {}
 
-        def mock_run_job(job, *, defer_agent_teardown=None):
+        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
             origin = job.get("origin", {})
             # run_job sets ContextVars — verify each job sees its own
             from gateway.session_context import set_session_vars, clear_session_vars

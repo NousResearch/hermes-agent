@@ -45,14 +45,6 @@ function isClarifyRespondTimeoutError(error: unknown): boolean {
   return /request timed out:\s*clarify\.respond/i.test(message)
 }
 
-const CLARIFY_RESPOND_TIMEOUT_MS = 120_000
-
-function isClarifyRespondTimeoutError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /request timed out:\s*clarify\.respond/i.test(message)
-}
-
 function readClarifyArgs(args: unknown): ClarifyArgs {
   if (!args || typeof args !== 'object') {
     return {}

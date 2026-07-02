@@ -2108,6 +2108,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
     monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "forum")
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
@@ -2125,6 +2126,8 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+    assert s["chat_type"] == "forum"
+    assert s["delivery_mode"] == "notify+wake"
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
@@ -2153,6 +2156,8 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert len(subs) == 1
     assert subs[0]["platform"] == "tui"
     assert subs[0]["chat_id"] == "tui-session-abc"
+    assert subs[0]["chat_type"] == "dm"
+    assert subs[0]["delivery_mode"] == "notify"
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):

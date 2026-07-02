@@ -35,9 +35,7 @@ KIND_BOOL = "bool"
 KIND_NUMBER = "number"
 KIND_JSON = "json"
 
-# Storage backends understood by web_server. ``flat_json`` persists non-secret
-# fields to ``<hermes_home>/<provider>/config.json``; ``honcho_host_block``
-# targets Honcho's real config (honcho.json, scoped to the active profile host).
+# Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
@@ -80,8 +78,7 @@ class ProviderField:
     env_fallbacks: tuple[str, ...] = ()
     inline: bool = False
     group: str = ""
-    # Where a host-block backend stores the field: "host" (per-profile host
-    # block) or "root" (config root). Ignored by the flat-json backend.
+    # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 
     @property
@@ -132,8 +129,7 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
             spec.loader.exec_module(module)
             schema = getattr(module, "CONFIG_SCHEMA", None)
         except Exception:
-            # A broken schema file must not cache: it would render as a silent
-            # empty panel until process restart even after the file is fixed.
+            # Never cache a failed load: it would pin an empty panel until restart.
             _log.exception("failed to load config schema for memory provider %r", name)
             return None
 

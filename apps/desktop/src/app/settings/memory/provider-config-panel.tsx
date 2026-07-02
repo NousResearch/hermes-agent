@@ -11,9 +11,7 @@ import { FieldControl } from './field-control'
 import { ListRow, LoadingState, Pill } from '../primitives'
 import { ProviderConfigModal } from './provider-config-modal'
 
-/** Seed editable values from the inline fields only, so saving the compact
- *  panel never re-writes fields owned by the full-config editor. Secret fields
- *  start blank (their value is never returned). */
+// Inline fields only: the compact panel must never re-write modal-owned keys.
 function seedValues(config: MemoryProviderConfig): Record<string, string> {
   return Object.fromEntries(
     config.fields.filter(field => field.inline).map(field => [field.key, field.kind === 'secret' ? '' : field.value])

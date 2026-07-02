@@ -10,8 +10,7 @@ import { CONTROL_TEXT } from '../constants'
 // Fade the placeholder well below set values so example text never reads as data.
 const FIELD_INPUT = `font-mono ${CONTROL_TEXT} placeholder:text-muted-foreground/45`
 
-/** Generic control for one declared provider field, dispatching on its kind.
- *  Values are edited as strings; the backend coerces them to native types. */
+// Values are edited as strings; the backend coerces them to native types.
 export function FieldControl({
   field,
   value,

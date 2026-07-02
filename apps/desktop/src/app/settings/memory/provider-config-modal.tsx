@@ -18,13 +18,12 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 import { FieldControl } from './field-control'
 import { ListRow } from '../primitives'
 
-/** Seed every editable field (inline and modal-only). Secrets start blank —
- *  their value is never returned and submitting blank keeps the stored one. */
+// Secrets seed blank: values are write-only and blank keeps the stored one.
 function seedAll(config: MemoryProviderConfig): Record<string, string> {
   return Object.fromEntries(config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value]))
 }
 
-/** Group fields in declared order, preserving first-seen group sequence. */
+// Group fields in declared order, preserving first-seen group sequence.
 function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderField[]][] {
   const groups: [string, MemoryProviderField[]][] = []
   for (const field of fields) {
@@ -56,8 +55,7 @@ export function ProviderConfigModal({
   const [seeded, setSeeded] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
 
-  // Reseed from the latest config each time the dialog opens so edits never
-  // start from a stale snapshot left over from a prior session.
+  // Reseed on open so edits never start from a stale prior-session snapshot.
   useEffect(() => {
     if (open) {
       const seed = seedAll(config)
@@ -67,8 +65,7 @@ export function ProviderConfigModal({
   }, [open, config])
 
   const save = async () => {
-    // Unstored fields render their schema default; persisting untouched keys
-    // would pin values that runtime defaults (e.g. migration guards) still own.
+    // Untouched keys stay unsubmitted; runtime defaults still own their values.
     const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
 
     setSaving(true)

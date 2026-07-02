@@ -581,8 +581,7 @@ class TestWebServerEndpoints:
         assert cfg["hosts"]["hermes"]["peerName"] == "eri"
         assert cfg["hosts"]["hermes"]["environment"] == "local"
         assert cfg["hosts"]["hermes"]["sessionStrategy"] == "per-repo"
-        # The key persists where the client actually reads it (the host block
-        # outranks the env store) — GET keeps it write-only regardless.
+        # The key lands where the client reads first; GET keeps it write-only.
         assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
 
     def test_put_honcho_blank_text_clears_key(self, monkeypatch, tmp_path):
@@ -703,9 +702,7 @@ class TestWebServerEndpoints:
         assert json.loads(fields["userPeerAliases"]["value"]) == {"telegram_1": "eri"}
 
     def test_put_honcho_first_save_merges_into_resolved_config(self, monkeypatch, tmp_path):
-        # No profile-local honcho.json: reads and writes both resolve to the
-        # global config, so a save merges instead of shadowing it with a
-        # sparse profile-local copy.
+        # With no profile-local file, a save merges into the resolved global config.
         monkeypatch.setenv("HOME", str(tmp_path))
         from hermes_constants import get_hermes_home
 
@@ -728,8 +725,7 @@ class TestWebServerEndpoints:
         assert cfg["hosts"]["hermes"] == {"workspace": "kept", "peerName": "eri"}
 
     def test_put_honcho_updates_legacy_dot_form_host_block(self, monkeypatch, tmp_path):
-        # A legacy 'hermes.<profile>' block that reads resolve must be updated
-        # in place, not shadowed by a fresh underscore-form block.
+        # The legacy dot-form block reads resolve is updated in place, not shadowed.
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes_work")
 

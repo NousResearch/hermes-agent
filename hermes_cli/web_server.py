@@ -3875,10 +3875,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-# ── Memory provider config ──────────────────────────────────────────────────
-# One generic GET/PUT pair drives every declared provider. Reads/writes dispatch
-# on ``provider.storage`` so a new simple provider is pure declaration, while
-# Honcho persists to its real host-scoped config without bespoke endpoints.
+# ── Memory provider config: one generic GET/PUT pair, dispatching on storage ──
 
 
 def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
@@ -3899,8 +3896,7 @@ def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
     }
 
 
-# Sentinel: a coerced value of _UNSET means "remove this key" (blank text /
-# number / json falls back to the host or built-in default).
+# Sentinel: remove this key so it falls back to the host or built-in default.
 _UNSET: Any = object()
 
 
@@ -4075,8 +4071,7 @@ def _memory_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
 
         native = _read_field(field, sources, env)
         if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
-            # Surface the resolved host so the user sees the peer mapping
-            # Honcho will actually use when these fields are left blank.
+            # Blank fields surface the resolved host Honcho will actually use.
             entry["placeholder"] = host
 
         value = _serialize_field_value(field, native)
@@ -4142,14 +4137,10 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
 
     resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
     host = resolve_active_host()
-    # Write the same file reads resolve — a hardcoded path would shadow a
-    # config living at one of resolve_config_path's fallbacks with a sparse
-    # copy holding only the submitted keys.
+    # Write the file reads resolve, or a save shadows it with a sparse copy.
     path = resolve_config_path()
 
-    # OAuth refresh rotates single-use tokens in this file; an unlocked
-    # read-modify-write racing it would persist a stale refresh token and
-    # revoke the grant, so serialize on the same advisory lock.
+    # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
     with _config_refresh_lock(path):
         cfg: Dict[str, Any] = {}
         if path.exists():
@@ -4161,8 +4152,7 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
 
         hosts = cfg.get("hosts")
         cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
-        # Target the block reads resolve — including a legacy dot-form key —
-        # so a save updates the live block instead of shadowing it.
+        # Update the block reads resolve (legacy dot-form included), never shadow it.
         existing = host_block_of(cfg, host)
         host_key = next((k for k, v in hosts.items() if v is existing), host) if existing else host
         host_block = hosts.setdefault(host_key, existing)
@@ -4175,9 +4165,7 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
                 continue
             if field.env_key:
                 save_env_value(field.env_key, submitted)
-            # The client reads the JSON-stored key before the env store, so
-            # persist where honcho setup does — but never overwrite an OAuth
-            # access token; the refresh loop owns that slot.
+            # Persist where the client reads first; an OAuth token owns that slot.
             stored = host_block.get(field.key)
             if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
                 host_block[field.key] = submitted

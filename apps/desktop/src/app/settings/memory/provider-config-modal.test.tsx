@@ -86,8 +86,7 @@ describe('ProviderConfigModal', () => {
     fireEvent.click(await screen.findByRole('switch'))
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    // Untouched fields stay unsubmitted so a save never ratifies rendered
-    // defaults the backend does not actually store.
+    // A save must never ratify rendered defaults the backend does not store.
     await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)

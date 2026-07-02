@@ -326,6 +326,40 @@ def test_generate_xai_tts_leaves_text_plain_by_default(tmp_path, monkeypatch):
     assert captured["json"]["text"] == "Bonjour Monsieur Talbot. Ceci est un test."
 
 
+def test_generate_xai_tts_transcodes_explicit_ogg_path(tmp_path, monkeypatch):
+    captured = {}
+    out = tmp_path / "out.ogg"
+    synth = tmp_path / "out.mp3"
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    def fake_convert(path: str) -> str:
+        assert path == str(synth)
+        out.write_bytes(b"ogg")
+        return str(out)
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("tools.tts_tool._convert_to_opus", fake_convert)
+
+    result = _generate_xai_tts(
+        "Hello world.",
+        str(out),
+        {"xai": {"voice_id": "ara", "language": "en"}},
+    )
+
+    assert result == str(out)
+    assert synth.read_bytes() == b"mp3"
+    assert out.read_bytes() == b"ogg"
+    assert "output_format" not in captured["json"]
+
+
 def test_generate_xai_tts_omits_speed_and_latency_by_default(tmp_path, monkeypatch):
     """No speed / optimize_streaming_latency in the request body unless
     the user explicitly sets them. Keeps the existing minimal-payload

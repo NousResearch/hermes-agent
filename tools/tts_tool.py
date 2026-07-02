@@ -1227,9 +1227,14 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
 
+    wants_opus = output_path.endswith(".ogg")
+    synthesis_path = output_path
+    if wants_opus:
+        synthesis_path = output_path.rsplit(".", 1)[0] + ".mp3"
+
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
-    codec = "wav" if output_path.endswith(".wav") else "mp3"
+    codec = "wav" if synthesis_path.endswith(".wav") else "mp3"
     payload: Dict[str, Any] = {
         "text": text,
         "voice_id": voice_id,
@@ -1271,10 +1276,13 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     )
     response.raise_for_status()
 
-    with open(output_path, "wb") as f:
+    with open(synthesis_path, "wb") as f:
         f.write(response.content)
 
-    return output_path
+    if wants_opus:
+        opus_path = _convert_to_opus(synthesis_path)
+        return opus_path or synthesis_path
+    return synthesis_path
 
 
 # ===========================================================================

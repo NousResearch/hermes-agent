@@ -113,6 +113,22 @@ def test_transient_classifier_does_not_infinite_loop_on_cyclic_cause():
     assert _is_transient_network_error(exc) is False
 
 
+def test_transient_classifier_tolerates_missing_chain_attributes():
+    """Regression for #57298: objects without __cause__/__context__ don't crash.
+
+    A ``traceback.TracebackException`` (or any duck-typed exception-like
+    object) may lack ``__cause__`` and ``__context__`` as instance
+    attributes.  The classifier must return ``False`` instead of raising
+    ``AttributeError``.
+    """
+
+    class TracebackLike:
+        """Mimics an object that has no exception-chain attributes."""
+        pass
+
+    assert _is_transient_network_error(TracebackLike()) is False
+
+
 # ---------------------------------------------------------------------
 # Loop handler
 # ---------------------------------------------------------------------

@@ -74,6 +74,8 @@ class TestCollectQueryImages:
         home = tmp_path / "home"
         img = _make_image(home / "storage" / "shared" / "Pictures" / "cat.png")
         monkeypatch.setenv("HOME", str(home))
+        # ntpath.expanduser ignores HOME (Python 3.8+) — it wants USERPROFILE.
+        monkeypatch.setenv("USERPROFILE", str(home))
 
         message, images = _collect_query_images("describe this", "~/storage/shared/Pictures/cat.png")
 

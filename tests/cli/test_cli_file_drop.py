@@ -7,6 +7,21 @@ import pytest
 from cli import _detect_file_drop
 
 
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    import tempfile
+    from pathlib import Path
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -212,6 +227,8 @@ class TestEscapedSpaces:
         img.parent.mkdir(parents=True, exist_ok=True)
         img.write_bytes(b"\x89PNG\r\n\x1a\n")
         monkeypatch.setenv("HOME", str(home))
+        # ntpath.expanduser ignores HOME (Python 3.8+) — it wants USERPROFILE.
+        monkeypatch.setenv("USERPROFILE", str(home))
 
         result = _detect_file_drop("~/storage/shared/Pictures/cat.png what is this?")
 
@@ -241,6 +258,7 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_to_file(self, tmp_image, tmp_path):
         link = tmp_path / "link.png"
         link.symlink_to(tmp_image)

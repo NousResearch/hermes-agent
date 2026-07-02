@@ -69,19 +69,47 @@ def _stub_uvicorn(monkeypatch):
     return captured
 
 
-def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
-    """WS ping must be configured so half-open connections (reverse-proxy 524,
-    dropped tunnels) raise WebSocketDisconnect into the reaping path (#32377).
+def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
+    """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
+    keepalive ping so an event-loop stall can never trigger a false disconnect.
 
-    Loopback binds (the Desktop case) get a longer window to ride out
-    GIL-pressure event-loop stalls (#48445/#50005). The invariant asserted
-    here is that ping stays enabled (non-None, positive) and the timeout is
-    never shorter than the interval — not a frozen literal, which churns every
-    time the window is retuned."""
+    uvicorn's ws ping runs on the same event loop as agent turns. A single
+    synchronous GIL-holding call on a worker thread can starve that loop for
+    minutes, so the loop can't process the pong and uvicorn kills an
+    otherwise-healthy local connection (#53773 "event loop stalled 226.3s",
+    #48445/#50005). On loopback there is no network/proxy path where a
+    half-open connection can occur — a dead local client tears the socket down
+    with a real FIN/RST that surfaces as WebSocketDisconnect regardless — so
+    the ping provides no liveness value and only harms. Assert it is disabled.
+    """
     captured = _stub_uvicorn(monkeypatch)
 
     # Loopback bind => no auth gate, so this reaches the Config constructor.
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] is None
+    assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
+    """Non-loopback (public) binds MUST keep the ws ping enabled so half-open
+    connections (reverse-proxy 524, dropped Cloudflare Tunnel) raise
+    WebSocketDisconnect into the reaping path (#32377).
+
+    The invariant asserted here is that ping stays enabled (non-None, positive)
+    and the timeout is never shorter than the interval — not a frozen literal,
+    which churns every time the window is retuned. Loopback disables the ping
+    (see test_start_server_disables_ws_ping_on_loopback); this covers the
+    public-bind half-open case, so the auth gate is active here.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    # Non-loopback bind so the _is_loopback branch selects the enabled-ping
+    # window. Neutralize the auth gate so start_server reaches uvicorn.Config
+    # without requiring a registered provider (a real public bind would raise
+    # SystemExit here). The ping window keys off the host, not the auth flag.
+    monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
+    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
     assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0

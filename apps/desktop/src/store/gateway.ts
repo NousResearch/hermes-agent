@@ -56,6 +56,7 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  retained: boolean
 }
 
 const secondaries = new Map<string, Secondary>()
@@ -112,7 +113,22 @@ async function openSecondary(entry: Secondary): Promise<void> {
   const conn = await desktop.getConnection(entry.profile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
+
+  if (!entry.retained) {
+    void desktop.retainBackend?.(entry.profile).catch(() => undefined)
+    entry.retained = true
+  }
+
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
+}
+
+function releaseSecondary(entry: Secondary): void {
+  if (!entry.retained) {
+    return
+  }
+
+  entry.retained = false
+  void window.hermesDesktop?.releaseBackend?.(entry.profile).catch(() => undefined)
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -161,7 +177,8 @@ function createSecondary(profile: string): Secondary {
     reconnectTimer: null,
     reconnectAttempt: 0,
     reconnecting: false,
-    wantOpen: true
+    wantOpen: true,
+    retained: false
   }
 
   entry.offEvent = gateway.onEvent(event => config?.onEvent(event))
@@ -271,6 +288,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
     clearTimer(entry)
     entry.offEvent()
     entry.offState()
+    releaseSecondary(entry)
     entry.gateway.close()
     secondaries.delete(key)
   }
@@ -282,6 +300,7 @@ export function closeSecondaryGateways(): void {
     clearTimer(entry)
     entry.offEvent()
     entry.offState()
+    releaseSecondary(entry)
     entry.gateway.close()
   }
 

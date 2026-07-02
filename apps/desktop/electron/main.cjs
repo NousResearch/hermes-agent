@@ -40,6 +40,14 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
 const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
+const {
+  createPoolBackendEntry,
+  isPoolBackendEvictable,
+  isPoolBackendReapable,
+  releasePoolBackendEntry,
+  retainPoolBackendEntry,
+  touchPoolBackendEntry
+} = require('./backend-pool-policy.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -766,7 +774,7 @@ let connectionPromise = null
 // backends spawned lazily when a session belongs to a different profile. A user
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
-const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt, rendererLeaseCount }
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -5197,7 +5205,7 @@ async function ensureBackend(profile) {
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
-  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
+  const entry = createPoolBackendEntry()
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
     backendPool.delete(key)
     throw error
@@ -5214,7 +5222,21 @@ function touchPoolBackend(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : null
   if (!key) return
   const entry = backendPool.get(key)
-  if (entry) entry.lastActiveAt = Date.now()
+  if (entry) touchPoolBackendEntry(entry)
+}
+
+function retainPoolBackend(profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  if (!key) return 0
+  const entry = backendPool.get(key)
+  return retainPoolBackendEntry(entry)
+}
+
+function releasePoolBackend(profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  if (!key) return 0
+  const entry = backendPool.get(key)
+  return releasePoolBackendEntry(entry)
 }
 
 // Evict least-recently-used pool backends until at most `keep` remain — but only
@@ -5225,7 +5247,7 @@ function evictLruPoolBackends(keep) {
   if (backendPool.size <= keep) return
   const now = Date.now()
   const evictable = [...backendPool.entries()]
-    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > POOL_KEEPALIVE_FRESH_MS)
+    .filter(([, entry]) => isPoolBackendEvictable(entry, { now, freshMs: POOL_KEEPALIVE_FRESH_MS }))
     .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
   let removable = backendPool.size - Math.max(0, keep)
   for (const [profile] of evictable) {
@@ -5241,7 +5263,7 @@ function startPoolIdleReaper() {
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
+      if (isPoolBackendReapable(entry, { now, idleMs: POOL_IDLE_MS })) {
         rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
         stopPoolBackend(profile)
       }
@@ -6057,6 +6079,12 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
+})
+ipcMain.handle('hermes:backend:retain', async (_event, profile) => {
+  return { ok: true, leases: retainPoolBackend(profile) }
+})
+ipcMain.handle('hermes:backend:release', async (_event, profile) => {
+  return { ok: true, leases: releasePoolBackend(profile) }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {

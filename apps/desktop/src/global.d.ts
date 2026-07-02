@@ -24,6 +24,12 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // Lifecycle lease: retain/release a pool backend while the renderer owns a
+      // live profile WebSocket. Unlike timestamp keepalives, leases survive
+      // delayed timers and event-loop stalls until the renderer intentionally
+      // closes the socket.
+      retainBackend?: (profile?: string | null) => Promise<{ ok: boolean; leases: number }>
+      releaseBackend?: (profile?: string | null) => Promise<{ ok: boolean; leases: number }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false

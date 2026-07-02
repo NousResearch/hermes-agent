@@ -8571,16 +8571,40 @@ def test_get_usage_reports_real_current_occupancy():
     assert usage["context_percent"] == 50
 
 
-def test_get_usage_clamps_post_compression_sentinel():
+def test_get_usage_reports_post_compression_rough_estimate():
     """Right after a compression, last_prompt_tokens is the -1 sentinel
-    (conversation_compression sets it until the next real usage report). It is
-    truthy, so `or 0` doesn't neutralize it — the guard must clamp <0 to 0 so
-    the transitional turn emits no gauge instead of leaking context_used=-1."""
+    (conversation_compression sets it until the next real usage report). The
+    transitional turn should expose the rough post-compression estimate so the
+    UI updates immediately, while flagging that value as estimated."""
     agent = types.SimpleNamespace(
         model="test-model",
         session_total_tokens=4_000_000,
         context_compressor=types.SimpleNamespace(
             last_prompt_tokens=-1,
+            last_compression_rough_tokens=131_072,
+            awaiting_real_usage_after_compression=True,
+            context_length=1_048_576,
+            compression_count=6,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_used"] == 131_072
+    assert usage["context_max"] == 1_048_576
+    assert usage["context_percent"] == 12
+    assert usage["context_estimated"] is True
+
+
+def test_get_usage_omits_context_when_post_compression_estimate_missing():
+    """If the compressor has no rough estimate, keep the old safe behavior:
+    hide current occupancy rather than leaking the -1 sentinel or fabricating a
+    cumulative-total gauge."""
+    agent = types.SimpleNamespace(
+        model="test-model",
+        session_total_tokens=4_000_000,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=-1,
+            last_compression_rough_tokens=0,
+            awaiting_real_usage_after_compression=True,
             context_length=1_048_576,
             compression_count=6,
         ),

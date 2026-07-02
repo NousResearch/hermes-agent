@@ -2986,18 +2986,27 @@ def _get_usage(agent) -> dict:
         # fabricated 0% or the old cumulative reading. The built-in compressor
         # always reports a real last_prompt_tokens once a turn runs, so it is
         # unaffected.
-        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
-        # (conversation_compression.py) to 0 so the transitional turn reads as
-        # unknown (no gauge) instead of leaking context_used=-1. Matches the
-        # CLI status-bar path (cli.py _get_status_bar_snapshot).
+        # When compression has just run, conversation_compression.py parks
+        # last_prompt_tokens at -1 until the next provider response supplies
+        # real usage. During that transitional state, expose the rough
+        # post-compression estimate so the WebUI/TUI can refresh immediately
+        # instead of waiting for the next user message.
         last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        estimated_context = False
         if last_prompt < 0:
-            last_prompt = 0
+            rough_tokens = getattr(comp, "last_compression_rough_tokens", 0) or 0
+            if getattr(comp, "awaiting_real_usage_after_compression", False) and rough_tokens > 0:
+                last_prompt = rough_tokens
+                estimated_context = True
+            else:
+                last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max and last_prompt:
             usage["context_used"] = last_prompt
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
+            if estimated_context:
+                usage["context_estimated"] = True
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status

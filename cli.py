@@ -4612,17 +4612,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if compressor:
             # last_prompt_tokens is parked at the -1 sentinel right after a
             # compression, until the next real API call reports a prompt count
-            # (awaiting_real_usage_after_compression). The status bar must not
-            # render that sentinel verbatim — it produced "-1/200K" / "-1%".
-            # Clamp it to 0 so the one transitional turn reads as empty context.
+            # (awaiting_real_usage_after_compression). During that transitional
+            # state, show the post-compression rough estimate with an
+            # approximate marker instead of rendering an empty/stale gauge.
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            estimated_context = False
             if context_tokens < 0:
-                context_tokens = 0
+                rough_tokens = getattr(compressor, "last_compression_rough_tokens", 0) or 0
+                if getattr(compressor, "awaiting_real_usage_after_compression", False) and rough_tokens > 0:
+                    context_tokens = rough_tokens
+                    estimated_context = True
+                else:
+                    context_tokens = 0
             context_length = getattr(compressor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
+            snapshot["context_estimated"] = estimated_context
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -5069,6 +5076,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
                 ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                if snapshot.get("context_estimated"):
+                    ctx_used = f"~{ctx_used}"
                 context_label = f"{ctx_used}/{ctx_total}"
             else:
                 context_label = "ctx --"
@@ -5162,6 +5171,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
                         ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                        if snapshot.get("context_estimated"):
+                            ctx_used = f"~{ctx_used}"
                         context_label = f"{ctx_used}/{ctx_total}"
                     else:
                         context_label = "ctx --"
@@ -9462,6 +9473,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
                     print(f"     {summary['note']}")
+                self._paint_now()
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
@@ -9507,6 +9519,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
+        last_prompt_estimated = False
+        if getattr(compressor, "last_prompt_tokens", 0) < 0:
+            rough_tokens = getattr(compressor, "last_compression_rough_tokens", 0) or 0
+            if getattr(compressor, "awaiting_real_usage_after_compression", False) and rough_tokens > 0:
+                last_prompt = rough_tokens
+                last_prompt_estimated = True
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compressions = compressor.compression_count
@@ -9527,7 +9545,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
+        approx = "~" if last_prompt_estimated else ""
+        print(f"  Current context:  {approx}{last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
 

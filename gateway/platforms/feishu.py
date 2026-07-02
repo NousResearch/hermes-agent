@@ -1450,6 +1450,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._message_context_cache: Dict[str, FeishuNormalizedMessage] = {}
+        # Parent message_id → downloaded (media_urls, media_types); replies to
+        # the same attachment message reuse the cached files.
+        self._reply_media_cache: Dict[str, tuple[List[str], List[str]]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2967,16 +2971,6 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
-
-        if inbound_type != MessageType.COMMAND:
-            hint = _build_mention_hint(mentions)
-            if hint:
-                text = f"{hint}\n\n{text}" if text else hint
-
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
@@ -2985,6 +2979,27 @@ class FeishuAdapter(BasePlatformAdapter):
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+
+        # Reply-media passthrough: a Feishu quote carries only a text preview,
+        # so "reply to a file/image and @ the bot" would otherwise hand the
+        # agent a bare placeholder with no way to reach the actual bytes.
+        if reply_to_message_id and inbound_type != MessageType.COMMAND:
+            reply_media_urls, reply_media_types = await self._fetch_reply_media(reply_to_message_id)
+            if reply_media_urls:
+                media_urls = list(media_urls) + reply_media_urls
+                media_types = list(media_types) + reply_media_types
+                text = self._prepend_reply_attachment_notes(text, reply_media_urls, reply_media_types)
+
+        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is
+        # dropped — unless the replied-to message contributed attachments.
+        if inbound_type == MessageType.TEXT and not text and not media_urls:
+            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+            return
+
+        if inbound_type != MessageType.COMMAND:
+            hint = _build_mention_hint(mentions)
+            if hint:
+                text = f"{hint}\n\n{text}" if text else hint
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3389,6 +3404,12 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+        # Text events can carry reply-passthrough media; merge without
+        # duplicating files already contributed by an earlier chunk.
+        for i, path in enumerate(event.media_urls):
+            if path not in existing.media_urls:
+                existing.media_urls.append(path)
+                existing.media_types.append(event.media_types[i] if i < len(event.media_types) else "")
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
@@ -3878,6 +3899,28 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
         if message_id in self._message_text_cache:
             return self._message_text_cache[message_id]
+        normalized = await self._fetch_message_normalized(message_id)
+        if normalized is None:
+            return None
+        text = self._text_from_normalized(normalized)
+        self._message_text_cache[message_id] = text
+        return text
+
+    async def _fetch_message_normalized(self, message_id: str) -> Optional[FeishuNormalizedMessage]:
+        """Fetch a referenced message and return its normalized payload.
+
+        Unlike ``_fetch_message_text`` this keeps image_keys/media_refs, so
+        callers can download the replied-to message's attachments.
+        """
+        if not self._client or not message_id:
+            return None
+        # Lazy-init: tests (and older pickled adapters) may bypass __init__.
+        context_cache = getattr(self, "_message_context_cache", None)
+        if context_cache is None:
+            context_cache = {}
+            self._message_context_cache = context_cache
+        if message_id in context_cache:
+            return context_cache[message_id]
         try:
             request = self._build_get_message_request(message_id)
             response = await asyncio.to_thread(self._client.im.v1.message.get, request)
@@ -3892,16 +3935,72 @@ class FeishuAdapter(BasePlatformAdapter):
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
             parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+                bot=self._bot_identity(),
             )
-            self._message_text_cache[message_id] = text
-            return text
+            context_cache[message_id] = normalized
+            return normalized
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_reply_media(self, message_id: str) -> tuple[List[str], List[str]]:
+        """Download the attachments carried by a replied-to message."""
+        media_cache = getattr(self, "_reply_media_cache", None)
+        if media_cache is None:
+            media_cache = {}
+            self._reply_media_cache = media_cache
+        cached = media_cache.get(message_id)
+        if cached is not None and all(os.path.exists(path) for path in cached[0]):
+            return list(cached[0]), list(cached[1])
+        normalized = await self._fetch_message_normalized(message_id)
+        if normalized is None or not (normalized.image_keys or normalized.media_refs):
+            return [], []
+        media_urls, media_types = await self._download_feishu_message_resources(
+            message_id=message_id,
+            normalized=normalized,
+        )
+        if media_urls:
+            media_cache[message_id] = (list(media_urls), list(media_types))
+        return media_urls, media_types
+
+    @staticmethod
+    def _prepend_reply_attachment_notes(
+        text: str,
+        media_urls: List[str],
+        media_types: List[str],
+    ) -> str:
+        """Point the agent at non-image reply attachments by cache path.
+
+        Images ride the gateway's normal media routing; documents and
+        audio/video need an explicit path note because the downstream
+        document note only fires for DOCUMENT-typed events, not TEXT replies.
+        """
+        notes: List[str] = []
+        for i, path in enumerate(media_urls):
+            media_type = media_types[i] if i < len(media_types) else ""
+            if media_type.startswith("image/"):
+                continue
+            basename = os.path.basename(path)
+            parts = basename.split("_", 2)
+            display_name = parts[2] if len(parts) >= 3 else basename
+            display_name = re.sub(r"[^\w.\- ]", "_", display_name)
+            try:
+                from tools.credential_files import to_agent_visible_cache_path
+
+                agent_path = to_agent_visible_cache_path(path)
+            except Exception:
+                agent_path = path
+            notes.append(
+                f"[The replied-to message has an attachment '{display_name}' saved at: {agent_path}]"
+            )
+        if not notes:
+            return text
+        prefix = "\n".join(notes)
+        return f"{prefix}\n\n{text}" if text else prefix
 
     def _extract_text_from_raw_content(
         self,
@@ -3916,6 +4015,10 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=mentions,
             bot=self._bot_identity(),
         )
+        return self._text_from_normalized(normalized)
+
+    @staticmethod
+    def _text_from_normalized(normalized: FeishuNormalizedMessage) -> Optional[str]:
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None

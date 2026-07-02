@@ -1921,6 +1921,97 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
 
+    @patch.dict(os.environ, {"HERMES_HOME": tempfile.gettempdir()}, clear=True)
+    def test_process_inbound_message_passes_reply_attachments_through(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="[Attachment: 邀请函.pdf]")
+        adapter._fetch_reply_media = AsyncMock(
+            return_value=(["/cache/doc_ab12_邀请函.pdf"], ["application/pdf"])
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"请根据邀请函设置日程"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.media_urls, ["/cache/doc_ab12_邀请函.pdf"])
+        self.assertEqual(event.media_types, ["application/pdf"])
+        self.assertIn("saved at:", event.text)
+        self.assertIn("请根据邀请函设置日程", event.text)
+        adapter._fetch_reply_media.assert_awaited_once_with("om_parent")
+
+    @patch.dict(os.environ, {"HERMES_HOME": tempfile.gettempdir()}, clear=True)
+    def test_process_inbound_message_keeps_bare_mention_reply_with_attachment(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="[Image]")
+        adapter._fetch_reply_media = AsyncMock(
+            return_value=(["/cache/img_ab12_screenshot.png"], ["image/png"])
+        )
+        # A reply that is nothing but "@Bot" strips to empty text; the parent
+        # attachment must keep it alive instead of the empty-text guard
+        # dropping it.
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":""}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_reply",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.media_urls, ["/cache/img_ab12_screenshot.png"])
+        self.assertEqual(event.media_types, ["image/png"])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig

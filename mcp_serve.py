@@ -961,6 +961,17 @@ def create_profile_router_mcp_server(
         cron_run as _cron_run,
         message_send as _message_send,
         telegram_send as _telegram_send,
+        workspace_python_run as _workspace_python_run,
+        profile_skill_create as _profile_skill_create,
+        profile_skill_delete as _profile_skill_delete,
+        profile_skill_edit as _profile_skill_edit,
+        profile_skill_patch as _profile_skill_patch,
+        profile_skill_remove_file as _profile_skill_remove_file,
+        profile_skill_write_file as _profile_skill_write_file,
+        profile_memory_add as _profile_memory_add,
+        profile_memory_list as _profile_memory_list,
+        profile_memory_remove as _profile_memory_remove,
+        profile_memory_replace as _profile_memory_replace,
         directory_create as _directory_create,
         file_delete as _file_delete,
         file_move as _file_move,
@@ -1043,8 +1054,9 @@ def create_profile_router_mcp_server(
             "file_patch, patch_apply, file_write, workspace_status_probe, workspace_scratch_smoke, file_move, file_delete, directory_create, terminal_run, "
             "tracked-process scaffolds process_start, process_list, process_poll, process_log, process_kill, "
             "read-only Git scaffolds git_status, git_diff, git_log, git_branch, script-only no_agent cron "
-            "scaffolds cron_list, cron_pause, cron_resume, cron_run, cron_create_script_only, and no-delivery "
-            "messaging dry-run scaffolds message_send and telegram_send for the public gateway's "
+            "scaffolds cron_list, cron_pause, cron_resume, cron_run, cron_create_script_only, no-delivery "
+            "messaging dry-run scaffolds message_send and telegram_send, deterministic workspace_python_run, "
+            "and profile-scoped profile_skill_* / profile_memory_* wrappers for the public gateway's "
             "explicit production wrappers; those direct tools require fresh "
             "workspace context plus filesystem.write, terminal.execution, git.enabled, cron.enabled/allowed_scripts, "
             "or messaging.enabled/allowed_recipients policy. It does "
@@ -1744,6 +1756,79 @@ def create_profile_router_mcp_server(
             exist_ok=exist_ok,
             context_token=context_token,
         )
+
+    @mcp.tool()
+    def workspace_python_run(
+        workspace_id: str,
+        code: str,
+        timeout: int = 30,
+        working_directory: str = ".",
+        context_token: str | None = None,
+        max_output_chars: int | None = 40000,
+    ) -> str:
+        """Private direct deterministic Python runner for explicit gateway wrappers."""
+        return _call_tool(
+            "workspace_python_run",
+            PROFILE_ROUTER_TERMINAL_SCOPE,
+            _workspace_python_run,
+            audit_workspace_id=workspace_id,
+            workspace_id=workspace_id,
+            code=code,
+            timeout=timeout,
+            working_directory=working_directory,
+            context_token=context_token,
+            max_output_chars=max_output_chars,
+        )
+
+    @mcp.tool()
+    def profile_skill_create(profile_ref: str, name: str, content: str, category: str | None = None, overwrite: bool = False) -> str:
+        """Create a profile-scoped skill after skills.write policy."""
+        return _call_tool("profile_skill_create", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_create, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, content=content, category=category, overwrite=overwrite)
+
+    @mcp.tool()
+    def profile_skill_patch(profile_ref: str, name: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+        """Patch a profile-scoped skill after skills.write policy."""
+        return _call_tool("profile_skill_patch", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_patch, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, old_string=old_string, new_string=new_string, replace_all=replace_all)
+
+    @mcp.tool()
+    def profile_skill_edit(profile_ref: str, name: str, content: str) -> str:
+        """Replace a profile-scoped skill after skills.write policy."""
+        return _call_tool("profile_skill_edit", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_edit, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, content=content)
+
+    @mcp.tool()
+    def profile_skill_write_file(profile_ref: str, name: str, file_path: str, content: str) -> str:
+        """Write a safe profile skill support file after skills.write policy."""
+        return _call_tool("profile_skill_write_file", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_write_file, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, file_path=file_path, content=content)
+
+    @mcp.tool()
+    def profile_skill_remove_file(profile_ref: str, name: str, file_path: str) -> str:
+        """Remove a safe profile skill support file after skills.write policy."""
+        return _call_tool("profile_skill_remove_file", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_remove_file, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, file_path=file_path)
+
+    @mcp.tool()
+    def profile_skill_delete(profile_ref: str, name: str, absorbed_into: str | None = None, confirm_delete: bool = False) -> str:
+        """Delete a profile-scoped skill only with delete policy and explicit intent."""
+        return _call_tool("profile_skill_delete", PROFILE_ROUTER_WRITE_SCOPE, _profile_skill_delete, audit_profile_ref=profile_ref, profile_ref=profile_ref, name=name, absorbed_into=absorbed_into, confirm_delete=confirm_delete)
+
+    @mcp.tool()
+    def profile_memory_add(profile_ref: str, content: str, target: str | None = "memory") -> str:
+        """Add a bounded profile memory after memory.write policy."""
+        return _call_tool("profile_memory_add", PROFILE_ROUTER_WRITE_SCOPE, _profile_memory_add, audit_profile_ref=profile_ref, profile_ref=profile_ref, content=content, target=target)
+
+    @mcp.tool()
+    def profile_memory_replace(profile_ref: str, old_text: str, new_content: str, target: str | None = "memory") -> str:
+        """Replace an exact profile memory entry after memory.write policy."""
+        return _call_tool("profile_memory_replace", PROFILE_ROUTER_WRITE_SCOPE, _profile_memory_replace, audit_profile_ref=profile_ref, profile_ref=profile_ref, old_text=old_text, new_content=new_content, target=target)
+
+    @mcp.tool()
+    def profile_memory_remove(profile_ref: str, old_text: str, target: str | None = "memory") -> str:
+        """Remove an exact profile memory entry after memory.write policy."""
+        return _call_tool("profile_memory_remove", PROFILE_ROUTER_WRITE_SCOPE, _profile_memory_remove, audit_profile_ref=profile_ref, profile_ref=profile_ref, old_text=old_text, target=target)
+
+    @mcp.tool()
+    def profile_memory_list(profile_ref: str, target: str | None = "memory", limit: int | None = 50) -> str:
+        """List bounded redacted profile memory entries after memory.write policy."""
+        return _call_tool("profile_memory_list", PROFILE_ROUTER_WRITE_SCOPE, _profile_memory_list, audit_profile_ref=profile_ref, profile_ref=profile_ref, target=target, limit=limit)
 
     @mcp.tool()
     def process_start(

@@ -67,6 +67,14 @@ from mcp_profile_router import (
     profile_context_get,
     profile_get,
     profile_health,
+    profile_memory_add,
+    profile_memory_list,
+    profile_memory_remove,
+    profile_memory_replace,
+    profile_skill_create,
+    profile_skill_delete,
+    profile_skill_patch,
+    profile_skill_write_file,
     profiles_list,
     require_fresh_workspace_context,
     resolve_workspace_path,
@@ -75,6 +83,7 @@ from mcp_profile_router import (
     skills_list,
     telegram_send,
     terminal_run,
+    workspace_python_run,
     viking_read,
     viking_search,
     workspace_close,
@@ -341,9 +350,22 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "cron_create_script_only",
         "message_send",
         "telegram_send",
+        "workspace_python_run",
+    }
+    profile_action_tools = {
+        "profile_skill_create",
+        "profile_skill_patch",
+        "profile_skill_edit",
+        "profile_skill_write_file",
+        "profile_skill_remove_file",
+        "profile_skill_delete",
+        "profile_memory_add",
+        "profile_memory_replace",
+        "profile_memory_remove",
+        "profile_memory_list",
     }
     blocked_catalog_tools = set(HERMES_CATALOG_BLOCKED_TOOL_NAMES)
-    assert set(metadata) == public_tools | disabled_power_tools | blocked_catalog_tools
+    assert set(metadata) == public_tools | disabled_power_tools | profile_action_tools | blocked_catalog_tools
     assert {"delegate_task", "image_generate", "vision_analyze"}.issubset(blocked_catalog_tools)
     assert set(HERMES_REGISTRY_TOOL_NAMES).issubset(set(metadata))
     workspace_required_tools = {
@@ -383,6 +405,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "cron_create_script_only",
         "message_send",
         "telegram_send",
+        "workspace_python_run",
     }
     for name, tool in metadata.items():
         assert tool["allowed_by_default"] is tool["enabled_by_default"]
@@ -463,9 +486,9 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["mutates_state"] is False
         assert tool["requires_context_policy"] == "profile_router.context.viking.read"
     assert metadata["workspace_diff"]["mutates_state"] is False
-    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_kill", "message_send", "telegram_send"}:
+    for name in {"file_patch", "patch_apply", "file_write", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_kill", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove"}:
         assert metadata[name]["mutates_state"] is True
-    for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch"}:
+    for name in {"workspace_status_probe", "process_list", "process_poll", "process_log", "git_status", "git_diff", "git_log", "git_branch", "profile_memory_list"}:
         assert metadata[name]["mutates_state"] is False
     for name in {"git_status", "git_diff", "git_log", "git_branch"}:
         assert metadata[name]["capability_group"] == "git"
@@ -2539,6 +2562,177 @@ def test_process_tools_require_terminal_policy(hermes_home, tmp_path):
     assert denied["error"]["code"] == "terminal_not_allowed"
 
 
+def test_workspace_python_run_is_context_gated_no_model_and_blocks_model_imports(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {"enabled": True, "allowed_commands": [sys.executable]},
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    missing_context = json.loads(workspace_python_run(workspace_id, "print(1 + 1)"))
+    assert missing_context["ok"] is False
+    assert missing_context["error"]["code"] == "context_not_loaded"
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    result = json.loads(workspace_python_run(workspace_id, "print(1 + 1)", context_token=token))
+    assert result["ok"] is True
+    assert result["python"]["status"] == "success"
+    assert result["python"]["stdout"]["text"].strip() == "2"
+    assert result["llm_calls"] == 0
+    assert result["python"]["audit"]["uses_shell"] is False
+    assert result["python"]["audit"]["env_values_exposed"] is False
+    assert result["python"]["audit"]["allowlist_redacted"] is True
+    assert result["code"]["source_returned"] is False
+    assert not (workspace_root / ".chatgpt-hermes-python").exists()
+
+    nonzero = json.loads(
+        workspace_python_run(
+            workspace_id,
+            "import sys\nprint('bad')\nsys.exit(3)",
+            context_token=token,
+        )
+    )
+    assert nonzero["ok"] is False
+    assert nonzero["python"]["status"] == "failed"
+    assert nonzero["python"]["returncode"] == 3
+    assert nonzero["python"]["audit"]["llm_calls"] == 0
+
+    timed_out = json.loads(
+        workspace_python_run(workspace_id, "while True:\n    pass", timeout=1, context_token=token)
+    )
+    assert timed_out["ok"] is False
+    assert timed_out["python"]["status"] == "timeout"
+    assert timed_out["python"]["timed_out"] is True
+    assert timed_out["python"]["audit"]["uses_shell"] is False
+
+    blocked = json.loads(workspace_python_run(workspace_id, "import openai\nprint('x')", context_token=token))
+    assert blocked["ok"] is False
+    assert blocked["error"]["code"] == "python_model_path_denied"
+
+
+def test_workspace_python_run_requires_python_executable_allowlist(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {"enabled": True, "allowed_commands": ["git status --short"]},
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    denied = json.loads(workspace_python_run(workspace_id, "print('nope')", context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "python_command_not_allowlisted"
+    assert denied["llm_calls"] == 0
+
+
+def test_profile_skill_write_wrappers_require_policy_and_delete_intent(hermes_home):
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "skills": {"write": True, "delete": True},
+            }
+        },
+    )
+    content = "---\nname: test-skill\ndescription: Safe helper.\n---\n\nInitial body.\n"
+
+    created = json.loads(profile_skill_create("local:main-bot", "test-skill", content))
+    assert created["ok"] is True
+    assert created["skill_management"]["skill"]["id"] == "test-skill"
+    assert created["llm_calls"] == 0
+
+    patched = json.loads(
+        profile_skill_patch("local:main-bot", "test-skill", "Initial body.", "Updated body.")
+    )
+    assert patched["ok"] is True
+    assert "Updated body" in (hermes_home / "profiles" / "main-bot" / "skills" / "test-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+    support = json.loads(
+        profile_skill_write_file("local:main-bot", "test-skill", "references/example.md", "Example text.\n")
+    )
+    assert support["ok"] is True
+    assert support["skill_management"]["file"]["path"] == "references/example.md"
+
+    missing_intent = json.loads(profile_skill_delete("local:main-bot", "test-skill", absorbed_into=""))
+    assert missing_intent["ok"] is False
+    assert missing_intent["error"]["code"] == "delete_intent_required"
+
+    deleted = json.loads(
+        profile_skill_delete("local:main-bot", "test-skill", absorbed_into="", confirm_delete=True)
+    )
+    assert deleted["ok"] is True
+    assert not (hermes_home / "profiles" / "main-bot" / "skills" / "test-skill").exists()
+
+
+def test_profile_memory_wrappers_use_exact_text_and_redacted_list(hermes_home):
+    _write_router_config(
+        hermes_home,
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "memory": {"write": True},
+            }
+        },
+    )
+
+    added = json.loads(profile_memory_add("local:main-bot", "Remember apples."))
+    assert added["ok"] is True
+    assert added["memory"]["added"] is True
+    assert added["llm_calls"] == 0
+
+    replaced = json.loads(
+        profile_memory_replace("local:main-bot", "Remember apples.", "Remember pears.")
+    )
+    assert replaced["ok"] is True
+    assert replaced["memory"]["entries"][0]["text"] == "Remember pears."
+
+    not_exact = json.loads(profile_memory_remove("local:main-bot", "Remember apples."))
+    assert not_exact["ok"] is False
+    assert not_exact["error"]["code"] == "memory_entry_not_found"
+
+    listed = json.loads(profile_memory_list("local:main-bot"))
+    assert listed["ok"] is True
+    assert listed["memory"]["entries"][0]["text"] == "Remember pears."
+
+    removed = json.loads(profile_memory_remove("local:main-bot", "Remember pears."))
+    assert removed["ok"] is True
+    assert removed["memory"]["total_count"] == 0
+
+
 def test_cron_tools_are_context_gated_script_only_and_no_model(hermes_home, tmp_path, monkeypatch):
     allowed_root = tmp_path / "allowed"
     workspace_root = allowed_root / "project"
@@ -3991,7 +4185,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         if tool["enabled_by_default"]
     }
 
-    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
+    private_action_tools = {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     assert set(tools) == expected_public_tools | private_action_tools
     assert expected_public_tools == metadata_public_tools
     assert not (set(tools) & FORBIDDEN_MODEL_LOOP_TOOL_NAMES)
@@ -4317,7 +4511,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         name
         for name, tool in get_router_tool_metadata().items()
         if tool["enabled_by_default"]
-    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send"}
+    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765

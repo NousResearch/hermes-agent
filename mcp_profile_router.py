@@ -11,6 +11,7 @@ arbitrary Hermes tools by default.
 
 from __future__ import annotations
 
+import ast
 import difflib
 import fnmatch
 import hashlib
@@ -22,6 +23,7 @@ import re
 import shlex
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -193,6 +195,12 @@ MAX_CONTEXT_HASH_BYTES = 1_000_000
 MAX_SKILLS_LIST_RESULTS = 100
 MAX_SKILL_LINKED_FILES_PER_DIR = 50
 MAX_SKILL_DESCRIPTION_CHARS = 500
+MAX_SKILL_WRITE_CHARS = 120_000
+MAX_SKILL_PATCH_DIFF_CHARS = 20_000
+MAX_MEMORY_ENTRY_CHARS = 2_200
+MAX_MEMORY_LIST_ENTRIES = 50
+MAX_MEMORY_LIST_ENTRY_CHARS = 500
+MEMORY_ENTRY_DELIMITER = "\n§\n"
 MAX_SESSION_SEARCH_RESULTS = 10
 MAX_SESSION_SEARCH_QUERY_CHARS = 200
 MAX_SESSION_SNIPPET_CHARS = 500
@@ -210,6 +218,8 @@ OPENVIKING_PSEUDO_SUMMARY_FILES = frozenset(
     {".abstract.md", ".overview.md", ".read.md", ".full.md"}
 )
 SAFE_SKILL_SUPPORT_DIRS = ("references", "templates", "scripts", "assets")
+SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SKILL_CATEGORY_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PROFILE_CONTEXT_FILES = ("SOUL.md",)
 WORKSPACE_INSTRUCTION_FILES = (
     "AGENTS.md",
@@ -241,6 +251,59 @@ MODEL_COMMAND_NAMES = frozenset(
 )
 MODEL_COMMAND_TEXT_MARKERS = ("run_conversation", "delegate_task")
 HERMES_MODEL_SUBCOMMANDS = frozenset({"chat"})
+MAX_PYTHON_CODE_CHARS = 20_000
+MAX_PYTHON_TIMEOUT_SECONDS = 30
+MAX_PYTHON_OUTPUT_CHARS = 40_000
+PYTHON_DENIED_IMPORT_ROOTS = frozenset(
+    {
+        "aiohttp",
+        "anthropic",
+        "asyncio.subprocess",
+        "boto3",
+        "botocore",
+        "ftplib",
+        "google.generativeai",
+        "grpc",
+        "http",
+        "httpx",
+        "imaplib",
+        "importlib",
+        "mcp",
+        "multiprocessing",
+        "openai",
+        "os",
+        "paramiko",
+        "pathlib",
+        "pexpect",
+        "pty",
+        "requests",
+        "run_agent",
+        "shutil",
+        "smtplib",
+        "socket",
+        "ssl",
+        "subprocess",
+        "telnetlib",
+        "urllib",
+        "webbrowser",
+        "xmlrpc",
+    }
+)
+PYTHON_DENIED_CALL_NAMES = frozenset(
+    {"__import__", "eval", "exec", "compile", "input", "breakpoint", "open"}
+)
+PYTHON_DENIED_ATTRIBUTE_NAMES = frozenset(
+    {"system", "popen", "spawn", "fork", "execv", "execve", "putenv", "environ"}
+)
+PYTHON_MODEL_TEXT_MARKERS = (
+    "run_conversation",
+    "delegate_task",
+    "openai",
+    "anthropic",
+    "claude",
+    "codex",
+    "gemini",
+)
 FORBIDDEN_MODEL_LOOP_TOOL_NAMES = frozenset(
     {
         "aider",
@@ -405,6 +468,9 @@ class ProfileRoutePolicy:
     allow_model_tools: bool = False
     allow_context_skills_read: bool = False
     allow_context_sessions_search: bool = False
+    allow_skills_write: bool = False
+    allow_skills_delete: bool = False
+    allow_memory_write: bool = False
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     allowed_cost_classes: tuple[str, ...] = DEFAULT_ALLOWED_COST_CLASSES
     terminal_execution_policy: TerminalExecutionPolicy = field(
@@ -901,7 +967,10 @@ def _parse_profile_policy(
         deploy.get("enabled"), f"profiles.{ref.value}.deploy.enabled"
     )
     allow_skills = _policy_bool(skills.get("enabled"), f"profiles.{ref.value}.skills.enabled")
+    allow_skills_write = _policy_bool(skills.get("write"), f"profiles.{ref.value}.skills.write")
+    allow_skills_delete = _policy_bool(skills.get("delete"), f"profiles.{ref.value}.skills.delete")
     allow_memory = _policy_bool(memory.get("enabled"), f"profiles.{ref.value}.memory.enabled")
+    allow_memory_write = _policy_bool(memory.get("write"), f"profiles.{ref.value}.memory.write")
     allow_session = _policy_bool(session.get("enabled"), f"profiles.{ref.value}.session.enabled")
     allow_web = _policy_bool(web.get("enabled"), f"profiles.{ref.value}.web.enabled")
     allow_browser = _policy_bool(
@@ -952,8 +1021,8 @@ def _parse_profile_policy(
         "git": allow_git or allow_git_push,
         "cron": allow_cron,
         "messaging": allow_messaging,
-        "skills": allow_skills,
-        "memory": allow_memory,
+        "skills": allow_skills or allow_skills_write or allow_skills_delete,
+        "memory": allow_memory or allow_memory_write,
         "session": allow_session,
         "web": allow_web,
         "browser": allow_browser,
@@ -987,6 +1056,9 @@ def _parse_profile_policy(
             context_sessions.get("search"),
             f"profiles.{ref.value}.context.sessions.search",
         ),
+        allow_skills_write=allow_skills_write,
+        allow_skills_delete=allow_skills_delete,
+        allow_memory_write=allow_memory_write,
         protected_branches=_policy_string_tuple(
             git.get("protected_branches"),
             f"profiles.{ref.value}.git.protected_branches",
@@ -1394,6 +1466,19 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         mutates_state=True,
         requires_context=True,
     ),
+    "workspace_python_run": RouterToolMetadata(
+        name="workspace_python_run",
+        description=(
+            "Private deterministic Python runner for a hydrated workspace. It uses "
+            "shell=false subprocess execution with sanitized env/output caps and "
+            "blocks network, process, and model-import paths."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
     "process_start": RouterToolMetadata(
         name="process_start",
         description=(
@@ -1588,6 +1673,96 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         enabled_by_default=False,
         mutates_state=True,
         requires_context=True,
+    ),
+    "profile_skill_create": RouterToolMetadata(
+        name="profile_skill_create",
+        description="Create one profile-scoped skill after explicit skills.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_skill_patch": RouterToolMetadata(
+        name="profile_skill_patch",
+        description="Patch one profile-scoped SKILL.md after explicit skills.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_skill_edit": RouterToolMetadata(
+        name="profile_skill_edit",
+        description="Replace one profile-scoped SKILL.md after explicit skills.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_skill_write_file": RouterToolMetadata(
+        name="profile_skill_write_file",
+        description="Write a safe skill support file after explicit skills.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_skill_remove_file": RouterToolMetadata(
+        name="profile_skill_remove_file",
+        description="Remove a safe skill support file after explicit skills.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_skill_delete": RouterToolMetadata(
+        name="profile_skill_delete",
+        description="Delete one profile-scoped skill only with skills.delete policy and explicit intent.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_memory_add": RouterToolMetadata(
+        name="profile_memory_add",
+        description="Add one bounded profile-scoped memory entry after memory.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_memory_replace": RouterToolMetadata(
+        name="profile_memory_replace",
+        description="Replace one exact profile memory entry after memory.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_memory_remove": RouterToolMetadata(
+        name="profile_memory_remove",
+        description="Remove one exact profile memory entry after memory.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_profile_ref=True,
+    ),
+    "profile_memory_list": RouterToolMetadata(
+        name="profile_memory_list",
+        description="List bounded redacted profile memory entries after memory.write policy.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
+        requires_profile_ref=True,
     ),
 }
 
@@ -1839,6 +2014,7 @@ ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
         "file_delete",
         "directory_create",
         "terminal_run",
+        "workspace_python_run",
         "process_start",
         "process_list",
         "process_poll",
@@ -1862,6 +2038,10 @@ ROUTER_WORKSPACE_REQUIRED_TOOLS = frozenset(
 def _router_capability_group(tool_name: str) -> str:
     if tool_name in HERMES_CATALOG_TOOL_CAPABILITY_GROUPS:
         return HERMES_CATALOG_TOOL_CAPABILITY_GROUPS[tool_name]
+    if tool_name.startswith("profile_skill_"):
+        return "skills"
+    if tool_name.startswith("profile_memory_"):
+        return "memory"
     if tool_name.startswith("profile") or tool_name == "profiles_list":
         return "profile"
     if tool_name in {"skills_list", "skill_view"}:
@@ -1876,7 +2056,7 @@ def _router_capability_group(tool_name: str) -> str:
         return "cron"
     if tool_name in {"message_send", "telegram_send"}:
         return "messaging"
-    if tool_name == "terminal_run" or tool_name.startswith("process_"):
+    if tool_name in {"terminal_run", "workspace_python_run"} or tool_name.startswith("process_"):
         return "terminal"
     if tool_name in {
         "workspace_file_list",
@@ -2648,6 +2828,11 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "skills": {"read": route_policy.allow_context_skills_read},
             "sessions": {"search": route_policy.allow_context_sessions_search},
         },
+        "skills_policy": {
+            "write": route_policy.allow_skills_write,
+            "delete": route_policy.allow_skills_delete,
+        },
+        "memory_policy": {"write": route_policy.allow_memory_write},
         "messaging_recipients_configured": bool(route_policy.messaging_allowed_recipients),
         "messaging_policy": {
             "enabled": route_policy.allow_messaging,
@@ -5646,6 +5831,161 @@ def _run_preflighted_terminal_command(
     return _run_terminal_subprocess_plan(plan, workspace=workspace)
 
 
+def _python_import_denied(module_name: str) -> bool:
+    normalized = str(module_name or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        normalized == denied
+        or normalized.startswith(denied + ".")
+        or denied.startswith(normalized + ".")
+        for denied in PYTHON_DENIED_IMPORT_ROOTS
+    )
+
+
+def _validate_workspace_python_code(code: str) -> None:
+    if not isinstance(code, str):
+        raise ProfileRouterError("invalid_python_code", "code must be a string")
+    if not code.strip():
+        raise ProfileRouterError("invalid_python_code", "code cannot be empty")
+    if len(code) > MAX_PYTHON_CODE_CHARS:
+        raise ProfileRouterError("python_code_too_large", f"code must be <= {MAX_PYTHON_CODE_CHARS} characters")
+    lowered = code.lower()
+    for marker in PYTHON_MODEL_TEXT_MARKERS:
+        if marker in lowered:
+            raise ProfileRouterError("python_model_path_denied", "Python code contains a model/agent execution marker")
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise ProfileRouterError("python_syntax_error", "Python code could not be parsed") from exc
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _python_import_denied(alias.name):
+                    raise ProfileRouterError("python_import_denied", "Python import is outside the deterministic no-model policy")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and _python_import_denied(node.module):
+                raise ProfileRouterError("python_import_denied", "Python import is outside the deterministic no-model policy")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in PYTHON_DENIED_CALL_NAMES:
+                raise ProfileRouterError("python_call_denied", "Python call is outside the deterministic no-model policy")
+            if isinstance(func, ast.Attribute) and func.attr in PYTHON_DENIED_ATTRIBUTE_NAMES:
+                raise ProfileRouterError("python_call_denied", "Python attribute call is outside the deterministic no-model policy")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in PYTHON_DENIED_ATTRIBUTE_NAMES:
+                raise ProfileRouterError("python_attribute_denied", "Python attribute is outside the deterministic no-model policy")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value
+            if HOST_ROOT_PATH_RE.search(value) or _is_secret_path(value):
+                raise ProfileRouterError("python_literal_denied", "Python code contains a host-root or secret-looking path literal")
+
+
+def run_workspace_python(
+    workspace_id: str,
+    code: str,
+    *,
+    timeout: int | None = 30,
+    working_directory: str = ".",
+    max_output_chars: int | None = MAX_PYTHON_OUTPUT_CHARS,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Run bounded deterministic Python in a hydrated workspace without model/network/process paths."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    if not route_policy.terminal_execution_policy.enabled:
+        raise ProfileRouterError(
+            "python_execution_not_allowed",
+            f"workspace_python_run requires terminal.execution policy: {workspace.profile_ref}",
+        )
+    python_match_type, python_match_index = _terminal_allowlist_match(
+        sys.executable,
+        route_policy.terminal_execution_policy,
+    )
+    if python_match_type is None:
+        raise ProfileRouterError(
+            "python_command_not_allowlisted",
+            "workspace_python_run requires the server Python executable to match the redacted terminal execution allowlist",
+        )
+    _validate_workspace_python_code(code)
+    timeout_seconds = _bounded_terminal_int(
+        timeout,
+        "timeout",
+        default=30,
+        minimum=1,
+        maximum=MAX_PYTHON_TIMEOUT_SECONDS,
+    )
+    capped_output_chars = _bounded_terminal_int(
+        max_output_chars,
+        "max_output_chars",
+        default=MAX_PYTHON_OUTPUT_CHARS,
+        minimum=1,
+        maximum=MAX_PYTHON_OUTPUT_CHARS,
+    )
+    resolved_cwd, public_cwd = _resolve_terminal_working_directory(workspace, working_directory)
+    temp_dir = resolved_cwd / ".chatgpt-hermes-python"
+    temp_dir.mkdir(exist_ok=True)
+    if temp_dir.is_symlink():
+        raise ProfileRouterError("symlink_traversal_denied", "Python scratch directory may not be a symlink")
+    script_path = temp_dir / f"run-{uuid4().hex}.py"
+    try:
+        script_path.write_text(code, encoding="utf-8")
+        plan = TerminalSubprocessPlan(
+            argv=(sys.executable, "-I", str(script_path)),
+            cwd=resolved_cwd,
+            public_cwd=public_cwd,
+            env=_build_terminal_sanitized_env(),
+            timeout_seconds=timeout_seconds,
+            max_output_chars=capped_output_chars,
+        )
+        terminal_result = _run_terminal_subprocess_plan(plan, workspace=workspace)
+    finally:
+        try:
+            script_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
+    audit = dict(terminal_result.get("audit") or {})
+    audit.update(
+        {
+            "tool": "workspace_python_run",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": False,
+            "executes": True,
+            "argv_redacted": True,
+            "env_values_exposed": False,
+            "allowlist_redacted": True,
+            "allowlist_match": True,
+            "allowlist_match_type": python_match_type,
+            "allowlist_match_index": python_match_index,
+        }
+    )
+    terminal_result["audit"] = audit
+    return {
+        "ok": terminal_result.get("status") == "success",
+        "profile_ref": workspace.profile_ref,
+        "workspace_id": workspace.workspace_id,
+        "python": terminal_result,
+        "code": {
+            "sha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            "chars": len(code),
+            "source_returned": False,
+        },
+        "cost_class": COST_CLASS_NO_MODEL,
+        "llm_calls": 0,
+    }
+
+
 @dataclass
 class WorkspaceProcessRecord:
     """Server-side runtime-owned background process record.
@@ -7226,6 +7566,387 @@ def view_profile_skill(profile_ref: str, name: str, *, file_path: str | None = N
         "skipped": skipped,
         "audit": {"tool": "skill_view", "llm_calls": 0, "root_exposed": False},
     }
+
+
+def _require_profile_skills_write_policy(profile_ref: str, *, delete: bool = False) -> tuple[ProfileRef, ProfileRoutePolicy]:
+    ref, route_policy, _router_policy = _require_local_profile_policy(profile_ref)
+    if not route_policy.allow_skills_write:
+        raise ProfileRouterError(
+            "skills_write_not_allowed",
+            f"skills.write is disabled by profile_router policy: {ref.value}",
+        )
+    if delete and not route_policy.allow_skills_delete:
+        raise ProfileRouterError(
+            "skills_delete_not_allowed",
+            f"skills.delete is disabled by profile_router policy: {ref.value}",
+        )
+    return ref, route_policy
+
+
+def _require_profile_memory_write_policy(profile_ref: str) -> tuple[ProfileRef, ProfileRoutePolicy]:
+    ref, route_policy, _router_policy = _require_local_profile_policy(profile_ref)
+    if not route_policy.allow_memory_write:
+        raise ProfileRouterError(
+            "memory_write_not_allowed",
+            f"memory.write is disabled by profile_router policy: {ref.value}",
+        )
+    return ref, route_policy
+
+
+def _reject_secret_text_content(text: str, *, field: str) -> None:
+    if not isinstance(text, str):
+        raise ProfileRouterError("invalid_content", f"{field} must be a string")
+    if _redact_sensitive_text_fields(text) != text:
+        raise ProfileRouterError(
+            "secret_content_denied",
+            f"{field} appears to contain secret-looking values and is denied",
+        )
+
+
+def _validate_skill_write_content(content: str, *, field: str = "content") -> str:
+    if not isinstance(content, str):
+        raise ProfileRouterError("invalid_skill_content", f"{field} must be a string")
+    if not content.strip():
+        raise ProfileRouterError("invalid_skill_content", f"{field} cannot be empty")
+    if len(content) > MAX_SKILL_WRITE_CHARS:
+        raise ProfileRouterError("skill_content_too_large", f"{field} exceeds skill size limit")
+    if "\x00" in content:
+        raise ProfileRouterError("binary_content_not_supported", f"{field} must be text")
+    _reject_secret_text_content(content, field=field)
+    return content
+
+
+def _normalize_new_skill_id(name: str, category: str | None = None) -> str:
+    if not isinstance(name, str):
+        raise ProfileRouterError("invalid_skill_name", "skill name must be a string")
+    skill_name = name.strip()
+    if not SKILL_NAME_RE.fullmatch(skill_name):
+        raise ProfileRouterError(
+            "invalid_skill_name",
+            "skill name must be lowercase letters/numbers/underscore/hyphen and <=64 chars",
+        )
+    category_parts: list[str] = []
+    if category is not None and str(category).strip():
+        raw_category = str(category).strip().strip("/")
+        if _is_unsafe_relative_context_path(raw_category):
+            raise ProfileRouterError("invalid_skill_category", "skill category must be a safe relative path")
+        for part in raw_category.split("/"):
+            if not SKILL_CATEGORY_SEGMENT_RE.fullmatch(part):
+                raise ProfileRouterError(
+                    "invalid_skill_category",
+                    "skill category segments must be lowercase letters/numbers/underscore/hyphen",
+                )
+            category_parts.append(part)
+    skill_id = posixpath.join(*category_parts, skill_name) if category_parts else skill_name
+    if _is_secret_path(skill_id):
+        raise ProfileRouterError("secret_path_denied", "Skill path is blocked by the secret denylist")
+    return skill_id
+
+
+def _resolve_profile_skill_write_root(ref: ProfileRef) -> tuple[Path, Path]:
+    profile_dir = _resolve_local_profile_dir(ref)
+    skills_root = profile_dir / "skills"
+    if skills_root.exists() and skills_root.is_symlink():
+        raise ProfileRouterError("profile_skill_symlink_denied", "Profile skills directory may not be a symlink")
+    skills_root.mkdir(parents=True, exist_ok=True)
+    resolved_root = skills_root.resolve(strict=True)
+    if not _path_is_relative_to(resolved_root, profile_dir):
+        raise ProfileRouterError("profile_skill_symlink_denied", "Profile skills directory escapes profile root")
+    return profile_dir, resolved_root
+
+
+def _resolve_skill_child_for_write(skill_dir: Path, relative_path: str, *, require_exists: bool) -> Path:
+    normalized = _normalize_skill_file_path(relative_path)
+    current = skill_dir
+    parts = [part for part in normalized.split("/") if part]
+    for part in parts[:-1]:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise ProfileRouterError("symlink_traversal_denied", f"Skill path uses a symlink: {normalized}")
+    if not current.exists():
+        current.mkdir(parents=True, exist_ok=True)
+    target = current / parts[-1]
+    if target.exists() and target.is_symlink():
+        raise ProfileRouterError("symlink_traversal_denied", f"Skill file uses a symlink: {normalized}")
+    if require_exists:
+        try:
+            resolved = target.resolve(strict=True)
+        except OSError as exc:
+            raise ProfileRouterError("file_not_found", f"Skill file not found: {normalized}") from exc
+        if not _path_is_relative_to(resolved, skill_dir):
+            raise ProfileRouterError("symlink_traversal_denied", "Skill path escapes its skill directory")
+    else:
+        resolved_parent = current.resolve(strict=True)
+        if not _path_is_relative_to(resolved_parent, skill_dir):
+            raise ProfileRouterError("symlink_traversal_denied", "Skill path escapes its skill directory")
+    return target
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            if content and not content.endswith("\n"):
+                handle.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _skill_mutation_result(ref: ProfileRef, action: str, skill_id: str, *, diff: dict | None = None, file_path: str | None = None, deleted: bool = False, absorbed_into: str | None = None) -> dict:
+    result = {
+        "profile_ref": ref.value,
+        "action": action,
+        "skill": {"id": skill_id, "root_exposed": False},
+        "deleted": deleted,
+        "audit": {"tool": action, "llm_calls": 0, "root_exposed": False},
+    }
+    if file_path is not None:
+        result["file"] = {"path": file_path, "root_exposed": False}
+    if diff is not None:
+        result["diff"] = diff
+    if absorbed_into is not None:
+        result["absorbed_into"] = absorbed_into
+    return result
+
+
+def create_profile_skill(profile_ref: str, name: str, content: str, *, category: str | None = None, overwrite: bool = False) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref)
+    skill_id = _normalize_new_skill_id(name, category)
+    safe_content = _validate_skill_write_content(content)
+    _profile_dir, skills_root = _resolve_profile_skill_write_root(ref)
+    skill_dir = skills_root / skill_id
+    if skill_dir.exists() and skill_dir.is_symlink():
+        raise ProfileRouterError("profile_skill_symlink_denied", "Skill directory may not be a symlink")
+    skill_file = skill_dir / "SKILL.md"
+    before = skill_file.read_text(encoding="utf-8") if skill_file.exists() else ""
+    if skill_file.exists() and not overwrite:
+        raise ProfileRouterError("skill_already_exists", f"Skill already exists: {skill_id}")
+    _atomic_write_text(skill_file, safe_content)
+    after = skill_file.read_text(encoding="utf-8")
+    return _skill_mutation_result(ref, "profile_skill_create", skill_id, diff=_bounded_unified_diff(before, after, "SKILL.md"))
+
+
+def patch_profile_skill(profile_ref: str, name: str, old_string: str, new_string: str, *, replace_all: bool = False) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref)
+    _validate_skill_write_content(new_string, field="new_string")
+    if not isinstance(old_string, str) or not old_string:
+        raise ProfileRouterError("invalid_patch", "old_string is required")
+    record, _skipped = _find_profile_skill(ref, name)
+    before = record.skill_file.read_text(encoding="utf-8")
+    occurrences = before.count(old_string)
+    if occurrences == 0:
+        raise ProfileRouterError("patch_target_not_found", "old_string was not found")
+    if occurrences > 1 and not replace_all:
+        raise ProfileRouterError("patch_target_not_unique", "old_string matched more than once")
+    after = before.replace(old_string, new_string) if replace_all else before.replace(old_string, new_string, 1)
+    if len(after) > MAX_SKILL_WRITE_CHARS:
+        raise ProfileRouterError("skill_content_too_large", "patched SKILL.md would exceed skill size limit")
+    _atomic_write_text(record.skill_file, after)
+    return _skill_mutation_result(ref, "profile_skill_patch", record.skill_id, diff=_bounded_unified_diff(before, after, "SKILL.md"))
+
+
+def edit_profile_skill(profile_ref: str, name: str, content: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref)
+    safe_content = _validate_skill_write_content(content)
+    record, _skipped = _find_profile_skill(ref, name)
+    before = record.skill_file.read_text(encoding="utf-8")
+    _atomic_write_text(record.skill_file, safe_content)
+    after = record.skill_file.read_text(encoding="utf-8")
+    return _skill_mutation_result(ref, "profile_skill_edit", record.skill_id, diff=_bounded_unified_diff(before, after, "SKILL.md"))
+
+
+def write_profile_skill_file(profile_ref: str, name: str, file_path: str, content: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref)
+    safe_content = _validate_skill_write_content(content)
+    record, _skipped = _find_profile_skill(ref, name)
+    normalized = _normalize_skill_file_path(file_path)
+    target = _resolve_skill_child_for_write(record.skill_dir, normalized, require_exists=False)
+    before = target.read_text(encoding="utf-8") if target.exists() else ""
+    _atomic_write_text(target, safe_content)
+    after = target.read_text(encoding="utf-8")
+    return _skill_mutation_result(ref, "profile_skill_write_file", record.skill_id, file_path=normalized, diff=_bounded_unified_diff(before, after, normalized))
+
+
+def remove_profile_skill_file(profile_ref: str, name: str, file_path: str) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref)
+    record, _skipped = _find_profile_skill(ref, name)
+    normalized = _normalize_skill_file_path(file_path)
+    target = _resolve_skill_child_for_write(record.skill_dir, normalized, require_exists=True)
+    before = target.read_text(encoding="utf-8")
+    target.unlink()
+    return _skill_mutation_result(ref, "profile_skill_remove_file", record.skill_id, file_path=normalized, diff=_bounded_unified_diff(before, "", normalized), deleted=True)
+
+
+def _delete_skill_directory(skill_dir: Path) -> None:
+    for dirpath, dirnames, filenames in os.walk(skill_dir, topdown=False, followlinks=False):
+        current = Path(dirpath)
+        if current.is_symlink():
+            raise ProfileRouterError("profile_skill_symlink_denied", "Refusing to delete symlinked skill directory")
+        for filename in filenames:
+            target = current / filename
+            if target.is_symlink():
+                raise ProfileRouterError("profile_skill_symlink_denied", "Refusing to delete symlinked skill file")
+            target.unlink()
+        for dirname in dirnames:
+            target_dir = current / dirname
+            if target_dir.is_symlink():
+                raise ProfileRouterError("profile_skill_symlink_denied", "Refusing to delete symlinked skill subdirectory")
+            target_dir.rmdir()
+    skill_dir.rmdir()
+
+
+def delete_profile_skill(profile_ref: str, name: str, *, absorbed_into: str | None, confirm_delete: bool = False) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_skills_write_policy(profile_ref, delete=True)
+    if not confirm_delete:
+        raise ProfileRouterError("delete_intent_required", "confirm_delete=true is required")
+    if absorbed_into is None:
+        raise ProfileRouterError("delete_intent_required", "absorbed_into must be provided; use empty string only for pruning")
+    record, _skipped = _find_profile_skill(ref, name)
+    if absorbed_into:
+        target_record, _target_skipped = _find_profile_skill(ref, absorbed_into)
+        if target_record.skill_id == record.skill_id:
+            raise ProfileRouterError("invalid_delete_intent", "absorbed_into cannot refer to the deleted skill")
+    before = record.skill_file.read_text(encoding="utf-8")
+    _delete_skill_directory(record.skill_dir)
+    return _skill_mutation_result(ref, "profile_skill_delete", record.skill_id, diff=_bounded_unified_diff(before, "", "SKILL.md"), deleted=True, absorbed_into=absorbed_into)
+
+
+def _memory_target_filename(target: str | None) -> str:
+    normalized = str(target or "memory").strip().lower()
+    if normalized in {"memory", "mem", "agent"}:
+        return "MEMORY.md"
+    if normalized in {"user", "profile"}:
+        return "USER.md"
+    raise ProfileRouterError("invalid_memory_target", "target must be memory or user")
+
+
+def _profile_memory_path(ref: ProfileRef, target: str | None) -> Path:
+    profile_dir = _resolve_local_profile_dir(ref)
+    mem_dir = profile_dir / "memories"
+    if mem_dir.exists() and mem_dir.is_symlink():
+        raise ProfileRouterError("profile_memory_symlink_denied", "Profile memories directory may not be a symlink")
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    resolved = mem_dir.resolve(strict=True)
+    if not _path_is_relative_to(resolved, profile_dir):
+        raise ProfileRouterError("profile_memory_symlink_denied", "Profile memories directory escapes profile root")
+    return resolved / _memory_target_filename(target)
+
+
+def _read_memory_entries(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        return []
+    return [entry.strip() for entry in raw.split(MEMORY_ENTRY_DELIMITER) if entry.strip()]
+
+
+def _write_memory_entries(path: Path, entries: list[str]) -> None:
+    _atomic_write_text(path, MEMORY_ENTRY_DELIMITER.join(entries))
+
+
+def _validate_memory_content(content: str, *, field: str = "content") -> str:
+    if not isinstance(content, str):
+        raise ProfileRouterError("invalid_memory_content", f"{field} must be a string")
+    text = content.strip()
+    if not text:
+        raise ProfileRouterError("invalid_memory_content", f"{field} cannot be empty")
+    if len(text) > MAX_MEMORY_ENTRY_CHARS:
+        raise ProfileRouterError("memory_content_too_large", f"{field} exceeds memory entry limit")
+    _reject_secret_text_content(text, field=field)
+    return text
+
+
+def _memory_result(ref: ProfileRef, action: str, target: str | None, entries: list[str]) -> dict:
+    selected = entries[:MAX_MEMORY_LIST_ENTRIES]
+    return {
+        "profile_ref": ref.value,
+        "target": _memory_target_filename(target),
+        "count": len(selected),
+        "total_count": len(entries),
+        "truncated": len(entries) > len(selected),
+        "entries": [
+            {"text": _redact_context_text(entry)[:MAX_MEMORY_LIST_ENTRY_CHARS], "truncated": len(entry) > MAX_MEMORY_LIST_ENTRY_CHARS}
+            for entry in selected
+        ],
+        "audit": {"tool": action, "llm_calls": 0, "root_exposed": False},
+    }
+
+
+def add_profile_memory(profile_ref: str, content: str, *, target: str | None = "memory") -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_memory_write_policy(profile_ref)
+    text = _validate_memory_content(content)
+    path = _profile_memory_path(ref, target)
+    entries = _read_memory_entries(path)
+    added = text not in entries
+    if added:
+        entries.append(text)
+        _write_memory_entries(path, entries)
+    result = _memory_result(ref, "profile_memory_add", target, entries)
+    result["added"] = added
+    return result
+
+
+def replace_profile_memory(profile_ref: str, old_text: str, new_content: str, *, target: str | None = "memory") -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_memory_write_policy(profile_ref)
+    if not isinstance(old_text, str) or not old_text.strip():
+        raise ProfileRouterError("invalid_old_text", "old_text is required")
+    replacement = _validate_memory_content(new_content, field="new_content")
+    path = _profile_memory_path(ref, target)
+    entries = _read_memory_entries(path)
+    matches = [index for index, entry in enumerate(entries) if entry == old_text.strip()]
+    if not matches:
+        raise ProfileRouterError("memory_entry_not_found", "old_text did not exactly match a memory entry")
+    if len(matches) > 1:
+        raise ProfileRouterError("memory_entry_not_unique", "old_text matched multiple memory entries")
+    entries[matches[0]] = replacement
+    _write_memory_entries(path, entries)
+    return _memory_result(ref, "profile_memory_replace", target, entries)
+
+
+def remove_profile_memory(profile_ref: str, old_text: str, *, target: str | None = "memory") -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_memory_write_policy(profile_ref)
+    if not isinstance(old_text, str) or not old_text.strip():
+        raise ProfileRouterError("invalid_old_text", "old_text is required")
+    path = _profile_memory_path(ref, target)
+    entries = _read_memory_entries(path)
+    matches = [index for index, entry in enumerate(entries) if entry == old_text.strip()]
+    if not matches:
+        raise ProfileRouterError("memory_entry_not_found", "old_text did not exactly match a memory entry")
+    if len(matches) > 1:
+        raise ProfileRouterError("memory_entry_not_unique", "old_text matched multiple memory entries")
+    del entries[matches[0]]
+    _write_memory_entries(path, entries)
+    return _memory_result(ref, "profile_memory_remove", target, entries)
+
+
+def list_profile_memory(profile_ref: str, *, target: str | None = "memory", limit: int | None = MAX_MEMORY_LIST_ENTRIES) -> dict:
+    assert_default_tools_are_no_model()
+    ref, _route_policy = _require_profile_memory_write_policy(profile_ref)
+    max_results = _bounded_int(limit, "limit", default=MAX_MEMORY_LIST_ENTRIES, minimum=1, maximum=MAX_MEMORY_LIST_ENTRIES)
+    path = _profile_memory_path(ref, target)
+    entries = _read_memory_entries(path)
+    result = _memory_result(ref, "profile_memory_list", target, entries[:max_results])
+    result["total_count"] = len(entries)
+    result["truncated"] = len(entries) > max_results
+    result["limit"] = max_results
+    return result
 
 
 def _normalize_session_search_query(query: str | None) -> str | None:
@@ -8883,6 +9604,156 @@ def telegram_send(
         )
     except ProfileRouterError as exc:
         return _tool_error("telegram_send", exc)
+
+
+def workspace_python_run(
+    workspace_id: str,
+    code: str,
+    timeout: int = 30,
+    working_directory: str = ".",
+    context_token: str | None = None,
+    max_output_chars: int | None = MAX_PYTHON_OUTPUT_CHARS,
+) -> str:
+    """Direct wrapper: run deterministic no-model Python in a hydrated workspace."""
+
+    try:
+        result = run_workspace_python(
+            workspace_id,
+            code,
+            timeout=timeout,
+            working_directory=working_directory,
+            context_token=context_token,
+            max_output_chars=max_output_chars,
+        )
+        return _tool_envelope("workspace_python_run", result)
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_python_run", exc)
+
+
+def profile_skill_create(
+    profile_ref: str,
+    name: str,
+    content: str,
+    category: str | None = None,
+    overwrite: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_create",
+            {"ok": True, "skill_management": create_profile_skill(profile_ref, name, content, category=category, overwrite=overwrite)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_create", exc)
+
+
+def profile_skill_patch(
+    profile_ref: str,
+    name: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_patch",
+            {"ok": True, "skill_management": patch_profile_skill(profile_ref, name, old_string, new_string, replace_all=replace_all)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_patch", exc)
+
+
+def profile_skill_edit(profile_ref: str, name: str, content: str) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_edit",
+            {"ok": True, "skill_management": edit_profile_skill(profile_ref, name, content)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_edit", exc)
+
+
+def profile_skill_write_file(profile_ref: str, name: str, file_path: str, content: str) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_write_file",
+            {"ok": True, "skill_management": write_profile_skill_file(profile_ref, name, file_path, content)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_write_file", exc)
+
+
+def profile_skill_remove_file(profile_ref: str, name: str, file_path: str) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_remove_file",
+            {"ok": True, "skill_management": remove_profile_skill_file(profile_ref, name, file_path)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_remove_file", exc)
+
+
+def profile_skill_delete(
+    profile_ref: str,
+    name: str,
+    absorbed_into: str | None = None,
+    confirm_delete: bool = False,
+) -> str:
+    try:
+        return _tool_envelope(
+            "profile_skill_delete",
+            {"ok": True, "skill_management": delete_profile_skill(profile_ref, name, absorbed_into=absorbed_into, confirm_delete=confirm_delete)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_skill_delete", exc)
+
+
+def profile_memory_add(profile_ref: str, content: str, target: str | None = "memory") -> str:
+    try:
+        return _tool_envelope(
+            "profile_memory_add",
+            {"ok": True, "memory": add_profile_memory(profile_ref, content, target=target)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_memory_add", exc)
+
+
+def profile_memory_replace(
+    profile_ref: str,
+    old_text: str,
+    new_content: str,
+    target: str | None = "memory",
+) -> str:
+    try:
+        return _tool_envelope(
+            "profile_memory_replace",
+            {"ok": True, "memory": replace_profile_memory(profile_ref, old_text, new_content, target=target)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_memory_replace", exc)
+
+
+def profile_memory_remove(profile_ref: str, old_text: str, target: str | None = "memory") -> str:
+    try:
+        return _tool_envelope(
+            "profile_memory_remove",
+            {"ok": True, "memory": remove_profile_memory(profile_ref, old_text, target=target)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_memory_remove", exc)
+
+
+def profile_memory_list(
+    profile_ref: str,
+    target: str | None = "memory",
+    limit: int | None = MAX_MEMORY_LIST_ENTRIES,
+) -> str:
+    try:
+        return _tool_envelope(
+            "profile_memory_list",
+            {"ok": True, "memory": list_profile_memory(profile_ref, target=target, limit=limit)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_memory_list", exc)
 
 
 def process_start(

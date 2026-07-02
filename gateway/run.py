@@ -8617,6 +8617,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+            # Voice/audio messages arrive with empty text and audio cached
+            # in media_urls.  Transcribe via STT and resolve the clarify
+            # with the transcript so the user can respond by voice.
+            if not _raw_clarify_reply:
+                _audio_urls = getattr(event, "media_urls", None) or []
+                _audio_types = getattr(event, "media_types", None) or []
+                _msg_type = getattr(event, "message_type", None)
+                from gateway.platforms.base import MessageType as _MT
+                _is_voice_media = _msg_type in (_MT.VOICE, _MT.AUDIO) or any(
+                    (t or "").startswith("audio/") for t in _audio_types
+                )
+                if _is_voice_media and _audio_urls:
+                    try:
+                        from tools.transcription_tools import transcribe_audio
+                        _transcript = await asyncio.to_thread(
+                            transcribe_audio, _audio_urls[0],
+                        )
+                        if _transcript.get("success") and _transcript.get("transcript"):
+                            _voice_text = _transcript["transcript"].strip()
+                            if _voice_text:
+                                _resolved = _clarify_mod.resolve_text_response_for_session(
+                                    _quick_key, _voice_text,
+                                )
+                                if _resolved:
+                                    logger.info(
+                                        "Gateway intercepted clarify voice response (session=%s, id=%s, transcript=%s)",
+                                        _quick_key, _pending_clarify.clarify_id,
+                                        _voice_text[:80],
+                                    )
+                                    return ""
+                    except Exception as _stt_err:
+                        logger.warning(
+                            "Failed to transcribe voice for clarify response (session=%s): %s",
+                            _quick_key, _stt_err,
+                        )
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

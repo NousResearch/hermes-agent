@@ -24,7 +24,7 @@ the live session's provider/model, otherwise the configured ``task`` (default
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning, _get_task_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ def run_oneshot(
     task: str = "title_generation",
     max_tokens: int = 1024,
     temperature: Optional[float] = 0.3,
-    timeout: float = 60.0,
+    timeout: Optional[float] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Run a single stateless LLM request and return its text.
@@ -135,12 +135,22 @@ def run_oneshot(
         messages.append({"role": "system", "content": instructions})
     messages.append({"role": "user", "content": user_input or ""})
 
+    # Resolve the per-task timeout the same way call_llm does, but keep this
+    # helper's historical 60s default for callers that neither pass a timeout nor
+    # configure ``auxiliary.<task>.timeout``. Previously the hard-coded 60.0 default
+    # was always forwarded, so call_llm never saw ``None`` and silently ignored a
+    # configured ``auxiliary.<task>.timeout`` on the live llm.oneshot path (the exact
+    # class of #32729 that #56322 fixed for generate_title).
+    effective_timeout = (
+        timeout if timeout is not None else _get_task_timeout(task, default=60.0)
+    )
+
     response = call_llm(
         task=task,
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
-        timeout=timeout,
+        timeout=effective_timeout,
         main_runtime=main_runtime,
     )
 

@@ -43,13 +43,23 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
-    """Persist disabled skill names to config."""
+    """Persist disabled skill names to config.
+
+    ``platform_disabled[platform]`` is an *override* list that is unioned
+    with the global ``disabled`` list on read (see
+    :func:`get_disabled_skills`), so it must store only the platform-specific
+    delta. Callers pass the effective (unioned) set they read back, so the
+    globally-disabled skills are subtracted before writing — otherwise every
+    global disable would be copied into the platform list and stay pinned
+    there even after the user re-enables it globally.
+    """
     config.setdefault("skills", {})
     if platform is None:
         config["skills"]["disabled"] = sorted(disabled)
     else:
+        global_disabled = set(config["skills"].get("disabled", []))
         config["skills"].setdefault("platform_disabled", {})
-        config["skills"]["platform_disabled"][platform] = sorted(disabled)
+        config["skills"]["platform_disabled"][platform] = sorted(set(disabled) - global_disabled)
     save_config(config)
 
 

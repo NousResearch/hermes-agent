@@ -11807,18 +11807,25 @@ def cmd_dashboard(args):
     # this, a profile's configured MCP servers never connect, so desktop
     # sessions show no MCP tools.  Spawn discovery in the background here so a
     # slow/dead server can't block dashboard startup.
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+    #
+    # Server deployments can opt out: the gateway already runs MCP discovery,
+    # and a second dashboard-owned stdio child (for example buildin-mcp) wastes
+    # memory inside the dashboard cgroup. Desktop users keep the default path.
+    if os.environ.get("HERMES_DASHBOARD_NO_MCP") == "1":
+        logger.info("Dashboard MCP discovery skipped (HERMES_DASHBOARD_NO_MCP=1)")
+    else:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
-        )
-    except Exception:
-        logger.debug(
-            "Background MCP tool discovery failed at dashboard startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at dashboard startup",
+                exc_info=True,
+            )
 
     from hermes_cli.web_server import start_server
 

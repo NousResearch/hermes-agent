@@ -102,3 +102,30 @@ def test_session_list_preserves_ordering_after_filter(monkeypatch):
     ids = [s["id"] for s in resp["result"]["sessions"]]
 
     assert ids == ["newest", "middle", "also-visible", "oldest"]
+
+
+def test_session_list_skips_empty_placeholder_rows(monkeypatch):
+    rows = [
+        {
+            "id": "ghost",
+            "source": "tui",
+            "title": "",
+            "preview": "",
+            "message_count": 0,
+            "started_at": 6,
+        },
+        {
+            "id": "real",
+            "source": "tui",
+            "title": "Real session",
+            "preview": "hello",
+            "message_count": 2,
+            "started_at": 5,
+        },
+    ]
+    monkeypatch.setattr(server, "_get_db", lambda: _StubDB(rows))
+
+    resp = _call()
+    ids = [s["id"] for s in resp["result"]["sessions"]]
+
+    assert ids == ["real"]

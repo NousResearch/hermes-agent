@@ -3,9 +3,33 @@
 import pytest
 
 from hermes_cli.session_listing import (
+    is_empty_session_placeholder,
     parse_session_listing_args,
     query_session_listing,
 )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"message_count": None},
+        {"message_count": "0"},
+        {"message_count": "invalid"},
+        {"message_count": -1},
+        {"message_count": False},
+        {"message_count": 0, "title": "Named"},
+        {"message_count": 0, "preview": "Existing preview"},
+    ],
+)
+def test_empty_session_placeholder_keeps_non_placeholder_rows(row):
+    assert not is_empty_session_placeholder(row)
+
+
+def test_empty_session_placeholder_matches_exact_zero_with_blank_text():
+    assert is_empty_session_placeholder(
+        {"message_count": 0, "title": "  ", "preview": "\n"}
+    )
 
 
 class TestParseSessionListingArgs:
@@ -51,6 +75,7 @@ class TestQuerySessionListingSearch:
         db.create_session("sess_winton", "whatsapp", user_id="1", chat_id="2")
         db.set_session_title("sess_winton", "Winton Email Sheet Update #3")
         db.create_session("sess_untitled", "telegram", user_id="1", chat_id="2")
+        db.append_message("sess_untitled", role="user", content="unnamed session")
         yield db
         db.close()
 

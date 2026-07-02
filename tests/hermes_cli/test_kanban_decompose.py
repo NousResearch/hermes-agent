@@ -112,6 +112,46 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_strips_think_block_before_json_parse(kanban_home):
+    """Think-enabled auxiliary models (MiniMax M2, DeepSeek-R1, Qwen-QwQ) emit
+    inline <think> reasoning even for this structured-output prompt, and that
+    reasoning routinely contains braces. Without a think-strip pass those braces
+    break _extract_json_blob's naive first-"{" .. last-"}" slice, so decompose
+    fails as "malformed JSON" even though the model produced a valid object.
+    Mirrors title_generator / kanban_specify."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+        ],
+    })
+    # Reasoning with braces BEFORE the real JSON — exactly what breaks the
+    # naive slice when think blocks aren't stripped first.
+    raw = (
+        "<think>\nThe child schema is {title, body}; I'll split into "
+        "{research, build}.\n</think>\n" + payload
+    )
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(raw), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)

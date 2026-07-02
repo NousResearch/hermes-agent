@@ -346,6 +346,17 @@ def decompose_task(
     except Exception:
         raw = ""
 
+    # Think-enabled auxiliary models (MiniMax M2, DeepSeek-R1, Qwen-QwQ) emit
+    # inline <think> reasoning even for this structured-output prompt. That
+    # reasoning routinely contains braces (schema sketches, set notation), which
+    # breaks _extract_json_blob's naive first-"{" .. last-"}" slice and makes
+    # decompose fail as "malformed JSON" even when the model produced a valid
+    # object. An unterminated block (token-limit truncation) is just as likely.
+    # Strip think blocks first via the canonical scrubber, mirroring
+    # title_generator and kanban_specify.
+    from agent.agent_runtime_helpers import strip_think_blocks
+    raw = strip_think_blocks(None, raw)
+
     parsed = _extract_json_blob(raw)
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")

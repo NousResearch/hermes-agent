@@ -146,6 +146,46 @@ def test_xai_no_operation_kwarg():
     assert result["error_type"] in {"auth_required", "api_error"}
 
 
+def test_xai_video_wrapper_preserves_read_timeout_error_type():
+    import httpx
+    from plugins.video_gen.xai import _run_xai_video_coroutine
+
+    async def fail_with_timeout():
+        raise httpx.ReadTimeout("")
+
+    result = _run_xai_video_coroutine(
+        fail_with_timeout(),
+        operation_label="generation",
+        model="grok-imagine-video",
+        prompt="animate the selected image",
+        aspect_ratio="16:9",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "timeout"
+    assert "ReadTimeout" in result["error"]
+
+
+def test_xai_video_wrapper_preserves_transport_error_type():
+    import httpx
+    from plugins.video_gen.xai import _run_xai_video_coroutine
+
+    async def fail_with_transport_error():
+        raise httpx.ConnectError("network unavailable")
+
+    result = _run_xai_video_coroutine(
+        fail_with_transport_error(),
+        operation_label="generation",
+        model="grok-imagine-video",
+        prompt="animate the selected image",
+        aspect_ratio="16:9",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "connection_error"
+    assert "ConnectError" in result["error"]
+
+
 def test_xai_video_output_urls_prefers_stored_public_url():
     from plugins.video_gen.xai import _xai_video_output_urls
 

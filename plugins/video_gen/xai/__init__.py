@@ -520,13 +520,21 @@ def _run_xai_video_coroutine(
     except Exception as exc:
         logger.warning("xAI video %s unexpected failure: %s", operation_label, exc, exc_info=True)
         return error_response(
-            error=f"xAI video {operation_label} failed: {exc}",
-            error_type="api_error",
+            error=f"xAI video {operation_label} failed: {type(exc).__name__}: {exc}",
+            error_type=_xai_video_wrapper_error_type(exc),
             provider="xai",
             model=model or DEFAULT_MODEL,
             prompt=prompt,
             aspect_ratio=aspect_ratio,
         )
+
+
+def _xai_video_wrapper_error_type(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "connection_error"
+    return "api_error"
 
 
 async def _generate_xai_video_async(

@@ -436,6 +436,18 @@ class TestParseReasoningEffort:
         """The literal "none" disables reasoning explicitly."""
         assert parse_reasoning_effort("none") == {"enabled": False}
 
+    @pytest.mark.parametrize("value", [False, "false", "FALSE", "disabled", " Disabled "])
+    def test_false_aliases_disable_reasoning(self, value):
+        """YAML `reasoning_effort: false`/`off`/`no` reaches loaders as a
+        boolean; users also hand-write "false"/"disabled". All must mean
+        disabled — not "unset, fall back to the default and keep thinking"."""
+        assert parse_reasoning_effort(value) == {"enabled": False}
+
+    @pytest.mark.parametrize("value", [None, True])
+    def test_non_string_non_false_returns_none(self, value):
+        """None and boolean True fall back to the caller default."""
+        assert parse_reasoning_effort(value) is None
+
     @pytest.mark.parametrize("level", list(VALID_REASONING_EFFORTS))
     def test_each_valid_level(self, level):
         """Every level listed in VALID_REASONING_EFFORTS is accepted as-is."""

@@ -2620,10 +2620,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config from config.yaml (raw value — a YAML boolean False
+        # means thinking disabled, see parse_reasoning_effort)
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        reasoning_config = parse_reasoning_effort(
+            _cfg.get("agent", {}).get("reasoning_effort", "")
+        )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

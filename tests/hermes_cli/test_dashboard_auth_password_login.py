@@ -393,6 +393,60 @@ class TestRateLimit:
         )
         assert good.status_code == 429
 
+    def test_expired_ip_buckets_pruned_before_live_eviction(self, monkeypatch):
+        from collections import deque
+
+        from hermes_cli.dashboard_auth import routes
+
+        _reset_password_rate_limit()
+        now = 1_000.0
+        monkeypatch.setattr(routes.time, "monotonic", lambda: now)
+        monkeypatch.setattr(routes, "_PW_RATE_MAX_CLIENT_IP_BUCKETS", 3, raising=False)
+
+        with routes._pw_attempts_lock:
+            routes._pw_attempts["live-a"] = deque([now])
+            routes._pw_attempts["live-b"] = deque([now])
+            routes._pw_attempts["expired-a"] = deque([
+                now - routes._PW_RATE_WINDOW_SEC - 1.0
+            ])
+
+        assert routes._password_rate_limited("live-c") is False
+
+        with routes._pw_attempts_lock:
+            assert set(routes._pw_attempts) == {"live-a", "live-b", "live-c"}
+
+    def test_retained_client_ip_buckets_are_capped(self, monkeypatch):
+        from hermes_cli.dashboard_auth import routes
+
+        _reset_password_rate_limit()
+        monkeypatch.setattr(routes.time, "monotonic", lambda: 2_000.0)
+        monkeypatch.setattr(routes, "_PW_RATE_MAX_CLIENT_IP_BUCKETS", 3, raising=False)
+
+        for i in range(5):
+            assert routes._password_rate_limited(f"ip-{i}") is False
+
+        with routes._pw_attempts_lock:
+            assert len(routes._pw_attempts) == 3
+            assert "ip-4" in routes._pw_attempts
+
+    def test_bucket_cap_preserves_existing_ip_throttle(self, monkeypatch):
+        from hermes_cli.dashboard_auth import routes
+
+        _reset_password_rate_limit()
+        monkeypatch.setattr(routes.time, "monotonic", lambda: 3_000.0)
+        monkeypatch.setattr(routes, "_PW_RATE_MAX_ATTEMPTS", 2)
+        monkeypatch.setattr(routes, "_PW_RATE_MAX_CLIENT_IP_BUCKETS", 3, raising=False)
+
+        assert routes._password_rate_limited("active") is False
+        assert routes._password_rate_limited("active") is False
+
+        # Filling other buckets up to the cap must not evict or reset the
+        # already-active IP's sliding-window counter.
+        assert routes._password_rate_limited("other-a") is False
+        assert routes._password_rate_limited("other-b") is False
+
+        assert routes._password_rate_limited("active") is True
+
 
 # ---------------------------------------------------------------------------
 # Login page rendering

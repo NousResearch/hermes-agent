@@ -415,8 +415,23 @@ def _validate_post_login_target(raw: str) -> str:
 
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
+_PW_RATE_MAX_CLIENT_IP_BUCKETS = 4096
 _pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
 _pw_attempts_lock = threading.Lock()
+
+
+def _prune_expired_password_rate_buckets(cutoff: float) -> None:
+    """Drop empty/expired password-rate buckets.
+
+    Caller must hold ``_pw_attempts_lock``. We prune every bucket before
+    enforcing the global bucket cap so stale IPs never force eviction of a
+    live client-IP bucket.
+    """
+    for key, bucket in list(_pw_attempts.items()):
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            del _pw_attempts[key]
 
 
 def _password_rate_limited(ip: str) -> bool:
@@ -432,9 +447,12 @@ def _password_rate_limited(ip: str) -> bool:
     cutoff = now - _PW_RATE_WINDOW_SEC
     key = ip or "_unknown_"
     with _pw_attempts_lock:
-        bucket = _pw_attempts[key]
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
+        _prune_expired_password_rate_buckets(cutoff)
+        bucket = _pw_attempts.get(key)
+        if bucket is None:
+            while len(_pw_attempts) >= _PW_RATE_MAX_CLIENT_IP_BUCKETS:
+                _pw_attempts.pop(next(iter(_pw_attempts)))
+            bucket = _pw_attempts[key]
         if len(bucket) >= _PW_RATE_MAX_ATTEMPTS:
             return True
         bucket.append(now)

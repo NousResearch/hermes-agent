@@ -1373,6 +1373,26 @@ class TestParseContextLimitFromError:
         msg = "Error: context window of 4096 tokens exceeded"
         assert parse_context_limit_from_error(msg) == 4096
 
+    def test_vllm_max_model_len_format(self):
+        msg = (
+            "The engine prompt length 1327246 exceeds the max_model_len 32768. "
+            "Please reduce prompt."
+        )
+        assert parse_context_limit_from_error(msg) == 32768
+
+    def test_vllm_maximum_model_length_format(self):
+        msg = "prompt length 200000 exceeds maximum model length 131072"
+        assert parse_context_limit_from_error(msg) == 131072
+
+    def test_get_context_length_from_vllm_max_model_len_error(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = (
+            "The engine prompt length 90000 exceeds the max_model_len 32768. "
+            "Please reduce prompt."
+        )
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+
     def test_minimax_delta_only_message_returns_none(self):
         msg = "invalid params, context window exceeds limit (2013)"
         assert parse_context_limit_from_error(msg) is None

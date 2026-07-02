@@ -194,6 +194,38 @@ class TestCreateProfile:
         with pytest.raises(FileExistsError):
             create_profile("coder", no_alias=True)
 
+    def test_create_profile_failure_does_not_remove_existing_profile(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        marker = profile_dir / "marker.txt"
+        marker.write_text("keep me", encoding="utf-8")
+
+        with pytest.raises(FileExistsError):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert profile_dir.exists()
+
+    def test_create_profile_cleans_partial_dir_on_clone_failure(
+        self,
+        profile_env,
+        monkeypatch,
+    ):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model:\n  default: test\n")
+
+        import hermes_cli.profiles as profiles
+
+        def fail_copy2(*args, **kwargs):
+            raise RuntimeError("copy failed")
+
+        monkeypatch.setattr(profiles.shutil, "copy2", fail_copy2)
+
+        with pytest.raises(RuntimeError, match="copy failed"):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not get_profile_dir("coder").exists()
+
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):
             create_profile("default", no_alias=True)

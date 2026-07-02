@@ -20,6 +20,7 @@ Usage::
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -33,6 +34,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+
+logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -154,6 +157,20 @@ def _ignore_dangling_symlinks(directory: str, names: List[str]) -> List[str]:
         except OSError:
             ignored.append(name)
     return ignored
+
+
+def _cleanup_partial_profile(profile_dir: Path) -> None:
+    """Best-effort removal of a profile directory created by a failed create."""
+    try:
+        shutil.rmtree(profile_dir)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning(
+            "Could not remove partial profile directory %s after creation failure: %s",
+            profile_dir,
+            exc,
+        )
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
@@ -1051,132 +1068,140 @@ def create_profile(
                 f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}"
             )
 
-    if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
-        shutil.copytree(
-            source_dir,
-            profile_dir,
-            ignore=_clone_all_copytree_ignore(source_dir),
-        )
-        # Strip runtime files
-        for stale in _CLONE_ALL_STRIP:
-            (profile_dir / stale).unlink(missing_ok=True)
-    else:
-        # Bootstrap directory structure
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        for subdir in _PROFILE_DIRS:
-            (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
-
-        # Clone config files from source
-        if source_dir is not None:
-            for filename in _CLONE_CONFIG_FILES:
-                src = source_dir / filename
-                if src.exists():
-                    dst = profile_dir / filename
-                    shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
-                    if filename == ".env":
-                        try:
-                            os.chmod(str(dst), 0o600)
-                        except OSError:
-                            pass
-
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
-            source_skills = source_dir / "skills"
-            if source_skills.is_dir():
-                shutil.copytree(
-                    source_skills,
-                    profile_dir / "skills",
-                    dirs_exist_ok=True,
-                    ignore=_ignore_dangling_symlinks,
-                )
-
-            # Clone memory and other subdirectory files
-            for relpath in _CLONE_SUBDIR_FILES:
-                src = source_dir / relpath
-                if src.exists():
-                    dst = profile_dir / relpath
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-
-    # Seed an empty .env so the profile has its own credentials file from
-    # day one. Without it, profile-scoped env writes (dashboard Channels /
-    # Keys pages, `hermes -p <name> auth add`) had no file until first
-    # write, and the profile silently inherited API keys from the shell
-    # environment — users reasonably read that as "the new profile reads
-    # the root .env". Skipped when --clone/--clone-all already copied one.
-    env_path = profile_dir / ".env"
-    if not env_path.exists():
-        try:
-            env_path.write_text(
-                "# Per-profile secrets for this Hermes profile.\n"
-                "# API keys and tokens set here override the shell environment.\n"
-                "# Behavioral settings belong in config.yaml, not here.\n",
-                encoding="utf-8",
-            )
-            os.chmod(str(env_path), 0o600)
-        except OSError:
-            pass  # best-effort — save_env_value creates the file on demand
-
-    # Seed a default SOUL.md so the user has a file to customize immediately.
-    # Skipped when the profile already has one (from --clone / --clone-all).
-    soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists():
-        try:
-            from hermes_cli.default_soul import DEFAULT_SOUL_MD
-            soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-        except Exception:
-            pass  # best-effort — don't fail profile creation over this
-
-    # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
-    # all-profile sync loop both skip this profile for bundled-skill seeding.
-    if no_skills:
-        try:
-            (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
-                "This profile opted out of bundled-skill seeding "
-                "(`hermes profile create --no-skills`).\n"
-                "Delete this file to re-enable sync on the next `hermes update`.\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass  # best-effort — the feature still works via the empty skills/ dir
-
-    # Cloned configs can be older than the running Hermes (or predate schema
-    # tracking entirely). Migrate config-only clones immediately so
-    # desktop/status surfaces don't warn that a just-created profile is
-    # v0/outdated. Leave --clone-all snapshots byte-for-byte apart from the
-    # explicit runtime/history stripping above.
-    if not clone_all:
-        _migrate_profile_config_if_outdated(profile_dir)
-
-    # Persist description if the caller provided one. Done last so a
-    # partial-create failure doesn't strand a description file in an
-    # incomplete profile.
-    if description and description.strip():
-        try:
-            write_profile_meta(
+    creation_started = False
+    try:
+        if clone_all and source_dir:
+            creation_started = True
+            # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+            shutil.copytree(
+                source_dir,
                 profile_dir,
-                description=description.strip(),
-                description_auto=False,
+                ignore=_clone_all_copytree_ignore(source_dir),
             )
-        except Exception:
-            pass  # non-fatal — user can describe later with `hermes profile describe`
+            # Strip runtime files
+            for stale in _CLONE_ALL_STRIP:
+                (profile_dir / stale).unlink(missing_ok=True)
+        else:
+            # Bootstrap directory structure
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            creation_started = True
+            for subdir in _PROFILE_DIRS:
+                (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    # Phase 4: when running inside a container under s6, register the
-    # new profile's gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` can supervise it via
-    # `s6-svc -u` instead of spawning a bare process. On host (systemd
-    # / launchd / windows) this is a no-op — the existing per-profile
-    # unit-generation paths handle gateway lifecycle.
-    _maybe_register_gateway_service(canon)
+            # Clone config files from source
+            if source_dir is not None:
+                for filename in _CLONE_CONFIG_FILES:
+                    src = source_dir / filename
+                    if src.exists():
+                        dst = profile_dir / filename
+                        shutil.copy2(src, dst)
+                        # Tighten .env to owner-only after copy. shutil.copy2
+                        # preserves source mode bits, but if the source's .env
+                        # was loose (host umask 0o022 leaving 0o644), tighten
+                        # explicitly so the clone doesn't inherit weak perms.
+                        if filename == ".env":
+                            try:
+                                os.chmod(str(dst), 0o600)
+                            except OSError:
+                                pass
 
-    return profile_dir
+                # Clone installed skills from the source profile. The dashboard's
+                # "clone from default" flow is expected to preserve both bundled
+                # and user-installed skills so the new profile immediately has the
+                # same agent capabilities as the source profile.
+                source_skills = source_dir / "skills"
+                if source_skills.is_dir():
+                    shutil.copytree(
+                        source_skills,
+                        profile_dir / "skills",
+                        dirs_exist_ok=True,
+                        ignore=_ignore_dangling_symlinks,
+                    )
+
+                # Clone memory and other subdirectory files
+                for relpath in _CLONE_SUBDIR_FILES:
+                    src = source_dir / relpath
+                    if src.exists():
+                        dst = profile_dir / relpath
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+
+        # Seed an empty .env so the profile has its own credentials file from
+        # day one. Without it, profile-scoped env writes (dashboard Channels /
+        # Keys pages, `hermes -p <name> auth add`) had no file until first
+        # write, and the profile silently inherited API keys from the shell
+        # environment — users reasonably read that as "the new profile reads
+        # the root .env". Skipped when --clone/--clone-all already copied one.
+        env_path = profile_dir / ".env"
+        if not env_path.exists():
+            try:
+                env_path.write_text(
+                    "# Per-profile secrets for this Hermes profile.\n"
+                    "# API keys and tokens set here override the shell environment.\n"
+                    "# Behavioral settings belong in config.yaml, not here.\n",
+                    encoding="utf-8",
+                )
+                os.chmod(str(env_path), 0o600)
+            except OSError:
+                pass  # best-effort — save_env_value creates the file on demand
+
+        # Seed a default SOUL.md so the user has a file to customize immediately.
+        # Skipped when the profile already has one (from --clone / --clone-all).
+        soul_path = profile_dir / "SOUL.md"
+        if not soul_path.exists():
+            try:
+                from hermes_cli.default_soul import DEFAULT_SOUL_MD
+                soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+            except Exception:
+                pass  # best-effort — don't fail profile creation over this
+
+        # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
+        # all-profile sync loop both skip this profile for bundled-skill seeding.
+        if no_skills:
+            try:
+                (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
+                    "This profile opted out of bundled-skill seeding "
+                    "(`hermes profile create --no-skills`).\n"
+                    "Delete this file to re-enable sync on the next `hermes update`.\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass  # best-effort — the feature still works via the empty skills/ dir
+
+        # Cloned configs can be older than the running Hermes (or predate schema
+        # tracking entirely). Migrate config-only clones immediately so
+        # desktop/status surfaces don't warn that a just-created profile is
+        # v0/outdated. Leave --clone-all snapshots byte-for-byte apart from the
+        # explicit runtime/history stripping above.
+        if not clone_all:
+            _migrate_profile_config_if_outdated(profile_dir)
+
+        # Persist description if the caller provided one. Done last so a
+        # partial-create failure doesn't strand a description file in an
+        # incomplete profile.
+        if description and description.strip():
+            try:
+                write_profile_meta(
+                    profile_dir,
+                    description=description.strip(),
+                    description_auto=False,
+                )
+            except Exception:
+                pass  # non-fatal — user can describe later with `hermes profile describe`
+
+        # Phase 4: when running inside a container under s6, register the
+        # new profile's gateway as a runtime s6 service so
+        # `hermes -p <profile> gateway start` can supervise it via
+        # `s6-svc -u` instead of spawning a bare process. On host (systemd
+        # / launchd / windows) this is a no-op — the existing per-profile
+        # unit-generation paths handle gateway lifecycle.
+        _maybe_register_gateway_service(canon)
+
+        return profile_dir
+    except Exception:
+        if creation_started and profile_dir.exists():
+            _cleanup_partial_profile(profile_dir)
+        raise
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:

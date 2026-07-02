@@ -90,3 +90,71 @@ class TestDownloadUrlSSRF:
         # The guarded client must register a redirect event hook.
         assert fetched["hooks"] is not None
         assert "response" in fetched["hooks"]
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_metadata_blocked(self, monkeypatch):
+        """A 302 whose Location points at a metadata address is rejected even
+        though httpx leaves response.next_request unset inside the hook.
+
+        Regression: the guard used to key on response.next_request, which is
+        None inside an httpx response event hook, so redirect-based SSRF (a
+        public URL 302-ing to 169.254.169.254) was never blocked.
+        """
+        import gateway.platforms.yuanbao_media as ym
+        from tools import url_safety
+
+        # Public pre-flight passes; the redirect target does not.
+        monkeypatch.setattr(
+            url_safety, "is_safe_url", lambda u: str(u).startswith("https://example.com")
+        )
+
+        captured = {}
+
+        class _FakeResp:
+            headers = {"content-type": "image/png", "content-length": "3"}
+            is_redirect = False
+            next_request = None
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _n):
+                yield b"png"
+
+        class _FakeStream:
+            async def __aenter__(self):
+                return _FakeResp()
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _FakeClient:
+            def __init__(self, *a, **kw):
+                captured["guard"] = kw["event_hooks"]["response"][0]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def head(self, url):
+                return _FakeResp()
+
+            def stream(self, method, url, **kw):
+                return _FakeStream()
+
+        monkeypatch.setattr(ym.httpx, "AsyncClient", _FakeClient)
+
+        await download_url("https://example.com/image.png")
+        guard = captured["guard"]
+
+        class _RedirectResp:
+            # A genuine 302 as seen inside the hook: Location set, next_request None.
+            is_redirect = True
+            url = "https://example.com/image.png"
+            headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+            next_request = None
+
+        with pytest.raises(ValueError, match="Blocked redirect"):
+            await guard(_RedirectResp())

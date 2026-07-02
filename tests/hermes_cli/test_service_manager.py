@@ -297,28 +297,11 @@ class TestS6Lifecycle:
 
 # ---------------------------------------------------------------------------
 # S6ServiceManager — registration
-#
-# NOTE: ``_render_finish_script`` imports GATEWAY_FATAL_CONFIG_EXIT_CODE
-# from ``gateway.restart``, but that symbol does not exist in the module
-# (it only defines GATEWAY_SERVICE_RESTART_EXIT_CODE). That is a real
-# production bug reported to the coordinator — NOT fixed here. These tests
-# inject the missing symbol so the registration path can be exercised;
-# ``test_render_finish_script_missing_symbol_is_a_bug`` documents the gap.
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def _inject_finish_exit_code(monkeypatch):
-    import gateway.restart as gr
-    monkeypatch.setattr(
-        gr, "GATEWAY_FATAL_CONFIG_EXIT_CODE", 78, raising=False
-    )
-
-
 class TestS6Registration:
-    def test_register_builds_service_dir(
-        self, s6, _inject_finish_exit_code
-    ):
+    def test_register_builds_service_dir(self, s6):
         with patch("subprocess.run", return_value=_completed()) as run:
             s6.register_profile_gateway("foo")
 
@@ -338,33 +321,25 @@ class TestS6Registration:
         assert "hermes -p foo gateway run --replace" in run_body
         assert "s6-setuidgid hermes" in run_body
 
-    def test_register_default_profile_omits_p_flag(
-        self, s6, _inject_finish_exit_code
-    ):
+    def test_register_default_profile_omits_p_flag(self, s6):
         with patch("subprocess.run", return_value=_completed()):
             s6.register_profile_gateway("default")
         run_body = (s6.scandir / "gateway-default" / "run").read_text()
         assert "hermes gateway run --replace" in run_body
         assert " -p " not in run_body
 
-    def test_register_start_now_false_writes_down_marker(
-        self, s6, _inject_finish_exit_code
-    ):
+    def test_register_start_now_false_writes_down_marker(self, s6):
         with patch("subprocess.run", return_value=_completed()):
             s6.register_profile_gateway("foo", start_now=False)
         assert (s6.scandir / "gateway-foo" / "down").exists()
 
-    def test_register_existing_raises_valueerror(
-        self, s6, _inject_finish_exit_code
-    ):
+    def test_register_existing_raises_valueerror(self, s6):
         (s6.scandir / "gateway-foo").mkdir()
         with patch("subprocess.run", return_value=_completed()):
             with pytest.raises(ValueError):
                 s6.register_profile_gateway("foo")
 
-    def test_register_rescan_failure_cleans_up_and_raises(
-        self, s6, _inject_finish_exit_code
-    ):
+    def test_register_rescan_failure_cleans_up_and_raises(self, s6):
         with patch(
             "subprocess.run",
             return_value=_completed(returncode=1, stderr="scan boom"),
@@ -411,20 +386,28 @@ class TestS6Registration:
         mgr = S6ServiceManager(scandir=tmp_path / "does-not-exist")
         assert mgr.list_profile_gateways() == []
 
-    def test_render_finish_script_missing_symbol_is_a_bug(self, monkeypatch):
-        """Regression guard for the real bug: _render_finish_script imports
-        GATEWAY_FATAL_CONFIG_EXIT_CODE from gateway.restart, which does not
-        define it. Ensure the symbol is genuinely absent (so we don't
-        silently mask a fix) and that the render blows up without it.
+    def test_render_finish_script_defines_fatal_config_exit_code(self):
+        """Regression test for a real bug: _render_finish_script imported
+        GATEWAY_FATAL_CONFIG_EXIT_CODE from gateway.restart, but that
+        symbol was never defined there — only GATEWAY_SERVICE_RESTART_EXIT_CODE
+        existed. That raised ImportError on the real register_profile_gateway
+        path, breaking s6 profile-gateway registration in production.
 
-        Reported to the coordinator; intentionally NOT fixed in this
-        test-only change.
+        Assert the import now resolves and the rendered finish script
+        checks for the correct (EX_CONFIG) exit code, distinct from the
+        restart exit code.
         """
-        import gateway.restart as gr
-        if hasattr(gr, "GATEWAY_FATAL_CONFIG_EXIT_CODE"):
-            pytest.skip("bug appears fixed: symbol now defined")
-        with pytest.raises(ImportError):
-            S6ServiceManager._render_finish_script()
+        from gateway.restart import (
+            GATEWAY_FATAL_CONFIG_EXIT_CODE,
+            GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
+
+        assert GATEWAY_FATAL_CONFIG_EXIT_CODE == 78
+        assert GATEWAY_FATAL_CONFIG_EXIT_CODE != GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+        script = S6ServiceManager._render_finish_script()
+        assert f'if [ "$1" = "{GATEWAY_FATAL_CONFIG_EXIT_CODE}" ]; then' in script
+        assert "exit 125" in script
 
 
 # ---------------------------------------------------------------------------

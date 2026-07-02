@@ -22,8 +22,8 @@ if [ "$BRANCH" = "main" ]; then
     exit 0
 fi
 
-echo "  [auto-push] Pushing $BRANCH to origin..."
-if git push -u origin "$BRANCH" 2>&1; then
+echo "  [auto-push] Pushing $BRANCH to fork..."
+if git push -u fork "$BRANCH" 2>&1; then
     echo "  [auto-push] Pushed successfully"
 else
     echo "  [auto-push] Push failed (non-blocking)"

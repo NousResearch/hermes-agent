@@ -57,7 +57,7 @@ log "Found $FILE_COUNT relevant file(s) to commit."
 # Step 2 — Stage relevant files
 # ---------------------------------------------------------
 # Stage tracked files with relevant extensions
-git add *.py scripts/ .github/ docs/ *.md config/ 2>/dev/null || true
+git add *.py scripts/ .github/ docs/ *.md 2>/dev/null || true
 
 # Stage any new files in important directories
 git add proposal/ approval/ 2>/dev/null || true
@@ -89,3 +89,4 @@ log "Commit message: $(echo "$COMMIT_MSG" | head -1)"
 log "Commit created successfully on branch: $CURRENT_BRANCH"
 log "Post-commit hook will push to GitHub."
 log "GitHub Actions will create a Draft PR."
+# test automation

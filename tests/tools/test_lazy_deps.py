@@ -13,6 +13,8 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+from types import SimpleNamespace
+
 import pytest
 
 import tools.lazy_deps as ld
@@ -404,3 +406,26 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+class TestLazyInstallSubprocessEncoding:
+    def test_venv_pip_install_captures_text_with_utf8_replace(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+
+        result = ld._venv_pip_install(("zzzfake==1.0",), timeout=5)
+
+        assert result.success is True
+        assert calls
+        _, kwargs = calls[0]
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"

@@ -23,6 +23,16 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+
+def _run_captured_text(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Capture subprocess text without relying on the Windows locale codec."""
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return subprocess.run(cmd, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
@@ -112,10 +122,8 @@ def _ensure_uv_path() -> Optional[str]:
     # Verify
     result = resolve_uv()
     if result:
-        version = subprocess.run(
+        version = _run_captured_text(
             [result, "--version"],
-            capture_output=True,
-            text=True,
             check=False,
         ).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
@@ -167,17 +175,13 @@ def update_managed_uv() -> Optional[str]:
         # Not installed yet — ensure_uv() will handle that elsewhere.
         return None
 
-    result = subprocess.run(
+    result = _run_captured_text(
         [existing, "self", "update"],
-        capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode == 0:
-        version = subprocess.run(
+        version = _run_captured_text(
             [existing, "--version"],
-            capture_output=True,
-            text=True,
             check=False,
         ).stdout.strip()
         print(f"  ✓ Managed uv updated ({version})")

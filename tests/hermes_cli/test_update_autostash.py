@@ -203,9 +203,15 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     assert restored is True
-    assert calls[0] == (["git", "stash", "apply", "abc123"], {"cwd": tmp_path, "capture_output": True, "text": True})
-    assert calls[1] == (["git", "diff", "--name-only", "--diff-filter=U"], {"cwd": tmp_path, "capture_output": True, "text": True})
-    assert calls[2] == (["git", "stash", "list", "--format=%gd %H"], {"cwd": tmp_path, "capture_output": True, "text": True, "check": True})
+    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+    assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
+    assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
+    assert calls[0][1]["cwd"] == tmp_path
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True
+    assert calls[0][1]["encoding"] == "utf-8"
+    assert calls[0][1]["errors"] == "replace"
+    assert calls[2][1]["check"] is True
     out = capsys.readouterr().out
     assert "couldn't find the stash entry to drop" in out
     assert "stash was left in place" in out
@@ -901,3 +907,26 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
         ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
     assert ".hermes-bootstrap-complete" not in status
+
+
+def test_cmd_update_text_subprocesses_use_utf8_replace(monkeypatch, tmp_path):
+    """Captured update subprocess output must not decode with the Windows locale."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect()
+    text_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if kwargs.get("text") is True:
+            text_calls.append((cmd, kwargs))
+        return side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert recorded
+    assert text_calls
+    assert all(kwargs.get("encoding") == "utf-8" for _, kwargs in text_calls)
+    assert all(kwargs.get("errors") in {"replace", "ignore"} for _, kwargs in text_calls)

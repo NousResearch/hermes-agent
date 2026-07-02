@@ -10,6 +10,9 @@ FRONTEND_SRC = REPO_ROOT / "apps" / "telegram-miniapp" / "src"
 APP_TSX = FRONTEND_SRC / "App.tsx"
 API_TS = FRONTEND_SRC / "api.ts"
 MOCK_DATA_TS = FRONTEND_SRC / "mockData.ts"
+APP_MODEL_TS = FRONTEND_SRC / "appModel.ts"
+APPROVALS_SECTION_TSX = FRONTEND_SRC / "components" / "ApprovalsSection.tsx"
+COMMAND_PALETTE_TSX = FRONTEND_SRC / "components" / "CommandPalette.tsx"
 
 FORBIDDEN_FRONTEND_ENDPOINTS = [
     "/api/actions",
@@ -140,8 +143,8 @@ def test_api_client_contains_single_guarded_fetch_sink():
 
 
 def test_decision_strip_buttons_are_disabled_and_handler_free():
-    app_text = read_frontend(APP_TSX)
-    match = re.search(r'<div className="decision-strip"[\s\S]*?</div>', app_text)
+    approvals_text = read_frontend(APPROVALS_SECTION_TSX)
+    match = re.search(r'<div className="decision-strip"[\s\S]*?</div>', approvals_text)
     assert match, "decision-strip block must exist as a visible locked affordance"
     block = match.group(0)
 
@@ -152,8 +155,8 @@ def test_decision_strip_buttons_are_disabled_and_handler_free():
 
 
 def test_command_palette_route_map_is_navigation_only():
-    app_text = read_frontend(APP_TSX)
-    match = re.search(r"const routeMap:.*?= \{([\s\S]*?)\};", app_text)
+    palette_text = read_frontend(COMMAND_PALETTE_TSX)
+    match = re.search(r"const routeMap:.*?= \{([\s\S]*?)\};", palette_text)
     assert match, "Command palette routeMap should be explicit and reviewable"
     route_map = match.group(1)
 
@@ -168,7 +171,7 @@ def test_command_palette_route_map_is_navigation_only():
 
 
 def test_local_storage_keys_remain_harmless_ui_state_only():
-    app_text = read_frontend(APP_TSX)
+    app_text = read_frontend(APP_MODEL_TS)
     match = re.search(r"const STORAGE_KEYS = \{([\s\S]*?)\} as const;", app_text)
     assert match, "STORAGE_KEYS must stay centralized and reviewable"
     storage_block = match.group(1)

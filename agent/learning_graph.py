@@ -15,6 +15,7 @@ Run as a module to print edge-density stats against real data:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -190,6 +191,18 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
     }
 
 
+def memory_chunk_hash(text: str) -> str:
+    """Stable 8-hex content fingerprint of a memory entry.
+
+    Embedded in memory node ids so an edit/delete can detect that the on-disk
+    entry at that position changed (e.g. a concurrent background-review write
+    reordered the list) between graph render and click — position alone is not
+    enough to address the right entry. Hashes the stripped text so both this
+    module and ``MemoryStore._read_file`` (which also strips) agree.
+    """
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:8]
+
+
 def _memory_cards() -> list[dict[str, Any]]:
     """Freeform memory as readable cards.
 
@@ -215,6 +228,7 @@ def _memory_cards() -> list[dict[str, Any]]:
                     "timestamp": file_ts + chunk_idx if file_ts is not None else None,
                     "title": (first[:80] + "…") if len(first) > 80 else first,
                     "body": chunk[:1200],
+                    "hash": memory_chunk_hash(chunk),
                 }
             )
     return cards
@@ -228,7 +242,7 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
     edges: list[tuple[str, str]] = []
     skill_meta = [(s, _tokenize(s.name), s.name.lower()) for s in skills]
     for idx, card in enumerate(memory_cards):
-        mem_id = f"memory:{card['source']}:{idx}"
+        mem_id = f"memory:{card['source']}:{idx}:{card['hash']}"
         text = f"{card.get('title', '')}\n{card.get('body', '')}".lower()
         text_tokens = _tokenize(text)
         scored: list[tuple[int, str]] = []
@@ -293,7 +307,7 @@ def build_learning_graph() -> dict[str, Any]:
     for i, card in enumerate(memory_cards):
         graph_nodes.append(
             {
-                "id": f"memory:{card['source']}:{i}",
+                "id": f"memory:{card['source']}:{i}:{card['hash']}",
                 "label": card["title"],
                 "kind": "memory",
                 "memorySource": card["source"],

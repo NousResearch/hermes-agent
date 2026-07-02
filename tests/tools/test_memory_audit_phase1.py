@@ -172,3 +172,36 @@ class TestRenderTruncationAndOversize:
         block = s.format_for_system_prompt("memory")
         assert "truncated" not in block.lower()
         assert "small fact" in block
+
+
+# =========================================================================
+# Fix 5 — bare (unquoted) API keys / tokens are blocked from memory
+# =========================================================================
+
+class TestBareSecretLint:
+    @pytest.mark.parametrize("secret", [
+        "sk-ant-api03-" + "A" * 40,
+        "sk-" + "a" * 30,
+        "ghp_" + "A" * 30,
+        "xoxb-" + "1" * 12 + "-abcdef",
+        "AKIA" + "A" * 16,
+        "AIza" + "a" * 35,
+        "glpat-" + "x" * 20,
+    ])
+    def test_bare_secret_blocked(self, secret):
+        assert scan_for_threats("my key is " + secret, scope="strict"), secret
+
+    def test_bare_secret_blocked_on_memory_write(self):
+        from tools.memory_tool import _scan_memory_content
+        err = _scan_memory_content("remember the token ghp_" + "Z" * 30)
+        assert err and "Blocked" in err
+
+    def test_benign_prose_not_flagged_as_secret(self):
+        # short / non-key uses of the same letters must not trip
+        for text in [
+            "the sdk uses async task queues",
+            "请把结果保存到 skills 目录，命名规范化",
+            "AWS region is us-east-1; role has S3 read access",
+            "用户偏好逐步执行、回复简洁、设计优先。",
+        ]:
+            assert scan_for_threats(text, scope="strict") == [], text

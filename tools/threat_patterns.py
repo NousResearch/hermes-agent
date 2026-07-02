@@ -154,6 +154,19 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (rf'(?:对话历史|對話歷史|聊天记录|聊天記錄|聊天历史|完整上下文|全部上下文|对话记录|對話記錄|系统提示词|系統提示詞|历史消息){_CJK_GAP}(?:发送|發送|上传|上傳|传送|傳送|导出|導出|外发|外發|泄露|洩露|发给|發給)', "context_exfil_cjk", "strict"),
     (r'你现在(?:是|要扮演|要充当|就是)|你現在(?:是|要扮演|要充當|就是)', "role_hijack_cjk", "context"),
     (rf'(?:不受|无视|無視|忽略|绕过|繞過|关闭|關閉|禁用){_CJK_GAP}(?:限制|约束|約束|安全|过滤|過濾|审查|審查|防护|防護)', "remove_filters_cjk", "context"),
+
+    # ── Bare (unquoted) API keys / tokens ────────────────────────────
+    # ``hardcoded_secret`` above only catches quoted ``key="..."`` assignments.
+    # A bare-pasted credential still lands in memory verbatim, gets injected into
+    # every future system prompt, and is sent to the cloud provider each turn.
+    # These vendor prefixes have near-zero false-positive rate in prose, so we
+    # block on them at the strict (memory / skill) scope.
+    (r'\bsk-[A-Za-z0-9_-]{20,}', "bare_secret_sk_key", "strict"),       # OpenAI / Anthropic
+    (r'\bgh[posru]_[A-Za-z0-9]{20,}', "bare_secret_github_token", "strict"),
+    (r'\bxox[baprs]-[A-Za-z0-9-]{10,}', "bare_secret_slack_token", "strict"),
+    (r'\bAKIA[0-9A-Z]{16}\b', "bare_secret_aws_key", "strict"),
+    (r'\bAIza[0-9A-Za-z_-]{35}\b', "bare_secret_google_key", "strict"),
+    (r'\bglpat-[A-Za-z0-9_-]{20,}', "bare_secret_gitlab_token", "strict"),
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.

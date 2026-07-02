@@ -3,10 +3,12 @@
 The journey graph (``agent.learning_graph``) gives every node a stable id:
 
 - **skills** → the skill name (e.g. ``"debugging-hermes-desktop"``)
-- **memories** → ``memory:<source>:<index>`` where ``source`` is ``memory``
-  (``MEMORY.md``) or ``profile`` (``USER.md``) and ``index`` is the node's
-  position in the combined card list (``MEMORY.md`` cards first, then
-  ``USER.md``).
+- **memories** → ``memory:<source>:<index>:<hash>`` where ``source`` is
+  ``memory`` (``MEMORY.md``) or ``profile`` (``USER.md``), ``index`` is the
+  node's position in the combined card list (``MEMORY.md`` cards first, then
+  ``USER.md``), and ``hash`` is an 8-hex content fingerprint used to reject a
+  stale click when the entry at that position changed since the graph render.
+  The ``hash`` segment is optional for backward compatibility with older ids.
 
 This module maps a node id back to its on-disk home and performs the mutation,
 shared by the CLI (``hermes journey delete|edit``), the TUI ``/journey`` overlay
@@ -33,15 +35,24 @@ def _memories_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
-def _parse_memory_id(node_id: str) -> tuple[str, int]:
-    """``memory:<source>:<index>`` → (source, global_index)."""
-    parts = node_id.split(":", 2)
-    if len(parts) != 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
+def _parse_memory_id(node_id: str) -> tuple[str, int, str | None]:
+    """``memory:<source>:<index>[:<hash>]`` → (source, global_index, hash|None).
+
+    Newer graph renders append an 8-hex content fingerprint so a stale click
+    (the entry at that position changed between render and click — e.g. a
+    concurrent background-review write reordered the list) is caught rather than
+    silently mutating the wrong entry. Ids without the hash segment (older
+    clients) parse with ``hash=None`` and fall back to position-only addressing.
+    """
+    parts = node_id.split(":", 3)
+    if len(parts) < 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
         raise ValueError(f"bad memory node id: {node_id!r}")
     try:
-        return parts[1], int(parts[2])
+        gidx = int(parts[2])
     except ValueError as exc:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
+    node_hash = parts[3] if len(parts) == 4 and parts[3] else None
+    return parts[1], gidx, node_hash
 
 
 def _memory_local_index(source: str, global_index: int) -> int:
@@ -62,11 +73,16 @@ def _memory_local_index(source: str, global_index: int) -> int:
     return global_index - sum(1 for c in cards if c.get("source") == "memory")
 
 
-def _locate_memory(source: str, gidx: int) -> tuple[Path, list[str], int]:
+def _locate_memory(source: str, gidx: int, expected_hash: str | None = None) -> tuple[Path, list[str], int]:
     """Resolve a memory card to its file, all §-delimited entries, and local index.
 
     Entries come from ``MemoryStore._read_file`` — the same parser the memory
     tool uses — so journey indices stay aligned with what the graph renders.
+
+    When *expected_hash* is provided (newer node ids carry it), the on-disk
+    entry at the resolved position must still hash to it; otherwise the entry
+    changed since the graph was rendered and we refuse rather than mutate the
+    wrong one.
     """
     from tools.memory_tool import MemoryStore
 
@@ -77,6 +93,11 @@ def _locate_memory(source: str, gidx: int) -> tuple[Path, list[str], int]:
     local = _memory_local_index(source, gidx)
     if not 0 <= local < len(chunks):
         raise ValueError("memory node id is stale — refresh the graph")
+    if expected_hash is not None:
+        from agent.learning_graph import memory_chunk_hash
+
+        if memory_chunk_hash(chunks[local]) != expected_hash:
+            raise ValueError("memory node id is stale — the entry changed; refresh the graph")
     return path, chunks, local
 
 
@@ -94,8 +115,8 @@ def node_detail(node_id: str) -> dict[str, Any]:
 
 def _node_detail(node_id: str) -> dict[str, Any]:
     if parse_node_kind(node_id) == "memory":
-        source, gidx = _parse_memory_id(node_id)
-        _, chunks, local = _locate_memory(source, gidx)
+        source, gidx, node_hash = _parse_memory_id(node_id)
+        _, chunks, local = _locate_memory(source, gidx, node_hash)
         body = chunks[local].strip()
 
         return {"ok": True, "kind": "memory", "id": node_id, "label": body.splitlines()[0][:80], "content": body}
@@ -142,8 +163,8 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    source, gidx = _parse_memory_id(node_id)
-    path, chunks, local = _locate_memory(source, gidx)
+    source, gidx, node_hash = _parse_memory_id(node_id)
+    path, chunks, local = _locate_memory(source, gidx, node_hash)
 
     del chunks[local]
     _write_memory(path, chunks)
@@ -174,11 +195,11 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
 
 
 def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
-    source, gidx = _parse_memory_id(node_id)
+    source, gidx, node_hash = _parse_memory_id(node_id)
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(source, gidx)
+    path, chunks, local = _locate_memory(source, gidx, node_hash)
 
     chunks[local] = body
     _write_memory(path, chunks)

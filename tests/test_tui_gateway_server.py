@@ -4229,6 +4229,37 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     assert resp["result"]["canon"]["/notes"] == "/notes"
 
 
+def test_commands_catalog_categorizes_skill_commands(monkeypatch):
+    from agent import skill_commands
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        skill_commands,
+        "scan_skill_commands",
+        lambda: {
+            "/ship-it": {
+                "name": "ship-it",
+                "description": "Run the release checklist",
+            }
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    skills_cat = next(
+        c for c in resp["result"]["categories"] if c["name"] == "Skills"
+    )
+    skill_pairs = dict(skills_cat["pairs"])
+
+    assert pairs["/ship-it"] == "Run the release checklist"
+    assert skill_pairs["/ship-it"] == "Run the release checklist"
+    assert resp["result"]["canon"]["/ship-it"] == "/ship-it"
+    assert resp["result"]["skill_count"] == 1
+
+
 def test_commands_catalog_includes_tui_mouse_command():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

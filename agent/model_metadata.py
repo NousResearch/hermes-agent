@@ -234,7 +234,6 @@ DEFAULT_CONTEXT_LENGTHS = {
     # future solar-pro* releases at the Pro context size.
     # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
     # Solar Open 2 = 256K.
-    "solar-open2-preview": 262144,  # 256K (longest-first: wins over solar-open2)
     "solar-open2": 262144,  # 256K
     "solar-pro3": 131072,
     "solar-pro": 131072,  # rolling alias → latest Solar Pro (currently pro3)

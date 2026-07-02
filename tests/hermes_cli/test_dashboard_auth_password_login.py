@@ -333,6 +333,23 @@ class TestPasswordLoginRoute:
         )
         assert resp.status_code == 200
 
+    def test_password_only_provider_does_not_auto_sso_to_oauth_route(self, gated_app):
+        # With exactly one OAuth provider, HTML loads may auto-bounce to
+        # /auth/login. A password-only provider has no OAuth start_login flow;
+        # it must render /login's credential form instead of raising a 500.
+        resp = gated_app.get("/sessions", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "/auth/login" not in resp.headers["location"]
+
+    def test_direct_oauth_login_for_password_provider_redirects_to_form(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2Fsessions",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2Fsessions"
+
 
 # ---------------------------------------------------------------------------
 # Transparent refresh — expired access token, live refresh token

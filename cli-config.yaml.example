@@ -943,6 +943,16 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#   # Headless machine-to-machine auth (no browser). Add via:
+#   #   hermes mcp add gateway --url https://gateway.internal/mcp --auth client_credentials
+#   gateway:
+#     url: https://gateway.internal/mcp
+#     auth: oauth
+#     oauth:
+#       grant: client_credentials
+#       client_id: my-client
+#       client_secret: "${MCP_GATEWAY_CLIENT_SECRET}"   # from .env — never inline
+#       scope: profile
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

@@ -4942,9 +4942,13 @@ def resolve_vision_provider_client(
 
         # Fall back through aggregators (uses their dedicated vision model,
         # not the user's main model) when main provider has no client.
+        # Do NOT skip when candidate == main_provider: the main-provider
+        # block above tried the *main chat model* on that provider (which
+        # may be text-only), while _resolve_strict_vision_backend uses the
+        # provider's *dedicated vision model* (e.g. gemini-3-flash-preview
+        # for OpenRouter).  If the main provider was actually resolved we
+        # already returned; reaching here means it was skipped or failed.
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
-            if candidate == main_provider:
-                continue  # already tried above
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)

@@ -3854,6 +3854,56 @@ class TestVisionAutoSkipsKimiCoding:
         })
 
 
+class TestVisionAutoFallbackForTextOnlyAggregatorMain:
+    """When the main provider IS an aggregator (e.g. OpenRouter) and the
+    main model is text-only, the aggregator fallback loop must still try
+    the provider's dedicated vision model (#56995).
+
+    Previously the ``candidate == main_provider`` skip in the aggregator
+    loop prevented this, causing ``resolve_vision_provider_client`` to
+    return None even when OPENROUTER_API_KEY was set.
+    """
+
+    def test_text_only_openrouter_main_falls_through_to_openrouter_vision(
+        self, monkeypatch,
+    ):
+        """OpenRouter main + text-only model → OpenRouter vision model."""
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        fake_or_client = MagicMock(name="openrouter_vision_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "openrouter",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model",
+            lambda: "zhipu/glm-5.2",
+        )
+        # Text-only: _main_model_supports_vision returns False
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda _p, _m: False,
+        )
+
+        def fake_strict(provider, model=None):
+            if provider == "openrouter":
+                return fake_or_client, "google/gemini-3-flash-preview"
+            return None, None
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            fake_strict,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+        assert provider == "openrouter", (
+            "text-only OpenRouter main should still resolve via OpenRouter "
+            "vision backend"
+        )
+        assert client is fake_or_client
+        assert model == "google/gemini-3-flash-preview"
+
+
 class TestCodexAuxiliaryAdapterTimeout:
     def test_forwards_timeout_to_responses_create(self):
         message_item = SimpleNamespace(

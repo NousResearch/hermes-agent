@@ -336,6 +336,13 @@ def finalize_turn(
 
     _response_transformed = False
 
+    # Save the pre-transform response for external memory sync.
+    # transform_llm_output is a display-time hook; the canonical response
+    # (what the model actually said) must reach external memory providers
+    # unmodified — matching what _persist_session and the in-context
+    # messages list already store.  (#57282)
+    _pre_transform_response = final_response
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
@@ -460,9 +467,12 @@ def finalize_turn(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
+    # Pass the pre-transform response so external memory providers store
+    # the raw LLM output, not content appended by transform_llm_output
+    # plugins (citations, disclaimers, etc.).  (#57282)
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
-        final_response=final_response,
+        final_response=_pre_transform_response,
         interrupted=interrupted,
         messages=messages,
     )

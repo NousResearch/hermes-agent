@@ -78,3 +78,20 @@ class TestEnrichMessageWithVision:
         assert "photograph of a dog" in out
         assert "fenced leak" not in out
         assert "<memory-context>" not in out
+
+    def test_system_prompt_forwarded_to_auxiliary_vision(self, gateway_runner):
+        fake_result = json.dumps({
+            "success": True,
+            "analysis": "A monochrome dashboard screenshot.",
+        })
+        mock_vision = AsyncMock(return_value=fake_result)
+        with patch("tools.vision_tools.vision_analyze_tool", new=mock_vision):
+            out = _run(
+                gateway_runner._enrich_message_with_vision(
+                    "caption",
+                    ["/tmp/img.jpg"],
+                    system_prompt="You are a UI critic.",
+                )
+            )
+        assert "dashboard screenshot" in out
+        assert mock_vision.await_args.kwargs["system_prompt"] == "You are a UI critic."

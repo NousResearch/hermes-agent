@@ -9962,6 +9962,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        context_prompt: str = "",
+        channel_prompt: Optional[str] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -10051,9 +10053,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
                         _img_mode, len(image_paths),
                     )
+                    combined_system_prompt = context_prompt or ""
+                    event_channel_prompt = (channel_prompt or "").strip()
+                    if event_channel_prompt:
+                        combined_system_prompt = (
+                            combined_system_prompt + "\n\n" + event_channel_prompt
+                        ).strip()
+                    if self._ephemeral_system_prompt:
+                        combined_system_prompt = (
+                            combined_system_prompt + "\n\n" + self._ephemeral_system_prompt
+                        ).strip()
                     message_text = await self._enrich_message_with_vision(
                         message_text,
                         image_paths,
+                        system_prompt=combined_system_prompt or None,
                     )
 
             if audio_paths:
@@ -10997,6 +11010,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event=event,
             source=source,
             history=history,
+            context_prompt=context_prompt,
+            channel_prompt=event.channel_prompt,
         )
         if message_text is None:
             return
@@ -14406,6 +14421,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         image_paths: List[str],
+        system_prompt: Optional[str] = None,
     ) -> str:
         """
         Auto-analyze user-attached images with the vision tool and prepend
@@ -14439,6 +14455,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
+                    system_prompt=system_prompt,
                 )
                 result = json.loads(result_json)
                 if result.get("success"):
@@ -19073,6 +19090,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
+                        context_prompt=context_prompt,
+                        channel_prompt=getattr(pending_event, "channel_prompt", None),
                     )
                     if next_message is None:
                         return result

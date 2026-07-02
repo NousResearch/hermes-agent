@@ -935,6 +935,7 @@ async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
     model: str = None,
+    system_prompt: str | None = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -952,6 +953,8 @@ async def vision_analyze_tool(
                          Accepts http://, https:// URLs or absolute/relative file paths.
         user_prompt (str): The pre-formatted prompt for the vision model
         model (str): The vision model to use (default: google/gemini-3-flash-preview)
+        system_prompt (str | None): Optional session/system guidance for the
+                                    auxiliary vision model.
     
     Returns:
         str: JSON string containing the analysis results with the following structure:
@@ -970,11 +973,17 @@ async def vision_analyze_tool(
     """
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        system_prompt = str(system_prompt)
+    system_prompt = (system_prompt or "").strip() or None
     debug_call_data = {
         "parameters": {
             "image_url": image_url,
             "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model
+            "model": model,
+            "system_prompt": (
+                system_prompt[:200] + "..." if system_prompt and len(system_prompt) > 200 else system_prompt
+            ),
         },
         "error": None,
         "success": False,
@@ -1064,7 +1073,10 @@ async def vision_analyze_tool(
         comprehensive_prompt = user_prompt
         
         # Prepare the message with base64-encoded image
-        messages = [
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append(
             {
                 "role": "user",
                 "content": [
@@ -1080,7 +1092,7 @@ async def vision_analyze_tool(
                     }
                 ]
             }
-        ]
+        )
         
         logger.info("Processing image with vision model...")
         

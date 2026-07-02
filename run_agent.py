@@ -4784,8 +4784,14 @@ class AIAgent:
         path = Path(tmp.name)
         return str(path), path
 
-    def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
+    def _describe_image_for_anthropic_fallback(
+        self,
+        image_url: str,
+        role: str,
+        system_prompt: str = "",
+    ) -> str:
+        cache_material = f"{image_url or ''}\n\n{system_prompt or ''}"
+        cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
         cached = self._anthropic_image_fallback_cache.get(cache_key)
         if cached:
             return cached
@@ -4810,7 +4816,11 @@ class AIAgent:
             from tools.vision_tools import vision_analyze_tool
 
             result_json = asyncio.run(
-                vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt)
+                vision_analyze_tool(
+                    image_url=vision_source,
+                    user_prompt=analysis_prompt,
+                    system_prompt=system_prompt or None,
+                )
             )
             result = json.loads(result_json) if isinstance(result_json, str) else {}
             description = (result.get("analysis") or "").strip()
@@ -4880,6 +4890,12 @@ class AIAgent:
         if not self._content_has_image_parts(content):
             return content
 
+        effective_system_prompt = self._cached_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            effective_system_prompt = (
+                effective_system_prompt + "\n\n" + self.ephemeral_system_prompt
+            ).strip()
+
         text_parts: List[str] = []
         image_notes: List[str] = []
         for part in content:
@@ -4901,7 +4917,13 @@ class AIAgent:
                 image_data = part.get("image_url", {})
                 image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
                 if image_url:
-                    image_notes.append(self._describe_image_for_anthropic_fallback(image_url, role))
+                    image_notes.append(
+                        self._describe_image_for_anthropic_fallback(
+                            image_url,
+                            role,
+                            system_prompt=effective_system_prompt,
+                        )
+                    )
                 else:
                     image_notes.append("[An image was attached but no image source was available.]")
                 continue

@@ -6268,6 +6268,8 @@ class TestAnthropicImageFallback:
     def test_build_api_kwargs_converts_multimodal_user_image_to_text(self, agent):
         agent.api_mode = "anthropic_messages"
         agent.reasoning_config = None
+        agent._cached_system_prompt = "You are a designer."
+        agent.ephemeral_system_prompt = "Focus on typography."
 
         api_messages = [{
             "role": "user",
@@ -6277,8 +6279,11 @@ class TestAnthropicImageFallback:
             ],
         }]
 
+        mock_vision = AsyncMock(
+            return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."})
+        )
         with (
-            patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
+            patch("tools.vision_tools.vision_analyze_tool", new=mock_vision),
             patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
@@ -6293,6 +6298,9 @@ class TestAnthropicImageFallback:
         assert "A cat sitting on a chair." in transformed[0]["content"]
         assert "Can you see this now?" in transformed[0]["content"]
         assert "vision_analyze with image_url: https://example.com/cat.png" in transformed[0]["content"]
+        assert mock_vision.await_args.kwargs["system_prompt"] == (
+            "You are a designer.\n\nFocus on typography."
+        )
 
     def test_build_api_kwargs_reuses_cached_image_analysis_for_duplicate_images(self, agent):
         agent.api_mode = "anthropic_messages"
@@ -6325,6 +6333,31 @@ class TestAnthropicImageFallback:
             agent._build_api_kwargs(api_messages)
 
         assert mock_vision.await_count == 1
+
+    def test_anthropic_image_cache_includes_system_prompt(self, agent):
+        agent._anthropic_image_fallback_cache = {}
+        mock_vision = AsyncMock(
+            side_effect=[
+                json.dumps({"success": True, "analysis": "A product screenshot."}),
+                json.dumps({"success": True, "analysis": "A UI audit of a product screenshot."}),
+            ]
+        )
+
+        with patch("tools.vision_tools.vision_analyze_tool", new=mock_vision):
+            first = agent._describe_image_for_anthropic_fallback(
+                "https://example.com/ui.png",
+                "user",
+                system_prompt="You are a generic assistant.",
+            )
+            second = agent._describe_image_for_anthropic_fallback(
+                "https://example.com/ui.png",
+                "user",
+                system_prompt="You are a UI auditor.",
+            )
+
+        assert mock_vision.await_count == 2
+        assert "A product screenshot." in first
+        assert "UI audit of a product screenshot." in second
 
 
 class TestFallbackAnthropicProvider:

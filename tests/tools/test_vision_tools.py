@@ -382,6 +382,38 @@ class TestErrorLoggingExcInfo:
 
 class TestVisionConfig:
     @pytest.mark.asyncio
+    async def test_vision_forwards_system_prompt_as_system_message(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Configured image analysis"
+        mock_response.choices = [mock_choice]
+
+        with patch(
+            "tools.vision_tools.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_llm:
+            result = json.loads(
+                await vision_analyze_tool(
+                    str(img),
+                    "describe this",
+                    "test/model",
+                    system_prompt="You are a security analyst.",
+                )
+            )
+
+        assert result["success"] is True
+        sent_messages = mock_llm.await_args.kwargs["messages"]
+        assert sent_messages[0] == {
+            "role": "system",
+            "content": "You are a security analyst.",
+        }
+        assert sent_messages[1]["role"] == "user"
+
+    @pytest.mark.asyncio
     async def test_vision_uses_configured_temperature_and_timeout(self, tmp_path):
         img = tmp_path / "test.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)

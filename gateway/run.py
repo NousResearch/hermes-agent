@@ -17267,6 +17267,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
+                            elif (
+                                source.platform == Platform.MATRIX
+                                and isinstance(raw, tuple)
+                                and await _handle_matrix_progress_tuple(raw)
+                            ):
+                                continue
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -17275,7 +17281,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        if source.platform == Platform.MATRIX:
+                                            progress_msg_id = await _send_or_edit_progress(
+                                                progress_msg_id,
+                                                _pending_text,
+                                                matrix_tool_activity=True,
+                                            )
+                                        else:
+                                            await _edit_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -17293,7 +17306,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            if source.platform == Platform.MATRIX:
+                                progress_msg_id = await _send_or_edit_progress(
+                                    progress_msg_id,
+                                    full_text,
+                                    matrix_tool_activity=True,
+                                )
+                            else:
+                                await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:
                             pass
                     return

@@ -35,7 +35,7 @@ class TestMatrixExecApprovalReactions:
 
     @pytest.mark.asyncio
     async def test_send_exec_approval_stores_requester_user(self, monkeypatch):
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._client = types.SimpleNamespace()
@@ -82,7 +82,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_infinity_reaction_resolves_approval_always(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._user_id = "@bot:example.org"
@@ -107,7 +107,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_reaction_from_non_requester_gets_feedback(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@alice:example.org,@bob:example.org")
-        from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._user_id = "@bot:example.org"
@@ -136,7 +136,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_expired_approval_reaction_does_not_resolve(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@alice:example.org")
-        from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._user_id = "@bot:example.org"
@@ -167,7 +167,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_model_picker_reaction_selects_model(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@alice:example.org")
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._client = types.SimpleNamespace()

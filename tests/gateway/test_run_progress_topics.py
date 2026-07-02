@@ -1103,8 +1103,8 @@ async def test_run_agent_matrix_defaults_to_tool_activity_without_response_strea
     assert adapter.sent
     assert adapter.edits
     all_contents = [call["content"] for call in adapter.sent + adapter.edits]
-    assert any("terminal" in text for text in all_contents)
-    assert any("browser_navigate" in text for text in all_contents)
+    assert any("Running pwd" in text for text in all_contents)
+    assert any("Browsing https://example.com" in text for text in all_contents)
     assert all("done" not in text for text in all_contents)
     matrix_metadata = [
         call.get("metadata") or {}
@@ -1114,6 +1114,10 @@ async def test_run_agent_matrix_defaults_to_tool_activity_without_response_strea
     assert matrix_metadata
     assert any("<details>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
     assert any("<summary>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
+    assert any(
+        "Browsing https://example.com" in meta.get("matrix_formatted_body", "")
+        for meta in matrix_metadata
+    )
 
 
 @pytest.mark.asyncio

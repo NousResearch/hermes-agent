@@ -1140,7 +1140,7 @@ class TestMatrixMarkdownToHtml:
         assert "<td>Apples</td>" in result
 
     def test_matrix_markdown_preserves_details_summary(self):
-        from gateway.platforms.matrix import _sanitize_matrix_html
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
 
         result = _sanitize_matrix_html(
             "<details><summary>Tool activity</summary><pre><code>terminal</code></pre></details>"

@@ -8,7 +8,25 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+@pytest.fixture(autouse=True)
+def _clear_local_ctx_probe_cache():
+    """Reset the in-process local-probe TTL cache around every test.
+
+    _query_local_context_length memoizes probes per (model, base_url) for a
+    short TTL to bound the probe rate on hot paths. In tests that mock httpx
+    to return different responses for the same (model, base_url), a stale
+    cache entry would leak across cases — clear it before and after each test.
+    """
+    import agent.model_metadata as _mm
+
+    _mm._LOCAL_CTX_PROBE_CACHE.clear()
+    yield
+    _mm._LOCAL_CTX_PROBE_CACHE.clear()
 
 
 
@@ -732,3 +750,55 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()
+
+
+class TestLocalContextProbeTTLCache:
+    """The in-process TTL cache collapses back-to-back probes for the same
+    (model, base_url) into one network round-trip (bounds probe rate on hot
+    paths like banner + /model switch + compressor update within one startup),
+    while a different key still probes."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_second_call_within_ttl_does_not_reprobe(self):
+        from agent.model_metadata import _query_local_context_length
+
+        show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
+        models_resp = self._make_resp(404, {})
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.return_value = models_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama") as detect, \
+             patch("httpx.Client", return_value=client_mock):
+            first = _query_local_context_length("m", "http://localhost:11434/v1")
+            second = _query_local_context_length("m", "http://localhost:11434/v1")
+
+        assert first == 32768
+        assert second == 32768
+        # Only the first call hits the network; the second is served from cache.
+        assert detect.call_count == 1
+
+    def test_different_key_still_probes(self):
+        from agent.model_metadata import _query_local_context_length
+
+        show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
+        models_resp = self._make_resp(404, {})
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.return_value = models_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama") as detect, \
+             patch("httpx.Client", return_value=client_mock):
+            _query_local_context_length("m1", "http://localhost:11434/v1")
+            _query_local_context_length("m2", "http://localhost:11434/v1")
+
+        assert detect.call_count == 2

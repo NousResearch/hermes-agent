@@ -184,6 +184,15 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# Short-lived in-process cache for local-server context probes. Bounds the
+# probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +
+# pre-defaults step 7) resolve the same model several times during one startup
+# (banner, /model switch, compressor update_model). Keyed by (model, base_url);
+# values are (result, monotonic_timestamp). Not persisted to disk — cross-
+# restart freshness is handled by the reconcile logic re-probing after expiry.
+_LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
+_LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -1068,8 +1077,8 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
-        r'max_model_len\s+(\d{4,})',  # vLLM: "exceeds the max_model_len 32768"
-        r'maximum model length\s+(\d{4,})',  # vLLM alt: "exceeds maximum model length 131072"
+        r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
+        r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
@@ -1515,6 +1524,33 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
 
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+    """Query a local server for the model's context length (short-TTL cached).
+
+    The live-probe paths added for local endpoints (reconcile-on-hit and the
+    pre-defaults step-7 probe) can fire this function several times in quick
+    succession during one startup — banner display, ``/model`` switch,
+    compressor ``update_model`` all resolve the same model. Each raw probe
+    issues synchronous ``detect_local_server_type`` + query HTTP calls (bounded
+    by the 3s httpx timeout), so an unreachable/slow local server would pay
+    that cost repeatedly. A tiny in-process TTL cache collapses back-to-back
+    probes for the same (model, base_url) into one network round-trip without
+    persisting anything to disk (freshness across restarts is still handled by
+    the reconcile logic, which probes again once the TTL expires).
+    """
+    import time as _time
+
+    cache_key = (_strip_provider_prefix(model), base_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LOCAL_CTX_PROBE_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LOCAL_CTX_PROBE_TTL_SECONDS:
+        return cached[0]
+
+    result = _query_local_context_length_uncached(model, base_url, api_key=api_key)
+    _LOCAL_CTX_PROBE_CACHE[cache_key] = (result, now)
+    return result
+
+
+def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 

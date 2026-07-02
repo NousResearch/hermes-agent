@@ -1722,8 +1722,10 @@ def init_agent(
         )
 
     # Nous Hermes 3/4 are chat models, not tool-call-tuned — surface the
-    # warning on every platform (CLI already did this; gateway/TUI did not).
-    if not agent.quiet_mode:
+    # warning on gateway/TUI. The interactive CLI already warns via
+    # cli.py show_banner() (richer output + /model switch hint), so skip the
+    # CLI platform here to avoid emitting the warning twice per startup.
+    if not agent.quiet_mode and (agent.platform or "cli") != "cli":
         try:
             from hermes_cli.model_switch import _check_hermes_model_warning
 

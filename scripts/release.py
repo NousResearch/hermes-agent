@@ -45,6 +45,8 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "jvsantos.cunha@gmail.com": "plcunha",  # PR #55300 salvage (gateway: record child gateway peer metadata after a compression session-id rotation and repoint stale sessions.json compression-parent entries to the recovered live child; consolidated in the compression-routing-integrity salvage)
+    "jakepresent1@gmail.com": "jakepresent",  # PR #55721 salvage (gateway: identity-guard stale in-flight compression splits — a late run may publish its compressed child only if its run generation is still current and the session key still points at the run's original parent, so an old run can't overwrite a newer /new or moved binding)
     "zhangml@tech.icbc.com.cn": "zmlgit",  # PR #54872 salvage (multiplex-profile kanban: route task notifications via the owning profile's adapter + wake the creator agent with a synthetic internal MessageEvent on terminal events)
     "1079826437@qq.com": "nankingjing",  # PR #56404 salvage (gateway: while a state.db compression lock is held for the session, demote busy_input_mode 'interrupt' to 'queue' so a rapid message burst can't interrupt and fork orphaned compression siblings off a stale parent; #56391)
     "ud@arubangles.com": "udatny",  # PR #29433 salvage (subdirectory_hints: catch RuntimeError from Path.expanduser()/Path.home() so a literal ~ in tool-call args — e.g. LLM "~500-700" or ~unknownuser — can't escape the hint walker and crash the conversation loop)

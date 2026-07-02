@@ -151,3 +151,39 @@ env mapping (OAuth vs API key vs base URL), all three modes, error handling,
 and — critically — that the adapter's return value normalizes correctly through
 the real `AnthropicTransport`. The tests use a fake SDK and never spawn the
 `claude` CLI.
+
+## SDK-surface coverage (claude-agent-sdk 0.2.110)
+
+Every `ClaudeAgentOptions` field was reviewed against the Agent SDK docs
+(code.claude.com/docs/en/agent-sdk). Coverage:
+
+**Wired by the adapter** — `model`, `env` (auth), `setting_sources=[]`,
+`system_prompt` (custom / preset+append), `tools`, `allowed_tools`,
+`disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd`,
+`mcp_servers` + `strict_mcp_config` (hybrid), `hooks` (PreToolUse guardrail),
+`resume` (gated to the same cwd — the CLI keys transcripts by directory),
+`cwd` (resolved via `agent.runtime_cwd`, all modes), `include_partial_messages`
+(stream bridge → live text/thinking/tool progress), `thinking` + `effort`
+(derived from Hermes' reasoning settings; reasoning off → `{"type":
+"disabled"}`).
+
+**Config passthroughs** (`model.claude_agent_sdk.*`, forwarded verbatim) —
+`cli_path`, `betas`, `fallback_model`, `sandbox`, `add_dirs`, `extra_args`.
+
+**Interrupts** — one-shot `query()` has no native interrupt (that needs
+`ClaudeSDKClient` + streaming input); the adapter polls Hermes' `/stop` flag
+between SDK messages and raises `InterruptedError`, which closes the generator
+and tears down the CLI transport.
+
+**Deliberately not used** (Hermes owns the equivalent, or N/A):
+`agents`/`skills`/`plugins` (Hermes has its own subagents/skills),
+`output_format` (structured outputs — Hermes consumes plain text),
+`enable_file_checkpointing` (Hermes has its own checkpoint manager),
+`can_use_tool` (cannot execute-and-return a result — documented SDK
+limitation; the PreToolUse hook covers deny/modify), `fork_session`,
+`session_store`/`session_store_flush`, `task_budget`, `user`,
+`include_hook_events`, `continue_conversation` (`resume` is used instead),
+`session_id` (the SDK-generated id is captured from `ResultMessage`),
+`max_thinking_tokens` (deprecated in favor of `thinking`),
+`permission_prompt_tool_name`, `debug_stderr`/`stderr`, `max_buffer_size`,
+`load_timeout_ms` (defaults).

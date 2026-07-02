@@ -629,3 +629,63 @@ def test_thinking_disabled_when_reasoning_off(monkeypatch):
     # Reasoning off in Hermes → explicitly disabled at the SDK, not left to
     # the CLI default (adaptive).
     assert capture["options"].thinking == {"type": "disabled"}
+
+
+# ---------------------------------------------------------------------------
+# Interrupt + option passthroughs + strict MCP (full SDK-surface coverage)
+# ---------------------------------------------------------------------------
+def test_interrupt_stops_sdk_turn(monkeypatch):
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("never returned")],
+                          result_kwargs={"result": "never"},
+                          stream_events=_stream_events())
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(_interrupt_requested=True)
+
+    with pytest.raises(InterruptedError):
+        adp.create_claude_agent_message(agent, _api_kwargs())
+
+
+def test_advanced_option_passthroughs(monkeypatch):
+    import hermes_cli.config as cfg
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda: {"model": {"claude_agent_sdk": {
+        "mode": "delegate",
+        "cli_path": "/opt/claude/bin/claude",
+        "betas": ["context-1m-2025-08-07"],
+        "fallback_model": "claude-sonnet-4-6",
+        "add_dirs": ["/data"],
+        "extra_args": {"verbose": None},
+    }}})
+    settings = adp.resolve_claude_agent_sdk_settings("anthropic")
+    assert settings["cli_path"] == "/opt/claude/bin/claude"
+    assert settings["betas"] == ["context-1m-2025-08-07"]
+
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(_claude_agent_sdk_mode="delegate", _claude_agent_sdk_settings=settings)
+    adp.create_claude_agent_message(agent, _api_kwargs())
+
+    opts = capture["options"]
+    assert opts.cli_path == "/opt/claude/bin/claude"
+    assert opts.betas == ["context-1m-2025-08-07"]
+    assert opts.fallback_model == "claude-sonnet-4-6"
+    assert opts.add_dirs == ["/data"]
+    assert opts.extra_args == {"verbose": None}
+
+
+def test_hybrid_pins_mcp_surface(monkeypatch):
+    capture = {}
+    fake = _make_fake_sdk(assistant_blocks=[_FakeTextBlock("ok")],
+                          result_kwargs={"result": "ok"}, capture=capture)
+    monkeypatch.setattr(adp, "_get_claude_agent_sdk", lambda: fake)
+    agent = _agent(
+        _claude_agent_sdk_mode="hybrid",
+        _claude_agent_sdk_settings={"mode": "hybrid", "permission_mode": "bypassPermissions",
+                                    "max_turns": 24, "allowed_tools": []},
+        tools=[{"type": "function", "function": {"name": "terminal", "description": "t",
+                                                 "parameters": {"type": "object", "properties": {}}}}],
+    )
+    adp.create_claude_agent_message(agent, _api_kwargs())
+    # No user/project MCP config may add tools behind Hermes' back.
+    assert capture["options"].strict_mcp_config is True

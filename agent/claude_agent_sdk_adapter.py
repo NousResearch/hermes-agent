@@ -197,6 +197,13 @@ def resolve_claude_agent_sdk_settings(provider: Optional[str]) -> Optional[Dict[
         "system_prompt_preset": _get("system_prompt_preset", None),
         "append_system_prompt": _get("append_system_prompt", None),
     }
+    # Advanced ClaudeAgentOptions passthroughs — forwarded verbatim when set
+    # so power users reach the rest of the SDK surface without new plumbing.
+    # (_build_options drops any key the installed SDK doesn't know.)
+    for passthrough in ("cli_path", "betas", "fallback_model", "sandbox", "add_dirs", "extra_args"):
+        val = opts.get(passthrough)
+        if val is not None:
+            settings[passthrough] = val
     return settings
 
 
@@ -644,8 +651,20 @@ class _StreamBridge:
             logger.debug("claude_agent_sdk: tool-complete callback raised", exc_info=True)
 
 
-async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBridge] = None) -> Dict[str, Any]:
-    """Run ``query(prompt, options)`` and collect text, usage and session id."""
+async def _collect_query(
+    sdk,
+    prompt: str,
+    options,
+    bridge: Optional[_StreamBridge] = None,
+    interrupt_check=None,
+) -> Dict[str, Any]:
+    """Run ``query(prompt, options)`` and collect text, usage and session id.
+
+    ``interrupt_check`` polls Hermes' /stop flag between SDK messages: one-shot
+    ``query()`` has no native interrupt (that needs ``ClaudeSDKClient`` +
+    streaming input), but raising out of the async-for closes the generator,
+    which tears down the CLI transport — so a stop lands within one message.
+    """
     AssistantMessage = sdk.AssistantMessage
     ResultMessage = sdk.ResultMessage
     TextBlock = getattr(sdk, "TextBlock", None)
@@ -666,6 +685,8 @@ async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBrid
     errors: List[str] = []
 
     async for message in sdk.query(prompt=prompt, options=options):
+        if interrupt_check is not None and interrupt_check():
+            raise InterruptedError("Agent interrupted during Claude Agent SDK turn")
         if StreamEvent is not None and isinstance(message, StreamEvent):
             # Live progress only — never part of the collected result. Skip
             # subagent streams (parent_tool_use_id set) so their text doesn't
@@ -841,6 +862,9 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
         hybrid_tools = getattr(agent, "tools", None) or tools
         server, allowed = _build_hybrid_mcp_server(sdk, agent, hybrid_tools)
         opt_kwargs["mcp_servers"] = {_HYBRID_SERVER: server}
+        # Pin the MCP surface to exactly this server — no user/project MCP
+        # config can add tools behind Hermes' back.
+        opt_kwargs["strict_mcp_config"] = True
         opt_kwargs["allowed_tools"] = allowed
         opt_kwargs["tools"] = []          # Hermes tools only; strip built-ins
         opt_kwargs["permission_mode"] = settings.get("permission_mode", "bypassPermissions")
@@ -855,6 +879,12 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
     # subtype error_max_budget_usd when exceeded.
     if mode in ("delegate", "hybrid") and settings.get("max_budget_usd") is not None:
         opt_kwargs["max_budget_usd"] = settings["max_budget_usd"]
+
+    # Advanced passthroughs from config (cli_path, betas, fallback_model,
+    # sandbox, add_dirs, extra_args) — see resolve_claude_agent_sdk_settings.
+    for passthrough in ("cli_path", "betas", "fallback_model", "sandbox", "add_dirs", "extra_args"):
+        if settings.get(passthrough) is not None:
+            opt_kwargs[passthrough] = settings[passthrough]
 
     # Live progress: when a display/TTS/tool-progress consumer is attached,
     # ask the SDK for raw stream events so the user sees text/thinking/tool
@@ -873,8 +903,19 @@ def create_claude_agent_message(agent, api_kwargs: dict) -> _SDKMessage:
 
     try:
         collected = _run_async(
-            _collect_query(sdk, prompt, options, bridge=bridge if bridge.active else None)
+            _collect_query(
+                sdk,
+                prompt,
+                options,
+                bridge=bridge if bridge.active else None,
+                # One-shot query() has no native interrupt; polling Hermes'
+                # /stop flag between SDK messages and raising closes the
+                # generator, which tears down the CLI transport.
+                interrupt_check=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+            )
         )
+    except InterruptedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         _friendly = _classify_sdk_error(exc)
         if _friendly:

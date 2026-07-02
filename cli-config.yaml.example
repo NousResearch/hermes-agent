@@ -114,6 +114,14 @@ model:
   #   max_turns: 24                        # delegate/hybrid
   #   max_budget_usd: 5.0                  # delegate/hybrid spend cap (optional)
   #   disallowed_tools: []                 # deny-list (optional)
+  #   # Advanced ClaudeAgentOptions passthroughs (all optional; unknown keys
+  #   # are dropped automatically on older SDK versions):
+  #   cli_path: /usr/local/bin/claude      # your own claude install (default: SDK-bundled CLI)
+  #   betas: []                            # Anthropic beta headers, e.g. [context-1m-2025-08-07]
+  #   fallback_model: claude-sonnet-4-6    # SDK-side fallback when the model is overloaded
+  #   sandbox: {}                          # SDK sandbox config for delegate-mode Bash
+  #   add_dirs: []                         # extra dirs the SDK's tools may access
+  #   extra_args: {}                       # raw claude CLI flags (escape hatch)
   # Shorthand:  claude_agent_sdk: inference
 
 # Named provider overrides (optional)

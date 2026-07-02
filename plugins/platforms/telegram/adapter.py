@@ -6240,10 +6240,28 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
+        """Remove ``@botname`` trigger from inbound text.
+
+        In DMs Telegram sends ``/resume 2`` — nothing to clean.
+        In groups, the bot command menu auto-fills ``/resume@botname 2``.
+        The ``\b`` word-boundary anchors to the end of ``botname``; we must
+        NOT consume the trailing space after ``@botname`` because that space
+        separates the command name from its arguments.
+
+        Before fix: ``/resume@botname 2`` → ``/resume2`` (space eaten)
+        After fix:  ``/resume@botname 2`` → ``/resume 2`` (space preserved)
+
+        Leading spaces (e.g. ``@botname /resume 2``) are still stripped by
+        the ``.strip()`` call — ``@botname`` is replaced, leaving `` /resume
+        2``, which ``.strip()`` normalises to ``/resume 2``.
+        """
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
         username = re.escape(self._bot.username)
-        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+        # NOTE: do NOT include \s* here — trailing space separates command
+        # name from args (``/resume 2``).  For ``@botname /resume 2`` the
+        # leading space survives the sub and is removed by .strip().
+        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*", "", text).strip()
         return cleaned or text
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:

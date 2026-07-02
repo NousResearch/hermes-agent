@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
 from gateway.session import SessionSource
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(
@@ -148,6 +149,60 @@ def _bot_command_entity(text, command):
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
+# ------------------------------------------------------------------
+# _clean_bot_trigger_text regression tests (GH: slash args eaten in groups)
+# ------------------------------------------------------------------
+
+
+def test_clean_bot_trigger_text_drops_at_mention():
+    """Verify ``@botname`` prefix is stripped from command text."""
+    adapter = _make_adapter(bot_username="mybot")
+    assert adapter._clean_bot_trigger_text("@mybot /resume 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_drops_at_mention_followed_by_comma():
+    """Variation with a comma between mention and command."""
+    adapter = _make_adapter(bot_username="mybot")
+    assert adapter._clean_bot_trigger_text("@mybot, /resume 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_preserves_trailing_space_after_mention():
+    """Key regression test: the space between command and args must NOT be eaten.
+
+    In groups, Telegram command menu auto-fills ``/resume@botname 2``.
+    The old regex ``@botname\\s*`` would eat the space, turning it into
+    ``/resume2`` — which Telegram then reports as "Unknown command /resume2".
+    """
+    adapter = _make_adapter(bot_username="hermes_bot")
+    # When text has NO @botname (DM path), nothing should change.
+    assert adapter._clean_bot_trigger_text("/resume 2") == "/resume 2"
+    # When @botname is present (group path), only @botname is removed,
+    # not the space that follows it.
+    assert adapter._clean_bot_trigger_text("/resume@hermes_bot 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_preserves_args_with_multiple_words():
+    """Arguments with spaces must survive intact."""
+    adapter = _make_adapter(bot_username="bot")
+    assert adapter._clean_bot_trigger_text("/new my topic name") == "/new my topic name"
+    assert adapter._clean_bot_trigger_text("@bot /new my topic name") == "/new my topic name"
+
+
+def test_clean_bot_trigger_text_none_input():
+    adapter = _make_adapter(bot_username="bot")
+    assert adapter._clean_bot_trigger_text(None) is None
+    assert adapter._clean_bot_trigger_text("") == ""
+
+
+def test_clean_bot_trigger_text_no_bot_username():
+    """When bot has no username (edge case), text passes through unchanged."""
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(enabled=True, token="***", extra={})
+    adapter._bot = SimpleNamespace(id=999, username=None)
+    assert adapter._clean_bot_trigger_text("/resume 2") == "/resume 2"
 
 
 def test_group_messages_can_be_opened_via_config():

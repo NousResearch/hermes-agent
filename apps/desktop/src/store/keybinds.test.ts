@@ -19,20 +19,26 @@ afterEach(() => {
 })
 
 describe('$comboIndex — session slots survive alongside profile slots', () => {
-  it('off macOS: every session slot resolves to its own action, not a profile', async () => {
+  it('off macOS: every session slot resolves via Ctrl+Shift+N and stays input-reachable', async () => {
     // Off macOS a real Ctrl+N keypress is emitted as `mod+N` and profiles own
     // ⌘1…⌘9, so the two families MUST occupy distinct keys — otherwise the
     // first-wins `$comboIndex` guard silently drops the (later) session slots.
     const { $comboIndex } = await loadStore('Win32')
+    const { comboAllowedInInput } = await import('@/lib/keybinds/combo')
     const index = $comboIndex.get()
 
-    const values = new Set(index.values())
-
     for (let slot = 1; slot <= 9; slot += 1) {
-      // The session slot must be reachable in the index. Before the fix its
-      // default `ctrl+N` folded to `mod+N`, collided with `profile.switch.N`
-      // (indexed first), and was dropped — so it was absent entirely.
-      expect(values.has(`session.slot.${slot}`)).toBe(true)
+      // The session slot must resolve on its EXACT default chord — Ctrl+Shift+N,
+      // canonicalized to `mod+shift+N` off macOS. Asserting the exact chord (not
+      // just presence) catches a regression to an awkward or unreachable key.
+      const chord = `mod+shift+${slot}`
+      expect(index.get(chord)).toBe(`session.slot.${slot}`)
+
+      // The chord MUST be input-reachable: `use-keybinds` drops any combo that
+      // fails `comboAllowedInInput` while a text surface is focused (the
+      // dominant context). A bare `alt+N` default would fail this — which is the
+      // whole reason the off-mac chord is `mod`-prefixed.
+      expect(comboAllowedInInput(chord)).toBe(true)
 
       // The profile slot must still resolve via ⌘/Ctrl+N, unchanged.
       expect(index.get(`mod+${slot}`)).toBe(`profile.switch.${slot}`)

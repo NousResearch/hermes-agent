@@ -7023,6 +7023,35 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _log_unprocessed_group_message(
+        self,
+        msg: Message,
+        message_type: MessageType,
+        *,
+        reason: str = "unmentioned_group_message",
+    ) -> None:
+        """Debug-log a Telegram group update dropped by trigger gating.
+
+        Keep this DEBUG-only and metadata-only: operators can diagnose why a
+        group attachment/message vanished without logging user text, captions,
+        file names, media URLs, or attachment contents.
+        """
+        chat = getattr(msg, "chat", None)
+        sender = getattr(msg, "from_user", None)
+        logger.debug(
+            "[Telegram] Telegram group message dropped: reason=%s type=%s "
+            "chat_id=%s chat_type=%s chat_title=%r sender_id=%s "
+            "sender_name=%r message_id=%s",
+            reason,
+            getattr(message_type, "value", str(message_type)),
+            getattr(chat, "id", None),
+            getattr(chat, "type", None),
+            getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            getattr(sender, "id", None),
+            getattr(sender, "full_name", None) or getattr(sender, "first_name", None),
+            getattr(msg, "message_id", None),
+        )
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7047,6 +7076,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            else:
+                self._log_unprocessed_group_message(msg, MessageType.TEXT)
             return
         await self._ensure_forum_commands(update.message)
 
@@ -7093,6 +7124,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            else:
+                self._log_unprocessed_group_message(msg, MessageType.LOCATION)
             return
 
         venue = getattr(msg, "venue", None)
@@ -7294,9 +7327,9 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         if not self._should_process_message(update.message):
-            if self._should_observe_unmentioned_group_message(update.message):
-                _m = update.message
-                _observe_type = self._media_message_type(_m)
+            _m = update.message
+            _observe_type = self._media_message_type(_m)
+            if self._should_observe_unmentioned_group_message(_m):
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
@@ -7304,6 +7337,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
+            else:
+                self._log_unprocessed_group_message(_m, _observe_type)
             return
 
         msg = update.message

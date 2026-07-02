@@ -130,6 +130,28 @@ def _dm_message(text="hello", *, from_user_id=111):
     )
 
 
+def _location_group_message():
+    msg = _group_message("")
+    msg.text = None
+    msg.location = SimpleNamespace(latitude=50.9, longitude=6.2)
+    msg.venue = None
+    return msg
+
+
+def _document_group_message():
+    msg = _group_message("")
+    msg.text = None
+    msg.caption = None
+    msg.sticker = None
+    msg.photo = []
+    msg.video = None
+    msg.audio = None
+    msg.voice = None
+    msg.document = SimpleNamespace(file_name="scan.pdf", mime_type="application/pdf", file_size=1234)
+    msg.media_group_id = None
+    return msg
+
+
 def _mention_entity(text, mention="@hermes_bot"):
     offset = text.index(mention)
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
@@ -187,6 +209,110 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
         assert store.sources[0].chat_type == "group"
         assert store.sources[0].user_id is None
         assert store.sources[0].user_name is None
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_group_text_drop_is_debug_logged(caplog):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=False,
+        )
+        update = SimpleNamespace(
+            update_id=1002,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+
+        with caplog.at_level("DEBUG"):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert any(
+            "Telegram group message dropped" in record.message
+            and "reason=unmentioned_group_message" in record.message
+            and "type=text" in record.message
+            for record in caplog.records
+        )
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_group_location_drop_is_debug_logged(caplog):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=False,
+        )
+        update = SimpleNamespace(
+            update_id=1004,
+            message=_location_group_message(),
+            effective_message=None,
+        )
+
+        with caplog.at_level("DEBUG"):
+            await adapter._handle_location_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert any(
+            "Telegram group message dropped" in record.message
+            and "reason=unmentioned_group_message" in record.message
+            and "type=location" in record.message
+            for record in caplog.records
+        )
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_group_media_drop_is_debug_logged(caplog):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=False,
+        )
+        update = SimpleNamespace(update_id=1005, message=_document_group_message())
+
+        with caplog.at_level("DEBUG"):
+            await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert any(
+            "Telegram group message dropped" in record.message
+            and "reason=unmentioned_group_message" in record.message
+            and "type=document" in record.message
+            for record in caplog.records
+        )
+
+    asyncio.run(_run())
+
+
+def test_observed_unmentioned_group_message_does_not_emit_drop_log(caplog):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        adapter._session_store = _FakeSessionStore()
+        update = SimpleNamespace(
+            update_id=1006,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+
+        with caplog.at_level("DEBUG"):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert not any("Telegram group message dropped" in record.message for record in caplog.records)
 
     asyncio.run(_run())
 

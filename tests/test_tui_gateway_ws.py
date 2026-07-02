@@ -1,10 +1,33 @@
 import asyncio
+import importlib
+import json
 import threading
 import time
 
 from hermes_cli import mcp_startup
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+
+
+def test_ws_write_timeout_env_override(monkeypatch):
+    """Operators can tune WS thread wait budget without patching code."""
+    monkeypatch.setenv("HERMES_WS_WRITE_TIMEOUT", "0.25")
+    reloaded = importlib.reload(ws_mod)
+    try:
+        assert reloaded._WS_WRITE_TIMEOUT_S == 0.25
+    finally:
+        monkeypatch.delenv("HERMES_WS_WRITE_TIMEOUT", raising=False)
+        importlib.reload(ws_mod)
+
+
+def test_ws_write_timeout_invalid_env_falls_back_safely(monkeypatch):
+    monkeypatch.setenv("HERMES_WS_WRITE_TIMEOUT", "not-a-float")
+    reloaded = importlib.reload(ws_mod)
+    try:
+        assert reloaded._WS_WRITE_TIMEOUT_S == 3.0
+    finally:
+        monkeypatch.delenv("HERMES_WS_WRITE_TIMEOUT", raising=False)
+        importlib.reload(ws_mod)
 
 
 def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
@@ -157,6 +180,64 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         while len(sent) < 2 and time.time() < deadline:
             time.sleep(0.01)
         assert len(sent) == 2
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_ws_streaming_frames_are_coalesced(monkeypatch):
+    """High-frequency token frames are buffered and flushed as one timed batch."""
+    monkeypatch.setattr(ws_mod, "_TOKEN_COALESCE_S", 0.02)
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="coalesce-test")
+        assert transport.write({"params": {"type": "message.delta", "text": "a"}}) is True
+        assert transport.write({"params": {"type": "message.delta", "text": "b"}}) is True
+
+        deadline = time.time() + 2
+        while len(sent) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert [json.loads(line)["params"]["text"] for line in sent] == ["a", "b"]
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_ws_non_streaming_frame_flushes_pending_tokens_in_order(monkeypatch):
+    """A control/RPC frame drains buffered token frames before itself."""
+    monkeypatch.setattr(ws_mod, "_TOKEN_COALESCE_S", 1.0)
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="order-test")
+        assert transport.write({"params": {"type": "message.delta", "text": "token"}}) is True
+        assert transport.write({"id": "complete", "result": {"ok": True}}) is True
+
+        frames = [json.loads(line) for line in sent]
+        assert [frame.get("id") or frame.get("params", {}).get("text") for frame in frames] == [
+            "token",
+            "complete",
+        ]
         assert transport._closed is False
     finally:
         loop.call_soon_threadsafe(loop.stop)

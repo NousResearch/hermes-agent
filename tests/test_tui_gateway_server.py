@@ -16,6 +16,49 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_slash_worker_popen_uses_utf8_replace_for_windows_subprocess_output(monkeypatch, tmp_path):
+    """Windows non-UTF-8 console locales must not crash the slash-worker pipe.
+
+    Python's subprocess reader thread uses the Popen text stream encoding. If
+    it falls back to the system ACP (cp949/gbk/etc.), UTF-8 bytes from child
+    Hermes processes can raise UnicodeDecodeError in _readerthread and break
+    the TUI/Desktop gateway. Pin the slash worker pipe to utf-8 with replacement.
+    """
+    calls = []
+
+    class FakeStdin:
+        def write(self, _text):
+            return None
+
+        def flush(self):
+            return None
+
+    class FakeProc:
+        stdin = FakeStdin()
+        stdout = []
+        stderr = []
+
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return FakeProc()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server, "hermes_subprocess_env", lambda inherit_credentials=False: {})
+
+    worker = server._SlashWorker("encoding-session", "")
+
+    assert calls
+    kwargs = calls[0]["kwargs"]
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    worker._closed = True
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

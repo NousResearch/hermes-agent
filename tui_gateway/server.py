@@ -212,6 +212,12 @@ _LONG_HANDLERS = frozenset(
         "projects.for_cwd",
         "projects.tree",
         "projects.project_sessions",
+        # Desktop readiness RPCs are polled during connect and while evaluating
+        # setup state. They read config/auth/provider state and can block for
+        # seconds under GIL pressure; keep them off the WS read loop so a slow
+        # readiness probe cannot look like a gateway/backend disconnect.
+        "setup.runtime_check",
+        "setup.status",
         "session.branch",
         "session.compress",
         "session.list",
@@ -222,17 +228,68 @@ _LONG_HANDLERS = frozenset(
     }
 )
 
+# Keep operator/control-plane RPCs off the heavy worker pool.  The Desktop and
+# web surfaces poll readiness/process/session state while agent turns, shell
+# commands, pet generation, and slash commands can occupy every generic worker.
+# If those control probes share the same saturated pool, a healthy backend looks
+# disconnected or "needs setup" even though only the heavy lane is backed up.
+#
+# This set is deliberately small and removable: methods only belong here when
+# they unblock manager-visible control surfaces (readiness, session/process
+# status, cancellation/approval).  Heavy work remains in _LONG_HANDLERS and is
+# routed to the generic _pool below.
+_CONTROL_PLANE_HANDLERS = frozenset(
+    {
+        "approval.respond",
+        "clarify.respond",
+        "process.kill",
+        "process.list",
+        "process.stop",
+        "secret.respond",
+        "session.active_list",
+        "session.interrupt",
+        "session.list",
+        "session.status",
+        "setup.runtime_check",
+        "setup.status",
+        "sudo.respond",
+        "terminal.read.respond",
+    }
+)
+
+try:
+    _rpc_control_pool_workers = max(
+        1, int(os.environ.get("HERMES_TUI_RPC_CONTROL_POOL_WORKERS") or "2")
+    )
+except (ValueError, TypeError):
+    _rpc_control_pool_workers = 2
+
 try:
     _rpc_pool_workers = max(
         2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
+_control_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_rpc_control_pool_workers,
+    thread_name_prefix="tui-rpc-control",
+)
 _pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_rpc_pool_workers,
     thread_name_prefix="tui-rpc",
 )
+atexit.register(lambda: _control_pool.shutdown(wait=False, cancel_futures=True))
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
+
+
+def _rpc_pool_for_method(method: str) -> concurrent.futures.ThreadPoolExecutor:
+    """Return the executor for a long RPC method.
+
+    Control-plane methods get a reserved executor so heavy/agent work can
+    saturate the generic pool without starving readiness, status, cancellation,
+    and approval messages.
+    """
+    return _control_pool if method in _CONTROL_PLANE_HANDLERS else _pool
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
@@ -298,6 +355,8 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             # slash_worker runs the Hermes agent → needs provider credentials.
@@ -1139,7 +1198,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             if resp is not None:
                 t.write(resp)
 
-        _pool.submit(lambda: ctx.run(run))
+        _rpc_pool_for_method(method).submit(lambda: ctx.run(run))
 
         return None
     finally:
@@ -6295,6 +6354,25 @@ def _clone_pet_payload(payload: dict) -> dict:
     return out
 
 
+# Heavy sprite fields worth ~3.2MB on the wire — omitted from ``pet.info`` when
+# the client already holds the current revision (issue #54730 / PR #56602).
+# Everything else (geometry, row counts, revision) is cheap and always sent so
+# the caller can confirm nothing changed without re-decoding the sheet.
+_PET_HEAVY_FIELDS = ("spritesheetBase64", "mime")
+
+
+def _strip_pet_sheet_bytes(payload: dict) -> dict:
+    """Return *payload* without the heavy spritesheet bytes.
+
+    The kept ``spritesheetRevision`` lets the client verify its cached sheet is
+    still current; ``spritesheetOmitted`` flags that the bytes were withheld on
+    purpose (not a decode failure) so the caller keeps its existing base64.
+    """
+    out = {k: v for k, v in payload.items() if k not in _PET_HEAVY_FIELDS}
+    out["spritesheetOmitted"] = True
+    return out
+
+
 def _pet_row_frame_counts(spritesheet) -> dict:
     """Real frame count per concrete spritesheet row name."""
     try:
@@ -6435,6 +6513,14 @@ def _(rid, params: dict) -> dict:
     Agent-independent (reads config + disk), so it works on any session and
     before the agent finishes building. Fail-open: returns ``enabled=False``
     on any error rather than erroring the surface.
+
+    Revision gate (issue #54730 / PR #56602): the ~3.2MB
+    ``spritesheetBase64`` is the same static asset on every poll. When the
+    caller passes ``knownRevision`` matching the current sheet, the bytes are
+    omitted (``spritesheetOmitted=True``) and only the cheap geometry + revision
+    are returned, so frequent polls stop re-sending the sheet and stalling the
+    WS write loop. A caller that omits ``knownRevision`` (older clients) still
+    gets the full payload.
     """
     try:
         enabled, pet, scale = _pet_active_selection()
@@ -6442,7 +6528,11 @@ def _(rid, params: dict) -> dict:
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+        payload = _pet_sprite_payload(pet, scale=scale)
+        known = params.get("knownRevision") if isinstance(params, dict) else None
+        if known and known == payload.get("spritesheetRevision"):
+            payload = _strip_pet_sheet_bytes(payload)
+        return _ok(rid, {"enabled": True, **payload})
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
         return _ok(rid, {"enabled": False})

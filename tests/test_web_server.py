@@ -6,6 +6,7 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import types
 
 import uvicorn
 
@@ -69,23 +70,56 @@ def _stub_uvicorn(monkeypatch):
     return captured
 
 
-def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
-    """WS ping must be configured so half-open connections (reverse-proxy 524,
-    dropped tunnels) raise WebSocketDisconnect into the reaping path (#32377).
+def test_start_server_disables_ws_ping_for_loopback_by_default(monkeypatch):
+    """Local Desktop/Web clients connect over loopback.
 
-    Loopback binds (the Desktop case) get a longer window to ride out
-    GIL-pressure event-loop stalls (#48445/#50005). The invariant asserted
-    here is that ping stays enabled (non-None, positive) and the timeout is
-    never shorter than the interval — not a frozen literal, which churns every
-    time the window is retuned."""
+    Under heavy agent/tool work, uvicorn keepalive pings can be starved by the
+    same event loop they use for pong processing, producing false local WS
+    disconnects. Loopback disables pings by default; remote binds keep them.
+    """
     captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.delenv("HERMES_WS_PING_INTERVAL", raising=False)
+    monkeypatch.delenv("HERMES_WS_PING_TIMEOUT", raising=False)
 
-    # Loopback bind => no auth gate, so this reaches the Config constructor.
     web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
 
-    assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
-    assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0
-    assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
+    assert captured["ws_ping_interval"] is None
+    assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_keeps_ws_ping_for_remote_binds(monkeypatch):
+    """Remote/tunnel binds still need half-open connection detection."""
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.delenv("HERMES_WS_PING_INTERVAL", raising=False)
+    monkeypatch.delenv("HERMES_WS_PING_TIMEOUT", raising=False)
+    monkeypatch.setattr(web_server, "should_require_auth", lambda host: False)
+
+    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 30.0
+    assert captured["ws_ping_timeout"] == 60.0
+
+
+def test_start_server_ws_ping_env_overrides(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMES_WS_PING_INTERVAL", "12.5")
+    monkeypatch.setenv("HERMES_WS_PING_TIMEOUT", "0")
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 12.5
+    assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_ws_ping_invalid_env_falls_back_safely(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMES_WS_PING_INTERVAL", "not-a-float")
+    monkeypatch.setenv("HERMES_WS_PING_TIMEOUT", "also-not-a-float")
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] is None
+    assert captured["ws_ping_timeout"] is None
 
 
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):

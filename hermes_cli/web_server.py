@@ -14163,6 +14163,31 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _ws_ping_val(env_val, host, *, default=30):
+    """Resolve WebSocket ping interval/timeout.
+
+    Local Desktop/Web clients connect over loopback. Loopback sockets do not
+    silently disappear like reverse-proxy/tunnel paths; uvicorn keepalive pings
+    instead become a failure mode when a GIL-heavy agent turn stalls the event
+    loop long enough to miss pong processing. Env overrides keep the policy
+    tunable without code changes; a value <= 0 disables pings.
+    """
+    if env_val is not None:
+        try:
+            v = float(env_val)
+        except (TypeError, ValueError):
+            _log.warning(
+                "invalid WebSocket ping value %r; using default for host=%s",
+                env_val,
+                host,
+            )
+        else:
+            return None if v <= 0 else v
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return float(default)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -14278,15 +14303,6 @@ def start_server(
     # For explicit non-zero ports, if the port is taken uvicorn catches
     # OSError inside create_server() and exits with a clear error — no
     # separate preflight probe needed.
-    # Loopback binds are the Desktop case: a single local client, no reverse
-    # proxy in front. A GIL-heavy agent turn can stall the event loop past 20s,
-    # and uvicorn's ws keepalive ping runs on that same starved loop — so a
-    # 20s ping timeout kills an otherwise-healthy local connection over a
-    # recoverable stall (QW-1). Give loopback a longer 60s timeout / 30s
-    # interval to ride out those stalls. Non-loopback binds sit behind a
-    # Cloudflare Tunnel (idle timeout ~100s), so keep them at 20/20 to detect
-    # half-open connections promptly and stay under the tunnel's idle window.
-    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -14298,11 +14314,13 @@ def start_server(
         # mode.
         proxy_headers=bool(app.state.auth_required),
         # Detect half-open WS connections (reverse-proxy 524, dropped
-        # tunnels) within ~20-40s so WebSocketDisconnect fires the
-        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
-        # timeout, keeping it warm.  Loopback gets a longer window (see above).
-        ws_ping_interval=30.0 if _is_loopback else 20.0,
-        ws_ping_timeout=60.0 if _is_loopback else 20.0,
+        # tunnels). Localhost is the Desktop case: no silent network drops, so
+        # keepalive pings are disabled by default to avoid false disconnects
+        # when the Python event loop is starved under GIL pressure. Remote
+        # binds keep conservative pings. Env overrides: <=0 disables; positive
+        # values set the timeout/interval explicitly.
+        ws_ping_interval=_ws_ping_val(os.environ.get("HERMES_WS_PING_INTERVAL"), host),
+        ws_ping_timeout=_ws_ping_val(os.environ.get("HERMES_WS_PING_TIMEOUT"), host, default=60),
     )
     server = uvicorn.Server(config)
 

@@ -282,6 +282,43 @@ class TestTranscribeGroq:
         call_kwargs = mock_openai_cls.call_args
         assert call_kwargs.kwargs["base_url"] == GROQ_BASE_URL
 
+    def test_passes_groq_language_from_config(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "שלום"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "groq": {"language": "he"},
+                 "local": {"language": "en"},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert call_kwargs["language"] == "he"
+
+    def test_groq_language_falls_back_to_local_config(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "bonjour"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"language": "fr"},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert call_kwargs["language"] == "fr"
+
     def test_api_error_returns_failure(self, monkeypatch, sample_wav):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 

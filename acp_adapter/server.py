@@ -456,7 +456,7 @@ class HermesACPAgent(acp.Agent):
         "tools": "List available tools",
         "context": "Show conversation context info",
         "reset": "Clear conversation history",
-        "compact": "Compress conversation context",
+        "compress": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
         "version": "Show Hermes version",
@@ -485,7 +485,7 @@ class HermesACPAgent(acp.Agent):
             "description": "Clear conversation history",
         },
         {
-            "name": "compact",
+            "name": "compress",
             "description": "Compress conversation context",
         },
         {
@@ -1740,7 +1740,7 @@ class HermesACPAgent(acp.Agent):
             "tools": self._cmd_tools,
             "context": self._cmd_context,
             "reset": self._cmd_reset,
-            "compact": self._cmd_compact,
+            "compress": self._cmd_compress,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
             "version": self._cmd_version,
@@ -1882,7 +1882,7 @@ class HermesACPAgent(acp.Agent):
                     lines.append(
                         f"Compression: due now (threshold ~{threshold_tokens:,}"
                         + (f", {threshold_pct:.0f}%" if threshold_pct else "")
-                        + "). Run /compact."
+                        + "). Run /compress."
                     )
                 else:
                     lines.append(
@@ -1897,7 +1897,7 @@ class HermesACPAgent(acp.Agent):
         if getattr(agent, "compression_enabled", True) is False:
             lines.append("Compression is disabled for this agent.")
         else:
-            lines.append("Tip: run /compact to compress manually before the threshold.")
+            lines.append("Tip: run /compress to compress manually before the threshold.")
 
         return "\n".join(lines)
 
@@ -1906,7 +1906,7 @@ class HermesACPAgent(acp.Agent):
         self.session_manager.save_session(state.session_id)
         return "Conversation history cleared."
 
-    def _cmd_compact(self, args: str, state: SessionState) -> str:
+    def _cmd_compress(self, args: str, state: SessionState) -> str:
         if not state.history:
             return "Nothing to compress — conversation is empty."
         try:

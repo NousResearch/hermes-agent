@@ -754,6 +754,11 @@ def run_doctor(args):
                 _resolve_auth_provider = None
                 pass
             try:
+                from hermes_cli.models import _KNOWN_PROVIDER_NAMES as _MODEL_KNOWN_PROVIDER_NAMES
+                known_providers.update(_MODEL_KNOWN_PROVIDER_NAMES)
+            except Exception:
+                pass
+            try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
                     normalize_provider as _normalize_catalog_provider,
@@ -814,10 +819,8 @@ def run_doctor(args):
                     provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
-                ):
+                known_match = bool(provider_ids_to_accept & valid_provider_ids)
+                if not known_match and catalog_provider is None:
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     _fail_and_issue(
                         f"model.provider '{provider_raw}' is not a recognised provider",
@@ -845,6 +848,7 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                "vertex",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

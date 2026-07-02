@@ -225,6 +225,16 @@ def _probe_single_server(
     if issues:
         raise ValueError("; ".join(issues))
 
+    # Honor the server's configured connect_timeout — an interactive OAuth
+    # flow (browser consent) can easily take longer than the 30s default,
+    # and dying mid-flow leaves the user with a dead consent tab.
+    try:
+        cfg_timeout = float(config.get("connect_timeout", 0))
+        if cfg_timeout > connect_timeout:
+            connect_timeout = cfg_timeout
+    except (TypeError, ValueError):
+        pass
+
     from tools.mcp_tool import (
         _ensure_mcp_loop,
         _run_on_mcp_loop,

@@ -554,6 +554,82 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_honors_configured_connect_timeout(self, monkeypatch):
+        """A server's ``connect_timeout`` must raise the probe timeout.
+
+        Interactive OAuth flows (browser consent) routinely exceed the 30s
+        default; if the probe ignores the configured value, ``hermes mcp
+        login`` kills the flow mid-consent and the callback listener dies
+        under the user.
+        """
+        import asyncio as _asyncio
+        import hermes_cli.mcp_config as mc
+
+        seen: dict = {"timeouts": []}
+
+        class _FakeTool:
+            name = "t"
+            description = ""
+
+        class _FakeServer:
+            _tools = [_FakeTool()]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            return _FakeServer()
+
+        real_wait_for = _asyncio.wait_for
+
+        async def _spy_wait_for(awaitable, timeout=None, **kw):
+            seen["timeouts"].append(timeout)
+            return await real_wait_for(awaitable, timeout=timeout, **kw)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr(_asyncio, "wait_for", _spy_wait_for)
+
+        mc._probe_single_server(
+            "srv", {"url": "http://localhost:1/mcp", "connect_timeout": 300}
+        )
+        assert 300.0 in seen["timeouts"]
+
+    def test_probe_never_lowers_default_connect_timeout(self, monkeypatch):
+        """A ``connect_timeout`` smaller than the default must not shrink the
+        probe window — the config value only ever extends it."""
+        import asyncio as _asyncio
+        import hermes_cli.mcp_config as mc
+
+        seen: dict = {"timeouts": []}
+
+        class _FakeTool:
+            name = "t"
+            description = ""
+
+        class _FakeServer:
+            _tools = [_FakeTool()]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            return _FakeServer()
+
+        real_wait_for = _asyncio.wait_for
+
+        async def _spy_wait_for(awaitable, timeout=None, **kw):
+            seen["timeouts"].append(timeout)
+            return await real_wait_for(awaitable, timeout=timeout, **kw)
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr(_asyncio, "wait_for", _spy_wait_for)
+
+        mc._probe_single_server(
+            "srv", {"url": "http://localhost:1/mcp", "connect_timeout": 5}
+        )
+        assert 30 in seen["timeouts"]
+        assert 5.0 not in seen["timeouts"]
+
 
 class TestStripBearerPrefix:
     """Pasted tokens that already include ``Bearer `` would otherwise produce

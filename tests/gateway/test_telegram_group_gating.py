@@ -156,6 +156,26 @@ def test_group_messages_can_be_opened_via_config():
     assert adapter._should_process_message(_group_message("hello everyone")) is True
 
 
+def test_dropped_unmentioned_group_message_logs_when_observe_off(caplog):
+    # When require_mention drops an unmentioned group message AND observe is off,
+    # the drop is logged at DEBUG (previously it left zero trace). Mirror of the
+    # observe-on test below, minus observe_unmentioned_group_messages.
+    async def _run():
+        adapter = _make_adapter(require_mention=True, allowed_chats=["-100"])
+        update = SimpleNamespace(
+            update_id=7001,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+        with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert "dropped by require_mention gate" in caplog.text
+
+    asyncio.run(_run())
+
+
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     async def _run():
         adapter = _make_adapter(

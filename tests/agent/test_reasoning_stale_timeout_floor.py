@@ -82,6 +82,12 @@ import pytest
     ("anthropic/claude-sonnet-4-20250514", 180.0),
     ("anthropic/claude-sonnet-4.5", 180.0),
     ("anthropic/claude-sonnet-4.6", 180.0),
+    # Bare canonical `claude-sonnet-4` (no trailing minor) — exercises the
+    # end-of-string branch `(?:$|[\-._])` of the compiled pattern, which the
+    # separator-suffixed cases above never reach.  This exact ID appears in
+    # repo examples/configs, so the floor must resolve for it too.
+    ("anthropic/claude-sonnet-4", 180.0),
+    ("claude-sonnet-4", 180.0),
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),

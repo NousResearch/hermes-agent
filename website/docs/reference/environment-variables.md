@@ -567,6 +567,23 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### KakaoTalk (Kakao i Open Builder)
+
+Used by the bundled KakaoTalk platform plugin (`plugins/platforms/kakao/`). See [Messaging Gateway → KakaoTalk](/user-guide/messaging/kakao) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `KAKAO_SKILL_SECRET` | Shared secret verified (constant-time) against the skill's custom header — Kakao does not sign requests. Required. |
+| `KAKAO_SECRET_HEADER` | Header name carrying the secret (default: `X-Hermes-Kakao-Secret`); must match the skill config in Open Builder. |
+| `KAKAO_HOST` | Webhook bind host (default: `0.0.0.0`). |
+| `KAKAO_PORT` | Webhook bind port (default: `8647`). |
+| `KAKAO_PUBLIC_URL` | Public HTTPS base URL — informational (startup log) only. |
+| `KAKAO_ALLOWED_USERS` | Comma-separated `botUserKey` values allowed to talk to the bot. |
+| `KAKAO_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any user. Default: `false`. |
+| `KAKAO_SYNC_TIMEOUT` | Seconds to wait for the answer before going async (default: `4.0`; Kakao's hard cap is 5s including network). |
+| `KAKAO_CALLBACK_TIMEOUT` | Seconds to wait after `useCallback` before spending the one-shot callback on a still-working notice (default: `50`). |
+| `KAKAO_BOT_ID` | Open Builder bot ID — informational only (not yet surfaced in CLI output). |
+
 ### ntfy (push notifications)
 
 [ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.

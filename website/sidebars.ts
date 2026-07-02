@@ -651,6 +651,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/photon',
             'user-guide/messaging/google_chat',
             'user-guide/messaging/line',
+            'user-guide/messaging/kakao',
             'user-guide/messaging/simplex',
             'user-guide/messaging/ntfy',
             'user-guide/messaging/irc',

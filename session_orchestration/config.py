@@ -43,6 +43,7 @@ _DEFAULT_HANG_IDLE_TICKS: int = 3       # N ticks of pane-hash unchanged before 
 _DEFAULT_DEAD_TMUX_REAP: bool = True    # reap sessions whose tmux pane died without a done marker
 _DEFAULT_GC_AFTER_SECONDS: int = 86400  # 24 h retention for terminal rows
 _DEFAULT_RENUDGE_AFTER_SECONDS: int = 1800  # 30 min before re-surfacing an unacted attention item
+_DEFAULT_DRIVE_QUEUE_TTL_SECONDS: int = 600  # 10 min before a queued busy-session reply is dropped
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,11 @@ class SessionOrchestrationConfig:
     # DM at most once per interval to re-surface the waiting item.  Set to 0 (or
     # any value <= 0) to disable re-nudging entirely.  Default: 1800 (30 min).
     renudge_after_seconds: int = _DEFAULT_RENUDGE_AFTER_SECONDS
+    # TTL (seconds) for a reply queued while its target session was busy (see
+    # gateway/run.py:_handle_managed_thread_reply). The watcher drops a queued
+    # reply older than this and notifies the user, so a queued reply can never
+    # rot invisibly. Set to 0 (or any value <= 0) to disable expiry. Default: 600.
+    drive_queue_ttl_seconds: int = _DEFAULT_DRIVE_QUEUE_TTL_SECONDS
     # Manual repo alias overrides for the repo registry (alias → path or dict).
     # Stored as the raw config dict so repo_registry.build_repo_registry() can
     # parse it without the config module importing the registry module.
@@ -108,6 +114,9 @@ class SessionOrchestrationConfig:
         renudge_after_seconds = _coerce_int(
             data.get("renudge_after_seconds"), _DEFAULT_RENUDGE_AFTER_SECONDS
         )
+        drive_queue_ttl_seconds = _coerce_int(
+            data.get("drive_queue_ttl_seconds"), _DEFAULT_DRIVE_QUEUE_TTL_SECONDS
+        )
         repos = data.get("repos")
         repos = repos if isinstance(repos, dict) else {}
 
@@ -120,6 +129,7 @@ class SessionOrchestrationConfig:
             dead_tmux_reap=dead_tmux_reap,
             gc_after_seconds=gc_after_seconds,
             renudge_after_seconds=renudge_after_seconds,
+            drive_queue_ttl_seconds=drive_queue_ttl_seconds,
             repos=repos,
         )
 

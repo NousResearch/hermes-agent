@@ -10981,7 +10981,7 @@ class GatewayRunner:
             from session_orchestration.registry import SessionOrchestrationRegistry
             from session_orchestration.relay import LockConflictError, SessionRelay
             from session_orchestration.spawn import get_adapter
-            from session_orchestration.types import SessionHandle
+            from session_orchestration.types import SessionHandle, SessionLifecycle
         except ImportError as exc:
             logger.debug("_handle_managed_thread_reply: session_orchestration not available: %s", exc)
             return None
@@ -11054,6 +11054,34 @@ class GatewayRunner:
             task_id, agent_name, len(drive_text), bool(drive_pre_keys),
         )
 
+        # Queued-reply acknowledgement, shared by the busy pre-check and the
+        # send-timeout fallback below.
+        queued_ack = (
+            "Session's busy — queued your message, it'll deliver when it's ready."
+        )
+
+        def _enqueue_pending() -> None:
+            registry.enqueue_pending_drive(task_id, drive_text, pre_keys=drive_pre_keys)
+
+        # Busy pre-check: if the session is actively working, a synchronous
+        # drive would block on _wait_for_ready and time out after 30s, dropping
+        # the reply. Instead, enqueue it now for the watcher to redeliver when
+        # the session next becomes idle (WAITING_USER).
+        try:
+            lifecycle = await asyncio.to_thread(adapter.detect, handle)
+        except Exception as exc:
+            logger.debug(
+                "drive_loop: detect() failed for task_id=%s (%s); attempting direct drive",
+                task_id, exc,
+            )
+            lifecycle = None
+        if lifecycle == SessionLifecycle.RUNNING:
+            logger.info(
+                "drive_loop: task_id=%s is RUNNING; queuing reply for redelivery", task_id
+            )
+            await asyncio.to_thread(_enqueue_pending)
+            return queued_ack
+
         try:
             await asyncio.to_thread(
                 relay.send_message, task_id, handle, drive_text,
@@ -11065,10 +11093,14 @@ class GatewayRunner:
             )
             return "Session is busy — try again in a moment."
         except TimeoutError as exc:
+            # The pane never became ready (session busy past the readiness
+            # window). Don't drop the reply — queue it for redelivery.
             logger.warning(
-                "drive_loop: pane-readiness timeout for task_id=%s: %s", task_id, exc
+                "drive_loop: pane-readiness timeout for task_id=%s: %s; queuing reply",
+                task_id, exc,
             )
-            return "Session pane did not become ready in time — it may be busy."
+            await asyncio.to_thread(_enqueue_pending)
+            return queued_ack
         except Exception as exc:
             logger.exception(
                 "drive_loop: unexpected error for task_id=%s", task_id

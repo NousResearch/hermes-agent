@@ -125,6 +125,25 @@ CREATE TABLE IF NOT EXISTS session_orchestration_queue (
 CREATE INDEX IF NOT EXISTS idx_soq_task
     ON session_orchestration_queue(task_id);
 
+-- Persistent pending-drive store: a user reply that arrived while the target
+-- session was busy (see gateway/run.py:_handle_managed_thread_reply). Unlike
+-- the intent queue above (drained-and-discarded each tick), a pending-drive
+-- entry survives across watcher ticks until the session next becomes idle and
+-- the watcher redelivers it (or the TTL expires). Concurrency model mirrors the
+-- intent queue: enqueue_pending_drive() is an append-only INSERT safe from any
+-- thread; every UPDATE/DELETE is watcher-only (single-writer invariant).
+CREATE TABLE IF NOT EXISTS session_orchestration_pending_drive (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    pre_keys    TEXT NOT NULL DEFAULT '[]',
+    enqueued_at TEXT NOT NULL DEFAULT (datetime('now')),
+    attempts    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_sopd_task
+    ON session_orchestration_pending_drive(task_id);
+
 CREATE TABLE IF NOT EXISTS session_orchestration_attention_items (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id               TEXT NOT NULL,
@@ -245,9 +264,11 @@ class SessionOrchestrationRegistry:
     without a separate SELECT.
 
     The cron watcher is the sole caller of :meth:`upsert`, :meth:`drain_intents`,
-    :meth:`acquire_lock`, and :meth:`release_lock`.  All other callers use only
-    :meth:`enqueue_intent` (append-only, safe from any thread/process) and
-    :meth:`get` / :meth:`list` (read-only).
+    :meth:`acquire_lock`, :meth:`release_lock`, :meth:`list_pending_drive`,
+    :meth:`delete_pending_drive`, and :meth:`bump_pending_drive_attempt`.  All
+    other callers use only :meth:`enqueue_intent` / :meth:`enqueue_pending_drive`
+    (append-only, safe from any thread/process) and :meth:`get` / :meth:`list`
+    (read-only).
     """
 
     def __init__(
@@ -1140,6 +1161,85 @@ class SessionOrchestrationRegistry:
                 "(task_id, run_id, repo, intent, payload) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (task_id, run_id, repo, intent, payload_str),
+            )
+
+        self._write(_do)
+
+    # ------------------------------------------------------------------
+    # Pending-drive store (busy-session reply recovery)
+    # ------------------------------------------------------------------
+    #
+    # Concurrency contract mirrors the intent queue: :meth:`enqueue_pending_drive`
+    # is an append-only INSERT safe from any thread/process (the Discord-drive
+    # path). The read/mutation helpers (:meth:`list_pending_drive`,
+    # :meth:`delete_pending_drive`, :meth:`bump_pending_drive_attempt`) are the
+    # cron watcher's alone — the single-writer invariant covers them.
+
+    def enqueue_pending_drive(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        pre_keys: Optional[List[str]] = None,
+    ) -> None:
+        """Queue a user reply for redelivery when the session next goes idle.
+
+        Append-only INSERT — safe to call from any thread or process (the
+        Discord-drive path calls this when the target session is busy). Does
+        NOT read or mutate any other row. The cron watcher drains the store on
+        the tick a session becomes ``WAITING_USER`` and redelivers FIFO.
+        """
+        import json as _json
+        pre_keys_str = _json.dumps(pre_keys or [])
+
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO session_orchestration_pending_drive "
+                "(task_id, message, pre_keys) VALUES (?, ?, ?)",
+                (task_id, message, pre_keys_str),
+            )
+
+        self._write(_do)
+
+    def list_pending_drive(self, task_id: str) -> List[Dict[str, Any]]:
+        """Return pending-drive entries for ``task_id`` in FIFO (insert) order.
+
+        **Cron watcher only.** Each dict carries ``id``, ``task_id``,
+        ``message``, ``pre_keys`` (JSON string), ``enqueued_at``, ``attempts``.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_orchestration_pending_drive "
+                "WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def delete_pending_drive(self, entry_id: int) -> None:
+        """Delete a pending-drive entry by id. **Cron watcher only.**"""
+
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM session_orchestration_pending_drive WHERE id = ?",
+                (entry_id,),
+            )
+
+        self._write(_do)
+
+    def bump_pending_drive_attempt(self, entry_id: int) -> None:
+        """Increment the ``attempts`` counter for a pending-drive entry.
+
+        **Cron watcher only.** Atomic SQL expression — never read-modify-write.
+        """
+
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE session_orchestration_pending_drive "
+                "SET attempts = attempts + 1 WHERE id = ?",
+                (entry_id,),
             )
 
         self._write(_do)

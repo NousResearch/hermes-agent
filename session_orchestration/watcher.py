@@ -177,6 +177,19 @@ def _load_gc_after_seconds_cfg() -> int:
         return 86400
 
 
+def _load_drive_queue_ttl_secs_cfg() -> int:
+    """Return drive_queue_ttl_seconds from config (default 600 = 10 min).
+
+    Lazy-imported so the watcher module does not pull in config at import
+    time.  Returns the default on any error.  A value <= 0 disables expiry.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+        return load_session_orchestration_config().drive_queue_ttl_seconds
+    except Exception:  # config load must never crash the watcher
+        return 600
+
+
 def _load_renudge_after_seconds_cfg() -> int:
     """Return renudge_after_seconds from config (default 1800 = 30 min).
 
@@ -1920,11 +1933,144 @@ class SessionWatcher:
                     task_id, exc,
                 )
 
+        # Redeliver any reply queued while this session was busy (single writer).
+        try:
+            self._drain_pending_drive(task_id, fresh_row, adapter, new_state, now)
+        except Exception as exc:
+            logger.error(
+                "watcher._process_row: _drain_pending_drive failed for task_id=%s: %s",
+                task_id, exc,
+            )
+
         return True
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _drain_pending_drive(
+        self,
+        task_id: str,
+        row: Dict[str, Any],
+        adapter: AgentAdapter,
+        new_state: str,
+        now: datetime,
+    ) -> None:
+        """Redeliver replies queued while this session was busy.
+
+        A reply that arrived while the session was ``RUNNING`` is stored in the
+        pending-drive table (``gateway/run.py:_handle_managed_thread_reply``).
+        Once the session is idle again (``WAITING_USER``) each queued reply is
+        redelivered FIFO through the relay — which contends for the same
+        per-session lock the tick uses — then deleted, with a confirmation
+        posted to the session thread. A redelivery that itself times out or
+        loses the lock leaves the entry for the next tick (bounded by the TTL
+        expiry below).
+
+        Runs inside the single-writer watcher tick, so its reads/deletes on the
+        pending-drive store are race-free against enqueues from the Discord path.
+
+        TTL expiry runs every tick regardless of state (a session that never
+        returns to ``WAITING_USER`` must still expire its queue); redelivery of
+        the survivors happens only once the session is idle.
+        """
+        try:
+            pending = self._registry.list_pending_drive(task_id)
+        except Exception as exc:
+            logger.error(
+                "watcher._drain_pending_drive: list failed for task_id=%s: %s",
+                task_id, exc,
+            )
+            return
+        if not pending:
+            return
+
+        thread_id = str(row.get("discord_thread_id") or "")
+
+        # TTL expiry — runs regardless of lifecycle state.
+        ttl_secs = _load_drive_queue_ttl_secs_cfg()
+        survivors: List[Dict[str, Any]] = []
+        if ttl_secs > 0:
+            now_ts = now.timestamp()
+            ttl_minutes = max(1, ttl_secs // 60)
+            for entry in pending:
+                enq_ts = _parse_marker_ts(entry.get("enqueued_at") or "")
+                # enq_ts <= 0 means the timestamp was unparseable — keep the
+                # entry rather than risk dropping a valid queued reply.
+                if 0 < enq_ts and (now_ts - enq_ts) > ttl_secs:
+                    self._registry.delete_pending_drive(entry["id"])
+                    logger.info(
+                        "watcher._drain_pending_drive: expired queued reply for "
+                        "task_id=%s entry=%s (age > %ss)",
+                        task_id, entry["id"], ttl_secs,
+                    )
+                    if thread_id:
+                        try:
+                            from session_orchestration.feed import _post_discord_message
+
+                            _post_discord_message(
+                                thread_id,
+                                "Your queued reply expired undelivered — the "
+                                f"session stayed busy for over {ttl_minutes} min.",
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "watcher._drain_pending_drive: expiry notice "
+                                "failed for task_id=%s: %s", task_id, exc,
+                            )
+                else:
+                    survivors.append(entry)
+        else:
+            survivors = pending
+
+        # Redelivery — only when the session is idle again.
+        if new_state != SessionLifecycle.WAITING_USER.value or not survivors:
+            return
+
+        from session_orchestration.relay import LockConflictError, SessionRelay
+
+        relay = SessionRelay(self._registry, adapter)
+        handle = _build_handle_from_row(row)
+        for entry in survivors:  # FIFO — list_pending_drive orders by id
+            entry_id = entry["id"]
+            try:
+                pre_keys = json.loads(entry.get("pre_keys") or "[]")
+            except (ValueError, TypeError):
+                pre_keys = []
+            try:
+                relay.send_message(
+                    task_id, handle, entry["message"],
+                    pre_keys=pre_keys, retry_on_conflict=True,
+                )
+            except (TimeoutError, LockConflictError) as exc:
+                # Still busy / locked — keep the entry, retry next tick. Stop
+                # here so a later entry can't jump the queue (FIFO preserved).
+                logger.info(
+                    "watcher._drain_pending_drive: redelivery deferred for "
+                    "task_id=%s entry=%s: %s", task_id, entry_id, exc,
+                )
+                self._registry.bump_pending_drive_attempt(entry_id)
+                return
+            except Exception as exc:
+                logger.error(
+                    "watcher._drain_pending_drive: redelivery failed for "
+                    "task_id=%s entry=%s: %s", task_id, entry_id, exc,
+                )
+                self._registry.bump_pending_drive_attempt(entry_id)
+                return
+            self._registry.delete_pending_drive(entry_id)
+            if thread_id:
+                try:
+                    from session_orchestration.feed import _post_discord_message
+
+                    _post_discord_message(
+                        thread_id, "Delivered your queued reply."
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "watcher._drain_pending_drive: confirmation post failed "
+                        "for task_id=%s: %s", task_id, exc,
+                    )
 
     @staticmethod
     def _build_handle(row: Dict[str, Any]) -> SessionHandle:

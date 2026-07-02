@@ -1114,6 +1114,29 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    def _business_connection_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Return Telegram Business identity kwargs for trusted opt-in sends.
+
+        Passing ``business_connection_id`` makes Telegram render the outbound
+        message as the connected business/human account rather than the bot.
+        Inbound Business metadata can be useful for routing, but normal agent
+        replies must not silently inherit that identity.  Keep outbound
+        send-as-account fail-closed unless a caller explicitly opts in per send.
+        """
+        metadata = metadata or {}
+        business_connection_id = metadata.get("business_connection_id")
+        if not business_connection_id:
+            return {}
+        if not metadata.get("telegram_business_send_as_account"):
+            logger.warning(
+                "[%s] Suppressing Telegram Business send-as-account for outbound message",
+                self.name,
+            )
+            return {}
+        return {"business_connection_id": str(business_connection_id)}
+
     # ------------------------------------------------------------------
     # Bot API 10.1 Rich Messages (sendRichMessage)
     #
@@ -1434,6 +1457,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # present _thread_kwargs_for_send pairs it with message_thread_id=None,
         # which must not be sent as a stray field on the raw endpoint.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
+        payload.update(self._business_connection_kwargs(metadata))
         payload.update(self._notification_kwargs(metadata))
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
@@ -3372,6 +3396,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
+                                **self._business_connection_kwargs(metadata),
                                 **self._notification_kwargs(metadata),
                             )
                         except Exception as md_error:
@@ -3386,6 +3411,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
+                                    **self._business_connection_kwargs(metadata),
                                     **self._notification_kwargs(metadata),
                                 )
                             else:
@@ -3900,6 +3926,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     )
                     break
@@ -3921,6 +3948,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=_strip_mdv2(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
+                                **self._business_connection_kwargs(metadata),
                                 **self._notification_kwargs(metadata),
                             )
                             break
@@ -5444,6 +5472,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
+                            **self._business_connection_kwargs(metadata),
                             **self._notification_kwargs(metadata),
                         },
                         metadata,
@@ -5470,6 +5499,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
+                            **self._business_connection_kwargs(metadata),
                             **self._notification_kwargs(metadata),
                         },
                         metadata,
@@ -5608,6 +5638,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "media": media,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     },
                     metadata,
@@ -5667,6 +5698,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     },
                     metadata,
@@ -5764,6 +5796,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     },
                     metadata,
@@ -5811,6 +5844,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     },
                     metadata,
@@ -5863,6 +5897,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
+                    **self._business_connection_kwargs(metadata),
                     **self._notification_kwargs(metadata),
                 },
                 metadata,
@@ -5900,6 +5935,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
+                        **self._business_connection_kwargs(metadata),
                         **self._notification_kwargs(metadata),
                     },
                     metadata,
@@ -5947,6 +5983,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
+                    **self._business_connection_kwargs(metadata),
                     **self._notification_kwargs(metadata),
                 },
                 metadata,

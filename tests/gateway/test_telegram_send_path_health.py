@@ -65,6 +65,41 @@ async def test_send_short_circuits_when_path_degraded():
 
 
 @pytest.mark.asyncio
+async def test_business_send_uses_bot_identity_by_default():
+    """Business routing metadata must not make agent output human-authored."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "8533179145",
+        "OK",
+        metadata={"business_connection_id": "biz-123"},
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert "business_connection_id" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_business_send_as_account_requires_explicit_opt_in():
+    """Trusted callers may opt in explicitly; default remains fail-closed."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "8533179145",
+        "OK",
+        metadata={
+            "business_connection_id": "biz-123",
+            "telegram_business_send_as_account": True,
+        },
+    )
+
+    assert result.success is True
+    kwargs = adapter._bot.send_message.await_args.kwargs
+    assert kwargs["business_connection_id"] == "biz-123"
+
+
+@pytest.mark.asyncio
 async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     """_handle_polling_network_error sets the flag while reconnecting; if the
     reconnect attempt itself raises (polling not yet healthy), the flag stays

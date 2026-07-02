@@ -1145,6 +1145,23 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         if _available >= 1:
             return _available
 
+    # vLLM style: both the window and the prompt are reported in TOKENS, e.g.
+    #   "This model's maximum context length is 131072 tokens. However, you
+    #    requested 65536 output tokens and your prompt contains at least 65537
+    #    input tokens, for a total of at least 131073 tokens. Please reduce
+    #    the length of the input prompt or the number of requested output
+    #    tokens."
+    # Available output = window - input. When the input alone is at or over
+    # the window this stays None, so the caller correctly falls through to
+    # compression instead of futilely shrinking the output cap.
+    _m_vllm_input = re.search(
+        r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
+    )
+    if _m_ctx_tok and _m_vllm_input:
+        _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        if _available >= 1:
+            return _available
+
     return None
 
 
@@ -2153,6 +2170,35 @@ def get_model_context_length(
 
     # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
+
+
+async def get_model_context_length_async(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Async variant of get_model_context_length.
+
+    Offloads the entire synchronous resolution chain (which contains
+    blocking HTTP calls via ``requests``) to a background thread so it
+    does not freeze the asyncio event loop and cause Discord heartbeat
+    timeouts.
+
+    Shares all logic with the sync version — no code duplication.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        get_model_context_length,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
 
 
 def estimate_tokens_rough(text: str) -> int:

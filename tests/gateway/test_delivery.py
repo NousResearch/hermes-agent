@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import SendResult
 from gateway.session import SessionSource
@@ -281,3 +281,33 @@ async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match="route failed"):
         await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
+
+
+@pytest.mark.asyncio
+async def test_long_output_preserved_for_signal_adapter(tmp_path, monkeypatch):
+    """Signal declares native splitting, so delivery must pass full output through."""
+    from gateway.platforms.signal import SignalAdapter
+
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    config = PlatformConfig(
+        enabled=True,
+        extra={"http_url": "http://localhost:8080", "account": "+155****4567"},
+    )
+    adapter = SignalAdapter(config)
+    calls = []
+
+    async def capture_send(chat_id, content, reply_to=None, metadata=None):
+        calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return SendResult(success=True)
+
+    adapter.send = capture_send
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.SIGNAL: adapter})
+    target = DeliveryTarget.parse("signal:+155****0000")
+
+    long_content = "x" * 5000
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job-signal"})
+
+    assert calls[0]["content"] == long_content
+    saved_files = list(tmp_path.glob("cron/output/job-signal_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text() == long_content

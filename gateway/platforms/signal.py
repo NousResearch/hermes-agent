@@ -249,6 +249,9 @@ class SignalAdapter(BasePlatformAdapter):
 
     platform = Platform.SIGNAL
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # send() chunks long content itself, so gateway delivery must not pre-cut
+    # cron/gateway output at its generic platform limit before Signal can split.
+    splits_long_messages = True
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
@@ -1070,8 +1073,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
 
-        plain_text, text_styles = self._markdown_to_signal(content)
-        chunks = self.truncate_message(plain_text, self.MAX_MESSAGE_LENGTH)
+        markdown_chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
 
         base_params: Dict[str, Any] = {"account": self.account}
         if chat_id.startswith("group:"):
@@ -1079,15 +1081,16 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             base_params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars in %d chunk(s)) to %s", len(plain_text), len(chunks), chat_id)
+        logger.info("[Signal] Sending response (%d chars in %d chunk(s)) to %s", len(content), len(markdown_chunks), chat_id)
         last_result: Any = None
-        for chunk in chunks:
-            params: Dict[str, Any] = {**base_params, "message": chunk}
+        for markdown_chunk in markdown_chunks:
+            plain_text, text_styles = self._markdown_to_signal(markdown_chunk)
+            params: Dict[str, Any] = {**base_params, "message": plain_text}
 
-            # Native Signal body ranges are offsets into one message body. Once
-            # a response is split, fall back to plain text chunks rather than
-            # sending stale ranges that point into the original unsplit text.
-            if len(chunks) == 1 and text_styles:
+            # Native Signal body ranges are offsets into one message body. Build
+            # them after splitting so every chunk carries ranges local to its own
+            # text, never stale offsets from the original full response.
+            if text_styles:
                 if len(text_styles) == 1:
                     params["textStyle"] = text_styles[0]
                 else:
@@ -1100,7 +1103,7 @@ class SignalAdapter(BasePlatformAdapter):
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
             last_result = result
-            self._track_sent_timestamp(result, chat_id, chunk)
+            self._track_sent_timestamp(result, chat_id, plain_text)
 
         if last_result is not None:
             # Signal has no editable message identifier. Returning None keeps the

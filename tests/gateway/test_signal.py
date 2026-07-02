@@ -83,6 +83,11 @@ class TestSignalConfigLoading:
 # ---------------------------------------------------------------------------
 
 class TestSignalAdapterInit:
+    def test_signal_declares_long_message_splitting(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert adapter.splits_long_messages is True
+
     def test_init_parses_config(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch, group_allowed="group123,group456")
         assert adapter.http_url == "http://localhost:8080"
@@ -1116,6 +1121,34 @@ class TestSignalStreamingCapabilities:
 
 class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
+
+    @pytest.mark.asyncio
+    async def test_send_keeps_native_formatting_per_long_chunk(self, monkeypatch):
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        formatted_unit = "**formatted** text "
+        plain_unit = "formatted text "
+        long_content = formatted_unit * ((MAX_MESSAGE_LENGTH // len(plain_unit)) + 80)
+
+        result = await adapter.send(chat_id="group:test-group", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        for call in captured:
+            params = call["params"]
+            message = params["message"]
+            styles = []
+            if "textStyle" in params:
+                styles.append(params["textStyle"])
+            styles.extend(params.get("textStyles", []))
+            assert styles, "each markdown-bearing chunk should keep native Signal styles"
+            for style in styles:
+                start, length, _style_type = style.split(":", 2)
+                assert int(start) + int(length) <= len(message)
 
     @pytest.mark.asyncio
     async def test_send_chunks_long_text_before_calling_signal_cli(self, monkeypatch):

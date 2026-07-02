@@ -316,15 +316,26 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Guard: truncate oversized cron output to stay within platform limits
+        # Guard: truncate oversized cron output only for adapters that cannot
+        # split long messages themselves. Signal/Telegram/Discord-style adapters
+        # that declare ``splits_long_messages`` need the full payload here so
+        # they can chunk it without data loss.
         if len(content) > MAX_PLATFORM_OUTPUT:
             job_id = (metadata or {}).get("job_id", "unknown")
-            saved_path = self._save_full_output(content, job_id)
-            logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
-            content = (
-                content[:TRUNCATED_VISIBLE]
-                + f"\n\n... [truncated, full output saved to {saved_path}]"
-            )
+            adapter_splits_long_messages = bool(getattr(adapter, "splits_long_messages", False))
+            if adapter_splits_long_messages:
+                try:
+                    saved_path = self._save_full_output(content, job_id)
+                    logger.info("Cron output preserved for chunking adapter (%d chars) — full output: %s", len(content), saved_path)
+                except Exception as exc:
+                    logger.warning("Failed to save full cron output audit copy before chunked delivery: %s", exc)
+            else:
+                saved_path = self._save_full_output(content, job_id)
+                logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
+                content = (
+                    content[:TRUNCATED_VISIBLE]
+                    + f"\n\n... [truncated, full output saved to {saved_path}]"
+                )
         
         # Substrate-level anti-loop guard: drop hallucinated "silence narration"
         # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.

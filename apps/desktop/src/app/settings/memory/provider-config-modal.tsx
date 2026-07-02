@@ -53,20 +53,27 @@ export function ProviderConfigModal({
   onSaved: () => Promise<void> | void
 }) {
   const [values, setValues] = useState<Record<string, string>>({})
+  const [seeded, setSeeded] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
 
   // Reseed from the latest config each time the dialog opens so edits never
   // start from a stale snapshot left over from a prior session.
   useEffect(() => {
     if (open) {
-      setValues(seedAll(config))
+      const seed = seedAll(config)
+      setSeeded(seed)
+      setValues(seed)
     }
   }, [open, config])
 
   const save = async () => {
+    // Unstored fields render their schema default; persisting untouched keys
+    // would pin values that runtime defaults (e.g. migration guards) still own.
+    const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
+
     setSaving(true)
     try {
-      await saveMemoryProviderConfig(provider, values)
+      await saveMemoryProviderConfig(provider, edited)
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
       await onSaved()
       onOpenChange(false)
@@ -138,7 +145,7 @@ export function ProviderConfigModal({
           </DialogClose>
           <Button disabled={saving} onClick={() => void save()} size="sm">
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            Save all
+            Save changes
           </Button>
         </DialogFooter>
       </DialogContent>

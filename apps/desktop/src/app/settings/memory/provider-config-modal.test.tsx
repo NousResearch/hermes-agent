@@ -80,20 +80,15 @@ describe('ProviderConfigModal', () => {
     expect(screen.getByDisplayValue('{"t":"eri"}')).toBeTruthy()
   })
 
-  it('saves all fields, serializing the toggled bool to "false"', async () => {
+  it('saves only edited fields, serializing the toggled bool to "false"', async () => {
     const { onSaved, onOpenChange } = await renderModal()
 
     fireEvent.click(await screen.findByRole('switch'))
-    fireEvent.click(screen.getByRole('button', { name: 'Save all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', {
-        workspace: 'myws',
-        saveMessages: 'false',
-        dialecticMaxChars: '1200',
-        userPeerAliases: '{"t":"eri"}'
-      })
-    )
+    // Untouched fields stay unsubmitted so a save never ratifies rendered
+    // defaults the backend does not actually store.
+    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })

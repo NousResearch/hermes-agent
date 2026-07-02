@@ -35,7 +35,7 @@ def _build_app(use_https: bool = True, prefix: str = ""):
     @app.get("/set-pkce")
     def set_pkce():
         r = Response("ok")
-        set_pkce_cookie(r, payload="provider=stub;state=s;verifier=v",
+        set_pkce_cookie(r, payload="provider=stub|state=s|verifier=v",
                         use_https=use_https, prefix=prefix)
         return r
 
@@ -208,10 +208,10 @@ def test_read_pkce_cookie_round_trip():
         "type": "http",
         "method": "GET",
         "path": "/",
-        "headers": [(b"cookie", f"{PKCE_COOKIE}=state=s;verifier=v".encode())],
+        "headers": [(b"cookie", f"{PKCE_COOKIE}=state=s|verifier=v".encode())],
     }
     req = Request(scope)
-    assert read_pkce_cookie(req) == "state=s"  # NB: cookie value stops at ';'
+    assert read_pkce_cookie(req) == "state=s|verifier=v"  # pipe-delimited, full value
 
 
 def test_detect_https_via_scheme():

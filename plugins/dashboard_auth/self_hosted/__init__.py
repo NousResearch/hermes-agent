@@ -235,10 +235,11 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         redirect_url = (
             f"{disco['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
         )
-        # Same flat ``state=…;verifier=…`` cookie shape every provider uses;
+        # Same flat ``state=…|verifier=…`` cookie shape every provider uses;
         # the auth-route layer prepends ``provider=`` and parses it back out.
+        # Pipe delimiter (not semicolon) for RFC 6265 cookie-value safety.
         cookie_payload = {
-            "hermes_session_pkce": f"state={state};verifier={code_verifier}",
+            "hermes_session_pkce": f"state={state}|verifier={code_verifier}",
         }
         return LoginStart(redirect_url=redirect_url, cookie_payload=cookie_payload)
 

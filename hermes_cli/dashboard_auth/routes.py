@@ -219,7 +219,7 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     # already included a ``provider=`` segment.
     pkce = ls.cookie_payload.get("hermes_session_pkce", "")
     if "provider=" not in pkce:
-        pkce = f"provider={provider};{pkce}" if pkce else f"provider={provider}"
+        pkce = f"provider={provider}|{pkce}" if pkce else f"provider={provider}"
     # Carry ``next=`` through the round trip in the PKCE cookie. Real
     # IDPs only echo back ``code`` + ``state`` on the callback URL, so
     # query-string transport would lose the value — the cookie is the
@@ -229,7 +229,7 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     safe_next = _validate_post_login_target(next)
     if safe_next:
         from urllib.parse import quote
-        pkce = f"{pkce};next={quote(safe_next, safe='')}"
+        pkce = f"{pkce}|next={quote(safe_next, safe='')}"
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -257,12 +257,14 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
+    # Parse ``provider=...|state=...|verifier=...|next=...`` — the
     # ``next`` segment is optional (only present when /auth/login was
     # given a next= query). All keys live in the same flat namespace;
-    # ``next`` carries a URL-encoded path so it never contains ``;``.
+    # ``next`` carries a URL-encoded path so it never contains ``|``.
+    # Pipe (|) delimiter: semicolons are cookie-attribute separators in
+    # RFC 6265 and Chromium rejects quoted values containing them.
     parts = dict(
-        seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
+        seg.split("=", 1) for seg in pkce_raw.split("|") if "=" in seg
     )
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")

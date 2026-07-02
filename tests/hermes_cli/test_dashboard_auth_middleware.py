@@ -506,12 +506,12 @@ def _mint_stub_at(stub: StubAuthProvider) -> str:
     ls = stub.start_login(redirect_uri="https://fly-app.fly.dev/auth/callback")
     state = dict(
         seg.split("=", 1)
-        for seg in ls.cookie_payload["hermes_session_pkce"].split(";")
+        for seg in ls.cookie_payload["hermes_session_pkce"].split("|")
         if "=" in seg
     )["state"]
     verifier = dict(
         seg.split("=", 1)
-        for seg in ls.cookie_payload["hermes_session_pkce"].split(";")
+        for seg in ls.cookie_payload["hermes_session_pkce"].split("|")
         if "=" in seg
     )["verifier"]
     session = stub.complete_login(

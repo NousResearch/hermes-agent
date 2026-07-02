@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
-from utils import env_int, is_truthy_value
+from utils import env_int, env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1320,7 +1320,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
     # WhatsApp (typically uses different auth mechanism)
-    whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}
+    whatsapp_enabled = env_var_enabled("WHATSAPP_ENABLED")
     whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
     if Platform.WHATSAPP in config.platforms:
         # YAML config exists — respect explicit disable
@@ -1437,7 +1437,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         signal_config.extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in {"true", "1", "yes"},
+            "ignore_stories": env_var_enabled("SIGNAL_IGNORE_STORIES", "true"),
         })
     signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
@@ -1485,7 +1485,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
         matrix_e2ee = (
             matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
-            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+            or env_var_enabled("MATRIX_ENCRYPTION")
         )
         matrix_config.extra["encryption"] = matrix_e2ee
         if matrix_e2ee_mode:
@@ -1553,7 +1553,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
+    api_server_enabled = env_var_enabled("API_SERVER_ENABLED")
     api_server_key = os.getenv("API_SERVER_KEY", "")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
@@ -1580,7 +1580,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
     # Webhook platform
-    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
+    webhook_enabled = env_var_enabled("WEBHOOK_ENABLED")
     webhook_port = os.getenv("WEBHOOK_PORT")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
     if webhook_enabled:
@@ -1596,11 +1596,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
-    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in {
-        "true",
-        "1",
-        "yes",
-    }
+    msgraph_webhook_enabled = env_var_enabled("MSGRAPH_WEBHOOK_ENABLED")
     msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
@@ -1794,7 +1790,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": env_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
+            "send_read_receipts": env_var_enabled("BLUEBUBBLES_SEND_READ_RECEIPTS", "true"),
         })
         bluebubbles_require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
         if bluebubbles_require_mention is not None:

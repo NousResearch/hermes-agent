@@ -98,6 +98,31 @@ career_docs_output/
 output/
 client_secret_*.json
 sync_result.txt
+/.omo/
+/.specstory/
+/_tmp/
+/media/
+/venv.corrupt.bak/
+/nul
+/_diag_*.py
+/temp_*.py
+/tmp_*.py
+/tmp_*_output.json
+/changelog.html
+/last_feature.txt
+/state.txt
+/hakua.ogg
+/ohayo.wav
+/latest_vrchat.png
+/temp_pic.png
+/hermes_v*_with_audio.mp4
+/hermes_v*.py
+/ohayo_tweet.mp4
+/output_video.mp4
+/silent_video.mp4
+/vrchat_hakua.mp4
+/skills/frontend/
+/skills/taste-skill/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml

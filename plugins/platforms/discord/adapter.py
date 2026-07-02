@@ -2812,6 +2812,10 @@ class DiscordAdapter(BasePlatformAdapter):
         reply can overlap the idle "thinking" loop seamlessly.  Otherwise we
         fall back to the legacy one-shot FFmpegPCMAudio path.
         """
+        if not check_discord_requirements():
+            logger.warning("Discord voice playback requested but discord.py is unavailable")
+            return False
+
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False

@@ -85,3 +85,38 @@ class TestProfileAwareDashboardDetection:
             pids = _find_stale_dashboard_pids()
 
         assert 7001 in pids
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only ps test")
+    def test_equals_profile_flags(self):
+        """``--profile=bruce`` and ``-p=bruce`` should also be normalised."""
+        from hermes_cli.main import _find_stale_dashboard_pids
+
+        fake_ps = _fake_ps_output([
+            (6001, "/venv/bin/hermes --profile=bruce dashboard --isolated"),
+            (6002, "/venv/bin/hermes -p=bruce serve --port 9119"),
+        ])
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=fake_ps,
+            )
+            pids = _find_stale_dashboard_pids()
+
+        assert 6001 in pids
+        assert 6002 in pids
+
+    def test_windows_profile_equals_flags(self, monkeypatch):
+        """Windows WMIC output should get the same profile normalisation."""
+        from hermes_cli import main
+
+        fake_wmic = (
+            "CommandLine=hermes --profile=bruce dashboard --isolated\n"
+            "ProcessId=5001\n\n"
+            "CommandLine=python -m hermes_cli.main -p=bruce serve --port 9119\n"
+            "ProcessId=5002\n"
+        )
+        monkeypatch.setattr(main.sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=fake_wmic)
+            pids = main._find_stale_dashboard_pids()
+
+        assert pids == [5001, 5002]

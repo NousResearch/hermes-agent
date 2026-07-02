@@ -52,6 +52,8 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+GATEWAY_SYSTEMD_UNIT_GLOB = "hermes*gateway*"
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -99,7 +101,7 @@ def _get_service_pids() -> set:
                     scope_args
                     + [
                         "list-units",
-                        "hermes-gateway*",
+                        GATEWAY_SYSTEMD_UNIT_GLOB,
                         "--plain",
                         "--no-legend",
                         "--no-pager",

@@ -5817,6 +5817,28 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
+
+    def _strip_profile_selector_tokens(command: str) -> str:
+        try:
+            raw_tokens = shlex.split(command, posix=False)
+        except ValueError:
+            raw_tokens = command.split()
+
+        filtered: list[str] = []
+        skip_next = False
+        for token in raw_tokens:
+            normalized = token.strip("\"'")
+            if skip_next:
+                skip_next = False
+                continue
+            if normalized in {"--profile", "-p"}:
+                skip_next = True
+                continue
+            if normalized.startswith("--profile=") or normalized.startswith("-p="):
+                continue
+            filtered.append(normalized)
+        return " ".join(filtered)
+
     patterns = [
         "hermes dashboard",
         "hermes_cli.main dashboard",
@@ -5863,14 +5885,9 @@ def _find_stale_dashboard_pids(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    # Normalise away ``--profile <name>`` / ``-p <name>``
-                    # — same rationale as the POSIX branch below.
-                    import re as _re
-                    _cmd_norm = _re.sub(
-                        r"\s{2,}",
-                        " ",
-                        _re.sub(r"(?:--profile|-p)\s+\S+", "", current_cmd),
-                    )
+                    # Hermes accepts profile selectors before the subcommand;
+                    # strip them so profile dashboards still match.
+                    _cmd_norm = _strip_profile_selector_tokens(current_cmd)
                     if (
                         any(p in _cmd_norm for p in patterns)
                         and int(pid_str) != self_pid
@@ -5905,17 +5922,9 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    # Normalise away ``--profile <name>`` / ``-p <name>``
-                    # so that ``hermes --profile bruce dashboard`` still
-                    # matches the ``"hermes dashboard"`` pattern.  Without
-                    # this, non-default-profile dashboard processes are
-                    # invisible to the stale-dashboard sweep (issue #56717).
-                    import re as _re
-                    _cmd_norm = _re.sub(
-                        r"\s{2,}",
-                        " ",
-                        _re.sub(r"(?:--profile|-p)\s+\S+", "", command),
-                    )
+                    # Hermes accepts profile selectors before the subcommand;
+                    # strip them so profile dashboards still match.
+                    _cmd_norm = _strip_profile_selector_tokens(command)
                     if any(p in _cmd_norm for p in patterns) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -10049,6 +10058,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _ensure_user_systemd_env,
                 find_gateway_pids,
                 find_profile_gateway_processes,
+                GATEWAY_SYSTEMD_UNIT_GLOB,
                 launch_detached_profile_gateway_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
@@ -10155,7 +10165,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 non-interactive sudo (``sudo -n``) — first a blanket probe,
                 then a targeted ``systemctl reset-failed`` probe so a
                 least-privilege sudoers entry scoped to
-                ``systemctl ... hermes-gateway*`` also qualifies
+                ``systemctl ... hermes*gateway*`` also qualifies
                 (``reset-failed`` is an idempotent no-op we run before every
                 privileged restart anyway).  If neither works, return None —
                 the caller must SKIP the restart (without draining the
@@ -10182,7 +10192,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         sudo_ok = _probe.returncode == 0
                         if not sudo_ok:
                             # Blanket sudo refused — a targeted sudoers entry
-                            # (NOPASSWD for systemctl ... hermes-gateway*)
+                            # (NOPASSWD for systemctl ... hermes*gateway*)
                             # may still allow the exact commands we need.
                             _probe = subprocess.run(
                                 sudo_cmd + ["reset-failed", svc_name_],
@@ -10233,7 +10243,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
+            # Discover default and profile gateway units.
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -10249,7 +10259,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd
                             + [
                                 "list-units",
-                                "hermes-gateway*",
+                                GATEWAY_SYSTEMD_UNIT_GLOB,
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",

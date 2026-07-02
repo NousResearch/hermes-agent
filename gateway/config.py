@@ -22,6 +22,27 @@ from utils import env_int, env_var_enabled, is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+def _scoped_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read a profile-scoped env/secret value when a secret scope is active.
+
+    The multiplexed gateway keeps secondary-profile ``.env`` values out of
+    process-global ``os.environ``. Gateway config loading therefore must use the
+    active secret scope for profile credentials such as Telegram bot tokens,
+    while preserving legacy ``os.getenv`` behaviour for the default profile and
+    non-multiplexed callers.
+    """
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+    except Exception:
+        val = os.environ.get(name)
+        return val if val is not None else default
+    try:
+        return get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.environ.get(name)
+        return val if val is not None else default
+
+
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
     if value is None:
@@ -108,6 +129,59 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
         if normalized in {"public", "private"}:
             return normalized
     return default
+
+
+def _coerce_profile_allowlist(value: Any) -> List[str]:
+    """Normalize gateway multiplexer profile allowlist values.
+
+    The allowlist is intentionally fail-closed: malformed values are ignored
+    rather than causing a fallback to broad profile enumeration. ``default`` is
+    always served by the owning gateway and is therefore omitted from the
+    secondary-profile allowlist.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items: list[Any] = []
+        for chunk in value.replace("\n", ",").split(","):
+            raw_items.extend(part for part in chunk.split() if part)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        logger.warning(
+            "Ignoring invalid gateway.multiplex_profile_allowlist=%r "
+            "(expected list or comma-separated string)",
+            value,
+        )
+        return []
+
+    try:
+        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+    except Exception:
+        logger.warning("Could not import profile validators for multiplexer allowlist")
+        return []
+
+    names: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            logger.warning(
+                "Ignoring invalid profile allowlist item %r (expected string)",
+                item,
+            )
+            continue
+        try:
+            name = normalize_profile_name(item)
+            validate_profile_name(name)
+        except Exception as exc:
+            logger.warning("Ignoring invalid profile allowlist item %r: %s", item, exc)
+            continue
+        if name == "default":
+            continue
+        if name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
 
 
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
@@ -610,11 +684,13 @@ class GatewayConfig:
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
-    # When True, the default profile's gateway serves inbound messages for every
-    # profile on the host: profiles are stamped into session keys and (in later
-    # phases) per-profile adapters/credentials are resolved. When False, the
-    # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
+    # When True, the default profile's gateway serves inbound messages for the
+    # explicitly allowlisted profiles on the host. Profiles are stamped into
+    # session keys and per-profile adapters/credentials are resolved. When
+    # False, the gateway behaves exactly as before — single HERMES_HOME, no
+    # profile stamping. An empty allowlist is fail-closed (default only).
     multiplex_profiles: bool = False
+    multiplex_profile_allowlist: List[str] = field(default_factory=list)
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -730,6 +806,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "multiplex_profile_allowlist": list(self.multiplex_profile_allowlist),
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -781,6 +858,11 @@ class GatewayConfig:
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
+        multiplex_profile_allowlist = data.get("multiplex_profile_allowlist")
+        if multiplex_profile_allowlist is None and isinstance(nested_gateway, dict):
+            multiplex_profile_allowlist = nested_gateway.get(
+                "multiplex_profile_allowlist"
+            )
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -818,6 +900,9 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            multiplex_profile_allowlist=_coerce_profile_allowlist(
+                multiplex_profile_allowlist
+            ),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -924,15 +1009,25 @@ def load_gateway_config() -> GatewayConfig:
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
-            # Multiplexing flag: accept both the top-level key and the nested
-            # gateway.multiplex_profiles form (from_dict resolves the nested
-            # fallback, but surface the top-level key here for parity with the
-            # other session-scope flags above).
+            # Multiplexing settings: accept both top-level legacy keys and the
+            # nested gateway.* form written by `hermes config set gateway.*`.
+            gateway_section = yaml_cfg.get("gateway")
+            if not isinstance(gateway_section, dict):
+                gateway_section = {}
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+            elif "multiplex_profiles" in gateway_section:
+                gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
+            if "multiplex_profile_allowlist" in yaml_cfg:
+                gw_data["multiplex_profile_allowlist"] = yaml_cfg[
+                    "multiplex_profile_allowlist"
+                ]
+            elif "multiplex_profile_allowlist" in gateway_section:
+                gw_data["multiplex_profile_allowlist"] = gateway_section[
+                    "multiplex_profile_allowlist"
+                ]
 
-            gateway_section = yaml_cfg.get("gateway")
-            if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
+            if "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 
             if "max_concurrent_sessions" in yaml_cfg:
@@ -1329,19 +1424,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         return platform_config
     
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_token = _scoped_env("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)
-    telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
+    telegram_reply_mode = (_scoped_env("TELEGRAM_REPLY_TO_MODE", "") or "").lower()
     if telegram_reply_mode in {"off", "first", "all"}:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
     
-    telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
+    telegram_fallback_ips = _scoped_env("TELEGRAM_FALLBACK_IPS", "") or ""
     if telegram_fallback_ips:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
@@ -1349,13 +1444,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
         ]
 
-    telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
+    telegram_home = _scoped_env("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
             platform=Platform.TELEGRAM,
             chat_id=telegram_home,
-            name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+            name=_scoped_env("TELEGRAM_HOME_CHANNEL_NAME", "Home") or "Home",
+            thread_id=_scoped_env("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
         )
     
     # Discord

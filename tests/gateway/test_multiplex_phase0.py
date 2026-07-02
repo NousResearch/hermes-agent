@@ -107,6 +107,7 @@ class TestMultiplexConfigFlag:
 
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
+        assert GatewayConfig().multiplex_profile_allowlist == []
 
     def test_to_dict_includes_flag(self):
         assert GatewayConfig().to_dict()["multiplex_profiles"] is False
@@ -119,13 +120,31 @@ class TestMultiplexConfigFlag:
         cfg = GatewayConfig.from_dict({"gateway": {"multiplex_profiles": True}})
         assert cfg.multiplex_profiles is True
 
+    def test_from_dict_nested_gateway_allowlist(self):
+        cfg = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "multiplex_profiles": True,
+                    "multiplex_profile_allowlist": ["Coder", "writer", "default"],
+                }
+            }
+        )
+        assert cfg.multiplex_profiles is True
+        assert cfg.multiplex_profile_allowlist == ["coder", "writer"]
+
     def test_from_dict_coerces_truthy_string(self):
         cfg = GatewayConfig.from_dict({"multiplex_profiles": "true"})
         assert cfg.multiplex_profiles is True
 
     def test_roundtrip(self):
-        cfg = GatewayConfig.from_dict(GatewayConfig(multiplex_profiles=True).to_dict())
+        cfg = GatewayConfig.from_dict(
+            GatewayConfig(
+                multiplex_profiles=True,
+                multiplex_profile_allowlist=["coder"],
+            ).to_dict()
+        )
         assert cfg.multiplex_profiles is True
+        assert cfg.multiplex_profile_allowlist == ["coder"]
 
 
 class TestSessionStoreProfileResolution:

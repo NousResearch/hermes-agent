@@ -127,6 +127,32 @@ def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     ) is default_adapter
 
 
+def test_unknown_stamped_profile_does_not_fallback_to_default_adapter(monkeypatch):
+    """Unknown non-default source.profile must fail closed for source-bound sends."""
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="attacker",
+        chat_id="dm-chat",
+        user_name="attacker",
+        chat_type="dm",
+        profile="missing-profile",
+    )
+
+    assert runner._adapter_for_source(source) is None
+    assert runner._adapter_for_source(
+        SessionSource(
+            platform=Platform.WECOM,
+            user_id="allowed-user",
+            chat_id="dm-chat",
+            user_name="allowed-user",
+            chat_type="dm",
+            profile=None,
+        )
+    ) is default_adapter
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

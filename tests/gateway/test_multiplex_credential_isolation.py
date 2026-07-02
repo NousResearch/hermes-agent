@@ -63,6 +63,23 @@ class TestRuntimeProviderUsesScope:
         assert _getenv("HERMES_MAX_ITERATIONS") == "42"
 
 
+class TestGatewayConfigUsesScope:
+    """Gateway platform credentials must use the active profile secret scope."""
+
+    def test_telegram_token_reads_scope(self, monkeypatch):
+        from gateway.config import Platform, load_gateway_config
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "default-token")
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({"TELEGRAM_BOT_TOKEN": "profile-token"})
+        try:
+            cfg = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(tok)
+
+        assert cfg.platforms[Platform.TELEGRAM].token == "profile-token"
+
+
 class TestMcpInterpolationUsesScope:
     """MCP config ${VAR} interpolation resolves through the secret scope."""
 

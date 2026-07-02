@@ -1719,6 +1719,19 @@ class TestProfilesToServe:
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
 
+    def test_on_allowlist_restricts_named_profiles(self, profile_env):
+        create_profile("coder", no_alias=True)
+        create_profile("writer", no_alias=True)
+        create_profile("reviewer", no_alias=True)
+        serve = dict(profiles_to_serve(multiplex=True, allowlist=["coder", "writer"]))
+        assert set(serve) == {"default", "coder", "writer"}
+        assert serve["coder"] == get_profile_dir("coder")
+
+    def test_on_empty_allowlist_returns_just_default(self, profile_env):
+        create_profile("coder", no_alias=True)
+        serve = profiles_to_serve(multiplex=True, allowlist=[])
+        assert [n for n, _ in serve] == ["default"]
+
     def test_on_default_always_first(self, profile_env):
         create_profile("coder", no_alias=True)
         serve = profiles_to_serve(multiplex=True)

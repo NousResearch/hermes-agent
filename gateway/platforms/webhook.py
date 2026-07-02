@@ -432,7 +432,14 @@ class WebhookAdapter(BasePlatformAdapter):
             return None
         try:
             from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            allowlist = getattr(cfg, "multiplex_profile_allowlist", None)
+            served = {
+                name
+                for name, _ in profiles_to_serve(
+                    multiplex=True,
+                    allowlist=allowlist,
+                )
+            }
         except Exception:
             return _PROFILE_REJECTED
         if profile not in served:

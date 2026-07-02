@@ -927,7 +927,10 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+def profiles_to_serve(
+    multiplex: bool,
+    allowlist: Optional[List[str]] = None,
+) -> List[Tuple[str, Path]]:
     """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
 
     This is the single chokepoint for "which profiles does the inbound gateway
@@ -937,8 +940,13 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
       profile — byte-for-byte the single-profile behavior the gateway has
       always had. The name is ``"default"`` for the default profile or the
       active named profile's id.
-    - ``multiplex=True``: returns the default profile plus every valid named
-      profile under ``profiles/``, each paired with its own HERMES_HOME.
+    - ``multiplex=True, allowlist=None``: returns the default profile plus every
+      valid named profile under ``profiles/``, each paired with its own
+      HERMES_HOME. This preserves the original broad-enumeration helper
+      behaviour for callers/tests that deliberately want it.
+    - ``multiplex=True, allowlist=[...]``: returns the default profile plus only
+      the valid, existing named profiles in the allowlist. An empty allowlist is
+      fail-closed and returns only default.
 
     Intentionally lightweight (a directory scan + name validation only): no
     per-profile config reads, gateway-running probes, or skill counts like
@@ -952,6 +960,22 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
         return [(active, get_profile_dir(active))]
 
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+
+    if allowlist is not None:
+        seen: set[str] = {"default"}
+        for raw in allowlist:
+            try:
+                name = normalize_profile_name(str(raw))
+                validate_profile_name(name)
+            except Exception:
+                continue
+            if name in seen:
+                continue
+            profile_dir = get_profile_dir(name)
+            if profile_dir.is_dir():
+                serve.append((name, profile_dir))
+                seen.add(name)
+        return serve
 
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():

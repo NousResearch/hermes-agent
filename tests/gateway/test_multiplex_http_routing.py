@@ -60,7 +60,7 @@ class TestWebhookProfileResolution:
         adapter, Req, _REJ, served = self._adapter(multiplex=True)
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [(n, None) for n in served],
+            lambda multiplex, allowlist=None: [(n, None) for n in served],
         )
         assert adapter._resolve_request_profile(Req("coder")) == "coder"
 
@@ -68,6 +68,6 @@ class TestWebhookProfileResolution:
         adapter, Req, REJ, served = self._adapter(multiplex=True)
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [(n, None) for n in served],
+            lambda multiplex, allowlist=None: [(n, None) for n in served],
         )
         assert adapter._resolve_request_profile(Req("ghost")) is REJ

@@ -1187,14 +1187,29 @@ def restore_primary_runtime(agent) -> bool:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
                 primary_provider = str(rt.get("provider") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider
-                if primary_provider == "custom" and entry_provider.startswith("custom:"):
-                    primary_base_url = str(rt.get("base_url") or "").strip().rstrip("/").lower()
-                    entry_base_url = str(
-                        getattr(entry, "runtime_base_url", None)
-                        or getattr(entry, "base_url", None)
-                        or ""
-                    ).strip().rstrip("/").lower()
-                    entry_matches_primary = bool(primary_base_url and entry_base_url == primary_base_url)
+                # Custom endpoints all carry the generic ``custom`` provider on
+                # the agent while the pool entry is keyed ``custom:<name>`` (see
+                # CUSTOM_POOL_PREFIX). Resolve the primary's base_url to its
+                # ``custom:<name>`` key via the canonical helper and compare
+                # against the entry's key — this mirrors the sibling guard in
+                # ``recover_with_credential_pool`` (see above) and correctly
+                # disambiguates multiple custom providers that share one gateway
+                # base_url. Fixes #56885.
+                from agent.credential_pool import CUSTOM_POOL_PREFIX
+                if (
+                    primary_provider == "custom"
+                    and entry_provider.startswith(CUSTOM_POOL_PREFIX)
+                ):
+                    entry_matches_primary = False
+                    try:
+                        from agent.credential_pool import get_custom_provider_pool_key
+                        primary_base_url = str(rt.get("base_url") or "").strip()
+                        primary_key = (
+                            get_custom_provider_pool_key(primary_base_url) or ""
+                        ).strip().lower()
+                        entry_matches_primary = bool(primary_key) and primary_key == entry_provider
+                    except Exception:
+                        entry_matches_primary = False
 
                 entry_key = (
                     getattr(entry, "runtime_api_key", None)

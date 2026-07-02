@@ -716,13 +716,8 @@ def run_import(args) -> None:
                     if skipped:
                         print(f"  Profile aliases skipped:  {', '.join(skipped)}")
                     if not _is_wrapper_dir_in_path():
-                        import sys as _sys
                         print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
-                        if _sys.platform == "win32":
-                            print(_get_path_guidance())
-                        else:
-                            print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
-                            print('    export PATH="$HOME/.local/bin:$PATH"')
+                        print(_get_path_guidance())
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):

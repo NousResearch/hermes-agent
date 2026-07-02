@@ -487,6 +487,10 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     # The alias is used verbatim as a filename under the wrapper dir; reject
     # any value that isn't a single safe identifier so it can't traverse out.
     validate_alias_name(canon)
+    # The profile id is interpolated unquoted into the generated script; every
+    # current caller pre-validates it, but enforce here so that stays true
+    # regardless of caller.
+    validate_profile_name(profile)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)

@@ -1834,7 +1834,9 @@ def get_model_context_length(
                     agg_model,
                     base_url=rt.get("base_url", "") or "",
                     api_key=rt.get("api_key", "") or "",
+                    config_context_length=config_context_length,
                     provider=agg_provider,
+                    custom_providers=custom_providers,
                 )
         except Exception:
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)

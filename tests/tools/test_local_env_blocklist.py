@@ -114,6 +114,29 @@ class TestProviderEnvBlocklist:
             "AWS_BEARER_TOKEN_BEDROCK leaked into subprocess env (see #32314)"
         )
 
+    def test_vertex_credentials_path_is_stripped(self):
+        """The Vertex AI service-account JSON path must not leak into
+        subprocesses, even though it is filesystem path metadata rather
+        than a bare API key.
+
+        Regression: ``vertex`` authenticates via OAuth2 (service-account
+        JSON / ADC), not PROVIDER_REGISTRY, and OPTIONAL_ENV_VARS marks
+        VERTEX_CREDENTIALS_PATH as ``password=False`` (it's a path, not a
+        secret string) with ``category="provider"`` — a category the
+        registry-derived loop above never checks — so it fell through both
+        blocklist sources. GOOGLE_APPLICATION_CREDENTIALS (the ADC fallback
+        the adapter also reads) had the same gap. A leaked path discloses
+        the on-disk location of a GCP service-account key to every spawned
+        subprocess (terminal, codex/copilot app-server, browser workers).
+        """
+        result_env = _run_with_env(extra_os_env={
+            "VERTEX_CREDENTIALS_PATH": "/home/user/.config/gcloud/sa-key.json",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/home/user/.config/gcloud/adc.json",
+        })
+
+        assert "VERTEX_CREDENTIALS_PATH" not in result_env
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in result_env
+
     def test_general_aws_credential_chain_is_preserved(self):
         """The GENERAL AWS credential chain must STILL pass through to
         subprocesses — this is the no-regression guard for #32314.

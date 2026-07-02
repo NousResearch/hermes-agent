@@ -155,6 +155,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
+        # Path to a GCP service-account JSON, not a bare key, so
+        # OPTIONAL_ENV_VARS marks it password=False and the loop above skips it.
+        "VERTEX_CREDENTIALS_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
         "DEEPSEEK_API_KEY",
         "MISTRAL_API_KEY",
         "GROQ_API_KEY",

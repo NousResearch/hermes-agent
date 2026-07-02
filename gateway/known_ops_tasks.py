@@ -1,0 +1,803 @@
+"""Deterministic gateway fast paths for known Hermes ops tasks.
+
+Known ops tasks are small, repeatable, low-token workflows that should not
+spend an agent turn rediscovering their data source or repair path.  Add a new
+entry here when a repeated failure has a stable detector and executable handler.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import datetime as dt
+import logging
+import re
+import subprocess
+import sys
+from typing import Callable, Sequence
+from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
+
+
+Detector = Callable[[str], bool]
+Handler = Callable[[str], str]
+
+
+@dataclass(frozen=True)
+class KnownOpsTask:
+    """Registered deterministic task available before agent dispatch."""
+
+    name: str
+    platforms: frozenset[str]
+    detector: Detector
+    handler: Handler
+    verification: tuple[str, ...]
+    promotion_hint: str
+    description: str = ""
+
+    def supports_platform(self, platform: str) -> bool:
+        normalized = (platform or "").strip().lower()
+        return "all" in self.platforms or normalized in self.platforms
+
+
+@dataclass(frozen=True)
+class KnownOpsTaskResult:
+    task: KnownOpsTask
+    text: str
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "").lower()
+
+
+def _looks_like_token_usage_request(text: str) -> bool:
+    """Detect token-report requests before dispatching to the agent."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_token = "token" in normalized or "tokens" in normalized
+    has_usage = any(marker in normalized for marker in ("消耗", "统计", "输入", "输出", "用量", "使用"))
+    has_time_window = any(
+        marker in normalized
+        for marker in (
+            "今天",
+            "今日",
+            "当日",
+            "截止到现在",
+            "昨天",
+            "昨日",
+            "最近",
+            "之内",
+            "以内",
+            "一周",
+            "一月",
+            "一个月",
+            "本周",
+            "本月",
+        )
+    ) or bool(re.search(r"\d+\s*(?:天|周|个月|月)", text or "")) or bool(
+        re.search(r"\d{4}-\d{2}-\d{2}", text or "")
+    )
+    return bool(has_token and has_usage and has_time_window)
+
+
+def _looks_like_token_usage_clarification_request(text: str) -> bool:
+    """Catch vague token usage asks so they do not enter broad agent exploration."""
+    normalized = _normalize_text(text)
+    if not normalized or "token" not in normalized:
+        return False
+    if _looks_like_token_usage_request(text):
+        return False
+    if any(marker in normalized for marker in ("什么是token", "token是什么", "解释token")):
+        return False
+    return any(
+        marker in normalized
+        for marker in ("查", "看", "查询", "检查", "统计", "用量", "使用", "消耗")
+    )
+
+
+def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
+    """Detect repeated asks about Hermes/OpenClaw diagnosis loops themselves."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_agent = "hermes" in normalized or "openclaw" in normalized
+    has_loop = any(
+        marker in normalized
+        for marker in (
+            "死循环",
+            "循环",
+            "卡住",
+            "无法答复",
+            "不能答复",
+            "没有答复",
+            "预算",
+            "限额",
+            "进展",
+            "查故障",
+            "故障诊断",
+            "虚幻",
+        )
+    )
+    has_diagnosis = any(
+        marker in normalized
+        for marker in ("为什么", "原因", "分析", "查", "诊断", "不正常", "无法结束")
+    )
+    return bool(has_agent and has_loop and has_diagnosis)
+
+
+_GITHUB_REPO_URL_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"(?<![\w.-])(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)(?![\w.-])"
+)
+_GITHUB_SKILL_IDENTIFIER_RE = re.compile(
+    r"(?<![\w.-])(?P<identifier>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)(?![\w.-])"
+)
+
+
+def _looks_like_github_skill_install_request(text: str) -> bool:
+    """Detect clear Feishu requests to install a GitHub-hosted skill."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_install = _has_github_skill_install_intent(text)
+    has_skill = (
+        "skill" in normalized
+        or "技能" in normalized
+        or bool(_github_skill_identifiers_from_text(text))
+    )
+    has_github = "github.com" in normalized or bool(_GITHUB_OWNER_REPO_RE.search(text or ""))
+    return bool(has_install and has_skill and has_github)
+
+
+def _has_github_skill_install_intent(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return any(marker in normalized for marker in ("安装", "帮我装", "装一下", "install", "setup"))
+
+
+def _looks_like_github_skill_reference_without_install_request(text: str) -> bool:
+    """Stop path-only GitHub skill mentions before they start a low-budget agent turn."""
+    if not text or _has_github_skill_install_intent(text):
+        return False
+    if _github_skill_identifiers_from_text(text):
+        return True
+    return bool(re.search(r"https?://github\.com/[^/\s]+/[^/\s]+/.*/SKILL\.md(?:[?#]\S*)?", text, re.IGNORECASE))
+
+
+def _github_skill_identifiers_from_text(text: str) -> list[str]:
+    raw = text or ""
+    identifiers: list[str] = []
+    for match in _GITHUB_SKILL_IDENTIFIER_RE.finditer(raw):
+        identifier = match.group("identifier").rstrip(".,，。)")
+        if identifier.lower().startswith("github.com/"):
+            continue
+        if "/blob/" in identifier or "/tree/" in identifier:
+            continue
+        identifiers.append(identifier.removesuffix(".git"))
+    return list(dict.fromkeys(identifiers))
+
+
+def _github_skill_identifier_from_text(text: str) -> tuple[str, str]:
+    """Return (mode, identifier) for a GitHub skill install request.
+
+    mode is "install" for direct SKILL.md URLs and "tap" for GitHub repos.
+    """
+    raw = text or ""
+    identifiers = _github_skill_identifiers_from_text(raw)
+    if identifiers:
+        return "install", identifiers[0]
+
+    match = _GITHUB_REPO_URL_RE.search(raw)
+    if match:
+        owner = match.group("owner")
+        repo = match.group("repo").removesuffix(".git")
+        url = match.group(0).rstrip(".,，。)")
+        if re.search(r"/SKILL\.md(?:[?#].*)?$", url, re.IGNORECASE):
+            blob_match = re.match(
+                r"https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*/?SKILL\.md)(?:[?#].*)?$",
+                url,
+                re.IGNORECASE,
+            )
+            if blob_match:
+                raw_owner, raw_repo, branch, path = blob_match.groups()
+                url = f"https://raw.githubusercontent.com/{raw_owner}/{raw_repo}/{branch}/{path}"
+            return "install", url
+        return "tap", f"{owner}/{repo}"
+
+    match = _GITHUB_OWNER_REPO_RE.search(raw)
+    if not match:
+        raise ValueError("未找到可安装的 GitHub repo 或 SKILL.md URL")
+    owner = match.group("owner")
+    repo = match.group("repo").removesuffix(".git")
+    return "tap", f"{owner}/{repo}"
+
+
+def _github_skill_targets_from_text(text: str) -> list[tuple[str, str]]:
+    raw = text or ""
+    targets: list[tuple[str, str]] = []
+
+    for match in _GITHUB_REPO_URL_RE.finditer(raw):
+        owner = match.group("owner")
+        repo = match.group("repo").removesuffix(".git")
+        url = match.group(0).rstrip(".,，。)")
+        if re.search(r"/SKILL\.md(?:[?#].*)?$", url, re.IGNORECASE):
+            blob_match = re.match(
+                r"https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*/?SKILL\.md)(?:[?#].*)?$",
+                url,
+                re.IGNORECASE,
+            )
+            if blob_match:
+                raw_owner, raw_repo, branch, path = blob_match.groups()
+                url = f"https://raw.githubusercontent.com/{raw_owner}/{raw_repo}/{branch}/{path}"
+            targets.append(("install", url))
+        else:
+            targets.append(("tap", f"{owner}/{repo}"))
+
+    for identifier in _github_skill_identifiers_from_text(raw):
+        targets.append(("install", identifier))
+
+    if not targets:
+        targets.append(_github_skill_identifier_from_text(raw))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in targets:
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped.append(target)
+    return deduped
+
+
+def _run_hermes_skills_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "skills", *args],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _discover_github_skill_dirs(repo: str) -> tuple[list[str], str]:
+    try:
+        from tools.skills_hub import GitHubAuth, GitHubSource
+    except Exception as exc:
+        return [], f"无法加载 GitHub skill 探测器: {exc}"
+
+    try:
+        source = GitHubSource(GitHubAuth())
+        tree = source._get_repo_tree(repo)
+    except Exception as exc:
+        return [], f"无法读取 GitHub repo tree: {exc}"
+    if tree is None:
+        rate_limited = bool(getattr(source, "is_rate_limited", False))
+        if rate_limited:
+            return [], "GitHub API rate limit 已耗尽，暂时无法列出仓库内 skills。"
+        return [], "未能读取 GitHub repo tree。"
+
+    _branch, entries = tree
+    dirs: list[str] = []
+    for entry in entries:
+        if entry.get("type") != "blob":
+            continue
+        path = str(entry.get("path") or "")
+        if not path.endswith("/SKILL.md") and path != "SKILL.md":
+            continue
+        skill_dir = path[: -len("/SKILL.md")] if path.endswith("/SKILL.md") else ""
+        if not skill_dir:
+            dirs.append(repo)
+        elif "/deprecated/" not in f"/{skill_dir}/":
+            dirs.append(f"{repo}/{skill_dir}")
+
+    return sorted(dict.fromkeys(dirs)), ""
+
+
+def _format_github_skill_candidates(candidates: Sequence[str], limit: int = 12) -> str:
+    if not candidates:
+        return ""
+    lines = [f"发现 {len(candidates)} 个可安装 skill。这个 repo 不是单个 skill，所以我没有盲装全部。"]
+    for item in candidates[:limit]:
+        lines.append(f"- {item}")
+    if len(candidates) > limit:
+        lines.append(f"- ... 另有 {len(candidates) - limit} 个未展开")
+    lines.append("")
+    lines.append("请回复要安装的具体条目，例如：")
+    lines.append(f"安装 {candidates[0]}")
+    return "\n".join(lines)
+
+
+def _clip_command_output(text: str, limit: int = 1200) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...(output clipped)"
+
+
+def _render_github_skill_install(text: str) -> str:
+    targets = _github_skill_targets_from_text(text)
+    install_targets = [identifier for mode, identifier in targets if mode == "install"]
+    if install_targets:
+        lines = ["已通过确定性快路径安装指定 GitHub skill："]
+        ok = 0
+        failed = 0
+        for identifier in install_targets:
+            result = _run_hermes_skills_command(["install", identifier, "--yes"])
+            combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+            output = _clip_command_output(combined, limit=500) or "(no output)"
+            if result.returncode == 0:
+                ok += 1
+                lines.append(f"- 成功: {identifier}")
+            else:
+                failed += 1
+                lines.append(f"- 失败: {identifier} (exit {result.returncode})")
+                lines.append(f"  {output}")
+        lines.append("")
+        lines.append(f"结果: {ok} 成功, {failed} 失败。")
+        lines.append("这次没有启动通用 Agent 探索，也没有扫描本机目录。")
+        return "\n".join(lines)
+
+    mode, identifier = targets[0]
+    if mode == "install":
+        cmd_args = ["install", identifier, "--yes"]
+        action = "安装 GitHub SKILL.md"
+    else:
+        cmd_args = ["tap", "add", identifier]
+        action = "添加 GitHub skill tap"
+
+    result = _run_hermes_skills_command(cmd_args)
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    output = _clip_command_output(combined) or "(no output)"
+    if result.returncode == 0:
+        if mode == "tap":
+            candidates, discovery_error = _discover_github_skill_dirs(identifier)
+            if len(candidates) == 1:
+                install_result = _run_hermes_skills_command(["install", candidates[0], "--yes"])
+                install_output = _clip_command_output(
+                    "\n".join(part for part in (install_result.stdout, install_result.stderr) if part)
+                ) or "(no output)"
+                if install_result.returncode == 0:
+                    return "\n".join(
+                        [
+                            "已通过确定性快路径完成：添加 GitHub skill tap 并安装唯一候选",
+                            f"目标: {candidates[0]}",
+                            "",
+                            install_output,
+                            "",
+                            "这次没有启动通用 Agent 探索，也没有扫描本机目录。",
+                        ]
+                    )
+                return "\n".join(
+                    [
+                        "已添加 GitHub skill tap，但安装唯一候选失败。",
+                        f"目标: {candidates[0]}",
+                        f"退出码: {install_result.returncode}",
+                        "",
+                        install_output,
+                    ]
+                )
+            candidate_text = _format_github_skill_candidates(candidates)
+            if candidate_text:
+                output = f"{output}\n\n{candidate_text}"
+            elif discovery_error:
+                output = f"{output}\n\n{discovery_error}"
+        return "\n".join(
+            [
+                f"已通过确定性快路径完成：{action}",
+                f"目标: {identifier}",
+                "",
+                output,
+                "",
+                "这次没有启动通用 Agent 探索，也没有扫描本机目录。新 skill/tap 会在下个会话或 reload 后进入可用范围。",
+            ]
+        )
+    return "\n".join(
+        [
+            f"GitHub skill 快路径执行失败：{action}",
+            f"目标: {identifier}",
+            f"退出码: {result.returncode}",
+            "",
+            output,
+            "",
+            "我已停止继续探索，避免再次消耗普通飞书轮次。请改用明确的 SKILL.md URL，或发送 `深诊断：继续安装这个 skill` 进入高预算路径。",
+        ]
+    )
+
+
+def _render_github_skill_reference_clarification(text: str) -> str:
+    identifiers = _github_skill_identifiers_from_text(text)
+    if not identifiers:
+        identifiers = [match.group(0).rstrip(".,，。)") for match in re.finditer(
+            r"https?://github\.com/[^/\s]+/[^/\s]+/.*/SKILL\.md(?:[?#]\S*)?",
+            text or "",
+            re.IGNORECASE,
+        )]
+    lines = [
+        "我识别到了 GitHub skill 路径，但没有看到明确的安装指令，所以这次没有执行安装。",
+        "",
+        "要安装请回复：",
+    ]
+    for identifier in identifiers[:5]:
+        lines.append(f"- 安装 {identifier}")
+    if len(identifiers) > 5:
+        lines.append(f"- ... 另有 {len(identifiers) - 5} 个未展开")
+    lines.extend(
+        [
+            "",
+            "这次没有启动通用 Agent 探索，也没有扫描本机目录。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _cron_jobs_named_in_text(text: str) -> list[dict[str, object]]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return []
+    try:
+        from cron.jobs import load_jobs
+    except Exception:
+        return []
+    matches: list[dict[str, object]] = []
+    try:
+        jobs = load_jobs()
+    except Exception as exc:
+        logger.warning("Failed to load cron jobs for known ops fast path: %s", exc)
+        return []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        name = str(job.get("name") or "").strip()
+        if name and _normalize_text(name) in normalized:
+            matches.append(job)
+    return matches
+
+
+def _looks_like_cron_schedule_status_request(text: str) -> bool:
+    """Detect simple cron schedule questions that should not start an agent turn."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_cron_context = any(
+        marker in normalized
+        for marker in (
+            "定时",
+            "自动运行",
+            "计划任务",
+            "cron",
+            "scheduledjob",
+            "schedule",
+        )
+    )
+    has_schedule_question = any(
+        marker in normalized
+        for marker in (
+            "间隔",
+            "多久",
+            "多长时间",
+            "频率",
+            "几分钟",
+            "几小时",
+            "下次",
+            "什么时候",
+            "schedule",
+        )
+    )
+    return bool(has_cron_context and has_schedule_question and _cron_jobs_named_in_text(text))
+
+
+def _render_cron_schedule_status(text: str) -> str:
+    jobs = _cron_jobs_named_in_text(text)
+    if not jobs:
+        return "没有在当前 cron 配置里找到这个定时任务。"
+
+    lines = ["当前定时任务配置："]
+    for job in jobs[:3]:
+        name = str(job.get("name") or job.get("id") or "cron job")
+        schedule = str(job.get("schedule_display") or "")
+        if not schedule:
+            raw_schedule = job.get("schedule")
+            if isinstance(raw_schedule, dict):
+                schedule = str(
+                    raw_schedule.get("display")
+                    or raw_schedule.get("value")
+                    or raw_schedule.get("expr")
+                    or raw_schedule.get("run_at")
+                    or "?"
+                )
+            else:
+                schedule = str(raw_schedule or "?")
+        state = "active" if job.get("enabled", True) and job.get("state", "scheduled") != "paused" else "paused"
+        lines.append(f"- {name}: {schedule} ({state})")
+        next_run = str(job.get("next_run_at") or "").strip()
+        if next_run:
+            lines.append(f"  下次运行: {next_run}")
+        last_run = str(job.get("last_run_at") or "").strip()
+        last_status = str(job.get("last_status") or "").strip()
+        if last_run or last_status:
+            suffix = f" {last_status}" if last_status else ""
+            lines.append(f"  最近运行: {last_run}{suffix}".rstrip())
+    if len(jobs) > 3:
+        lines.append(f"另外还有 {len(jobs) - 3} 个同名/匹配任务未展开。")
+    return "\n".join(lines)
+
+
+def _render_agent_loop_diagnostic_report(text: str) -> str:
+    return "\n".join(
+        [
+            "Hermes/OpenClaw 故障诊断循环快照：",
+            "",
+            "- 已识别为诊断循环类问题，先走确定性报告，避免再次进入通用 Agent 探索循环。",
+            "- 当前已知风险点：普通 Feishu 诊断预算较低，深诊断只是扩大轮次；如果没有预算前收口，仍可能继续发散。",
+            "- 已知有效保护：Feishu 普通/深诊断预算分流、工具结果压缩、压缩低收益停止、工具循环 guardrail、known ops 快路径。",
+            "- 仍需看代码/日志时，请只查一个明确缺口：预算前收口、连续探索 guardrail、known ops 覆盖，避免重新大范围搜索历史归档。",
+            "",
+            "建议下一步：如果你是在排查“为什么上轮没答复”，先看最近一次 trajectory 的 finalStatus、toolMetas 数量、turn_exit_reason；如果只是要继续修复 Hermes，请直接指定一个缺口继续。",
+        ]
+    )
+
+
+def _parse_top_n(text: str, default: int = 3) -> int:
+    match = re.search(r"(?:前|top)\s*([0-9一二三四五六七八九十]+)", text or "", re.IGNORECASE)
+    if not match:
+        return default
+    raw = match.group(1)
+    chinese_digits = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    try:
+        value = int(raw)
+    except ValueError:
+        value = chinese_digits.get(raw, default)
+    return max(1, min(value, 10))
+
+
+def _today_token_usage_scope(text: str) -> str:
+    normalized = _normalize_text(text)
+    if "飞书" in normalized and not any(marker in normalized for marker in ("全部", "所有", "整体")):
+        return "feishu"
+    return "all"
+
+
+def _chinese_number_to_int(raw: str, default: int) -> int:
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    digits = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    if raw == "十":
+        return 10
+    if raw.startswith("十"):
+        return 10 + digits.get(raw[1:], 0)
+    if "十" in raw:
+        left, _, right = raw.partition("十")
+        return digits.get(left, 1) * 10 + digits.get(right, 0)
+    return digits.get(raw, default)
+
+
+def _parse_token_usage_window(text: str) -> dict[str, object]:
+    normalized = _normalize_text(text)
+    now = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+    today = now.date()
+    dates = re.findall(r"\d{4}-\d{2}-\d{2}", text or "")
+
+    if len(dates) >= 2:
+        return {
+            "range_start": dates[0],
+            "range_end": (dt.date.fromisoformat(dates[1]) + dt.timedelta(days=1)).isoformat(),
+            "label": f"{dates[0]} 至 {dates[1]}",
+        }
+    if len(dates) == 1:
+        return {"target_date": dates[0], "label": dates[0]}
+
+    if any(marker in normalized for marker in ("昨天", "昨日")):
+        target = today - dt.timedelta(days=1)
+        return {"target_date": target.isoformat(), "label": "昨日"}
+
+    if any(marker in normalized for marker in ("本周", "这周")):
+        start = today - dt.timedelta(days=today.weekday())
+        return {"range_start": start.isoformat(), "range_end": (today + dt.timedelta(days=1)).isoformat(), "label": "本周"}
+
+    if any(marker in normalized for marker in ("本月", "这个月")):
+        start = today.replace(day=1)
+        return {"range_start": start.isoformat(), "range_end": (today + dt.timedelta(days=1)).isoformat(), "label": "本月"}
+
+    month_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)?(?:个)?月(?:内|以内|之内)?", normalized)
+    if month_match and "本月" not in normalized:
+        months = _chinese_number_to_int(month_match.group(1) or "一", 1)
+        return {"days": max(1, min(months * 30, 366)), "label": f"最近 {months} 个月"}
+
+    week_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)?周(?:内|以内|之内)?", normalized)
+    if week_match:
+        weeks = _chinese_number_to_int(week_match.group(1) or "一", 1)
+        return {"days": max(1, min(weeks * 7, 366)), "label": f"最近 {weeks} 周"}
+
+    day_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)天(?:内|以内|之内)?", normalized)
+    if day_match:
+        days = _chinese_number_to_int(day_match.group(1), 1)
+        return {"days": max(1, min(days, 366)), "label": f"最近 {days} 天"}
+
+    return {"label": "今日"}
+
+
+def _render_token_usage_report(text: str) -> str:
+    from tools.local_repair_tool import render_token_usage_report
+
+    return render_token_usage_report(
+        scope=_today_token_usage_scope(text),
+        top_n=_parse_top_n(text),
+        **_parse_token_usage_window(text),
+    )
+
+
+def _render_token_usage_clarification(text: str) -> str:
+    return (
+        "请指定 token 统计时间范围，例如：\n"
+        "- 查今天 token 使用情况\n"
+        "- 查昨天 token 使用情况\n"
+        "- 统计最近 3 天 Token 消耗"
+    )
+
+
+KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
+    KnownOpsTask(
+        name="cron_schedule_status",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_cron_schedule_status_request,
+        handler=_render_cron_schedule_status,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: ask Feishu for a named cron job interval and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Named cron schedule/status questions should read cron/jobs.json "
+            "deterministically instead of spending a low-budget Feishu agent turn."
+        ),
+        description="Answer simple schedule questions for named cron jobs without starting an agent turn.",
+    ),
+    KnownOpsTask(
+        name="agent_loop_diagnostic_report",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_agent_loop_diagnostic_request,
+        handler=_render_agent_loop_diagnostic_report,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu diagnostic-loop question and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Repeated questions about Hermes/OpenClaw diagnostic loops should get a "
+            "bounded deterministic status report first; only the named missing gap "
+            "should be handed to the general agent."
+        ),
+        description="Explain Hermes/OpenClaw diagnostic-loop state without starting another broad diagnostic turn.",
+    ),
+    KnownOpsTask(
+        name="github_skill_install",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_github_skill_install_request,
+        handler=_render_github_skill_install,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu GitHub skill install request and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Clear Feishu requests to install a GitHub-hosted skill should call "
+            "the Hermes skills CLI directly instead of letting the model scan "
+            "home directories or GitHub contents JSON."
+        ),
+        description="Install or add GitHub-hosted skills through the Hermes skills CLI before agent dispatch.",
+    ),
+    KnownOpsTask(
+        name="github_skill_reference_clarification",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_github_skill_reference_without_install_request,
+        handler=_render_github_skill_reference_clarification,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu GitHub skill path without an install verb and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Path-only GitHub skill mentions should ask for explicit install confirmation "
+            "instead of entering the low-budget Feishu general agent."
+        ),
+        description="Clarify path-only GitHub skill mentions without starting an agent turn.",
+    ),
+    KnownOpsTask(
+        name="token_usage_report",
+        platforms=frozenset({"feishu", "telegram"}),
+        detector=_looks_like_token_usage_request,
+        handler=_render_token_usage_report,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "unit: tests/tools/test_local_repair_tool.py",
+            "runtime: ask Feishu or Telegram for token usage and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Repeated messaging-platform requests for token usage over common time windows should "
+            "stay on this deterministic state.db report path; extend the time-window "
+            "parser instead of adding one-off scripts."
+        ),
+        description="Render Hermes input/output token usage and top sessions for common time windows.",
+    ),
+    KnownOpsTask(
+        name="token_usage_clarification",
+        platforms=frozenset({"feishu", "telegram"}),
+        detector=_looks_like_token_usage_clarification_request,
+        handler=_render_token_usage_clarification,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: ask Telegram '查token' and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Vague token usage asks should request a bounded time window instead of "
+            "starting an exploratory agent turn."
+        ),
+        description="Clarify vague token usage requests without starting an agent turn.",
+    ),
+)
+
+
+def iter_known_ops_tasks(platform: str) -> tuple[KnownOpsTask, ...]:
+    return tuple(task for task in KNOWN_OPS_TASKS if task.supports_platform(platform))
+
+
+def match_known_ops_task(platform: str, text: str) -> KnownOpsTask | None:
+    for task in iter_known_ops_tasks(platform):
+        try:
+            if task.detector(text):
+                return task
+        except Exception as exc:
+            logger.warning("Known ops detector failed for %s: %s", task.name, exc)
+    return None
+
+
+def render_known_ops_task(platform: str, text: str) -> KnownOpsTaskResult | None:
+    task = match_known_ops_task(platform, text)
+    if task is None:
+        return None
+    return KnownOpsTaskResult(task=task, text=task.handler(text))
+
+
+def known_ops_task_metadata(platform: str | None = None) -> list[dict[str, object]]:
+    tasks: Sequence[KnownOpsTask]
+    if platform:
+        tasks = iter_known_ops_tasks(platform)
+    else:
+        tasks = KNOWN_OPS_TASKS
+    return [
+        {
+            "name": task.name,
+            "platforms": sorted(task.platforms),
+            "description": task.description,
+            "verification": list(task.verification),
+            "promotion_hint": task.promotion_hint,
+        }
+        for task in tasks
+    ]

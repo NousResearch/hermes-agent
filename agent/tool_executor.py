@@ -46,25 +46,62 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    BudgetConfig,
+    DEFAULT_BUDGET,
+    FEISHU_BUDGET,
+    FEISHU_DEEP_BUDGET,
+    MESSAGING_BUDGET,
+    UI_VERIFICATION_BUDGET,
+    DEEP_DIAGNOSTIC_BUDGET,
+    budget_for_context_window,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _budget_for_agent(agent) -> BudgetConfig:
-    """Resolve a tool-result BudgetConfig scaled to the agent's context window.
+def _platform_budget_for_agent(agent) -> BudgetConfig:
+    platform = (
+        getattr(agent, "_platform_budget_key", None)
+        or getattr(agent, "platform", "")
+        or ""
+    ).strip().lower()
+    if platform == "feishu":
+        return FEISHU_BUDGET
+    if platform == "feishu_deep":
+        return FEISHU_DEEP_BUDGET
+    if platform in {"telegram", "telegram_ordinary", "feishu_ordinary"}:
+        return MESSAGING_BUDGET
+    if platform in {"telegram_ui", "feishu_ui", "ui_verification"}:
+        return UI_VERIFICATION_BUDGET
+    if platform in {"telegram_deep", "deep_diagnostic"}:
+        return DEEP_DIAGNOSTIC_BUDGET
+    return DEFAULT_BUDGET
 
-    Large-context models keep the historical 100K/200K char defaults; small
-    models (e.g. a 65K-token local model switched into mid-session) get a budget
-    proportional to their window so a single large tool result can't push the
-    request past the model's limit (#23767). Falls back to the default budget
-    when the context length isn't resolvable.
-    """
+
+def _combine_budget_caps(base: BudgetConfig, cap: BudgetConfig) -> BudgetConfig:
+    default_result_size = min(base.default_result_size, cap.default_result_size)
+    return BudgetConfig(
+        default_result_size=default_result_size,
+        turn_budget=min(base.turn_budget, cap.turn_budget),
+        preview_size=min(base.preview_size, cap.preview_size),
+        tool_overrides={
+            name: min(value, default_result_size)
+            for name, value in base.tool_overrides.items()
+        },
+    )
+
+
+def _budget_for_agent(agent) -> BudgetConfig:
+    """Resolve a tool-result budget from platform policy and context size."""
+    platform_budget = _platform_budget_for_agent(agent)
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+        context_budget = budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
     except Exception:
-        return DEFAULT_BUDGET
+        context_budget = DEFAULT_BUDGET
+    return _combine_budget_caps(platform_budget, context_budget)
+
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -1397,18 +1434,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
+                _hfc_kwargs = {
+                    "tool_call_id": tool_call.id,
+                    "session_id": agent.session_id or "",
+                    "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                    "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                    "enabled_tools": list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    "skip_pre_tool_call_hook": True,
+                    "skip_tool_request_middleware": True,
+                    "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
+                    "disabled_toolsets": getattr(agent, "disabled_toolsets", None),
+                    "tool_request_middleware_trace": list(middleware_trace),
+                }
+                _platform_budget_key = getattr(agent, "_platform_budget_key", None)
+                if _platform_budget_key:
+                    _hfc_kwargs["platform"] = _platform_budget_key
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
-                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    tool_request_middleware_trace=list(middleware_trace),
+                    **_hfc_kwargs,
                 )
                 _spinner_result = function_result
             except KeyboardInterrupt:
@@ -1439,18 +1482,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
+                _hfc_kwargs = {
+                    "tool_call_id": tool_call.id,
+                    "session_id": agent.session_id or "",
+                    "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                    "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                    "enabled_tools": list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    "skip_pre_tool_call_hook": True,
+                    "skip_tool_request_middleware": True,
+                    "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
+                    "disabled_toolsets": getattr(agent, "disabled_toolsets", None),
+                    "tool_request_middleware_trace": list(middleware_trace),
+                }
+                _platform_budget_key = getattr(agent, "_platform_budget_key", None)
+                if _platform_budget_key:
+                    _hfc_kwargs["platform"] = _platform_budget_key
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
-                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    tool_request_middleware_trace=list(middleware_trace),
+                    **_hfc_kwargs,
                 )
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(

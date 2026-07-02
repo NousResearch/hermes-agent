@@ -112,3 +112,72 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
         turn_budget=per_turn,
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
     )
+
+
+# Messaging diagnostics need much tighter inline results than CLI/desktop.
+# A single 50K-char terminal/execute_code result can dominate every following
+# Feishu model call, so persist or inline-truncate far earlier there.
+FEISHU_BUDGET = BudgetConfig(
+    default_result_size=8_000,
+    turn_budget=24_000,
+    preview_size=1_200,
+    tool_overrides={
+        "execute_code": 8_000,
+        "terminal": 8_000,
+        "search_files": 8_000,
+    },
+)
+
+FEISHU_DEEP_BUDGET = BudgetConfig(
+    default_result_size=16_000,
+    turn_budget=48_000,
+    preview_size=1_500,
+    tool_overrides={
+        "execute_code": 16_000,
+        "terminal": 16_000,
+        "search_files": 16_000,
+    },
+)
+
+
+# Messaging operations should default to a compact "summary + artifact path"
+# shape regardless of platform. Telegram was previously allowed to inherit the
+# large desktop/CLI defaults, so a routine ops request could carry tens of
+# thousands of chars into every later model request.
+MESSAGING_BUDGET = BudgetConfig(
+    default_result_size=8_000,
+    turn_budget=24_000,
+    preview_size=1_200,
+    tool_overrides={
+        "execute_code": 8_000,
+        "terminal": 8_000,
+        "search_files": 8_000,
+        "computer_use": 8_000,
+    },
+)
+
+
+UI_VERIFICATION_BUDGET = BudgetConfig(
+    default_result_size=8_000,
+    turn_budget=24_000,
+    preview_size=1_200,
+    tool_overrides={
+        "computer_use": 8_000,
+        "execute_code": 8_000,
+        "terminal": 8_000,
+        "search_files": 8_000,
+    },
+)
+
+
+DEEP_DIAGNOSTIC_BUDGET = BudgetConfig(
+    default_result_size=16_000,
+    turn_budget=48_000,
+    preview_size=1_500,
+    tool_overrides={
+        "computer_use": 16_000,
+        "execute_code": 16_000,
+        "terminal": 16_000,
+        "search_files": 16_000,
+    },
+)

@@ -211,6 +211,27 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "when you need to verify an action's effect."
                 ),
             },
+            "inspect_full": {
+                "type": "boolean",
+                "description": (
+                    "Default false. When false, captures and action follow-up "
+                    "captures return a compact text result plus any artifact "
+                    "path instead of inline screenshot/base64 or a full UI "
+                    "tree. Set true only for an explicit deep UI inspection."
+                ),
+                "default": False,
+            },
+            "max_inline_chars": {
+                "type": "integer",
+                "description": (
+                    "Maximum inline text characters returned by this tool. "
+                    "Default 8000; action-only results are internally capped "
+                    "much lower. Full artifacts are saved to disk when needed."
+                ),
+                "default": 8000,
+                "minimum": 500,
+                "maximum": 16000,
+            },
         },
         "required": ["action"],
     },

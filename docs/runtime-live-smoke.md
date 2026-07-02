@@ -109,3 +109,40 @@ when credentials are present but should not be used in CI.
   `DefaultAgentFactory` path.
 - Messaging-adapter live-smoke requirements are documented in
   `docs/messaging-adapter-live-smoke.md`.
+
+---
+
+## Phase 20 -- Real DeepSeek Smoke Readiness
+
+Date: 2026-07-02
+
+### Result
+
+- Deterministic Agent-only runtime smoke: PASSED.
+  - Command: scripts/smoke_runtime_executor_live.sh
+  - Result: 7 passed, 0 failed, 1 skipped.
+  - Port: 8642.
+  - Cleanup: standalone runtime server stopped.
+- Deterministic cross-repo Agent to WebUI smoke: PASSED.
+  - Command: scripts/smoke_cross_repo.sh
+  - Result: 11 passed, 0 failed.
+  - Ports: Agent 8642, WebUI 8789.
+  - Cleanup: Agent and WebUI smoke servers stopped.
+- Real DeepSeek Agent-only smoke: SKIPPED.
+  - Reason: DEEPSEEK_API_KEY was not present in the active environment.
+- Real DeepSeek cross-repo smoke: SKIPPED.
+  - Reason: DEEPSEEK_API_KEY was not present in the active environment.
+- Provider/model: N/A because no real credential smoke ran.
+- WebUI proxied status/events: PASSED via deterministic cross-repo smoke.
+- Cancel/stop: PASSED via deterministic smoke.
+- Secret leakage: no secret values were printed or committed during credential checks.
+
+### Future real DeepSeek smoke requirement
+
+Set DEEPSEEK_API_KEY only in a local secret store or active shell.
+
+Preferred real-smoke target:
+
+- Provider: DeepSeek
+- Model: deepseek-v4-flash
+- Prompt: Return exactly: hermes runtime real smoke ok

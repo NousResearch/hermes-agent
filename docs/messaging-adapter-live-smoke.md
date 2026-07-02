@@ -213,3 +213,66 @@ After smoke completion:
   automatically redacts known secret patterns from event payloads.
 - Verify redaction by checking event payloads for `[REDACTED]` instead
   of raw secrets.
+
+---
+
+## Phase 20 -- Reference Adapter Selection
+
+Date: 2026-07-02
+
+### Selected reference adapter
+
+Telegram is the Phase 20 reference messaging-platform live-smoke target.
+
+### Selection rationale
+
+Telegram was selected because it has the smallest preferred credential path:
+
+- Required credential: TELEGRAM_BOT_TOKEN.
+- Required safe target: private test group/chat.
+- Required setup: add the bot to the private test group and make it admin if group-message reading is required.
+
+### Phase 20 live adapter result
+
+Reference messaging adapter live smoke: SKIPPED.
+
+Reason: the active environment did not contain Telegram credentials or a safe test chat identifier.
+
+Missing env/context:
+
+- TELEGRAM_BOT_TOKEN
+- TELEGRAM_CHAT_ID, if required by the local adapter workflow
+- Private Telegram test group/chat containing only the operator and bot
+
+### Future Telegram smoke steps
+
+1. Create a private Telegram test group/chat.
+2. Add the Hermes bot.
+3. Make the bot admin if needed for group-message reading.
+4. Set TELEGRAM_BOT_TOKEN in a local secret store.
+5. Start Agent runtime server and WebUI agent-runs mode.
+6. Start the gateway with Telegram enabled.
+7. Send: Return exactly: hermes messaging runtime smoke ok
+8. Verify runtime run creation or binding.
+9. Verify runtime status/events through /v1/runs.
+10. Verify the bot responds in the safe Telegram chat.
+11. Verify no secret leakage.
+12. Test /approve, /deny, and /stop only if safe pending-action and long-running flows are available.
+13. Stop processes and revoke temporary tokens if created only for testing.
+
+### Approval/clarify e2e decision
+
+Full approval/clarify resolve-while-non-terminal remains deferred.
+
+Safe future design:
+
+- Add a fake-mode-only delay or pause-before-complete flag in scripts/standalone_runtime_server.py.
+- Or add a test-only fake agent scenario selected by smoke-script flag.
+- Or use a real tool flow that naturally pauses on approval/clarify.
+
+Constraints:
+
+- Do not expose production-only injection endpoints.
+- Do not bypass RuntimeExecutor.
+- Do not bypass RuntimeControlBridge.
+- Verify pending action removal and a single resolved event append.

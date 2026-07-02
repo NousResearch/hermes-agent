@@ -854,3 +854,35 @@ All Phase 11-18 runtime architecture preserved:
 - API-server runtime path complete
 - Messaging-platform binding complete
 - Slash-command state sync complete
+
+---
+
+## Phase 20 -- Real Smoke Readiness
+
+Date: 2026-07-02
+
+### Verification summary
+
+- Deterministic Agent-only runtime smoke: PASSED, 7 passed, 0 failed, 1 skipped.
+- Deterministic cross-repo Agent to WebUI smoke: PASSED, 11 passed, 0 failed.
+- DEEPSEEK_API_KEY: not present in the active environment.
+- Real DeepSeek Agent-only smoke: SKIPPED.
+- Real DeepSeek cross-repo smoke: SKIPPED.
+- Provider/model: N/A because no real credential smoke ran.
+- WebUI proxied status/events: PASSED via deterministic cross-repo smoke.
+- Cancel/stop: PASSED via deterministic smoke.
+- Selected reference messaging adapter: Telegram.
+- Reference messaging adapter live smoke: SKIPPED because Telegram credentials and a safe test chat were unavailable.
+- Approval/clarify full e2e resolve-while-non-terminal: deferred.
+- API-server runtime path: preserved.
+- Messaging-platform runtime binding: preserved.
+- Slash-command state sync: preserved.
+- RuntimeExecutor: preserved.
+- DefaultAgentFactory: preserved.
+
+### Remaining deferred items
+
+1. Run real DeepSeek Agent-only smoke with DEEPSEEK_API_KEY.
+2. Run real DeepSeek cross-repo Agent to WebUI smoke with DEEPSEEK_API_KEY.
+3. Run Telegram reference messaging-adapter live smoke with TELEGRAM_BOT_TOKEN and a safe private test chat.
+4. Complete full approval/clarify e2e resolution while the run is non-terminal.

@@ -32,7 +32,9 @@ Usage:
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
-    HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
+    HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
+                         ';' also works and drive letters are handled;
+                         default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
@@ -89,6 +91,41 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+def _split_pathspec(value: str) -> List[str]:
+    """Split a separator-joined path list (``--paths``/``--files``/
+    ``HERMES_TEST_PATHS``) into individual paths.
+
+    POSIX: ``:``-separated, as documented.
+
+    Windows: ``;`` (``os.pathsep``) and ``:`` are both accepted as
+    separators, but a ``:`` that forms a drive letter (``C:\\...`` or
+    ``C:/...``) stays glued to its path — a naive ``split(":")`` turns
+    ``C:\\repo\\tests`` into ``['C', '\\repo\\tests']``, where the bogus
+    ``C`` becomes a phantom discovery root and the rooted remainder only
+    resolves by accident of ``Path.__truediv__`` re-anchoring it onto
+    ``repo_root``'s drive.
+    """
+    if sys.platform != "win32":
+        return [p for p in value.split(":") if p.strip()]
+    parts: List[str] = []
+    for chunk in value.split(";"):
+        raw = chunk.split(":")
+        i = 0
+        while i < len(raw):
+            part = raw[i]
+            if (
+                len(part) == 1
+                and part.isalpha()
+                and i + 1 < len(raw)
+                and raw[i + 1][:1] in ("\\", "/")
+            ):
+                part = f"{part}:{raw[i + 1]}"
+                i += 1
+            parts.append(part)
+            i += 1
+    return [p for p in parts if p.strip()]
 
 
 def _approximately_count_tests(
@@ -592,6 +629,18 @@ def _slice_files(
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # When stdout/stderr are pipes (CI, subprocess capture, redirection),
+        # Windows defaults them to the legacy ANSI code page (e.g. cp1252),
+        # which cannot encode the ✓/✗ progress glyphs. The resulting
+        # UnicodeEncodeError fires inside the executor's done-callback, so
+        # per-file progress lines are silently swallowed. Force UTF-8.
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -606,7 +655,11 @@ def main() -> int:
     parser.add_argument(
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
-        help="Colon-separated discovery roots (default: 'tests')",
+        help=(
+            "Colon-separated discovery roots (default: 'tests'). On "
+            "Windows, ';' also separates and drive letters (C:\\...) are "
+            "kept intact."
+        ),
     )
     parser.add_argument(
         "--include-integration",
@@ -652,9 +705,10 @@ def main() -> int:
         "--files",
         metavar="LIST",
         help=(
-            "Explicit colon-separated list of test files to run. Bypasses "
-            "discovery entirely — used by CI matrix jobs that receive their "
-            "file list from the generate job."
+            "Explicit colon-separated list of test files to run (on "
+            "Windows, ';' also separates and drive letters are kept "
+            "intact). Bypasses discovery entirely — used by CI matrix "
+            "jobs that receive their file list from the generate job."
         ),
     )
     parser.add_argument(
@@ -749,7 +803,7 @@ def main() -> int:
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        files = [repo_root / f for f in _split_pathspec(args.files)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -757,7 +811,7 @@ def main() -> int:
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
         else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+            roots = [repo_root / p for p in _split_pathspec(args.paths)]
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.

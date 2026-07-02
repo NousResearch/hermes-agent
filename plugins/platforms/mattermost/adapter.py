@@ -117,6 +117,9 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _api_get(self, path: str) -> Dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -134,6 +137,9 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """POST /api/v4/{path} with JSON body."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         self._last_post_status = None
         self._last_post_error = ""
@@ -213,6 +219,9 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """PUT /api/v4/{path} with JSON body."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.put(
@@ -256,7 +265,7 @@ class MattermostAdapter(BasePlatformAdapter):
     # Required overrides
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Mattermost and start the WebSocket listener."""
         import aiohttp
 

@@ -252,9 +252,7 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return typeof row.message === 'string' ? { type: 'send', message: row.message, notice: str(row.notice) } : null
 
     case 'prefill':
-      return typeof row.message === 'string'
-        ? { type: 'prefill', message: row.message, notice: str(row.notice) }
-        : null
+      return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
 
     default:
       return null

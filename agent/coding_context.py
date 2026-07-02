@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 logger = logging.getLogger("hermes.coding_context")
 
 CODING_TOOLSET = "coding"
@@ -82,6 +84,59 @@ _PROJECT_MARKERS = (
 
 # Agent-instruction files surfaced separately from manifests in the snapshot.
 _CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
+
+# Source-file extensions that make a git repo a *code* workspace even with no
+# manifest. Without this, `git init` on a notes/writing/research folder (a huge
+# non-coding use case) would flip the whole session into the coding posture just
+# for having a `.git`. A manifest still wins on its own (see `_PROJECT_MARKERS`).
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php", ".c", ".h",
+    ".cc", ".cpp", ".hpp", ".cs", ".swift", ".m", ".mm", ".dart", ".ex", ".exs",
+    ".lua", ".sh", ".bash", ".zsh", ".sql", ".vue", ".svelte", ".r", ".jl",
+    ".hs", ".clj", ".erl", ".pl",
+})
+
+# Dirs never worth scanning for the code check (deps/build/vcs/venv noise).
+_CODE_SCAN_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build",
+    "target", ".next", ".turbo", "vendor",
+})
+
+# Bounded sweep: a code workspace reveals itself in the first handful of entries.
+_CODE_SCAN_MAX_ENTRIES = 500
+
+
+def _has_code_files(root: Path) -> bool:
+    """Cheap, bounded check for source files in a repo's top two levels.
+
+    Lets a git repo of loose scripts (no manifest) still read as a code
+    workspace while a bare notes/writing repo does not. Scans the root and its
+    immediate subdirectories only, capped at ``_CODE_SCAN_MAX_ENTRIES`` stats —
+    a handful of readdirs at session start, not a full walk.
+    """
+    seen = 0
+    stack = [(root, True)]
+    while stack:
+        directory, is_root = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > _CODE_SCAN_MAX_ENTRIES:
+                        return False
+                    name = entry.name
+                    try:
+                        if entry.is_file():
+                            if os.path.splitext(name)[1].lower() in _CODE_EXTENSIONS:
+                                return True
+                        elif is_root and entry.is_dir() and name not in _CODE_SCAN_SKIP_DIRS and not name.startswith("."):
+                            stack.append((Path(entry.path), False))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
 
 # Lockfile → package manager, checked in priority order.
 _PY_LOCKFILES = (("uv.lock", "uv"), ("poetry.lock", "poetry"), ("Pipfile.lock", "pipenv"))
@@ -298,6 +353,29 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     return "auto"
 
 
+def _coding_instructions(config: Optional[dict[str, Any]]) -> str:
+    """Standing operator instructions for the coding posture (config).
+
+    ``agent.coding_instructions`` — a string or list of strings appended to the
+    coding brief as an extra stable system block, so a user can pin project-wide
+    coding-workflow rules (e.g. "for UI work don't run tsc/lint until I approve;
+    clean the diff before committing") without editing the shipped brief.
+    Cache-safe: resolved once per session into the stable system-prompt tier,
+    like the rest of the posture.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    raw = ((config or {}).get("agent", {}) or {}).get("coding_instructions", "")
+    if isinstance(raw, (list, tuple)):
+        return "\n".join(str(item).strip() for item in raw if str(item).strip())
+    return str(raw or "").strip()
+
+
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
     if cwd:
         return Path(cwd).expanduser()
@@ -368,10 +446,16 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
+    # A recognized project root (manifest / AGENTS.md / .cursorrules) is a code
+    # workspace on its own — cheap stat checks, no scan.
+    if _marker_root(cwd) is not None:
+        return CODING_PROFILE.name
     git_root = _git_root(cwd)
     if git_root is not None and git_root == _home():
         git_root = None  # dotfiles repo at $HOME — not a code workspace
-    if git_root is not None or _marker_root(cwd) is not None:
+    # A bare git repo only counts when it actually holds code, so `git init` on a
+    # notes/writing/research folder stays in the general posture.
+    if git_root is not None and _has_code_files(git_root):
         return CODING_PROFILE.name
     return GENERAL_PROFILE.name
 
@@ -398,6 +482,9 @@ class RuntimeMode:
     # only to steer edit-format guidance toward the model's family — see
     # ``_edit_format_line``. Fixed for the session, so cache-safe.
     model: Optional[str] = None
+    # Standing operator instructions (``agent.coding_instructions``), appended
+    # as an extra stable system block. Empty unless the user configures it.
+    instructions: str = ""
 
     @property
     def kind(self) -> str:
@@ -444,6 +531,10 @@ class RuntimeMode:
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
             blocks.append(workspace)
+        # Operator instructions ride their own block so the brief (block 0) stays
+        # byte-stable and cache-keyed independently of user config.
+        if self.instructions:
+            blocks.append(f"Operator instructions (from config):\n{self.instructions}")
         return blocks
 
     def compact_skill_categories(self) -> frozenset[str]:
@@ -496,6 +587,7 @@ def resolve_runtime_mode(
         cwd=resolved_cwd,
         config_mode=mode,
         model=model,
+        instructions=_coding_instructions(config),
     )
 
 
@@ -588,12 +680,14 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 
 def _git(cwd: Path, *args: str) -> str:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            **_popen_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

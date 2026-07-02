@@ -34,9 +34,10 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
-    ("anthropic/claude-sonnet-4.6",            ""),
+    ("anthropic/claude-sonnet-5",              ""),
     ("anthropic/claude-haiku-4.5",             ""),
     # OpenAI
     ("openai/gpt-5.5",                         ""),
@@ -71,6 +72,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # Sakana
+    ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
@@ -173,10 +176,12 @@ def _xai_curated_models() -> list[str]:
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4.8",
-        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4.5",
         # OpenAI
         "openai/gpt-5.5",
@@ -211,6 +216,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "stepfun/step-3.7-flash",
         # NVIDIA
         "nvidia/nemotron-3-super-120b-a12b",
+        # Sakana
+        "sakana/fugu-ultra",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -396,9 +403,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "opencode-zen": [
         "kimi-k2.5",
+        "kimi-k2.6",
+        "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4-pro",
         "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -408,6 +421,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5",
         "gpt-5-codex",
         "gpt-5-nano",
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",
@@ -415,21 +431,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-5",
         "claude-sonnet-4",
         "claude-haiku-4-5",
-        "claude-3-5-haiku",
+        "gemini-3.5-flash",
         "gemini-3.1-pro",
-        "gemini-3-pro",
         "gemini-3-flash",
         "minimax-m2.7",
         "minimax-m2.5",
-        "minimax-m2.5-free",
-        "minimax-m2.1",
+        "minimax-m3-free",
+        "glm-5.1",
         "glm-5",
-        "glm-4.7",
-        "glm-4.6",
-        "kimi-k2-thinking",
-        "kimi-k2",
-        "qwen3-coder",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-free",
+        "qwen3.6-plus",
+        "qwen3.6-plus-free",
+        "qwen3.5-plus",
+        "grok-build-0.1",
         "big-pickle",
+        "mimo-v2.5-free",
+        "north-mini-code-free",
+        "nemotron-3-ultra-free",
     ],
     "opencode-go": [
         "kimi-k2.6",
@@ -1019,6 +1039,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
@@ -1034,6 +1055,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("cursor",         "Cursor",                   "Cursor (100+ models, subscription)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
+    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
@@ -1064,7 +1086,7 @@ try:
     for _pp in _list_providers_for_canonical():
         if _pp.name in _canonical_slugs:
             continue
-        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot"}:
+        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex"}:
             continue  # non-api-key flows need bespoke picker UX; skip auto-inject
         _label = _pp.display_name or _pp.name
         _desc = _pp.description or f"{_label} (direct API)"
@@ -1200,6 +1222,10 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
@@ -1861,6 +1887,17 @@ _AGGREGATOR_PROVIDERS = frozenset(
 # away from the model's native vendor). None are currently defined.
 _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 
+# Providers whose live /v1/models endpoint is the authoritative catalog, so the
+# curated list is a discovery-only fallback. For these, the picker merges
+# live-first (live entries lead, curated-only entries append). Every OTHER
+# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
+# surfaced newest model stays at the top even when the live API lags. OpenCode
+# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
+# their stale curated entries must not pollute the top of the picker. (#49129)
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
+    {"opencode-zen", "opencode-go"}
+)
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -2520,15 +2557,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
                     # partial rollout) still appear in the picker.
-                    # Curated entries come first so deliberately-surfaced
-                    # newest models (e.g. kimi-k2.7-code, #46309) stay at
-                    # the top of the picker; live-only entries are appended
-                    # afterwards for discovery.  (#46850)
+                    #
+                    # Single providers (kimi, zai) use curated-first
+                    # (commit 658ac1d86) to surface newest models even when live
+                    # API lags (#46309). OpenCode Zen / Go are different: their
+                    # live API is the authoritative catalog, so they merge
+                    # live-first — live entries lead and stale curated entries
+                    # no longer pollute the top of the picker. (#49129)
                     curated = list(_PROVIDER_MODELS.get(normalized, []))
                     if curated:
-                        merged = list(curated)
-                        merged_lower = {m.lower() for m in curated}
-                        for m in live:
+                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                            primary, secondary = live, curated
+                        else:
+                            primary, secondary = curated, live
+                        merged = list(primary)
+                        merged_lower = {m.lower() for m in primary}
+                        for m in secondary:
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())
@@ -2971,13 +3015,19 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
 
 
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
-    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
+    """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
+    Users commonly copy either the OpenAI-compatible runtime URL
+    (``.../v1``) or the native API prefix (``.../api`` / ``.../api/v1``).
+    Native probes append ``/api/v1/...`` themselves, so normalize all accepted
+    forms back to the bare server root to avoid ``/api/api/v1`` requests.
     Returns ``None`` when the base URL is empty/invalid.
     """
     root = (base_url or "").strip().rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3].rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
     return root or None
 
 
@@ -3764,6 +3814,24 @@ def validate_requested_model(
             "recognized": False,
             "message": "Model name cannot be empty.",
         }
+
+    if normalized == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+
+            cfg = normalize_moa_config(load_config().get("moa") or {})
+            if requested in cfg["presets"]:
+                return {"accepted": True, "persist": True, "recognized": True, "message": None}
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"MoA preset `{requested}` was not found. Run `hermes moa list`.",
+            }
+        except Exception as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not read MoA presets: {exc}",
+            }
 
     if any(ch.isspace() for ch in requested):
         return {

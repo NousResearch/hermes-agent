@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace
+from utils import atomic_replace, fast_safe_load
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -403,7 +403,7 @@ def _load_secrets_config(home_path: Path) -> dict:
         return {}
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = fast_safe_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}

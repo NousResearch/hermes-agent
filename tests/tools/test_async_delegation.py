@@ -262,7 +262,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     monkeypatch.setattr(dt, "_run_single_child", slow_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
     out = dt.delegate_task(
-        goal="the real task", context="ctx", toolsets=["web"],
+        goal="the real task", context="ctx",
         background=True, parent_agent=parent,
     )
 
@@ -432,6 +432,30 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is False
         assert captured["model"] == "cheap/model"
         assert captured["provider"] == "openrouter"
+
+
+def test_dispatch_never_forwards_model_toolsets():
+    """The model has no toolsets argument — subagents always inherit the
+    parent's toolsets. Even if a model smuggles a `toolsets` key into the
+    tool-call args, the live dispatch path must NOT forward it to
+    delegate_task (which no longer accepts it) and must not crash."""
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    captured = {}
+
+    def _fake_delegate(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
+        run_agent.AIAgent._dispatch_delegate_task(
+            _FakeAgent(), {"goal": "x", "toolsets": ["web", "terminal"]}
+        )
+    assert "toolsets" not in captured
 
 
 def test_delegate_task_background_detaches_child_from_parent(monkeypatch):

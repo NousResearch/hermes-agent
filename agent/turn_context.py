@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -142,7 +143,13 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    agent._ensure_db_session()
+    # NOTE: the DB session row is created later, AFTER the system prompt is
+    # restored/built (see _ensure_db_session() below the system-prompt block).
+    # Creating it here — before _cached_system_prompt is populated — inserts a
+    # row with system_prompt=NULL on a fresh API/gateway agent that carries
+    # client-managed history, which then trips the "stored system prompt is
+    # null; rebuilding from scratch" warning and a needless first-turn prefix
+    # cache miss. (Issue #45499.)
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
@@ -216,6 +223,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    if callable(_reset_consol):
+        _reset_consol()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -309,6 +319,11 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Create the DB session row now that _cached_system_prompt is populated, so
+    # the persisted snapshot is written non-NULL on the first turn (Issue
+    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
+    agent._ensure_db_session()
+
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
         agent._persist_session(messages, conversation_history)
@@ -348,6 +363,12 @@ def build_turn_context(
             if _last >= 0 and _preflight_tokens > _last:
                 _compressor.last_prompt_tokens = _preflight_tokens
 
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+
         if _preflight_deferred:
             logger.info(
                 "Skipping preflight compression: rough estimate ~%s >= %s, "
@@ -355,6 +376,13 @@ def build_turn_context(
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
+            )
+        elif _compression_cooldown:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(
@@ -389,7 +417,9 @@ def build_turn_context(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
                     break  # Cannot compress further: neither rows nor tokens moved
-                conversation_history = None
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
@@ -429,6 +459,7 @@ def build_turn_context(
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

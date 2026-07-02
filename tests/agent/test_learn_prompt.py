@@ -32,6 +32,23 @@ class TestBuildLearnPrompt:
         for tool in ("read_file", "search_files", "web_extract"):
             assert tool in prompt
 
+    def test_separates_sources_from_requirements(self):
+        # The reported bug (@GrenFX, Jun 2026): when a request leads with a
+        # path/URL, the agent fetched it and ignored the trailing prose. The
+        # prompt must tell the agent the request can MIX sources and
+        # requirements, and that prose after a source is authoring guidance to
+        # honor — not noise to drop.
+        prompt = build_learn_prompt(
+            "https://api.example.com/docs focus on the auth flow, skip deprecated bits"
+        )
+        low = prompt.lower()
+        # Carries the whole request verbatim (no truncation at the URL).
+        assert "focus on the auth flow, skip deprecated bits" in prompt
+        # Explicitly distinguishes sources from requirements.
+        assert "requirement" in low
+        # Names the failure mode it's guarding against.
+        assert "never fetch the first source" in low
+
     def test_empty_request_falls_back_to_the_conversation(self):
         # Bare /learn should distill "what we just did", not error.
         prompt = build_learn_prompt("")
@@ -47,7 +64,6 @@ class TestBuildLearnPrompt:
         assert "60" in _AUTHORING_STANDARDS
 
     def test_teaches_the_full_hardline_standards(self):
-        # /learn must teach ALL the CONTRIBUTING.md skill rules, not just the
         # description length — otherwise distilled skills miss platform gating,
         # author credit, and the tool-framing table. Lock the coverage in.
         std = _AUTHORING_STANDARDS.lower()
@@ -55,8 +71,9 @@ class TestBuildLearnPrompt:
         assert "count" in std and "60" in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
-        # #4 author credits the human first.
-        assert "author" in std
+        # author is always the literal Hermes, never the host/OS identity (#52368).
+        assert "author: always the literal value `hermes`" in std
+        assert "never fill it from the host" in std
         # #2 Hermes-tool framing names the wrapped tools, not shell utilities.
         for tool in ("read_file", "search_files", "patch", "write_file"):
             assert tool in std

@@ -30,6 +30,11 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # task description, and active lists are a handful of items, not hundreds.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
+# Upper bound on a single todo tool-result payload accepted during history
+# hydration. The gateway/API server replays caller-supplied conversation
+# history to rebuild the store, so an oversized forged result is dropped
+# before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
+MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
 
 
@@ -158,6 +163,9 @@ class TodoStore:
         Ensures required fields exist and status is valid.
         Returns a clean dict with only {id, content, status}.
         """
+        if not isinstance(item, dict):
+            return {"id": "?", "content": "(invalid item)", "status": "pending"}
+
         item_id = str(item.get("id", "")).strip()
         if not item_id:
             item_id = "?"
@@ -179,6 +187,10 @@ class TodoStore:
         """Collapse duplicate ids, keeping the last occurrence in its position."""
         last_index: Dict[str, int] = {}
         for i, item in enumerate(todos):
+            if not isinstance(item, dict):
+                # Non-dict items get a synthetic key so _validate can handle them
+                last_index[f"__invalid_{i}"] = i
+                continue
             item_id = str(item.get("id", "")).strip() or "?"
             last_index[item_id] = i
         return [todos[i] for i in sorted(last_index.values())]
@@ -204,6 +216,16 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
+        # Guard: LLM sometimes sends todos as a JSON string instead of a list
+        if isinstance(todos, str):
+            try:
+                todos = json.loads(todos)
+            except (json.JSONDecodeError, TypeError):
+                return tool_error("todos must be a list of objects, got unparseable string")
+        if not isinstance(todos, list):
+            return tool_error(
+                f"todos must be a list, got {type(todos).__name__}"
+            )
         items = store.write(todos, merge)
     else:
         items = store.read()

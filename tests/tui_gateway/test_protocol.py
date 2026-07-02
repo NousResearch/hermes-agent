@@ -323,7 +323,9 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260409_010101_abc123", "cols": 100},
+            # eager_build: exercise the synchronous build path (this test
+            # monkeypatches _make_agent/_init_session/_session_info).
+            "params": {"session_id": "20260409_010101_abc123", "cols": 100, "eager_build": True},
         }
     )
 
@@ -334,6 +336,147 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
+
+
+def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
+    """A normal cold resume (no ``eager_build``) must return the full display
+    transcript immediately and register an upgradable live session WITHOUT
+    building the agent on the response path — that eager build is the
+    multi-second switch latency. Deferred is the default; ``eager_build: true``
+    opts back into the synchronous path."""
+
+    target = "20260409_010101_abc123"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {
+                "id": target,
+                "model": "vendor/cool-model",
+                "model_config": {"provider": "vendor"},
+            }
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    builds: list = []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    # The response path must never call _make_agent; route the deferred timer
+    # through a recorder so a 50ms fire can't build (or crash) under the test.
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no eager build"))
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: builds.append(sid))
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["message_count"] == 2
+    assert result["messages"] == [
+        {"role": "user", "text": "hello"},
+        {"role": "assistant", "text": "yo"},
+    ]
+    # Lazy info contract (same shape session.create returns), with the session's
+    # persisted model/provider restored rather than the global default.
+    assert result["info"]["lazy"] is True
+    assert result["info"]["model"] == "vendor/cool-model"
+    assert result["info"]["provider"] == "vendor"
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    # Registered but not built: agent is None and the resume key is carried so a
+    # later prompt.submit / _sess() upgrade continues THIS stored conversation.
+    assert session["agent"] is None
+    assert session["resume_session_id"] == target
+    assert not session["agent_ready"].is_set()
+    # Not a watch spectator: a normal deferred resume is a real session.
+    assert not session.get("lazy")
+    # The persisted runtime identity is stashed for the deferred build so it
+    # can't drop the provider ("No LLM provider configured").
+    assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
+    assert server._find_live_session_by_key(target) == (sid, session)
+
+
+def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
+    """The LRU cap frees the least-recently-active DETACHED sessions when over
+    the limit, and never a live-transport / running / mid-build one."""
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+
+    def _ready() -> threading.Event:
+        ev = threading.Event()
+        ev.set()
+        return ev
+
+    detached = server._detached_ws_transport
+    live = object()  # no _closed attr -> live transport, never evictable
+
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            "old_detached": {"transport": detached, "last_active": 100.0, "agent_ready": _ready()},
+            "new_detached": {"transport": detached, "last_active": 300.0, "agent_ready": _ready()},
+            "running_detached": {
+                "transport": detached,
+                "last_active": 50.0,
+                "running": True,
+                "agent_ready": _ready(),
+            },
+            "focused_live": {"transport": live, "last_active": 200.0, "agent_ready": _ready()},
+        }
+    )
+
+    server._enforce_session_cap()
+
+    # 4 sessions, cap 2 -> evict 2. Only detached+idle+built are eligible, oldest
+    # first; the running one and the live-transport one are exempt.
+    assert evicted == ["old_detached", "new_detached"]
+
+
+def test_enforce_session_cap_disabled_is_noop(server, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 0})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            f"s{i}": {"transport": server._detached_ws_transport, "last_active": float(i)}
+            for i in range(5)
+        }
+    )
+
+    server._enforce_session_cap()
+
+    assert evicted == []
 
 
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
@@ -374,7 +517,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260502_000000_listcontent", "cols": 100},
+            "params": {"session_id": "20260502_000000_listcontent", "cols": 100, "eager_build": True},
         }
     )
 
@@ -688,7 +831,9 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "first",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 100},
+                    # eager_build: this test drives the synchronous build race +
+                    # double-checked locking that only the eager path exercises.
+                    "params": {"session_id": target, "cols": 100, "eager_build": True},
                 }
             )
 
@@ -703,7 +848,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "second",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 120},
+                    "params": {"session_id": target, "cols": 120, "eager_build": True},
                 }
             )
 
@@ -1591,3 +1736,37 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
     resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
 
     assert resp["result"] == {"ok": True}
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_completion_handlers_are_pool_routed(completion_method, server):
+    """complete.path/complete.slash must run on the pool, never the reader thread.
+
+    Regression for #21123: completion ran inline, so a slow git ls-files /
+    skill-scan blocked prompt.submit and froze the TUI for the 120s RPC timeout.
+    """
+    assert completion_method in server._LONG_HANDLERS
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_slow_completion_does_not_block_fast_handler(completion_method, server):
+    """A slow completion RPC must not block a concurrent fast handler (#21123)."""
+    released = threading.Event()
+
+    def slow_completion(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"items": []})
+
+    server._methods[completion_method] = slow_completion
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": completion_method, "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
+
+    released.set()

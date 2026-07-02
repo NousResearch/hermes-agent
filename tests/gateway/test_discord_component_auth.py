@@ -95,6 +95,17 @@ def test_component_check_explicit_allow_all_passes(monkeypatch, env_name, env_va
     assert _component_check_auth(interaction, set(), set()) is True
 
 
+@pytest.mark.parametrize(
+    "env_name",
+    ["DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"],
+)
+def test_component_check_missing_user_rejected_even_with_allow_all(monkeypatch, env_name):
+    """Component clicks without interaction.user stay fail-closed with allow-all."""
+    monkeypatch.setenv(env_name, "true")
+    interaction = _interaction(11111, drop_user=True)
+    assert _component_check_auth(interaction, set(), set()) is False
+
+
 # ── user allowlist ─────────────────────────────────────────────────────────
 
 

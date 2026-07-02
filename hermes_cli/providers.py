@@ -44,6 +44,11 @@ class HermesOverlay:
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+    "moa": HermesOverlay(
+        transport="openai_chat",
+        auth_type="virtual",
+        base_url_override="moa://local",
+    ),
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -369,6 +374,7 @@ ALIASES: Dict[str, str] = {
 # not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
+    "moa": "Mixture of Agents",
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
@@ -648,7 +654,7 @@ def resolve_custom_provider(
     # from a prior model-switch bug), fall back to the first custom
     # provider entry so existing configs self-heal.  (GH #17478)
     bare_custom_fallback = requested == "custom"
-    first_valid = None
+    first_valid: Optional[Tuple[str, str, Tuple[str, ...]]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -664,9 +670,14 @@ def resolve_custom_provider(
         if not display_name or not api_url:
             continue
 
+        key_env = (entry.get("key_env") or "").strip()
+        env_vars: List[str] = []
+        if key_env:
+            env_vars.append(key_env)
+
         # Stash the first valid entry for bare-"custom" fallback
         if first_valid is None:
-            first_valid = (display_name, api_url)
+            first_valid = (display_name, api_url, tuple(env_vars))
 
         slug = custom_provider_slug(display_name)
         if requested not in {display_name.lower(), slug}:
@@ -676,7 +687,7 @@ def resolve_custom_provider(
             id=slug,
             name=display_name,
             transport="openai_chat",
-            api_key_env_vars=(),
+            api_key_env_vars=tuple(env_vars),
             base_url=api_url,
             is_aggregator=False,
             auth_type="api_key",
@@ -685,13 +696,13 @@ def resolve_custom_provider(
 
     # Self-heal: bare "custom" matched nothing — return first valid entry
     if bare_custom_fallback and first_valid:
-        dname, aurl = first_valid
+        dname, aurl, denv = first_valid
         slug = custom_provider_slug(dname)
         return ProviderDef(
             id=slug,
             name=dname,
             transport="openai_chat",
-            api_key_env_vars=(),
+            api_key_env_vars=denv,
             base_url=aurl,
             is_aggregator=False,
             auth_type="api_key",

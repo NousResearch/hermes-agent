@@ -25,6 +25,9 @@ from hermes_constants import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
+from tools.environments.local import hermes_subprocess_env
+from agent.replay_cleanup import sanitize_replay_history
+from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -177,6 +180,16 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        # Completion RPCs run inline on the reader thread by default, but both
+        # can block it for seconds: complete.path spawns `git ls-files` and
+        # fuzzy-ranks the whole repo (slow on large repos / WSL2 mounts), and
+        # complete.slash does first-call prompt_toolkit imports + a skill-dir
+        # scan. While either runs inline, prompt.submit / session.interrupt sit
+        # unread in the stdin pipe — the TUI appears frozen until the 120s RPC
+        # timeout fires (#21123). Routing them to the pool keeps the fast path
+        # responsive; completion is read-only and write_json is lock-guarded.
+        "complete.path",
+        "complete.slash",
         "llm.oneshot",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
@@ -188,11 +201,20 @@ _LONG_HANDLERS = frozenset(
         # round-trips per call — so it must never block the reader thread.
         "pet.generate",
         "pet.hatch",
+        "pet.info",
         "pet.select",
         "pet.thumb",
+        "learning.frames",
         "plugins.manage",
+        "process.list",
+        "projects.discover_repos",
+        "projects.record_repos",
+        "projects.for_cwd",
+        "projects.tree",
+        "projects.project_sessions",
         "session.branch",
         "session.compress",
+        "session.list",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -202,7 +224,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4")
+        2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 4
@@ -260,6 +282,16 @@ class _SlashWorker:
             argv += ["--model", model]
 
         self._closed = False
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        # start_new_session=True detaches the slash worker into its own
+        # process group / session. Without this, the worker inherits the
+        # gateway's pgid (= TUI parent PID). When mcp_tool's
+        # _kill_orphaned_mcp_children races with slash_worker spawn and sweeps
+        # the gateway's child set, it captures the worker PID, records the
+        # inherited pgid, and killpg() then kills the TUI parent itself.
+        # See agent/lsp/client.py for the symmetric LSP server fix and
+        # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -268,7 +300,11 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # slash_worker runs the Hermes agent → needs provider credentials.
+            # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
+            creationflags=windows_hide_flags(),
+            start_new_session=True,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -741,6 +777,76 @@ def _reap_idle_sessions() -> None:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
         _close_session_by_id(sid, end_reason="idle_timeout")
+    _enforce_session_cap()
+
+
+# Soft LRU cap on in-memory sessions. The 6h TTL reaper above only frees
+# sessions that have been idle for hours; a heavy user who reconnects often
+# accumulates detached sessions (the report's ``detached_sessions=5``) whose
+# agents sit resident for the full TTL. The cap evicts the least-recently-active
+# DETACHED sessions sooner so live agents don't pile up under memory pressure.
+# Default-on but provably safe: it only touches sessions with no live client
+# (reopening re-resumes them from the DB) and never a running / pending /
+# mid-build / live-transport one. 0/null disables.
+def _max_live_sessions() -> int:
+    try:
+        from hermes_cli.active_sessions import coerce_max_concurrent_sessions
+
+        cfg = _load_cfg() or {}
+        raw = cfg.get("max_live_sessions")
+        if raw is None:
+            gateway_cfg = cfg.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                raw = gateway_cfg.get("max_live_sessions")
+        coerced = coerce_max_concurrent_sessions(raw, key="max_live_sessions")
+        return int(coerced) if coerced else 0
+    except Exception:
+        return 0
+
+
+def _session_is_lru_evictable(sid: str, session: dict) -> bool:
+    # Same hard exemptions as the TTL reaper (never evict a session mid-turn,
+    # awaiting input, or still building), but WITHOUT the hours-scale age gate:
+    # a detached session is eligible the moment it loses its client.
+    if session.get("running") or _session_pending_kind(sid):
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set() and not session.get("lazy"):
+        return False
+    return _transport_is_dead(session.get("transport"))
+
+
+def _enforce_session_cap() -> None:
+    cap = _max_live_sessions()
+    if cap <= 0:
+        return
+    with _sessions_lock:
+        total = len(_sessions)
+        if total <= cap:
+            return
+        evictable = [
+            (sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)
+        ]
+    # Oldest-touched first; only evict down to the cap (live/focused sessions on
+    # a live transport are never eligible, so we may stop short of the cap).
+    evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
+    overflow = total - cap
+    for sid, _s in evictable[:overflow]:
+        _close_session_by_id(sid, end_reason="lru_evict")
+
+
+def _schedule_session_cap_enforcement() -> None:
+    """Run the LRU sweep off the response path (eviction can call agent.close)."""
+
+    def _run():
+        try:
+            _enforce_session_cap()
+        except Exception:
+            logger.debug("session cap enforcement failed", exc_info=True)
+
+    timer = threading.Timer(0.1, _run)
+    timer.daemon = True
+    timer.start()
 
 
 def _start_idle_reaper() -> None:
@@ -1111,17 +1217,26 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 kw: dict[str, Any] = {"session_db": session_db}
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
-                # Model/effort/fast the desktop picked for a brand-new chat ride
-                # in as per-session overrides so the first build uses them
-                # directly (no global config, no build-then-switch).
-                if override := current.get("model_override"):
-                    kw["model_override"] = override
-                if current.get("reasoning_config_override") is not None:
-                    kw["reasoning_config_override"] = current.get("reasoning_config_override")
-                elif (reasoning := current.get("create_reasoning_override")) is not None:
-                    kw["reasoning_config_override"] = reasoning
-                if (tier := current.get("create_service_tier_override")) is not None:
-                    kw["service_tier_override"] = tier
+                resume_overrides = current.get("resume_runtime_overrides")
+                if isinstance(resume_overrides, dict) and resume_overrides:
+                    # Cold deferred resume: restore the full persisted runtime
+                    # identity (model/provider/base_url/api_mode/reasoning/tier)
+                    # exactly as the eager resume path's _stored_session_runtime_
+                    # overrides splat did, so a deferred build can't drop the
+                    # provider and fail with "No LLM provider configured".
+                    kw.update(resume_overrides)
+                else:
+                    # Model/effort/fast the desktop picked for a brand-new chat
+                    # ride in as per-session overrides so the first build uses
+                    # them directly (no global config, no build-then-switch).
+                    if override := current.get("model_override"):
+                        kw["model_override"] = override
+                    if current.get("reasoning_config_override") is not None:
+                        kw["reasoning_config_override"] = current.get("reasoning_config_override")
+                    elif (reasoning := current.get("create_reasoning_override")) is not None:
+                        kw["reasoning_config_override"] = reasoning
+                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -1154,6 +1269,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            # Surface the self-improvement review's "💾 …" summary as an event
+            # the TUI/desktop render in-transcript, honoring
+            # display.memory_notifications. _init_session wires this for the
+            # eager/branch paths; deferred-built sessions (session.create and the
+            # default cold resume) build through here, so without this their
+            # review summaries would leak to stdout instead of the chat.
+            try:
+                agent.background_review_callback = lambda message, _sid=sid: _emit(
+                    "review.summary", _sid, {"text": str(message)}
+                )
+                agent.memory_notifications = _load_memory_notifications()
+            except Exception:
+                pass
             # Hydrate credits notices at session OPEN (not just on the first
             # message), so depletion / usage-band warnings show at "ready". Runs
             # off the build thread, after the notice_callback is wired. Fail-open.
@@ -1273,37 +1401,89 @@ def _terminal_task_cwd(session: dict | None) -> str:
     return _session_cwd(session)
 
 
-def _git_branch_for_cwd(cwd: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip()
-            if branch:
-                return branch
-        head = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        return head.stdout.strip() if head.returncode == 0 else ""
-    except Exception:
-        return ""
+# Git working-tree probing (run git, resolve roots, fold worktrees) lives in a
+# focused, single-flight-cached module; these stay as the in-server names every
+# call site already uses.
+_git = git_probe.run_git
+_git_branch_for_cwd = git_probe.branch
+_git_repo_root_for_cwd = git_probe.repo_root
+_git_common_repo_root_for_cwd = git_probe.common_repo_root
+_resolve_cwd_git = git_probe.resolve
 
 
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         return str(session["cwd"])
     return _completion_cwd()
+
+
+def _heal_dead_cwd(cwd: str) -> str:
+    """Resolve a session cwd that points at a now-deleted directory.
+
+    A session anchored to a linked worktree (``<repo>/.worktrees/<name>``) keeps
+    that path after the worktree is removed (branch merged, `git worktree
+    remove`, etc). The literal dir is gone, so a probe of it returns nothing and
+    the composer shows no branch — while the sidebar still folds the path up to
+    the repo's main lane. Heal the mismatch: walk up to the first existing
+    ancestor, then resolve its common git root, so a dead-worktree cwd collapses
+    to the live repo root (and its real current branch).
+
+    Only meaningful for local backends; a remote/SSH cwd may legitimately not
+    exist on the host, so callers must skip healing there.
+    """
+    raw = (cwd or "").strip()
+    if not raw or os.path.isdir(raw):
+        return raw
+
+    probe = raw
+    # Climb to the first ancestor that still exists on disk.
+    for _ in range(64):
+        parent = os.path.dirname(probe)
+        if not parent or parent == probe:
+            break
+        probe = parent
+        if os.path.isdir(probe):
+            break
+
+    if not os.path.isdir(probe):
+        return raw
+
+    try:
+        root = _git_common_repo_root_for_cwd(probe) or _git_repo_root_for_cwd(probe)
+    except Exception:
+        root = ""
+
+    return root or probe
+
+
+def _is_local_terminal_backend() -> bool:
+    backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    return not backend or backend == "local"
+
+
+def _display_session_cwd(session: dict | None) -> str:
+    """Session cwd for display/probe surfaces, healed past deleted worktrees.
+
+    Persists the healed value back to the session row (best-effort, local only)
+    so the next load is already coherent and the sidebar lane stops showing a
+    session pinned to a vanished path.
+    """
+    cwd = _session_cwd(session)
+    if not _is_local_terminal_backend():
+        return cwd
+
+    healed = _heal_dead_cwd(cwd)
+    if healed and healed != cwd and session is not None:
+        session["cwd"] = healed
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    db.update_session_cwd(session.get("session_key", ""), healed)
+        except Exception:
+            logger.debug("failed to persist healed session cwd", exc_info=True)
+        _persist_session_git_meta(session, healed)
+
+    return healed
 
 
 def _session_source(session: dict | None) -> str:
@@ -1410,12 +1590,19 @@ def _ensure_session_db_row(session: dict) -> None:
         model_config["reasoning_config"] = reasoning
     if tier := session.get("create_service_tier_override"):
         model_config["service_tier"] = tier
+    # Branch lineage: stamp the same ``_branched_from`` marker the TUI /branch
+    # uses so list_sessions_rich keeps the branch listed and the desktop sidebar
+    # can nest it under its parent.
+    parent_session_id = session.get("parent_session_id") or None
+    if parent_session_id:
+        model_config["_branched_from"] = parent_session_id
     try:
         db.create_session(
             key,
             source=_session_source(session),
             model=row_model,
             model_config=model_config or None,
+            parent_session_id=parent_session_id,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
@@ -1426,6 +1613,35 @@ def _ensure_session_db_row(session: dict) -> None:
                 db.close()
             except Exception:
                 pass
+
+
+def _persist_branch_seed(session: dict) -> None:
+    """First-turn persist of a branch's copied transcript.
+
+    A branch is a draft until its first submit: the parent's messages live only
+    in ``session["history"]`` (they ride into the agent as ``conversation_history``,
+    which ``_flush_messages_to_session_db`` skips by identity). Without this the
+    branch row would resume missing its pre-branch context. Runs once; the row +
+    parent link are written by ``_ensure_session_db_row`` just before this.
+    """
+    if not session.get("parent_session_id") or session.get("_branch_seed_persisted"):
+        return
+    key = session.get("session_key")
+    if not key:
+        return
+    with session["history_lock"]:
+        seed = [dict(msg) for msg in (session.get("history") or [])]
+    if not seed:
+        return
+    with _session_db(session) as db:
+        if db is None:
+            return
+        try:
+            for msg in seed:
+                db.append_message(session_id=key, role=msg.get("role", "user"), content=msg.get("content"))
+            session["_branch_seed_persisted"] = True
+        except Exception:
+            logger.debug("branch seed persist failed", exc_info=True)
 
 
 @contextlib.contextmanager
@@ -1456,6 +1672,41 @@ def _session_db(session: dict):
                 db.close()
 
 
+def _persist_session_git_meta(session: dict, cwd: str) -> None:
+    """Resolve + persist a session's git branch / repo root WITHOUT blocking.
+
+    Branch and root come from ``git`` subprocess probes; running them inline on
+    the session-init / cwd-set path would stall startup whenever ``cwd`` is slow
+    or on an unreachable mount. Run them on a short-lived daemon thread instead
+    and persist via the same profile-aware db the caller writes ``cwd`` to.
+
+    Best-effort: ``cwd`` itself is persisted synchronously by the caller, so a
+    probe failure just leaves these enrichment columns unset (the project tree
+    falls back to its live resolver / lazy backfill). Daemon, so a mid-flight
+    probe never delays gateway shutdown.
+    """
+    session_key = session.get("session_key", "")
+    if not session_key or not cwd:
+        return
+    # Snapshot the routing fields now; the live session dict may be gone by the
+    # time the thread runs. `_session_db` reopens the profile-correct db inside.
+    db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
+
+    def _run() -> None:
+        try:
+            branch = _git_branch_for_cwd(cwd)
+            root = _git_common_repo_root_for_cwd(cwd)
+            if not (branch or root):
+                return
+            with _session_db(db_session) as db:
+                if db is not None:
+                    db.update_session_cwd(session_key, cwd, branch, root)
+        except Exception:
+            logger.debug("failed to persist session git metadata", exc_info=True)
+
+    threading.Thread(target=_run, name="git-meta", daemon=True).start()
+
+
 def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(str(cwd)))
     if not os.path.isdir(resolved):
@@ -1471,6 +1722,8 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
                 db.update_session_cwd(session.get("session_key", ""), resolved)
             except Exception:
                 logger.debug("failed to persist session cwd", exc_info=True)
+    # Branch/repo-root probes are git subprocesses — capture them off the hot path.
+    _persist_session_git_meta(session, resolved)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -1963,7 +2216,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    entry = {"role": "system", "content": marker}
+    # Persist as a user message, not a system message.  The gateway appends
+    # this marker after prior conversation turns, and strict OpenAI-compatible
+    # providers (vLLM, Qwen) reject system messages that are not at the
+    # beginning of the API message list (#48338).
+    entry = {"role": "user", "content": marker}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -1978,14 +2235,14 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="system", content=marker)
+            db.append_message(session_id=session_key, role="user", content=marker)
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="system", content=marker
+                    session_id=session_key, role="user", content=marker
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -2150,7 +2407,11 @@ def _load_enabled_toolsets() -> list[str] | None:
 
             selection = coding_selection(platform="tui")
             if selection is not None:
-                return selection
+                # Fold in `project` here too: this is a GUI-only resolver, and
+                # the focus-mode coding posture returns before the fallback path
+                # that normally adds it — without this the desktop loses the
+                # project tools exactly when sitting in a repo (see below).
+                return sorted({*selection, "project"})
         except Exception:
             pass
 
@@ -2256,12 +2517,18 @@ def _load_enabled_toolsets() -> list[str] | None:
         # list without baking in implicit MCP defaults. Using the wrong
         # variant at agent creation time makes MCP tools silently missing
         # from the TUI. See PR #3252 for the original design split.
-        enabled = sorted(
-            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
-        )
+        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
-        return enabled or None
+        if not enabled:
+            return None
+        # The desktop Project tools are off _HERMES_CORE_TOOLS (every other
+        # platform would carry their schema for nothing), so the platform
+        # recovery above — which keys off hermes-cli's tool universe — can't
+        # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
+        # folding in the `project` toolset here is the gate that exposes them on
+        # exactly the surface that can follow a project move.
+        return sorted(enabled | {"project"})
     except Exception:
         if fallback_notice is not None:
             print(
@@ -2700,8 +2967,6 @@ def _get_usage(agent) -> dict:
         "model": getattr(agent, "model", "") or "",
         "input": g("session_input_tokens", "session_prompt_tokens"),
         "output": g("session_output_tokens", "session_completion_tokens"),
-        "cache_read": g("session_cache_read_tokens"),
-        "cache_write": g("session_cache_write_tokens"),
         "reasoning": g("session_reasoning_tokens"),
         "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"),
@@ -2710,12 +2975,31 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        # context_used is the *current-window* occupancy. Do NOT fall back to
+        # usage["total"] (cumulative lifetime session_total_tokens): for an
+        # external context engine that doesn't report last_prompt_tokens that
+        # substitution showed lifetime totals as the live context fill, yielding
+        # impossible readings such as 1.9m/120k clamped to 100% (#50421).
+        #
+        # Per the issue, populate context_used/percent only from a *real*
+        # current-occupancy value and "leave it unknown otherwise" — so a falsy
+        # last_prompt_tokens (0 or missing, i.e. an engine that doesn't track
+        # per-window occupancy) intentionally emits no gauge rather than a
+        # fabricated 0% or the old cumulative reading. The built-in compressor
+        # always reports a real last_prompt_tokens once a turn runs, so it is
+        # unaffected.
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (conversation_compression.py) to 0 so the transitional turn reads as
+        # unknown (no gauge) instead of leaking context_used=-1. Matches the
+        # CLI status-bar path (cli.py _get_status_bar_snapshot).
+        last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        if last_prompt < 0:
+            last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max:
-            usage["context_used"] = ctx_used
+        if ctx_max and last_prompt:
+            usage["context_used"] = last_prompt
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+            usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
@@ -2723,25 +3007,6 @@ def _get_usage(agent) -> dict:
     try:
         from tools.async_delegation import active_count as _async_active_count
         usage["active_subagents"] = _async_active_count()
-    except Exception:
-        pass
-    try:
-        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
-
-        cost = estimate_usage_cost(
-            usage["model"],
-            CanonicalUsage(
-                input_tokens=usage["input"],
-                output_tokens=usage["output"],
-                cache_read_tokens=usage["cache_read"],
-                cache_write_tokens=usage["cache_write"],
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
-        usage["cost_status"] = cost.status
-        if cost.amount_usd is not None:
-            usage["cost_usd"] = float(cost.amount_usd)
     except Exception:
         pass
     # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on
@@ -2824,7 +3089,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
             if candidate.get("agent") is agent:
                 session = candidate
                 break
-    cwd = _session_cwd(session)
+    cwd = _display_session_cwd(session)
     session_key = str(
         (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
     )
@@ -2929,9 +3194,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 def _tool_ctx(name: str, args: dict) -> str:
     try:
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_label
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_label(name, args, max_len=80) or ""
     except Exception:
         return ""
 
@@ -3164,6 +3429,24 @@ def _on_tool_progress(
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)
         return
+    if event_type == "moa.reference" and name:
+        # MoA reference-model output — relay as a labelled block the Ink/desktop
+        # client renders before the aggregator's response (like a thinking
+        # block, tagged with the source model). `name` is the slot label,
+        # `preview` is the reference text.
+        ref_payload: dict[str, object] = {
+            "label": str(name),
+            "text": str(preview or ""),
+        }
+        if _kwargs.get("moa_index") is not None:
+            ref_payload["index"] = _kwargs.get("moa_index")
+        if _kwargs.get("moa_count") is not None:
+            ref_payload["count"] = _kwargs.get("moa_count")
+        _emit("moa.reference", sid, ref_payload)
+        return
+    if event_type == "moa.aggregating":
+        _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
+        return
     if event_type.startswith("subagent."):
         payload = {
             "goal": str(_kwargs.get("goal") or ""),
@@ -3199,11 +3482,6 @@ def _on_tool_progress(
                     payload[int_key] = int(val)
                 except (TypeError, ValueError):
                     pass
-        if _kwargs.get("cost_usd") is not None:
-            try:
-                payload["cost_usd"] = float(_kwargs["cost_usd"])
-            except (TypeError, ValueError):
-                pass
         if _kwargs.get("files_read"):
             payload["files_read"] = [str(p) for p in _kwargs["files_read"]]
         if _kwargs.get("files_written"):
@@ -3376,11 +3654,67 @@ def _agent_cbs(sid: str) -> dict:
     }
 
 
+def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
+    """Intentional workspace move from the project_* tools: re-anchor the live
+    session's cwd to the chosen project's folder and push session.info so the
+    desktop follows (refresh tree + scope into the project). This is the ONLY
+    auto-cwd path — driven by an explicit tool call, never a terminal `cd`."""
+    if not path:
+        return
+
+    # The tool's task_id is the durable session_key, but _sessions is keyed by a
+    # short sid uuid (and the desktop routes events by that sid). Resolve it.
+    key = str(task_id or "")
+    sid = ""
+    session = None
+    with _sessions_lock:
+        if key in _sessions:
+            sid, session = key, _sessions[key]
+        else:
+            for cand_sid, cand in _sessions.items():
+                if cand.get("session_key") == key or getattr(cand.get("agent"), "session_id", None) == key:
+                    sid, session = cand_sid, cand
+                    break
+
+    if session is None:
+        return
+
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
+    if not os.path.isdir(resolved):
+        return
+
+    session["cwd"] = resolved
+    session["explicit_cwd"] = True
+    _register_session_cwd(session)
+
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.update_session_cwd(session.get("session_key", ""), resolved)
+            except Exception:
+                logger.debug("failed to persist project workspace cwd", exc_info=True)
+
+    _persist_session_git_meta(session, resolved)
+
+    try:
+        agent = session.get("agent")
+        info = (
+            _session_info(agent, session)
+            if agent is not None
+            else {"cwd": resolved, "branch": _git_branch_for_cwd(resolved), "lazy": True}
+        )
+        _emit("session.info", sid, info)
+    except Exception:
+        logger.debug("failed to emit session.info after project workspace move", exc_info=True)
+
+
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
+    from tools.project_tools import set_project_workspace_callback
 
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_project_workspace_callback(_apply_project_workspace)
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var}
@@ -3821,12 +4155,55 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
-
     threading.Thread(
         target=_wait_then_refresh,
         name=f"tui-mcp-late-refresh-{sid}",
         daemon=True,
     ).start()
+
+
+def _resolve_runtime_with_fallback(
+    resolve_kwargs: dict | None = None,
+) -> dict:
+    """Resolve runtime provider with init-time fallback on auth failure.
+
+    Mirrors the fallback pattern in ``cron/scheduler.py`` and
+    ``hermes_cli/cli_agent_setup_mixin.py``: when the primary provider
+    raises ``AuthError``, walk the configured ``fallback_providers`` /
+    ``fallback_model`` chain before giving up.
+    """
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    kwargs = resolve_kwargs or {}
+    try:
+        return resolve_runtime_provider(**kwargs)
+    except AuthError as primary_exc:
+        fb_chain = _load_fallback_model() or []
+        for entry in fb_chain:
+            if not isinstance(entry, dict):
+                continue
+            fb_provider = (entry.get("provider") or "").strip()
+            if not fb_provider:
+                continue
+            try:
+                fb_kwargs: dict = {"requested": fb_provider}
+                if entry.get("base_url"):
+                    fb_kwargs["explicit_base_url"] = entry["base_url"]
+                if entry.get("api_key"):
+                    fb_kwargs["explicit_api_key"] = entry["api_key"]
+                runtime = resolve_runtime_provider(**fb_kwargs)
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Primary auth failed (%s), falling back to %s",
+                    primary_exc,
+                    fb_provider,
+                )
+                return runtime
+            except Exception:
+                continue
+        raise
 
 
 def _make_agent(
@@ -3840,7 +4217,6 @@ def _make_agent(
     service_tier_override: str | None = None,
 ):
     from run_agent import AIAgent
-    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -3868,12 +4244,25 @@ def _make_agent(
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
-        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
         if missing_skills:
-            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            missing_display = ", ".join(missing_skills)
+            # Degrade gracefully when some skills loaded; only hard-fail when
+            # every requested skill is missing. Mirrors cli.py — a typo'd skill
+            # name should not crash the worker and auto-block the Kanban task.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
@@ -3909,11 +4298,9 @@ def _make_agent(
                 # Failing identity recovery, still hand the base_url to the
                 # direct-alias branch so pool/env credentials resolve for it.
                 resolve_kwargs["explicit_base_url"] = override_base_url
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-            **resolve_kwargs,
-        )
+        resolve_kwargs["requested"] = requested_provider
+        resolve_kwargs["target_model"] = model or None
+        runtime = _resolve_runtime_with_fallback(resolve_kwargs)
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
         # resolution would pick a different one.
@@ -3929,10 +4316,10 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-        )
+        runtime = _resolve_runtime_with_fallback({
+            "requested": requested_provider,
+            "target_model": model or None,
+        })
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -4033,7 +4420,10 @@ def _init_session(
                     _sessions[sid]["cwd"] = row["cwd"]
         else:
             try:
-                db.update_session_cwd(key, _sessions[sid]["cwd"])
+                _cwd = _sessions[sid]["cwd"]
+                db.update_session_cwd(key, _cwd)
+                # git branch/root probes run off the hot path (see _set_session_cwd).
+                _persist_session_git_meta(_sessions[sid], _cwd)
             except Exception:
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
@@ -4506,6 +4896,10 @@ def _(rid, params: dict) -> dict:
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
+    # When set, this is a branch: the new chat copies an existing conversation's
+    # history and links back to it so list_sessions_rich keeps it visible and the
+    # sidebar can nest it under its parent. Mirrors the TUI /branch marker.
+    parent_session_id = str(params.get("parent_session_id") or "").strip() or None
     # Did the client pick a workspace, or are we falling back to the gateway's
     # launch directory? Only an explicit choice is persisted as the session's
     # workspace (see _ensure_session_db_row); otherwise it lands in "No
@@ -4577,6 +4971,7 @@ def _(rid, params: dict) -> dict:
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
+            "parent_session_id": parent_session_id,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
@@ -4589,6 +4984,7 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
+
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -4600,14 +4996,8 @@ def _(rid, params: dict) -> dict:
     # + skeleton panel, then build the real AIAgent just after this response is
     # flushed.  This keeps startup responsive while still hydrating tools/skills
     # without requiring the user to submit a first prompt.
-    def _deferred_build() -> None:
-        session = _sessions.get(sid)
-        if session is not None:
-            _start_agent_build(sid, session)
-
-    build_timer = threading.Timer(0.05, _deferred_build)
-    build_timer.daemon = True
-    build_timer.start()
+    _schedule_agent_build(sid)
+    _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
     return _ok(
         rid,
@@ -4666,7 +5056,7 @@ def _(rid, params: dict) -> dict:
         fetch_limit = max(limit * 2, 200)
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True)
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(
@@ -4713,7 +5103,7 @@ def _(rid, params: dict) -> dict:
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a
         # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200)
+        rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=True)
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
@@ -4773,6 +5163,110 @@ def _(rid, params: dict) -> dict:
     except Exception:
         logger.exception("verification.status failed")
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
+
+
+def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+    """session.info for a not-yet-built session (the shape session.create
+    returns). tools/skills land later when the deferred build emits session.info."""
+    info = {
+        "cwd": cwd,
+        "branch": _git_branch_for_cwd(cwd),
+        "model": model or _resolve_model(),
+        "tools": {},
+        "skills": {},
+        "lazy": True,
+        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "profile_name": _current_profile_name(),
+    }
+    if provider:
+        info["provider"] = provider
+    return info
+
+
+def _deferred_session_record(
+    session_key: str,
+    *,
+    cols: int,
+    cwd: str,
+    history: list,
+    lease,
+    source: str = "tui",
+    close_on_disconnect: bool = False,
+    display_history_prefix: list | None = None,
+    profile_home: Path | None = None,
+    lazy: bool = False,
+    model_override=None,
+    resume_runtime_overrides: dict | None = None,
+) -> dict:
+    """A live-session record whose AIAgent is built later (lazy watch / cold
+    resume) — _init_session's shape minus the agent."""
+    now = time.time()
+    return {
+        "agent": None,
+        "agent_error": None,
+        "agent_ready": threading.Event(),
+        "attached_images": [],
+        "close_on_disconnect": close_on_disconnect,
+        "active_session_lease": lease,
+        "cols": cols,
+        "created_at": now,
+        "cwd": cwd,
+        "display_history_prefix": display_history_prefix or [],
+        "edit_snapshots": {},
+        "explicit_cwd": False,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "image_counter": 0,
+        "inflight_turn": None,
+        "last_active": now,
+        "lazy": lazy,
+        "model_override": model_override,
+        "pending_title": None,
+        "profile_home": str(profile_home) if profile_home is not None else None,
+        "resume_runtime_overrides": resume_runtime_overrides,
+        "resume_session_id": session_key,
+        "running": False,
+        "session_key": session_key,
+        "show_reasoning": _load_show_reasoning(),
+        "slash_worker": None,
+        "source": source,
+        "tool_progress_mode": _load_tool_progress_mode(),
+        "tool_started_at": {},
+        "transport": current_transport() or _stdio_transport,
+    }
+
+
+def _claim_or_reuse_live(
+    sid: str, session_key: str, record: dict, lease
+) -> tuple[str, dict] | None:
+    """Register ``record`` as the live session for ``session_key`` under the
+    resume lock, or — if a concurrent resume already won — release ``lease`` and
+    return the winner for the caller to reuse."""
+    with _session_resume_lock:
+        live = _find_live_session_by_key(session_key)
+        if live is not None:
+            if lease is not None:
+                lease.release()
+            return live
+        with _sessions_lock:
+            _sessions[sid] = record
+            _register_session_cwd(_sessions[sid])
+    return None
+
+
+def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
+    """Pre-warm a deferred session's agent off the response path (session.create
+    and cold resume both build through here; _sess() also builds on demand)."""
+
+    def _run():
+        session = _sessions.get(sid)
+        if session is not None:
+            _start_agent_build(sid, session)
+
+    timer = threading.Timer(delay, _run)
+    timer.daemon = True
+    timer.start()
 
 
 @method("session.resume")
@@ -4882,65 +5376,31 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4090, limit_message)
         try:
             db.reopen_session(target)
-            # The child's OWN conversation only. Delegation children are
-            # parent-linked rows, so include_ancestors would prepend the
-            # parent's entire transcript — a watch window opened on a subagent
-            # must show the subagent's branch, not the parent's prompt.
+            # The child's OWN conversation only — include_ancestors would prepend
+            # the parent's transcript onto the subagent's branch.
             history = db.get_messages_as_conversation(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        messages = _history_to_messages(history)
         cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
-        now = time.time()
-        # A delegated child mid-run emits no native session events of its own —
-        # report its liveness from the relay registry so the window paints a
-        # busy indicator instead of a dead idle transcript.
+        record = _deferred_session_record(
+            target,
+            cols=cols,
+            cwd=cwd,
+            history=history,
+            lease=lease,
+            source=str(params.get("source") or "tui").strip() or "tui",
+            close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+            profile_home=profile_home,
+            lazy=True,
+        )
+        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+            return _ok(rid, _reuse_live_payload(*live))
+        # A delegated child mid-run emits no session events of its own — report
+        # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
-        source = str(params.get("source") or "tui").strip() or "tui"
-        with _session_resume_lock:
-            live = _find_live_session_by_key(target)
-            if live is not None:
-                if lease is not None:
-                    lease.release()
-                return _ok(rid, _reuse_live_payload(*live))
-            with _sessions_lock:
-                _sessions[sid] = {
-                    "agent": None,
-                    "agent_error": None,
-                    "agent_ready": threading.Event(),
-                    "attached_images": [],
-                    "close_on_disconnect": is_truthy_value(
-                        params.get("close_on_disconnect", False)
-                    ),
-                    "active_session_lease": lease,
-                    "cols": cols,
-                    "created_at": now,
-                    "display_history_prefix": [],
-                    "edit_snapshots": {},
-                    "explicit_cwd": False,
-                    "history": history,
-                    "history_lock": threading.Lock(),
-                    "history_version": 0,
-                    "image_counter": 0,
-                    "cwd": cwd,
-                    "inflight_turn": None,
-                    "last_active": now,
-                    "lazy": True,
-                    "pending_title": None,
-                    "profile_home": str(profile_home) if profile_home is not None else None,
-                    "resume_session_id": target,
-                    "running": False,
-                    "session_key": target,
-                    "show_reasoning": _load_show_reasoning(),
-                    "source": source,
-                    "slash_worker": None,
-                    "tool_progress_mode": _load_tool_progress_mode(),
-                    "tool_started_at": {},
-                    "transport": current_transport() or _stdio_transport,
-                }
-                _register_session_cwd(_sessions[sid])
+        messages = _history_to_messages(history)
         return _ok(
             rid,
             {
@@ -4948,21 +5408,92 @@ def _(rid, params: dict) -> dict:
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
-                "info": {
-                    "cwd": cwd,
-                    "branch": _git_branch_for_cwd(cwd),
-                    "model": _resolve_model(),
-                    "tools": {},
-                    "skills": {},
-                    "lazy": True,
-                    "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                    "profile_name": _current_profile_name(),
-                },
+                "info": _lazy_resume_info(cwd),
                 "inflight": None,
                 "running": child_running,
                 "session_key": target,
-                "started_at": now,
+                "started_at": record["created_at"],
                 "status": "streaming" if child_running else "idle",
+            },
+        )
+
+    # Cold resume default: register the live session and read its stored
+    # transcript, but build the agent OFF the response path. _make_agent can
+    # block for seconds (MCP discovery, prompt/skill build, AIAgent
+    # construction), and every resume caller (desktop + Ink TUI) awaits this RPC
+    # before it paints — so building eagerly is the bulk of the multi-second
+    # "switching sessions is frozen" latency. Return the full display transcript
+    # immediately and pre-warm the agent on a short timer (the same deferred-
+    # build contract session.create uses); _sess() also builds on demand if the
+    # first prompt beats the timer. A caller that needs the agent built
+    # synchronously (e.g. tests of the build race) passes ``eager_build: true``
+    # to fall through to the eager path below. Distinct from the lazy/watch
+    # branch above: a normal resume restores the full ancestor history and the
+    # session's persisted runtime identity, and is a real (upgradable) session.
+    if not is_truthy_value(params.get("eager_build", False)):
+        sid = uuid.uuid4().hex[:8]
+        lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
+        if limit_message is not None:
+            return _err(rid, 4090, limit_message)
+        # Interactive resume routes approvals/clarify through gateway prompts;
+        # the deferred build wires the remaining per-session callbacks.
+        _enable_gateway_prompts()
+        try:
+            db.reopen_session(target)
+            raw_history = db.get_messages_as_conversation(target)
+            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        except Exception as e:
+            if lease is not None:
+                lease.release()
+            return _err(rid, 5000, f"resume failed: {e}")
+        # Display keeps the full transcript; the model-fed history drops a
+        # dangling/interrupted tool-call tail so a session killed mid-loop does
+        # not replay the unanswered call forever (#29086).
+        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
+        history = sanitize_replay_history(raw_history)
+        # Restore the model/provider/reasoning/tier this chat last used so the
+        # deferred build (and the info below) match the eager path — without them
+        # the build drops the provider ("No LLM provider configured").
+        overrides = _stored_session_runtime_overrides(found) or {}
+        model_override = overrides.get("model_override") or {}
+        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        record = _deferred_session_record(
+            target,
+            cols=cols,
+            cwd=cwd,
+            history=history,
+            lease=lease,
+            source=str(params.get("source") or "tui").strip() or "tui",
+            close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+            display_history_prefix=prefix,
+            profile_home=profile_home,
+            model_override=overrides.get("model_override"),
+            resume_runtime_overrides=overrides or None,
+        )
+        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+            return _ok(rid, _reuse_live_payload(*live))
+
+        _schedule_agent_build(sid)
+        _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+
+        messages = _history_to_messages(display_history)
+        return _ok(
+            rid,
+            {
+                "session_id": sid,
+                "resumed": target,
+                "message_count": len(messages),
+                "messages": messages,
+                "info": _lazy_resume_info(
+                    cwd,
+                    model=model_override.get("model") or "",
+                    provider=overrides.get("provider_override") or "",
+                ),
+                "inflight": None,
+                "running": False,
+                "session_key": target,
+                "started_at": record["created_at"],
+                "status": "idle",
             },
         )
 
@@ -4980,13 +5511,21 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
+        raw_history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
         )
+        # The display transcript keeps every row so the user still sees their
+        # full history.  The model-fed history is sanitized: a session whose
+        # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
+        # (or interrupted assistant→tool) tail; replaying it makes the model
+        # re-issue the unanswered call forever — the permanent-"thinking" stuck
+        # session in #29086.  The messaging gateway already strips this; this is
+        # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = display_history[
-            : max(0, len(display_history) - len(history))
+            : max(0, len(display_history) - len(raw_history))
         ]
+        history = sanitize_replay_history(raw_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -5675,6 +6214,36 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("session.context_breakdown")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        usage = _get_usage(None)
+        return _ok(
+            rid,
+            {
+                "categories": [],
+                "context_max": usage.get("context_max", 0) or 0,
+                "context_percent": usage.get("context_percent", 0) or 0,
+                "context_used": usage.get("context_used", 0) or 0,
+                "estimated_total": 0,
+                "model": "",
+            },
+        )
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    try:
+        from agent.context_breakdown import compute_session_context_breakdown
+
+        payload = compute_session_context_breakdown(agent, history)
+    except Exception as exc:
+        return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+    return _ok(rid, payload)
 
 
 def _pet_frame_counts(spritesheet) -> dict:
@@ -7252,8 +7821,31 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if hasattr(session["agent"], "interrupt"):
+    # Safety net: if the turn's run thread is already gone but `running` stayed
+    # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
+    # so the session can't be permanently bricked at 4009 "session busy" — every
+    # send/restore/resume would otherwise reject until a full backend restart.
+    # Always tell the agent to interrupt when the session claims a run is active:
+    # stale flags are cleared below, and fresh turns clear the interrupt flag at
+    # entry. This keeps a stale/missing thread handle from making Stop a no-op.
+    run_thread = session.get("_run_thread")
+    run_thread_alive = run_thread is not None and run_thread.is_alive()
+    should_interrupt = bool(session.get("running"))
+    if should_interrupt and hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
+    with session["history_lock"]:
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
+    if not run_thread_alive:
+        with session["history_lock"]:
+            if session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+
+    # Stop = stop the TURN (cooperative interrupt above also kills the in-flight
+    # foreground subprocess). Background processes the agent started (dev servers,
+    # watchers) are intentionally left running — kill those individually with the
+    # "x" on the task row (process.kill). Don't reap them here.
     # Scope the pending-prompt release to THIS session.  A global
     # _clear_pending() would collaterally cancel clarify/sudo/secret
     # prompts on unrelated sessions sharing the same tui_gateway
@@ -7563,7 +8155,12 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
+            # Reject out-of-range ordinals on BOTH ends. A negative value would
+            # otherwise sail past the upper-bound check and hit Python's negative
+            # indexing below (user_indices[-1] -> the LAST user turn), silently
+            # truncating history to everything before it and persisting that loss
+            # via replace_messages — an unrecoverable overwrite of the session DB.
+            if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
@@ -7574,11 +8171,15 @@ def _(rid, params: dict) -> dict:
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
+        session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
+    # A branch becomes real here: copy its parent's transcript into the row so it
+    # resumes with full context (the agent won't persist the seed itself).
+    _persist_branch_seed(session)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -7597,9 +8198,18 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
         _run_prompt_submit(rid, sid, session, text)
 
-    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+    # Keep a handle so session.interrupt can tell a live turn from a stuck
+    # `running` flag (a turn that died without clearing it) and recover the latter.
+    session["_run_thread"] = run_thread
+    run_thread.start()
     return _ok(rid, {"status": "streaming"})
 
 
@@ -7787,8 +8397,54 @@ def _notification_poller_loop(
         process_registry.completion_queue.put(evt)
 
 
+def _wire_agent_terminal_output() -> None:
+    """Idempotently route background-process output (and tab-close requests) to
+    the desktop, keyed by process id. Read-only agent terminal tabs stream
+    `agent.terminal.output` chunks live instead of polling the output tail, and
+    `process_registry.request_close_terminal` emits `terminal.close` so the agent
+    can drop a tab without killing the process. Events are routed to the window
+    that owns the process (its gateway session); `_emit`/`write_json` is
+    `_stdout_lock`-guarded, so calling it from the registry's reader threads is
+    safe."""
+    from tools.process_registry import process_registry
+
+    has_output_sink = getattr(process_registry, "on_output", None) is not None
+    has_close_sink = getattr(process_registry, "on_close", None) is not None
+    if has_output_sink and has_close_sink:
+        return
+
+    def _owner_sid_for_process(session) -> str:
+        session_key = str(getattr(session, "session_key", "") or "")
+        if not session_key:
+            return ""
+        with _sessions_lock:
+            for sid, tui_session in _sessions.items():
+                if str(tui_session.get("session_key") or "") == session_key:
+                    return sid
+        return ""
+
+    def _emit_agent_terminal_output(session, chunk):
+        _emit(
+            "agent.terminal.output",
+            _owner_sid_for_process(session),
+            {"process_id": session.id, "chunk": chunk},
+        )
+
+    def _emit_agent_terminal_close(session, process_id):
+        # session may be None (process already finished/pruned) — the tab can
+        # still linger and be closed; route to the owning window when we can.
+        sid = _owner_sid_for_process(session) if session is not None else ""
+        _emit("terminal.close", sid, {"process_id": process_id})
+
+    if not has_output_sink:
+        process_registry.on_output = _emit_agent_terminal_output
+    if not has_close_sink:
+        process_registry.on_close = _emit_agent_terminal_close
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
+    _wire_agent_terminal_output()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,
@@ -7808,6 +8464,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
+    if hasattr(agent, "clear_interrupt"):
+        try:
+            agent.clear_interrupt()
+        except Exception:
+            pass
     _emit("message.start", sid)
 
     def run():
@@ -7946,6 +8607,44 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
+            if "moa_one_shot_restore" in session:
+                _restore = session.pop("moa_one_shot_restore", None)
+                # Restore the model the user was on before the /moa one-shot.
+                # The one-shot did a real in-place agent.switch_model() to MoA
+                # (#53444), so undoing it must go back through the switch path —
+                # resetting session["model_override"] alone would leave the live
+                # agent's client pinned to MoA for the next turn.
+                if isinstance(_restore, dict):
+                    _prev_override = _restore.get("override")
+                    _prev_model = _restore.get("model")
+                    _prev_provider = _restore.get("provider")
+                    if _prev_override is None:
+                        session.pop("model_override", None)
+                    else:
+                        session["model_override"] = _prev_override
+                    if _prev_model:
+                        _raw = (
+                            f"{_prev_model} --provider {_prev_provider}"
+                            if _prev_provider
+                            else _prev_model
+                        )
+                        try:
+                            _apply_model_switch(
+                                sid,
+                                session,
+                                _raw,
+                                confirm_expensive_model=False,
+                                pin_session_override=bool(_prev_override),
+                            )
+                        except Exception as _moa_restore_exc:
+                            logger.warning(
+                                "MoA one-shot model restore failed: %s",
+                                _moa_restore_exc,
+                            )
+                elif _restore is None:
+                    session.pop("model_override", None)
+                else:
+                    session["model_override"] = _restore
 
             last_reasoning = None
             status_note = None
@@ -8106,12 +8805,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 try:
                     from agent.title_generator import maybe_auto_title
 
+                    _title_key = session.get("session_key") or sid
                     maybe_auto_title(
                         _get_db(),
-                        session.get("session_key") or sid,
+                        _title_key,
                         text,
                         raw,
                         session.get("history", []),
+                        # Push the generated title live so the sidebar renames
+                        # without waiting for the next list refresh (the titler
+                        # runs async, after this turn's refresh already fired).
+                        title_callback=lambda t, _k=_title_key: _emit(
+                            "session.title", sid, {"session_id": _k, "title": t}
+                        ),
                     )
                 except Exception:
                     pass
@@ -8231,7 +8937,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    threading.Thread(target=run, daemon=True).start()
+    run_thread = threading.Thread(target=run, daemon=True)
+    session["_run_thread"] = run_thread
+    run_thread.start()
 
 
 @method("clipboard.paste")
@@ -8550,8 +9258,13 @@ def _(rid, params: dict) -> dict:
             "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(out_prefix),
         ]
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = subprocess.run(
+                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -9609,6 +10322,438 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
+# ---------------------------------------------------------------------------
+# Projects — first-class, per-profile, multi-folder workspaces
+# ---------------------------------------------------------------------------
+
+
+# JSON-RPC error codes for the projects surface.
+_E_PROJECTS = 5061  # generic failure
+_E_NO_PROJECT = 5062  # id resolved to nothing
+_E_PROJECT_ARG = 5063  # invalid argument (e.g. bad name/slug)
+
+
+class _NoProject(Exception):
+    """Raised inside a projects handler when ``params['id']`` resolves to None."""
+
+
+def _projects_payload(conn) -> dict:
+    from hermes_cli import projects_db as pdb
+
+    return {
+        "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
+        "active_id": pdb.get_active_id(conn),
+    }
+
+
+def _projects_method(name: str):
+    """Register a projects RPC, injecting (pdb, conn) and unifying error mapping.
+
+    Every project CRUD handler opened the per-profile DB, mapped a missing id to
+    5062, bad args to 5063, and everything else to 5061. This collapses that
+    boilerplate so each handler is just its one meaningful operation.
+    """
+
+    def decorator(fn):
+        @method(name)
+        def handler(rid, params: dict) -> dict:
+            try:
+                from hermes_cli import projects_db as pdb
+
+                with pdb.connect_closing() as conn:
+                    return fn(rid, params, pdb, conn)
+            except _NoProject:
+                return _err(rid, _E_NO_PROJECT, "no such project")
+            except ValueError as e:
+                return _err(rid, _E_PROJECT_ARG, str(e))
+            except Exception as e:
+                return _err(rid, _E_PROJECTS, str(e))
+
+        return handler
+
+    return decorator
+
+
+def _require_project(pdb, conn, params: dict):
+    """The project named by ``params['id']`` (or raise ``_NoProject``)."""
+    proj = pdb.get_project(conn, str(params.get("id") or ""))
+    if proj is None:
+        raise _NoProject
+    return proj
+
+
+@_projects_method("projects.list")
+def _(rid, params, pdb, conn) -> dict:
+    return _ok(rid, _projects_payload(conn))
+
+
+@_projects_method("projects.get")
+def _(rid, params, pdb, conn) -> dict:
+    return _ok(rid, {"project": _require_project(pdb, conn, params).to_dict()})
+
+
+@_projects_method("projects.create")
+def _(rid, params, pdb, conn) -> dict:
+    pid = pdb.create_project(
+        conn,
+        name=str(params.get("name") or ""),
+        slug=params.get("slug"),
+        folders=params.get("folders") or [],
+        primary_path=params.get("primary_path"),
+        description=params.get("description"),
+        icon=params.get("icon"),
+        color=params.get("color"),
+        board_slug=params.get("board_slug"),
+    )
+    if params.get("use"):
+        pdb.set_active(conn, pid)
+    proj = pdb.get_project(conn, pid)
+    return _ok(rid, {"project": proj.to_dict() if proj else None})
+
+
+@_projects_method("projects.update")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    pdb.update_project(
+        conn,
+        proj.id,
+        name=params.get("name"),
+        description=params.get("description"),
+        icon=params.get("icon"),
+        color=params.get("color"),
+        board_slug=params.get("board_slug"),
+    )
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+
+
+@_projects_method("projects.add_folder")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    pdb.add_folder(
+        conn,
+        proj.id,
+        str(params.get("path") or ""),
+        label=params.get("label"),
+        is_primary=bool(params.get("is_primary")),
+    )
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+
+
+@_projects_method("projects.remove_folder")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    pdb.remove_folder(conn, proj.id, str(params.get("path") or ""))
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+
+
+@_projects_method("projects.set_primary")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    pdb.set_primary(conn, proj.id, str(params.get("path") or ""))
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+
+
+@_projects_method("projects.archive")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    (pdb.restore_project if params.get("restore") else pdb.archive_project)(conn, proj.id)
+    return _ok(rid, _projects_payload(conn))
+
+
+@_projects_method("projects.delete")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    pdb.delete_project(conn, proj.id)
+    return _ok(rid, _projects_payload(conn))
+
+
+@_projects_method("projects.set_active")
+def _(rid, params, pdb, conn) -> dict:
+    pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
+    return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+
+
+@_projects_method("projects.for_cwd")
+def _(rid, params, pdb, conn) -> dict:
+    cwd = _completion_cwd({"cwd": str(params.get("cwd") or "").strip()} if params.get("cwd") else {})
+    proj = pdb.project_for_path(conn, cwd)
+    return _ok(rid, {"project": proj.to_dict() if proj else None, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
+
+
+def _is_repo_junk(root: str) -> bool:
+    """A git root we never auto-surface as a project: the bare home dir or
+    anything under HERMES_HOME (~/.hermes by default) — config/sessions/skills,
+    not a workspace. User-created projects pointing there are still honored."""
+    if not root:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    real = os.path.realpath(root)
+    home = os.path.realpath(os.path.expanduser("~"))
+    hermes_home = os.path.realpath(str(get_hermes_home()))
+
+    return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
+
+
+def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
+    """Merge filesystem-scanned repos (cached) with session-derived repo roots.
+
+    Repo-first: the disk scan (persisted by `projects.record_repos`) surfaces
+    repos even with zero hermes sessions. Session-derived roots cover repos
+    outside the scan roots. Both are junk-filtered (hermes home subtree + bare
+    home) and carry their session totals for the overview.
+
+    ``conn`` reuses an already-open projects.db connection (the tree path holds
+    one); ``backfill`` persists resolved roots back onto session rows — kept off
+    the per-turn tree path (grouping uses the live git resolver regardless) and
+    done only on the explicit discover/record refresh.
+    """
+    _is_junk = _is_repo_junk
+    repos: dict[str, dict] = {}
+
+    def _agg(root: str) -> dict:
+        return repos.setdefault(root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
+
+    # Session-derived roots (common repo root, folding worktrees; cached) +
+    # backfill the column so persisted git_repo_root matches the tree grouping.
+    cwd_rows = list(db.distinct_session_cwds())
+    # Warm the per-cwd git probes in parallel so a cold first paint doesn't
+    # serialize one subprocess per distinct cwd before this loop reads the cache.
+    git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
+    cwd_to_root: dict[str, str] = {}
+    for row in cwd_rows:
+        cwd = str(row.get("cwd") or "")
+        root = _git_common_repo_root_for_cwd(cwd)
+        if not root:
+            continue
+        cwd_to_root[cwd] = root
+        if _is_junk(root):
+            continue
+        agg = _agg(root)
+        agg["sessions"] += int(row.get("sessions") or 0)
+        agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
+
+    if backfill:
+        try:
+            db.backfill_repo_roots(cwd_to_root)
+        except Exception:
+            logger.debug("failed to backfill repo roots", exc_info=True)
+
+    # Filesystem-scanned roots from the cache (may have zero sessions). Reuse the
+    # caller's projects.db connection when given, else open a short-lived one.
+    try:
+        from hermes_cli import projects_db as pdb
+
+        def _read(c) -> None:
+            for entry in pdb.list_discovered_repos(c):
+                root = str(entry.get("root") or "")
+                if not root or _is_junk(root):
+                    continue
+                agg = _agg(root)
+                if entry.get("label"):
+                    agg["label"] = entry["label"]
+                agg["last_active"] = max(agg["last_active"], float(entry.get("last_seen") or 0))
+
+        if conn is not None:
+            _read(conn)
+        else:
+            with pdb.connect_closing() as own:
+                _read(own)
+    except Exception:
+        logger.debug("failed to read discovered repo cache", exc_info=True)
+
+    out = sorted(repos.values(), key=lambda r: r["last_active"], reverse=True)
+    for r in out:
+        r["label"] = r["label"] or os.path.basename(r["root"].rstrip("/\\")) or r["root"]
+    return out
+
+
+@method("projects.discover_repos")
+def _(rid, params: dict) -> dict:
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    try:
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"repos": []})
+        return _ok(rid, {"repos": _discover_repos_payload(db)})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.record_repos")
+def _(rid, params: dict) -> dict:
+    """Persist git repo roots found by the client's filesystem scan, then return
+    the merged repo list. The native crawl runs on the desktop (local fs); this
+    caches the result so later reads are instant instead of re-walking disk."""
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pairs: list[tuple[str, str | None]] = []
+        for item in params.get("repos") or []:
+            if isinstance(item, str):
+                pairs.append((item, None))
+            elif isinstance(item, dict) and item.get("root"):
+                pairs.append((str(item["root"]), item.get("label")))
+
+        with pdb.connect_closing() as conn:
+            pdb.record_discovered_repos(conn, pairs, replace=True)
+
+        db = _get_db()
+        return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+# Sources excluded from the project tree: cron runs and tool/subagent children
+# are not user conversations. Subagent/compression children are already dropped
+# by list_sessions_rich(include_children=False); cron has its own section.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron"]
+
+
+def _project_tree_row(r: dict) -> dict:
+    """Project a SessionDB row to the minimal shape the sidebar renders.
+
+    Keeps the fields the grouping needs (cwd / git_branch / git_repo_root) plus
+    everything ``SidebarSessionRow`` reads, and drops the heavy columns
+    (system_prompt, model_config, ...) so the tree payload stays lean.
+    """
+    return {
+        "id": r.get("id"),
+        "_lineage_root_id": r.get("_lineage_root_id"),
+        # The sidebar nests branch/fork sessions under their parent
+        # (flattenSessionsWithBranches keys on this); without it, lane rows can't
+        # draw the └─ connector the flat Recents list shows.
+        "parent_session_id": r.get("parent_session_id"),
+        "title": r.get("title"),
+        "preview": r.get("preview"),
+        "started_at": r.get("started_at") or 0,
+        "ended_at": r.get("ended_at"),
+        "last_active": r.get("last_active") or r.get("started_at") or 0,
+        "source": r.get("source"),
+        "archived": bool(r.get("archived")),
+        "message_count": r.get("message_count") or 0,
+        "tool_call_count": r.get("tool_call_count") or 0,
+        "input_tokens": r.get("input_tokens") or 0,
+        "output_tokens": r.get("output_tokens") or 0,
+        "model": r.get("model"),
+        "is_active": False,
+        "cwd": r.get("cwd"),
+        "git_branch": r.get("git_branch"),
+        "git_repo_root": r.get("git_repo_root"),
+    }
+
+
+def _project_tree_inputs(
+    db, session_limit: int, *, include_discovered: bool
+) -> tuple[list[dict], list[dict], list[dict], str | None]:
+    """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
+
+    ``include_discovered`` is the zero-session-repo overview tier; the entered
+    view (drill-in) skips it entirely — it only needs the project it's showing,
+    which already has sessions — avoiding the distinct-cwd scan + git probes on
+    that per-turn path. One projects.db connection serves both reads.
+    """
+    rows = db.list_sessions_rich(
+        limit=session_limit,
+        offset=0,
+        order_by_last_active=True,
+        min_message_count=1,
+        include_children=False,
+        exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
+        include_archived=False,
+    )
+    sessions = [_project_tree_row(r) for r in rows]
+    # Parallel-warm the git cache so build_tree's resolver reads it instead of
+    # cold-probing each cwd in sequence (matters on the drill-in path, which
+    # skips the discovery warm-up below).
+    git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
+
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        projects = [p.to_dict() for p in pdb.list_projects(conn)]
+        active_id = pdb.get_active_id(conn)
+        # backfill stays off the hot tree path — grouping uses the live resolver.
+        discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
+
+    return sessions, projects, discovered, active_id
+
+
+def _build_project_tree(
+    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+) -> tuple[dict, str | None]:
+    """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
+    from tui_gateway import project_tree
+
+    sessions, projects, discovered, active_id = _project_tree_inputs(
+        db, session_limit, include_discovered=include_discovered
+    )
+    tree = project_tree.build_tree(
+        projects,
+        sessions,
+        discovered,
+        _resolve_cwd_git,
+        preview_limit=preview_limit,
+        hydrate=hydrate,
+        is_junk_root=_is_repo_junk,
+    )
+    return tree, active_id
+
+
+@method("projects.tree")
+def _(rid, params: dict) -> dict:
+    """Authoritative project overview: project -> repo -> lane structure with
+    counts + a few preview sessions per project, plus the flat set of session
+    ids claimed by any project (so the desktop excludes them from flat Recents).
+    Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
+    """
+    try:
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+
+        tree, active_id = _build_project_tree(
+            db,
+            preview_limit=int(params.get("preview_limit") or 3),
+            hydrate=False,
+            session_limit=int(params.get("session_limit") or 2000),
+            include_discovered=True,
+        )
+        return _ok(
+            rid,
+            {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
+        )
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.project_sessions")
+def _(rid, params: dict) -> dict:
+    """Fully hydrated lanes (repo -> lane -> session rows) for one project,
+    built from the same authoritative grouping as ``projects.tree`` so ids and
+    membership match exactly. Used when the user enters a project."""
+    try:
+        project_id = str(params.get("project_id") or "")
+        if not project_id:
+            return _err(rid, 5063, "project_id required")
+
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"project": None})
+
+        # Drill-in only needs the entered project (which has sessions), so skip
+        # the zero-session discovery tier entirely.
+        tree, _active = _build_project_tree(
+            db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
+            include_discovered=False,
+        )
+        proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
+        return _ok(rid, {"project": proj})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
 @method("config.get")
 def _(rid, params: dict) -> dict:
     key = params.get("key", "")
@@ -10045,6 +11190,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "moa",
         "undo",
         "learn",
     }
@@ -10184,7 +11330,9 @@ def _(rid, params: dict) -> dict:
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
+            # needs provider credentials. Tier-1 secrets still stripped (#29157).
+            env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
         )
         parts = [r.stdout or "", r.stderr or ""]
@@ -10240,6 +11388,11 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            # Sanitize env to prevent credential leakage —
+            # quick commands run in the TUI server process which
+            # has all API keys in os.environ.
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
@@ -10247,12 +11400,16 @@ def _(rid, params: dict) -> dict:
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
                 + (r.stderr or "")
             ).strip()[:4000]
+            if output:
+                from agent.redact import redact_sensitive_text
+                output = redact_sensitive_text(output)
             if r.returncode != 0:
                 return _err(
                     rid,
@@ -10317,6 +11474,65 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "moa":
+        # /moa is one-shot sugar only: run a single prompt through the default
+        # MoA preset, then restore the prior model. To *switch* to a MoA preset
+        # for the rest of the session, pick it from the model picker (MoA
+        # presets surface as a virtual "Mixture of Agents" provider).
+        try:
+            from hermes_cli.moa_config import moa_usage, normalize_moa_config
+
+            if not arg:
+                return _err(rid, 4004, moa_usage())
+            if not session:
+                return _err(rid, 4001, "no active session")
+            sid = params.get("session_id", "")
+            moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
+            preset = moa_cfg["default_preset"]
+            # Record the live model identity so it can be restored after the
+            # one-shot turn, then swap the agent's client in place (#53444:
+            # setting session["model_override"] alone never switched the
+            # already-built agent, so the turn silently ran on the old model).
+            agent = session.get("agent")
+            session["moa_one_shot_restore"] = {
+                "override": session.get("model_override"),
+                "model": getattr(agent, "model", None) if agent else None,
+                "provider": getattr(agent, "provider", None) if agent else None,
+            }
+            if agent is not None:
+                # Live agent: swap its client in place so THIS turn runs MoA.
+                try:
+                    _apply_model_switch(
+                        sid,
+                        session,
+                        f"{preset} --provider moa",
+                        confirm_expensive_model=False,
+                        pin_session_override=True,
+                    )
+                except Exception as exc:
+                    session.pop("moa_one_shot_restore", None)
+                    return _err(rid, 5030, f"moa unavailable: {exc}")
+            else:
+                # No agent built yet (lazy/fresh session): the override is
+                # consumed by the first build, so the turn runs MoA without an
+                # in-place switch.
+                session["model_override"] = {
+                    "provider": "moa",
+                    "model": preset,
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                }
+            return _ok(
+                rid,
+                {
+                    "type": "send",
+                    "notice": f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn.",
+                    "message": arg,
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5030, f"moa unavailable: {exc}")
 
     if name == "retry":
         if not session:
@@ -10640,6 +11856,9 @@ def _list_repo_files(root: str) -> list[str]:
             return cached[1]
 
     files: list[str] = []
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    _creationflags = windows_hide_flags()
     try:
         top_result = subprocess.run(
             ["git", "-C", root, "rev-parse", "--show-toplevel"],
@@ -10647,6 +11866,7 @@ def _list_repo_files(root: str) -> list[str]:
             timeout=2.0,
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=_creationflags,
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
@@ -10665,6 +11885,7 @@ def _list_repo_files(root: str) -> list[str]:
                 timeout=2.0,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=_creationflags,
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
@@ -12335,6 +13556,63 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))
+
+
+@method("learning.frames")
+def _(rid, params: dict) -> dict:
+    """Pre-render the learning timeline for the TUI ``/journey`` overlay.
+
+    Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
+    so Ink can render and walk the tree locally without round-tripping the
+    gateway. Shares its renderer with the ``hermes journey`` CLI.
+    """
+    try:
+        cols = int(params.get("cols", 80) or 80)
+        rows = int(params.get("rows", 24) or 24)
+        frames = int(params.get("frames", 48) or 48)
+    except (TypeError, ValueError):
+        cols, rows, frames = 80, 24, 48
+    try:
+        from agent.learning_graph import build_learning_graph
+        from agent.learning_graph_render import render_frames
+
+        payload = build_learning_graph()
+        return _ok(rid, render_frames(payload, cols=max(20, cols), rows=max(10, rows), frames=frames))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.frames failed: {exc}")
+
+
+@method("learning.detail")
+def _(rid, params: dict) -> dict:
+    """Current content of a journey node, for an edit prefill."""
+    try:
+        from agent.learning_mutations import node_detail
+
+        return _ok(rid, node_detail(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.detail failed: {exc}")
+
+
+@method("learning.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a journey node — skills are archived (restorable), memories removed."""
+    try:
+        from agent.learning_mutations import delete_node
+
+        return _ok(rid, delete_node(str(params.get("id", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.delete failed: {exc}")
+
+
+@method("learning.edit")
+def _(rid, params: dict) -> dict:
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+    try:
+        from agent.learning_mutations import edit_node
+
+        return _ok(rid, edit_node(str(params.get("id", "")), str(params.get("content", ""))))
+    except Exception as exc:  # noqa: BLE001
+        return _err(rid, 5000, f"learning.edit failed: {exc}")
 
 
 @method("skills.manage")

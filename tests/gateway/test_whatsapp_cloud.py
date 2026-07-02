@@ -20,6 +20,20 @@ import pytest
 from gateway.config import Platform
 
 
+@pytest.fixture(autouse=True)
+def _whatsapp_open_optin(monkeypatch):
+    """Opt into WhatsApp allow-all for the file's dispatch-mechanics tests.
+
+    The adapter now fails closed on ``dm_policy: open`` unless
+    ``WHATSAPP_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` is set
+    (SECURITY.md 2.6). These tests set ``_dm_policy = "open"`` as a stand-in
+    for "process this DM" while exercising unrelated dispatch mechanics, so
+    grant the opt-in here. Tests that specifically assert the gate override
+    this within their own body.
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2319,3 +2333,107 @@ class TestMediaIdValidation:
         path, mime = await adapter._download_media_to_cache("../../etc/passwd")
         assert path is None and mime is None
         adapter._http_client.get.assert_not_called()
+
+
+class TestReplyContextResolution:
+    """The Cloud webhook ``context`` object only carries the quoted message's
+    id (and author), never its text. We resolve the text from rich_sent_store,
+    which is populated on every inbound message and every outbound send. Without
+    a resolved ``reply_to_text`` run.py can't inject the disambiguation prefix,
+    so the agent never learns the message was a reply (the user-reported bug).
+    """
+
+    @pytest.mark.asyncio
+    async def test_reply_to_own_earlier_message_resolves_text(self):
+        """User replies to their own earlier message — its text was indexed
+        on the earlier inbound, so the reply resolves it."""
+        adapter = _make_adapter()
+        # First inbound message gets recorded by wamid.
+        await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.PRIOR", "type": "text",
+             "text": {"body": "remind me to buy milk"}},
+            {"15551234567": "Alice"}, {},
+        )
+        # Now the user replies to that earlier message.
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "did you?"},
+             "context": {"id": "wamid.PRIOR", "from": "15551234567"}},
+            {"15551234567": "Alice"}, {},
+        )
+        assert event is not None
+        assert event.reply_to_message_id == "wamid.PRIOR"
+        assert event.reply_to_text == "remind me to buy milk"
+        assert event.reply_to_is_own_message is False  # quoted author == the user
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_message_marks_own(self):
+        """User replies to one of the bot's messages — context.from matches the
+        business number, so reply_to_is_own_message is True and text resolves
+        from the outbound record made in send()."""
+        from gateway import rich_sent_store
+
+        adapter = _make_adapter()
+        # Simulate the outbound record send() would have made.
+        rich_sent_store.record("15551234567", "wamid.BOT", "Sure, milk added.")
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "thanks"},
+             "context": {"id": "wamid.BOT", "from": "15550009999"}},
+            {"15551234567": "Alice"},
+            {"display_phone_number": "15550009999"},
+        )
+        assert event is not None
+        assert event.reply_to_message_id == "wamid.BOT"
+        assert event.reply_to_text == "Sure, milk added."
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to_unknown_message_id_no_text(self):
+        """Quoted message we never indexed (e.g. before gateway start) — id is
+        still surfaced, text is None, and we don't crash."""
+        adapter = _make_adapter()
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "what about this"},
+             "context": {"id": "wamid.GONE", "from": "15551234567"}},
+            {"15551234567": "Alice"}, {},
+        )
+        assert event is not None
+        assert event.reply_to_message_id == "wamid.GONE"
+        assert event.reply_to_text is None
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_non_reply_message_has_no_reply_context(self):
+        adapter = _make_adapter()
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.PLAIN", "type": "text",
+             "text": {"body": "hello"}},
+            {"15551234567": "Alice"}, {},
+        )
+        assert event is not None
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_send_records_outbound_text_by_wamid(self):
+        """send() must index its own wamid -> text so replies to the bot
+        resolve. Verify the round-trip through rich_sent_store."""
+        from gateway import rich_sent_store
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.OUT"}]}
+            )
+        )
+        result = await adapter.send("15551234567", "here is your answer")
+        assert result.success and result.message_id == "wamid.OUT"
+        assert (
+            rich_sent_store.lookup("15551234567", "wamid.OUT")
+            == "here is your answer"
+        )
+

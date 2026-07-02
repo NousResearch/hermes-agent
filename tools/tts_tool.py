@@ -1027,11 +1027,14 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
-        response_format = "opus"
-    else:
-        response_format = "mp3"
+    # OpenAI-compatible backends vary in supported formats (e.g. Speaches/Kokoro
+    # only accept mp3/flac/wav/pcm). Always synthesize mp3, then transcode to
+    # OGG/Opus locally when the caller requested a .ogg target (#54589).
+    wants_opus_output = output_path.endswith(".ogg")
+    response_format = "mp3"
+    synth_path = output_path
+    if wants_opus_output:
+        synth_path = output_path.rsplit(".", 1)[0] + ".mp3"
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
@@ -1047,8 +1050,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
 
-        response.stream_to_file(output_path)
-        return output_path
+        response.stream_to_file(synth_path)
+        if wants_opus_output:
+            converted = _convert_to_opus(synth_path)
+            return converted or synth_path
+        return synth_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -2174,9 +2180,9 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram voice bubbles require Opus (.ogg). ElevenLabs can produce Opus
+    # natively; OpenAI-compatible backends synthesize mp3 and transcode via
+    # ffmpeg. Edge TTS always outputs MP3 and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
@@ -2216,8 +2222,8 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
-        # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
+        # Use .ogg for Telegram with providers that natively or locally produce
+        # Opus voice bubbles; otherwise fall back to .mp3 (Edge TTS converts later).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:

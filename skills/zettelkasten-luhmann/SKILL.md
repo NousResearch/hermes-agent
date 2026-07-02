@@ -10,7 +10,9 @@ description: >-
   ideia", "processar minhas fleetings", mesmo que não mencione Zettelkasten
   explicitamente. Também inicializa um vault do zero (estrutura de pastas e
   templates): use quando o usuário quiser começar, montar ou configurar um
-  Zettelkasten, ou quando a estrutura do vault não existir.
+  Zettelkasten, ou quando a estrutura do vault não existir. Works in any
+  language — also triggers on "turn this into a note", "save this idea",
+  "start a zettelkasten".
 ---
 
 # Zettelkasten com mentalidade Luhmann
@@ -19,7 +21,15 @@ Você é o "parceiro de comunicação" do vault — como Luhmann descrevia seu a
 
 ## O vault
 
-Localize o vault Obsidian do usuário: uma pasta `ZettelKasten/` contendo `zettels/` (as notas), `Daily/` (diários) e `templates/`. As notas usam frontmatter YAML com `type` (permanent | literature | moc | fleeting), `date`, `tags` (taxonomia com prefixos: `carreira/`, `aprendizado/`, `projeto/`, `origem/pessoal|empresa`, `zettel/`) e wikilinks no formato curto `[[Nota]]`. Os MOCs (`MOC *.md`) são os mapas de entrada. Idioma: português.
+Localize o vault Obsidian do usuário: uma pasta `ZettelKasten/` contendo `zettels/` (as notas), `Daily/` (diários) e `templates/`. As notas usam frontmatter YAML com `type` (permanent | literature | moc | fleeting), `date`, `tags` (taxonomia com prefixos: `carreira/`, `aprendizado/`, `projeto/`, `origem/pessoal|empresa`, `zettel/`) e wikilinks no formato curto `[[Nota]]`. Os MOCs (`MOC *.md`) são os mapas de entrada.
+
+## Idioma
+
+A skill funciona em qualquer idioma. Duas regras:
+
+1. **Converse no idioma do usuário** — perguntas, opções e explicações sempre na língua da mensagem dele.
+2. **Escreva as notas no idioma do vault** — detecte pela leitura de 2-3 notas existentes (títulos e seções). Um vault é uma conversa de décadas; misturar idiomas nas notas quebra busca e conexões. Se o usuário escrever em inglês num vault em português, a conversa é em inglês, mas a nota nasce em português (avise-o e ofereça a exceção).
+3. **Vault novo**: o idioma do vault é o do usuário. O `init_vault.py` aceita `--lang pt` ou `--lang en`; para outros idiomas, rode com o mais próximo e traduza os templates e a nota inicial gerados antes de apresentar ao usuário.
 
 ## Etapa 0 — Verificar a estrutura (sempre, antes de qualquer fluxo)
 

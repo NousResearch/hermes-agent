@@ -5840,6 +5840,79 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
     return value
 
 
+def _aux_missing_credentials_error(provider_id: str) -> RuntimeError:
+    """Build an actionable error for an auxiliary provider whose client
+    could not be built.
+
+    The original message assumed any explicit provider used an API key
+    and named a ``<X>_API_KEY`` env var. That is wrong for providers
+    that authenticate via OAuth/ADC/SDK chains (vertex, bedrock,
+    openai-codex, etc.) — pointing users at a nonexistent env var
+    blocks diagnosis. This helper looks up the provider's ``auth_type``
+    in the registry and returns a message that names the real auth
+    mechanism. Issue #56810.
+    """
+    pid = (provider_id or "").strip().lower()
+    auth_type: Optional[str] = None
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY.get(pid)
+        if pconfig is not None:
+            auth_type = getattr(pconfig, "auth_type", None)
+    except Exception:
+        # PROVIDER_REGISTRY is the canonical lookup but may not be
+        # importable in all environments. Fall through to generic
+        # message — never raise from this helper.
+        auth_type = None
+
+    if auth_type == "api_key":
+        return RuntimeError(
+            f"Provider '{pid}' is set in config.yaml but no API key "
+            f"was found. Set the {pid.upper()}_API_KEY environment "
+            f"variable, or switch to a different provider with `hermes model`."
+        )
+    if auth_type == "vertex":
+        return RuntimeError(
+            f"Provider '{pid}' is set in config.yaml but Google Cloud "
+            f"Application Default Credentials (ADC) were not found. "
+            f"Run `gcloud auth application-default login`, set the "
+            f"GOOGLE_APPLICATION_CREDENTIALS env var to a service-account "
+            f"JSON file, or configure `vertex` credentials under "
+            f"~/.hermes/config.yaml. You can also switch providers with "
+            f"`hermes model`."
+        )
+    if auth_type == "aws_sdk":
+        return RuntimeError(
+            f"Provider '{pid}' is set in config.yaml but AWS credentials "
+            f"were not found. Configure credentials with `aws configure` "
+            f"or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (and "
+            f"optionally AWS_SESSION_TOKEN) in your environment, or use "
+            f"IAM roles / SSO. You can also switch providers with "
+            f"`hermes model`."
+        )
+    if auth_type in {"oauth_device_code", "oauth_external"}:
+        return RuntimeError(
+            f"Provider '{pid}' is set in config.yaml but OAuth "
+            f"credentials were not found. Run `hermes model` to "
+            f"authorize this account, or switch to a different "
+            f"provider with `hermes model`."
+        )
+    if auth_type == "external_process":
+        return RuntimeError(
+            f"Provider '{pid}' is set in config.yaml but the external "
+            f"process backend (e.g. claude-code / codex / local LLM "
+            f"shim) is not available. Verify the binary is installed "
+            f"and on PATH, or switch providers with `hermes model`."
+        )
+    # Unknown / unregistered auth_type — do NOT lie about API keys.
+    return RuntimeError(
+        f"Provider '{pid}' is set in config.yaml but no usable "
+        f"credentials were found for this provider. Check the provider "
+        f"docs for the required auth mechanism, or switch providers "
+        f"with `hermes model`."
+    )
+
+
 def call_llm(
     task: str = None,
     *,
@@ -5946,11 +6019,7 @@ def call_llm(
                     client, final_model = fb_client, fb_model
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise _aux_missing_credentials_error(_explicit)
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —
@@ -6520,11 +6589,7 @@ async def async_call_llm(
                     )
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise _aux_missing_credentials_error(_explicit)
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)

@@ -1025,9 +1025,18 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
-        thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or os.environ.get("HERMES_SESSION_THREAD_ID", "")) or None
-        user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or os.environ.get("HERMES_SESSION_USER_ID", "")) or None
-        notifier_profile = os.environ.get("HERMES_PROFILE")
+        thread_id = (
+            get_session_env("HERMES_SESSION_THREAD_ID", "")
+            or os.environ.get("HERMES_SESSION_THREAD_ID", "")
+        ) or None
+        user_id = (
+            get_session_env("HERMES_SESSION_USER_ID", "")
+            or os.environ.get("HERMES_SESSION_USER_ID", "")
+        ) or None
+        notifier_profile = (
+            get_session_env("HERMES_SESSION_PROFILE", "")
+            or os.environ.get("HERMES_PROFILE")
+        )
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb

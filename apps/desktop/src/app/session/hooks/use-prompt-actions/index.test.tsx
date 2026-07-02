@@ -13,6 +13,7 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
+  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
@@ -367,10 +368,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // every delta of this brand-new turn.
     expect(seeds.length).toBeGreaterThan(0)
     expect(seeds.every(s => s.interrupted === false)).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'hello after a stop'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'hello after a stop'
+      },
+      1_800_000
+    )
   })
 
   it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
@@ -392,10 +397,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
     const accepted = await handle!.submitText('queued message', { fromQueue: true })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'queued message'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'queued message'
+      },
+      1_800_000
+    )
   })
 
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
@@ -432,10 +441,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     const second = await handle!.submitText('please send me', { fromQueue: true })
     expect(second).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'please send me'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'please send me'
+      },
+      1_800_000
+    )
   })
 
   it('rides out a transient "session busy" so the user never sees it (retries, no error bubble)', async () => {
@@ -628,11 +641,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     // Ordinal 0 = "truncate before the first visible user message": the gateway
     // drops that turn and everything after, then runs the same text again.
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      1_800_000
+    )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
     expect(lastState.busy).toBe(true)
   })
@@ -691,11 +708,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
     expect(submitAttempts).toBe(2)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      1_800_000
+    )
   })
 
   it('rejects non-user targets and unknown ids without touching the gateway', async () => {
@@ -732,11 +753,15 @@ describe('usePromptActions restoreToMessage', () => {
       userOrdinal: 0
     })
 
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      1_800_000
+    )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
 })

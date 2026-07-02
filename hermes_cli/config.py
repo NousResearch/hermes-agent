@@ -1194,6 +1194,7 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "allow_unsafe_evaluate": False,  # Allow browser_console(expression=...) to use sensitive JS primitives (cookies/storage/clipboard/network/form values)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -1623,7 +1624,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
         "moa_aggregator": {
@@ -1631,7 +1632,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 600,
+            "timeout": 900,
             "extra_body": {},
         },
     },
@@ -2155,6 +2156,14 @@ DEFAULT_CONFIG = {
     "moa": {
         "default_preset": "default",
         "active_preset": "",
+        # When true, every MoA turn that runs the reference fan-out writes the
+        # FULL turn (each reference's exact input messages + output + usage/cost,
+        # and the aggregator's exact input + output) to a JSONL file at
+        # <hermes_home>/moa-traces/<session_id>.jsonl. Off by default — turn it
+        # on to audit / improve MoA behavior from real runs. Set trace_dir to
+        # override the output directory.
+        "save_traces": False,
+        "trace_dir": "",
         "presets": {
             "default": {
                 "reference_models": [
@@ -2288,6 +2297,7 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
+        "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
@@ -2724,6 +2734,23 @@ DEFAULT_CONFIG = {
             "idle_timeout_minutes": 5,
         },
 
+        # Auto-resume restart-loop breaker (#30719, defense-3). When the
+        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
+        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
+        # restart-interrupted session on the next boot. If the resumed turn
+        # keeps triggering another kill (e.g. the agent runs a raw
+        # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
+        # cover), the result is a tight SIGTERM-respawn loop. This breaker
+        # counts restart-interrupted boots in a rolling window and, once
+        # `max_restarts` boots happen within `window_seconds`, SKIPS
+        # auto-resume for that boot — the gateway still starts and serves
+        # real inbound messages, it just stops replaying the session that
+        # keeps killing it. Set `max_restarts` to 0 to disable the breaker.
+        "restart_loop_guard": {
+            "max_restarts": 3,
+            "window_seconds": 60,
+        },
+
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was
@@ -3076,6 +3103,24 @@ DEFAULT_CONFIG = {
     },
 
 
+    # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
+    # Auth is OAuth2 (short-lived access tokens minted from a service-account
+    # JSON or Application Default Credentials) — NOT a static API key. The
+    # credential *path* is a secret-adjacent pointer and lives in .env
+    # (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS); these two
+    # settings are non-secret routing config and live here. Both are bridged to
+    # the VERTEX_PROJECT_ID / VERTEX_REGION env vars the adapter reads, so an
+    # explicit env var still wins over config.yaml.
+    "vertex": {
+        # GCP project ID. Empty → use the project_id embedded in the service
+        # account JSON (or ADC-resolved project).
+        "project_id": "",
+        # Vertex region. "global" is required for the Gemini 3.x preview models
+        # (regional endpoints silently 404 them). Override to a regional value
+        # (e.g. "us-central1") only if your models are pinned to a region.
+        "region": "global",
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 32,
 }
@@ -3141,6 +3186,18 @@ OPTIONAL_ENV_VARS = {
         "description": "Google AI Studio base URL override",
         "prompt": "Gemini base URL (leave empty for default)",
         "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_CREDENTIALS_PATH": {
+        "description": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). "
+                       "Vertex uses OAuth2, not a static API key — this points at the "
+                       "credentials Hermes mints short-lived tokens from. Falls back to "
+                       "GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
+                       "application-default login). Set project/region under vertex: in config.yaml.",
+        "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
+        "url": "https://cloud.google.com/iam/docs/keys-create-delete",
         "password": False,
         "category": "provider",
         "advanced": True,
@@ -4437,7 +4494,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4544,6 +4601,16 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
+    ssl_ca_cert = entry.get("ssl_ca_cert")
+    if isinstance(ssl_ca_cert, str) and ssl_ca_cert.strip():
+        normalized["ssl_ca_cert"] = ssl_ca_cert.strip()
+
+    ssl_verify = entry.get("ssl_verify")
+    if isinstance(ssl_verify, bool):
+        normalized["ssl_verify"] = ssl_verify
+    elif isinstance(ssl_verify, str) and ssl_verify.strip():
+        normalized["ssl_verify"] = ssl_verify.strip()
+
     return normalized
 
 
@@ -4571,6 +4638,8 @@ def _custom_provider_entry_to_provider_config(
         "rate_limit_delay",
         "discover_models",
         "extra_body",
+        "ssl_ca_cert",
+        "ssl_verify",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -4645,6 +4714,71 @@ def get_compatible_custom_providers(
         _append_if_new(entry)
 
     return compatible
+
+
+def _coerce_ssl_verify(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+    return None
+
+
+def get_custom_provider_tls_settings(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return TLS settings from a matching ``custom_providers`` / ``providers`` entry."""
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return {}
+
+    # Case-insensitive compare: elsewhere custom_providers are keyed on a
+    # lowercased base_url (see get_compatible_custom_providers dedup), and
+    # scheme/host are case-insensitive anyway — so a config entry written as
+    # https://Ollama.Example.com/v1 must still match a lowercased runtime
+    # base_url. Exact match after rstrip('/') + lower() (no prefix/substring).
+    target_url = (base_url or "").rstrip("/").lower()
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        if not entry_url or entry_url != target_url:
+            continue
+        out: Dict[str, Any] = {}
+        ca = entry.get("ssl_ca_cert")
+        if isinstance(ca, str) and ca.strip():
+            out["ssl_ca_cert"] = ca.strip()
+        verify = _coerce_ssl_verify(entry.get("ssl_verify"))
+        if verify is not None:
+            out["ssl_verify"] = verify
+        return out
+    return {}
+
+
+def apply_custom_provider_tls_to_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Attach per-provider TLS knobs to OpenAI client kwargs when matched."""
+    tls = get_custom_provider_tls_settings(base_url, custom_providers, config)
+    if tls.get("ssl_ca_cert"):
+        client_kwargs["ssl_ca_cert"] = tls["ssl_ca_cert"]
+    if "ssl_verify" in tls:
+        client_kwargs["ssl_verify"] = tls["ssl_verify"]
 
 
 def get_custom_provider_context_length(
@@ -4772,6 +4906,7 @@ _KNOWN_ROOT_KEYS = {
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
@@ -6707,6 +6842,23 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+_STRUCTURED_VALUE_MARKERS = ("://", "?", "&")
+
+
+def _looks_like_structured_value(value: str) -> bool:
+    """True when ``value`` looks like a URL/query string or holds whitespace.
+
+    Such a value is treated as one opaque secret. An embedded
+    ``KNOWN_KEY=`` substring inside it (e.g. a webhook URL carrying a query
+    parameter, or a proxy base URL with an embedded key) is part of the value,
+    not the start of a second .env entry, so the concatenation splitter must
+    not break on it. Plain token secrets (API keys) never contain these.
+    """
+    if any(marker in value for marker in _STRUCTURED_VALUE_MARKERS):
+        return True
+    return any(ch.isspace() for ch in value)
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
@@ -6755,10 +6907,32 @@ def _sanitize_env_lines(lines: list) -> list:
             )
         })
 
-        if len(split_positions) > 1:
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
+        # Only treat the line as a concatenation when it actually begins with a
+        # known KEY= (split_positions[0] == 0). A first match at a non-zero
+        # offset means the matches sit inside a value, so splitting there would
+        # silently drop the leading text — keep the line intact instead.
+        split_into_entries = False
+        segments: list[str] = []
+        if len(split_positions) > 1 and split_positions[0] == 0:
+            segments = [
+                stripped[pos:(
+                    split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
+                )]
+                for i, pos in enumerate(split_positions)
+            ]
+            # A genuine concatenation has a simple token value in every segment
+            # that precedes a boundary. If a preceding value looks structured
+            # (a URL/query string or whitespace), the embedded KNOWN_KEY= is
+            # part of that value rather than a new entry, so we must not split —
+            # otherwise we truncate the real secret and fabricate a bogus one.
+            split_into_entries = all(
+                not _looks_like_structured_value(seg.split("=", 1)[1])
+                for seg in segments[:-1]
+            )
+
+        if split_into_entries:
+            for seg in segments:
+                part = seg.strip()
                 if part:
                     sanitized.append(part + "\n")
         else:

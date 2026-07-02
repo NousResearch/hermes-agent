@@ -142,6 +142,45 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+def _ignore_dangling_symlinks(directory: str, names: List[str]) -> List[str]:
+    """copytree ignore callback that skips symlinks whose targets are missing."""
+    ignored: list[str] = []
+    base = Path(directory)
+    for name in names:
+        path = base / name
+        try:
+            if path.is_symlink() and not path.exists():
+                ignored.append(name)
+        except OSError:
+            ignored.append(name)
+    return ignored
+
+
+def _copy_skills_tree(source_skills: Path, target_skills: Path) -> None:
+    """Copy a profile's skills while preserving valid symlinks.
+
+    Dangling skill symlinks are unusable in the target profile and make
+    ``shutil.copytree`` fail. Preserve valid symlink entries as symlinks, but
+    skip broken ones so one stale local link does not abort profile cloning.
+    """
+    shutil.copytree(
+        source_skills,
+        target_skills,
+        dirs_exist_ok=True,
+        symlinks=True,
+        ignore=_ignore_dangling_symlinks,
+    )
+
+
+def _cleanup_partial_profile(profile_dir: Path) -> None:
+    try:
+        shutil.rmtree(profile_dir)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -169,6 +208,14 @@ def _clone_all_copytree_ignore(source_dir: Path):
     def _ignore(directory: str, names: List[str]) -> List[str]:
         ignored: list[str] = []
         for entry in names:
+            entry_path = Path(directory) / entry
+            try:
+                if entry_path.is_symlink() and not entry_path.exists():
+                    ignored.append(entry)
+                    continue
+            except OSError:
+                ignored.append(entry)
+                continue
             # Universal exclusions at any depth.
             if (
                 entry == "__pycache__"
@@ -1039,14 +1086,19 @@ def create_profile(
 
     if clone_all and source_dir:
         # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
-        shutil.copytree(
-            source_dir,
-            profile_dir,
-            ignore=_clone_all_copytree_ignore(source_dir),
-        )
-        # Strip runtime files
-        for stale in _CLONE_ALL_STRIP:
-            (profile_dir / stale).unlink(missing_ok=True)
+        try:
+            shutil.copytree(
+                source_dir,
+                profile_dir,
+                ignore=_clone_all_copytree_ignore(source_dir),
+                symlinks=True,
+            )
+            # Strip runtime files
+            for stale in _CLONE_ALL_STRIP:
+                (profile_dir / stale).unlink(missing_ok=True)
+        except Exception:
+            _cleanup_partial_profile(profile_dir)
+            raise
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1055,36 +1107,40 @@ def create_profile(
 
         # Clone config files from source
         if source_dir is not None:
-            for filename in _CLONE_CONFIG_FILES:
-                src = source_dir / filename
-                if src.exists():
-                    dst = profile_dir / filename
-                    shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
-                    if filename == ".env":
-                        try:
-                            os.chmod(str(dst), 0o600)
-                        except OSError:
-                            pass
+            try:
+                for filename in _CLONE_CONFIG_FILES:
+                    src = source_dir / filename
+                    if src.exists():
+                        dst = profile_dir / filename
+                        shutil.copy2(src, dst)
+                        # Tighten .env to owner-only after copy. shutil.copy2
+                        # preserves source mode bits, but if the source's .env
+                        # was loose (host umask 0o022 leaving 0o644), tighten
+                        # explicitly so the clone doesn't inherit weak perms.
+                        if filename == ".env":
+                            try:
+                                os.chmod(str(dst), 0o600)
+                            except OSError:
+                                pass
 
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
-            source_skills = source_dir / "skills"
-            if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                # Clone installed skills from the source profile. The dashboard's
+                # "clone from default" flow is expected to preserve both bundled
+                # and user-installed skills so the new profile immediately has the
+                # same agent capabilities as the source profile.
+                source_skills = source_dir / "skills"
+                if source_skills.is_dir():
+                    _copy_skills_tree(source_skills, profile_dir / "skills")
 
-            # Clone memory and other subdirectory files
-            for relpath in _CLONE_SUBDIR_FILES:
-                src = source_dir / relpath
-                if src.exists():
-                    dst = profile_dir / relpath
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+                # Clone memory and other subdirectory files
+                for relpath in _CLONE_SUBDIR_FILES:
+                    src = source_dir / relpath
+                    if src.exists():
+                        dst = profile_dir / relpath
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+            except Exception:
+                _cleanup_partial_profile(profile_dir)
+                raise
 
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /

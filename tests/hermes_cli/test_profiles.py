@@ -7,6 +7,7 @@ and shell completion generation.
 
 import json
 import io
+import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -248,6 +249,39 @@ class TestCreateProfile:
             / "installed-skill"
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
+
+    def test_clone_config_skips_dangling_skill_symlinks_and_preserves_valid_ones(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skills_dir = default_home / "skills" / "custom"
+        real_skill = skills_dir / "real-skill"
+        real_skill.mkdir(parents=True)
+        (real_skill / "SKILL.md").write_text("---\nname: real-skill\n---\n")
+        os.symlink(real_skill, skills_dir / "valid-link")
+        os.symlink(skills_dir / "missing-skill", skills_dir / "dangling-link")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        copied_valid = profile_dir / "skills" / "custom" / "valid-link"
+        assert copied_valid.is_symlink()
+        assert copied_valid.resolve() == real_skill.resolve()
+        assert not (profile_dir / "skills" / "custom" / "dangling-link").exists()
+
+    def test_clone_config_cleans_partial_profile_on_copy_failure(self, profile_env, monkeypatch):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "skills" / "custom" / "skill").mkdir(parents=True)
+
+        def fail_copytree(*args, **kwargs):
+            raise OSError("copy failed")
+
+        monkeypatch.setattr("hermes_cli.profiles._copy_skills_tree", fail_copytree)
+
+        with pytest.raises(OSError, match="copy failed"):
+            create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not (tmp_path / ".hermes" / "profiles" / "coder").exists()
 
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env

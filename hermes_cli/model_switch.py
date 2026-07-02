@@ -1132,6 +1132,7 @@ def switch_model(
                             detected_provider,
                             detected_model,
                             current_provider,
+                            exc_info=True,
                         )
                     else:
                         target_provider, new_model = detected_provider, detected_model

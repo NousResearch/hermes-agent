@@ -155,6 +155,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Edits consumed per sent-message guid (Apple caps iMessage edits
+        # at 5 per message within 15 minutes). LRU-capped like _guid_cache.
+        self._edit_counts: OrderedDict[str, int] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -253,6 +256,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             server_data = (info or {}).get("data", {})
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
+            # Message editing rides the Private API.  Expose support
+            # dynamically (instance attribute shadows the class default) so
+            # the stream consumer, which reads SUPPORTS_MESSAGE_EDITING via
+            # getattr at message time, only streams when the helper can
+            # actually deliver edits.
+            self.SUPPORTS_MESSAGE_EDITING = bool(
+                self._private_api_enabled and self._helper_connected
+            )
             logger.info(
                 "[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                 self.server_url,
@@ -742,6 +753,75 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Tapback reactions
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Message editing (Private API) — enables Telegram-style streamed
+    # previews via the gateway stream consumer.
+    # ------------------------------------------------------------------
+
+    # Apple caps iMessage edits at 5 per message within a 15-minute window.
+    _EDIT_BUDGET = 5
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a previously sent iMessage via the BlueBubbles Private API.
+
+        Preview (non-finalize) edits stop one short of Apple's 5-edit cap so
+        the final answer always has an edit slot left; over-budget preview
+        edits succeed as no-ops (the bubble stops updating until finalize).
+        A finalize call with no budget left delivers the answer as a fresh
+        message instead of being dropped.
+        """
+        if not (self._private_api_enabled and self._helper_connected and self.client):
+            return SendResult(
+                success=False,
+                error="BlueBubbles message editing requires the Private API helper",
+            )
+        if not message_id:
+            return SendResult(success=False, error="edit_message: missing message_id")
+
+        used = self._edit_counts.get(message_id, 0)
+        if not finalize and used >= self._EDIT_BUDGET - 1:
+            return SendResult(success=True, message_id=message_id)
+        if finalize and used >= self._EDIT_BUDGET:
+            return await self.send(chat_id, content)
+
+        text = self.format_message(content)
+        chunks = self.truncate_message(text)
+        first, rest = chunks[0], chunks[1:]
+        payload = {
+            "editedMessage": first,
+            "backwardsCompatibilityMessage": first,
+            "partIndex": 0,
+        }
+        encoded = quote(message_id, safe="")
+        try:
+            res = await self._api_post(f"/api/v1/message/{encoded}/edit", payload)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+        data = (res or {}).get("data") or {}
+        new_id = str(data.get("guid") or message_id)
+        self._edit_counts.pop(message_id, None)
+        self._edit_counts[new_id] = used + 1
+        while len(self._edit_counts) > _GUID_CACHE_SIZE:
+            self._edit_counts.popitem(last=False)
+        last = SendResult(success=True, message_id=new_id, raw_response=res)
+        # Overflow past MAX_TEXT_LENGTH: edit holds the first chunk and the
+        # tail goes out as follow-up messages, mirroring the Telegram
+        # adapter's split-and-deliver contract (subsequent edits then target
+        # the returned last message id).
+        for chunk in rest:
+            tail = await self.send(chat_id, chunk)
+            if tail.success and tail.message_id:
+                last = tail
+        return last
 
     # ------------------------------------------------------------------
     # Chat info

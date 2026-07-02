@@ -59,6 +59,9 @@ export function App() {
     lastSuccessAt,
     now,
     refreshSnapshots,
+    actionsEnabled,
+    isActionOwner,
+    submitApprovalDecision,
     selectedApprovalId,
     setSelectedApprovalId,
     selectedSessionId,
@@ -197,7 +200,16 @@ export function App() {
 
       {activeTab === "status" ? <StatusSection cards={cards} safetyText={safetyText} approvalCount={approvalCount} capabilities={serverCapabilities} endpointHealth={endpointKeys.map((key) => endpointHealth[key])} /> : null}
       {activeTab === "sessions" ? <SessionsSection sessions={sessions} selectedId={selectedSessionId} onSelect={(session) => setSelectedSessionId(session.id)} /> : null}
-      {activeTab === "approvals" ? <ApprovalsSection approvals={approvals} selectedId={selectedApprovalId} onSelect={(approval) => setSelectedApprovalId(approval.id)} /> : null}
+      {activeTab === "approvals" ? (
+        <ApprovalsSection
+          approvals={approvals}
+          selectedId={selectedApprovalId}
+          onSelect={(approval) => setSelectedApprovalId(approval.id)}
+          actionsEnabled={actionsEnabled}
+          isOwner={isActionOwner}
+          onDecision={submitApprovalDecision}
+        />
+      ) : null}
       {activeTab === "logs" ? (
         <LogsSection
           logs={logs}

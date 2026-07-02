@@ -1,5 +1,6 @@
 import {
   type ApprovalItem,
+  type CapabilityItem,
   type LogPreviewItem,
   type SessionPreviewItem,
   type StatusSnapshot,
@@ -220,7 +221,13 @@ export function mapServerApproval(item: ApprovalItem): ApprovalPreview {
     requestedAt: item.requested_at,
     status: item.status === "waiting" ? "ожидает" : "заблокировано",
     checks: item.checks,
+    allowedDecisions: item.allowed_decisions,
   };
+}
+
+export function approveActionEnabled(capabilities: CapabilityItem[]): boolean {
+  const item = capabilities.find((c) => c.id === "approve-action");
+  return Boolean(item && item.enabled && item.mode === "owner-confirmed-action");
 }
 
 export function mapServerSession(item: SessionPreviewItem): SessionPreview {

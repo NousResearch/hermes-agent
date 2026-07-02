@@ -38,6 +38,8 @@ export type SessionPreview = {
   tone: "ok" | "warn" | "muted";
 };
 
+export type ApprovalDecisionValue = "approve_once" | "reject_once";
+
 export type ApprovalPreview = {
   id: string;
   title: string;
@@ -47,6 +49,7 @@ export type ApprovalPreview = {
   requestedAt: string;
   status: "ожидает" | "заблокировано";
   checks: string[];
+  allowedDecisions?: ApprovalDecisionValue[];
 };
 
 export const statusCards: StatusCard[] = [

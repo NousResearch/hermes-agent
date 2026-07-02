@@ -32,6 +32,7 @@ export type AuthResponse = {
   ok: boolean;
   user: AuthenticatedUser;
   expires_at: string;
+  is_action_owner?: boolean;
 };
 
 export type SnapshotMeta = {
@@ -45,7 +46,7 @@ export type CapabilityItem = {
   id: string;
   label: string;
   enabled: boolean;
-  mode: "read-only" | "blocked";
+  mode: "read-only" | "blocked" | "owner-confirmed-action";
   reason: string;
 };
 
@@ -59,6 +60,8 @@ export type ApprovalRisk = "read_only" | "critical";
 
 export type ApprovalStatus = "waiting" | "blocked";
 
+export type ApprovalDecision = "approve_once" | "reject_once";
+
 export type ApprovalItem = {
   id: string;
   title: string;
@@ -68,12 +71,21 @@ export type ApprovalItem = {
   requested_at: string;
   status: ApprovalStatus;
   checks: string[];
+  allowed_decisions?: ApprovalDecision[];
 };
 
 export type ApprovalsSnapshot = {
   ok: boolean;
   meta?: SnapshotMeta;
+  snapshot_version?: string;
   items: ApprovalItem[];
+};
+
+export type DecisionResponse = {
+  ok: boolean;
+  decision_id: string;
+  status: string;
+  message: string;
 };
 
 export type SessionPreviewItem = {
@@ -120,12 +132,22 @@ const ALLOWED_API_PATHS = new Set([
   "/api/logs",
 ]);
 
+// The single mutating action path is dynamic (opaque approval id) so it cannot
+// be a static Set entry. It is allowed only via this strict pattern — the exact
+// Phase 1 decision endpoint and nothing else. Backend owner/proof/capability
+// gating stays the real security boundary; this narrows the client surface.
+const DECISION_PATH = /^\/api\/approvals\/[A-Za-z0-9_-]+\/decision$/;
+
+function isAllowedApiPath(path: string): boolean {
+  return ALLOWED_API_PATHS.has(path) || DECISION_PATH.test(path);
+}
+
 export function hasMiniAppApi(isTelegramRuntime = false): boolean {
   return API_URL.length > 0 || (import.meta.env.PROD && isTelegramRuntime);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!ALLOWED_API_PATHS.has(path)) {
+  if (!isAllowedApiPath(path)) {
     throw new Error(`Mini App API path is not allowlisted: ${path}`);
   }
   const response = await fetch(`${API_URL}${path}`, {
@@ -167,4 +189,27 @@ export async function fetchSessionsSnapshot(): Promise<SessionsSnapshot> {
 
 export async function fetchLogsSnapshot(): Promise<LogsSnapshot> {
   return requestJson<LogsSnapshot>("/api/logs");
+}
+
+export type DecisionInput = {
+  approvalId: string;
+  decision: ApprovalDecision;
+  clientRequestId: string;
+  snapshotVersion: string;
+  initData: string;
+};
+
+export async function postApprovalDecision(input: DecisionInput): Promise<DecisionResponse> {
+  // The owner-confirmed Phase 1 action. The fresh Telegram proof rides in the
+  // X-Telegram-Init-Data header (the backend re-verifies it); the session
+  // cookie alone is not accepted server-side.
+  return requestJson<DecisionResponse>(`/api/approvals/${encodeURIComponent(input.approvalId)}/decision`, {
+    method: "POST",
+    headers: { "x-telegram-init-data": input.initData },
+    body: JSON.stringify({
+      decision: input.decision,
+      client_request_id: input.clientRequestId,
+      snapshot_version: input.snapshotVersion,
+    }),
+  });
 }

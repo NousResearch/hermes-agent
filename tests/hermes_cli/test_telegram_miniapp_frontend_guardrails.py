@@ -13,6 +13,7 @@ MOCK_DATA_TS = FRONTEND_SRC / "mockData.ts"
 APP_MODEL_TS = FRONTEND_SRC / "appModel.ts"
 APPROVALS_SECTION_TSX = FRONTEND_SRC / "components" / "ApprovalsSection.tsx"
 COMMAND_PALETTE_TSX = FRONTEND_SRC / "components" / "CommandPalette.tsx"
+SNAPSHOTS_HOOK_TS = FRONTEND_SRC / "useMiniAppSnapshots.ts"
 
 FORBIDDEN_FRONTEND_ENDPOINTS = [
     "/api/actions",
@@ -61,28 +62,45 @@ def all_shipped_frontend_assets() -> dict[Path, str]:
     return {path: read_frontend(path) for path in paths if path.exists()}
 
 
-def test_frontend_has_no_action_endpoint_strings_or_fetch_helpers():
+def test_frontend_has_no_forbidden_action_endpoint_strings():
     assets = all_shipped_frontend_assets()
     combined = "\n".join(assets.values())
 
     for path, text in assets.items():
         for endpoint in FORBIDDEN_FRONTEND_ENDPOINTS:
             assert endpoint not in text, f"{path.name} references forbidden endpoint {endpoint}"
-    assert not re.search(r"/api/approvals/[^\n\"'`]+/(approve|reject|decision)", combined)
+    # The Phase 1 gate exposes exactly one mutating path: /api/approvals/{id}/decision.
+    # Direct approve/reject sub-paths remain forbidden (decisions go through the
+    # single decision endpoint), and restart/execute/etc are covered above.
+    assert not re.search(r"/api/approvals/[^\n\"'`]+/(approve|reject)\b", combined)
 
     api_text = read_frontend(API_TS)
+    # No approve/reject/restart/... helper — the only mutating helper is
+    # postApprovalDecision, which does not contain any forbidden token.
     forbidden_helper_names = [
-        "approve",
-        "reject",
         "restart",
         "execute",
-        "command",
         "process",
         "modelSwitch",
-        "config",
     ]
     for name in forbidden_helper_names:
         assert not re.search(rf"export\s+async\s+function\s+\w*{name}\w*", api_text, re.IGNORECASE)
+
+
+def test_single_mutating_helper_is_decision_with_proof_header():
+    api_text = read_frontend(API_TS)
+    # Exactly one POST-to-decision helper, and it attaches the Telegram proof
+    # header the backend requires (the session cookie alone is refused).
+    assert "export async function postApprovalDecision" in api_text
+    match = re.search(r"export async function postApprovalDecision[\s\S]*?\n\}", api_text)
+    assert match, "postApprovalDecision must exist"
+    body = match.group(0)
+    assert "/api/approvals/" in body and "/decision" in body
+    assert '"x-telegram-init-data"' in body, "decision must carry the fresh Telegram proof header"
+    # No other exported helper posts to a mutating path.
+    posts = re.findall(r'requestJson<[^>]*>\(([^,]+),\s*\{\s*[\s\S]*?method:\s*"POST"', api_text)
+    mutating = [p for p in posts if "/decision" in p or "/auth/telegram" in p or "/logout" in p]
+    assert len(mutating) == len(posts), f"unexpected mutating POST helper: {posts}"
 
 
 def test_api_client_enforces_runtime_path_allowlist():
@@ -93,16 +111,29 @@ def test_api_client_enforces_runtime_path_allowlist():
     declared = set(re.findall(r'"([^"]+)"', match.group(1)))
     assert declared == EXPECTED_ALLOWED_API_PATHS
 
+    # The one dynamic mutating path is allowed only via a strict anchored
+    # pattern — the exact decision endpoint and nothing else.
+    decision_pat = re.search(r"const DECISION_PATH = /(.+?)/;", api_text)
+    assert decision_pat, "api.ts must declare a strict DECISION_PATH pattern"
+    assert decision_pat.group(1).startswith("^") and decision_pat.group(1).endswith("decision$"), (
+        "DECISION_PATH must be anchored to exactly /api/approvals/<id>/decision"
+    )
+    assert "isAllowedApiPath" in api_text
+    guard_fn = re.search(r"function isAllowedApiPath[\s\S]*?\n\}", api_text)
+    assert guard_fn, "isAllowedApiPath must exist"
+    assert "ALLOWED_API_PATHS.has(path)" in guard_fn.group(0)
+    assert "DECISION_PATH.test(path)" in guard_fn.group(0)
+
     request_fn = re.search(r"async function requestJson[\s\S]*?\n\}", api_text)
     assert request_fn, "requestJson must exist as the single fetch entry point"
     body = request_fn.group(0)
     guard = re.search(
-        r"if\s*\(\s*!ALLOWED_API_PATHS\.has\(path\)\s*\)\s*\{\s*\n\s*throw new Error",
+        r"if\s*\(\s*!isAllowedApiPath\(path\)\s*\)\s*\{\s*\n\s*throw new Error",
         body,
     )
     assert guard, (
         "requestJson must contain the rejecting guard branch: "
-        "if (!ALLOWED_API_PATHS.has(path)) { throw new Error(...) }"
+        "if (!isAllowedApiPath(path)) { throw new Error(...) }"
     )
     assert guard.start() < body.index("fetch("), (
         "requestJson must reject non-allowlisted paths before any fetch"
@@ -142,16 +173,55 @@ def test_api_client_contains_single_guarded_fetch_sink():
         )
 
 
-def test_decision_strip_buttons_are_disabled_and_handler_free():
+def test_decision_buttons_are_gated_and_go_through_confirm():
     approvals_text = read_frontend(APPROVALS_SECTION_TSX)
-    match = re.search(r'<div className="decision-strip"[\s\S]*?</div>', approvals_text)
-    assert match, "decision-strip block must exist as a visible locked affordance"
-    block = match.group(0)
 
-    assert "disabled>Одобрить позже" in block
-    assert "disabled>Отклонить позже" in block
-    assert "onClick" not in block
-    assert "fetch" not in block
+    # Decisions are actionable only when the backend capability is live, the
+    # user is the authenticated owner, and the approval advertises the decision.
+    assert "actionsEnabled && isOwner && Boolean(onDecision)" in approvals_text
+    # Buttons are disabled unless canDecide (and while a decision is pending),
+    # AND unless the approval advertises that specific decision.
+    assert 'disabled={!canDecide || pending || !allowed.includes("approve_once")}' in approvals_text
+    assert 'disabled={!canDecide || pending || !allowed.includes("reject_once")}' in approvals_text
+    # canDecide requires the server-authenticated owner flag, not just initData.
+    assert "actionsEnabled && isOwner && Boolean(onDecision)" in approvals_text
+    # The confirm freezes the exact target approval (no redirect on refresh).
+    assert "confirm.approval" in approvals_text and "runDecision(confirm.approval" in approvals_text
+    # Tapping a decision opens the two-step confirm sheet with a FROZEN target
+    # (approval + decision); it does NOT fetch or call the handler directly.
+    assert 'setConfirm({ approval: selected, decision: "approve_once" })' in approvals_text
+    assert 'setConfirm({ approval: selected, decision: "reject_once" })' in approvals_text
+    # The network call only happens from the confirm step, via the injected
+    # onDecision prop (which routes through api.ts) — never a direct fetch here.
+    assert "fetch" not in approvals_text
+    assert "ConfirmSheet" in approvals_text and "ШАГ 2" in approvals_text
+    # The raw command is never displayed; the sheet states so explicitly.
+    assert "Сырая команда не раскрывается" in approvals_text
+
+
+def test_action_gate_fails_closed_on_any_degraded_action_read():
+    hook_text = read_frontend(SNAPSHOTS_HOOK_TS)
+
+    # The capability that opens the action gate may be stored ONLY when every
+    # action-critical read of the poll is fresh and successful. A tripwire that
+    # breaks if someone weakens the invariant back to capabilities-only.
+    assert "const actionReadsHealthy =" in hook_text
+    for cond in (
+        'status.status === "fulfilled"',
+        'capabilities.status === "fulfilled"',
+        'approvals.status === "fulfilled"',
+    ):
+        assert cond in hook_text
+    assert "setServerCapabilities(actionReadsHealthy ? capabilities.value.items : [])" in hook_text
+    # The catch path also fails closed.
+    assert hook_text.count("setServerCapabilities([])") >= 1
+    # The stale approvals version is cleared on any degraded/errored poll, and a
+    # fresh version is only written back when the whole poll is healthy.
+    assert 'if (!actionReadsHealthy) setApprovalsVersion("")' in hook_text
+    assert "if (actionReadsHealthy) setApprovalsVersion(approvals.value.snapshot_version" in hook_text
+    # The effective gate also requires the live status flag, so a status that
+    # reads safe/blocked can never sit over enabled action buttons.
+    assert "snapshot?.miniapp.actions_enabled === true" in hook_text
 
 
 def test_command_palette_route_map_is_navigation_only():

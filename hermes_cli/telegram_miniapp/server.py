@@ -406,7 +406,14 @@ def create_app(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
         session = sessions.create(verified, ttl_seconds=settings.session_ttl_seconds, now=settings.now())
-        response = JSONResponse({"ok": True, "user": _user_payload(session.user), "expires_at": session.expires_at.isoformat()})
+        response = JSONResponse({
+            "ok": True,
+            "user": _user_payload(session.user),
+            "expires_at": session.expires_at.isoformat(),
+            # Server-authenticated per-user owner flag: the UI must gate action
+            # buttons on THIS, not merely on the presence of a Telegram runtime.
+            "is_action_owner": bool(actions_ready and session.user.id in settings.action_owners),
+        })
         response.set_cookie(
             SESSION_COOKIE,
             session.session_id,
@@ -434,6 +441,7 @@ def create_app(
             "authenticated": True,
             "user": _user_payload(session.user),
             "session_expires_at": session.expires_at.isoformat(),
+            "is_action_owner": bool(actions_ready and session.user.id in settings.action_owners),
         })
         return _apply_api_no_store(response, settings)
 
@@ -447,10 +455,15 @@ def create_app(
                 now=settings.now(),
             ):
                 raise HTTPException(status_code=429, detail="Too many requests")
-        snapshot = status_provider()
-        if settings.public_smoke:
-            snapshot = dict(snapshot)
-            snapshot["miniapp"] = {"mode": "https-smoke", "actions_enabled": False, "public_exposure": True}
+        snapshot = dict(status_provider())
+        # Always report the real action state so the status card and the action
+        # gate agree — the frontend requires miniapp.actions_enabled === true in
+        # addition to the capability, so a stale/false status fails closed.
+        snapshot["miniapp"] = {
+            "mode": "https-smoke" if settings.public_smoke else ("owner-action" if actions_ready else "read-only"),
+            "actions_enabled": actions_ready,
+            "public_exposure": settings.public_smoke,
+        }
         return _apply_api_no_store(JSONResponse(snapshot), settings)
 
     @app.get("/api/capabilities")

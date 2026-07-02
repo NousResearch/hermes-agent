@@ -1373,7 +1373,25 @@ button.list-card[data-selected="true"] {
   color: var(--text-muted);
   background: var(--surface-2);
   font-weight: 500;
+}
+
+.decision-strip button:disabled {
   cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* An enabled decision reads with the owning accent; the destructive confirm
+   carries the risk accent. */
+.decision-strip button:not(:disabled) {
+  color: var(--gold);
+  border-color: var(--gold-rim);
+  background: var(--gold-dim);
+}
+
+.decision-strip button.confirm-danger:not(:disabled) {
+  color: var(--risk);
+  border-color: var(--risk-rim);
+  background: var(--risk-dim);
 }
 
 .log-list.expanded {

@@ -6,6 +6,8 @@ import {
   fetchLogsSnapshot,
   fetchSessionsSnapshot,
   fetchStatusSnapshot,
+  postApprovalDecision,
+  type ApprovalDecision,
   type CapabilityItem,
   type SnapshotMeta,
   type StatusSnapshot,
@@ -21,6 +23,7 @@ import {
 import {
   POLL_INTERVAL_MS,
   STORAGE_KEYS,
+  approveActionEnabled,
   createEndpointHealth,
   createEndpointStateUpdates,
   logLineKey,
@@ -49,6 +52,8 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
   const [serverSessions, setServerSessions] = useState<SessionPreview[]>([]);
   const [serverLogs, setServerLogs] = useState<LogLine[]>([]);
   const [serverCapabilities, setServerCapabilities] = useState<CapabilityItem[]>([]);
+  const [approvalsVersion, setApprovalsVersion] = useState("");
+  const [isActionOwner, setIsActionOwner] = useState(false);
   const [endpointHealth, setEndpointHealth] = useState<Record<EndpointKey, EndpointHealthItem>>(() => createEndpointHealth("preview"));
   const [snapshotMeta, setSnapshotMeta] = useState<Record<"approvals" | "sessions" | "logs", SnapshotMeta | null>>({ approvals: null, sessions: null, logs: null });
   const [isRefreshing, setRefreshing] = useState(false);
@@ -134,6 +139,19 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
           logs: logs.status === "fulfilled" ? "ok" : "degraded",
         }));
 
+        // Fail closed FIRST, before any early return: the action gate may open
+        // ONLY when every action-critical read of this poll is fresh and
+        // successful — status AND capabilities AND approvals. If any of them
+        // degraded, drop the capability (and the stale approvals version) so a
+        // previously-loaded approve-action=true can never keep buttons live on
+        // stale data.
+        const actionReadsHealthy =
+          status.status === "fulfilled" &&
+          capabilities.status === "fulfilled" &&
+          approvals.status === "fulfilled";
+        setServerCapabilities(actionReadsHealthy ? capabilities.value.items : []);
+        if (!actionReadsHealthy) setApprovalsVersion("");
+
         if (status.status !== "fulfilled") {
           setApiState("offline");
           if (manual) triggerTelegramRefreshHaptic("warning");
@@ -144,6 +162,10 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
         if (approvals.status === "fulfilled") {
           const mappedApprovals = approvals.value.items.map(mapServerApproval);
           setServerApprovals(mappedApprovals);
+          // Only keep a live approvals version when the whole action-critical
+          // poll is healthy; otherwise it stays cleared (set above) so no stale
+          // version can back a decision.
+          if (actionReadsHealthy) setApprovalsVersion(approvals.value.snapshot_version ?? "");
           setSnapshotMeta((current) => ({ ...current, approvals: approvals.value.meta ?? null }));
           setSelectedApprovalId((current) => {
             if (mappedApprovals.some((approval) => approval.id === current)) return current;
@@ -168,9 +190,6 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
             return mappedLogs[0] ? logLineKey(mappedLogs[0]) : "";
           });
         }
-        if (capabilities.status === "fulfilled") {
-          setServerCapabilities(capabilities.value.items);
-        }
         const refreshedAt = Date.now();
         setLastSuccessAt(refreshedAt);
         setNow(refreshedAt);
@@ -179,6 +198,10 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
       } catch {
         if (requestId === refreshRequestId.current) {
           setApiState("offline");
+          // Fail closed on a thrown refresh too: drop the action capability and
+          // stale approvals version so buttons cannot stay live on an errored poll.
+          setServerCapabilities([]);
+          setApprovalsVersion("");
           setEndpointHealth((current) => updateEndpointHealth(current, createEndpointStateUpdates("degraded")));
           if (manual) triggerTelegramRefreshHaptic("warning");
         }
@@ -200,6 +223,8 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
       setServerCapabilities([]);
       setEndpointHealth(createEndpointHealth("preview"));
       setSnapshotMeta({ approvals: null, sessions: null, logs: null });
+      setApprovalsVersion("");
+      setIsActionOwner(false);
       setLastSuccessAt(null);
       setRefreshing(false);
       return;
@@ -208,14 +233,19 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
     let cancelled = false;
     setApiState("connecting");
     setRefreshing(true);
+    setIsActionOwner(false);
     void authenticateTelegram(telegram.initData)
-      .then(() => {
-        if (!cancelled) return refreshSnapshots();
-        return undefined;
+      .then((auth) => {
+        if (cancelled) return undefined;
+        // Owner eligibility comes from the server, not the mere presence of a
+        // Telegram runtime.
+        setIsActionOwner(Boolean(auth.is_action_owner));
+        return refreshSnapshots();
       })
       .catch(() => {
         if (!cancelled) {
           setApiState("offline");
+          setIsActionOwner(false);
           setRefreshing(false);
         }
       });
@@ -233,7 +263,42 @@ export function useMiniAppSnapshots(telegram: TelegramRuntime, apiConfigured: bo
     return () => window.clearInterval(timer);
   }, [apiConfigured, refreshSnapshots, telegram.initData, telegram.isTelegram]);
 
+  // Effective gate: process-level capability AND server-authenticated owner AND
+  // the live status payload confirming actions are enabled. Requiring the
+  // status flag too means a status card that reads "safe/blocked" can never sit
+  // over live action buttons — the two must agree or the gate stays closed.
+  const actionsEnabled =
+    approveActionEnabled(serverCapabilities) && isActionOwner && snapshot?.miniapp.actions_enabled === true;
+
+  const submitApprovalDecision = useCallback(
+    async (approvalId: string, decision: ApprovalDecision): Promise<boolean> => {
+      if (!actionsEnabled || !telegram.initData || !approvalsVersion) return false;
+      try {
+        await postApprovalDecision({
+          approvalId,
+          decision,
+          // Idempotency key unique per approval+decision+snapshot; a retry of
+          // the same decision replays the server's cached response.
+          clientRequestId: `${approvalId}:${decision}:${approvalsVersion}`,
+          snapshotVersion: approvalsVersion,
+          initData: telegram.initData,
+        });
+        triggerTelegramRefreshHaptic("success");
+        await refreshSnapshots();
+        return true;
+      } catch {
+        triggerTelegramRefreshHaptic("warning");
+        await refreshSnapshots();
+        return false;
+      }
+    },
+    [actionsEnabled, approvalsVersion, refreshSnapshots, telegram.initData],
+  );
+
   return {
+    actionsEnabled,
+    isActionOwner,
+    submitApprovalDecision,
     snapshot,
     apiState,
     approvals,

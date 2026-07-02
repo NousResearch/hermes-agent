@@ -203,7 +203,10 @@ def test_me_and_status_require_auth_then_return_safe_schema():
     assert me.status_code == 200
     assert me.json()["user"]["id"] == "777"
     assert status.status_code == 200
-    assert status.json() == snapshot
+    # The sidecar authoritatively owns the miniapp block; with actions disabled
+    # it must report actions_enabled False so status and the gate agree.
+    expected = {**snapshot, "miniapp": {"mode": "read-only", "actions_enabled": False, "public_exposure": False}}
+    assert status.json() == expected
     serialized = status.text
     assert "/Volumes/Diver Pro/hermes" not in serialized
     assert BOT_TOKEN not in serialized
@@ -670,6 +673,23 @@ def test_action_gate_enabled_flow_and_leak_safety(tmp_path):
     assert len(list((tmp_path / "miniapp" / "decisions").glob("*.json"))) == 1
 
 
+def test_me_reports_action_owner_flag(tmp_path):
+    # Owner 777 in action_owners with actions enabled -> is_action_owner True.
+    _app, owner_client = _actions_client(tmp_path, owners={"777"})
+    auth_client(owner_client)
+    assert owner_client.get("/api/me").json()["is_action_owner"] is True
+
+    # Same allowlisted user but NOT an action owner -> False.
+    _app2, non_owner = _actions_client(tmp_path, owners={"999"})
+    auth_client(non_owner)
+    assert non_owner.get("/api/me").json()["is_action_owner"] is False
+
+    # Actions disabled entirely -> False even for the user.
+    disabled = make_client()
+    auth_client(disabled)
+    assert disabled.get("/api/me").json()["is_action_owner"] is False
+
+
 def test_action_gate_requires_owner(tmp_path):
     # Authenticated allowlisted user 777, but not in action_owners.
     app, client = _actions_client(tmp_path, owners={"999"})
@@ -816,6 +836,16 @@ def test_action_route_absent_without_hermes_home():
     caps = client.get("/api/capabilities").json()
     approve = next(c for c in caps["items"] if c["id"] == "approve-action")
     assert approve["enabled"] is False
+
+
+def test_status_reports_actions_enabled_when_gate_is_on(tmp_path):
+    # When the sidecar runs with the gate ready, /api/status must reflect
+    # actions_enabled=True so the status card and the frontend gate agree.
+    app, client = _actions_client(tmp_path)
+    auth_client(client)
+    status = client.get("/api/status").json()
+    assert status["miniapp"]["actions_enabled"] is True
+    assert status["miniapp"]["public_exposure"] is False
 
 
 def test_action_gate_rejects_stale_snapshot(tmp_path):

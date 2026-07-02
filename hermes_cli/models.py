@@ -3451,6 +3451,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3497,6 +3498,16 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if isinstance(request_headers, dict):
+        # Per-provider custom headers can contain auth/proxy secrets. Merge
+        # last so endpoint-specific config wins, and never log the values.
+        headers.update(
+            {
+                str(key): str(value)
+                for key, value in request_headers.items()
+                if value is not None
+            }
+        )
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -3529,13 +3540,20 @@ def fetch_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        timeout=timeout,
+        api_mode=api_mode,
+        request_headers=headers,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------

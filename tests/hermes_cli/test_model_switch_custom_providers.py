@@ -643,8 +643,8 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -679,15 +679,70 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
     )
 
     assert gateway_prov is not None, "Custom provider group not found in results"
-    assert calls == [("sk-gateway-key", "https://gateway.example.com/v1")], (
-        "fetch_api_models must be called with the custom provider's credentials"
-    )
+    assert calls == [
+        ("sk-gateway-key", "https://gateway.example.com/v1", {"headers": None})
+    ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
         "gateway-model-b",
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_provider_live_model_probe_uses_extra_headers(monkeypatch):
+    """custom_providers[].extra_headers must apply to live /models probes."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["gateway-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "LLM Proxy",
+                "api_key": "local-key",
+                "base_url": "http://localhost:8081/v1",
+                "extra_headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "http://localhost:8081/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None
+    assert calls == [
+        (
+            "local-key",
+            "http://localhost:8081/v1",
+            {
+                "headers": {
+                    "sleeve-harness": "hermes",
+                    "sleeve-base-url": "http://localhost:8081/v1",
+                }
+            },
+        )
+    ]
+    assert gateway_prov["models"] == ["gateway-model"]
 
 
 def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatch):
@@ -704,8 +759,8 @@ def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatc
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
@@ -760,8 +815,8 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
-        calls.append((api_key, base_url))
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
         return ["live-a", "live-b"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)

@@ -4996,6 +4996,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _shutdown_reason_hint(self) -> Optional[str]:
+        """One-line reason for the shutdown notification message.
+
+        Returns ``None`` for chat ``/restart``, ``SIGUSR1``, or any other
+        operator-planned stop — those cases already have a clear
+        "restarting" verb + resume-on-next-message hint on the notification,
+        so an added reason string would be redundant and slightly noisy.
+
+        Returns a short reason string for external / unplanned stops so the
+        user reading the WhatsApp / Discord / Slack message knows the
+        gateway didn't decide to restart itself. Common cases the operator
+        wants to distinguish:
+
+        * ``terminal interrupt (Ctrl+C)`` — SIGINT from a foreground shell.
+        * ``external stop from systemd`` — SIGTERM under a systemd unit
+          (covers ``systemctl stop/restart``, package-upgrade needrestart
+          hooks, container/pod terminations that route through systemd).
+        * ``external stop`` — SIGTERM outside systemd (bare kill, container
+          orchestrator that isn't systemd, ``pkill`` from an admin shell).
+
+        Draws on the ``_shutdown_ctx`` snapshot captured by the signal
+        handler (see ``gateway/shutdown_forensics.py``). Falls back to
+        ``None`` when the context isn't available so the caller renders
+        the original short message without an inline reason clause.
+        """
+        if self._restart_requested:
+            return None
+        ctx = getattr(self, "_shutdown_ctx", None)
+        if not isinstance(ctx, dict):
+            return None
+        sig = ctx.get("signal")
+        if sig == "SIGINT":
+            return "terminal interrupt (Ctrl+C)"
+        if sig == "SIGTERM":
+            if ctx.get("under_systemd"):
+                return "external stop from systemd"
+            return "external stop"
+        return None
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
@@ -5007,13 +5046,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         restart_source = self._restart_command_source if self._restart_requested else None
 
         action = "restarting" if self._restart_requested else "shutting down"
+        reason_hint = self._shutdown_reason_hint()
         hint = (
             "Your current task will be interrupted. "
             "Send any message after restart and I'll try to resume where you left off."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        if reason_hint:
+            msg = f"⚠️ Gateway {action} — {reason_hint}. {hint}"
+        else:
+            msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -18597,6 +18640,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         except Exception as _e:
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)
+
+        # Mirror onto the runner so _notify_active_sessions_of_shutdown can
+        # derive a human-readable reason string for the outbound "Gateway
+        # shutting down" message (SIGINT vs SIGTERM-under-systemd vs bare
+        # kill). Never fails: if snapshot failed and _shutdown_ctx is None,
+        # the notify helper falls back to the plain unreasoned message.
+        try:
+            runner._shutdown_ctx = _shutdown_ctx
+        except Exception as _e:
+            logger.debug("Failed to mirror _shutdown_ctx onto runner: %s", _e)
 
         if planned_takeover:
             logger.info(

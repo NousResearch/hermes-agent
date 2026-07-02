@@ -688,3 +688,137 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+# ── _shutdown_reason_hint + reason clause in notification ─────────────────
+
+
+class TestShutdownReasonHint:
+    def _fresh_runner(self):
+        runner, _adapter = make_restart_runner()
+        # make_restart_runner leaves _restart_requested = False; be explicit
+        # so test intent is clear at the call site.
+        runner._restart_requested = False
+        return runner
+
+    def test_no_hint_when_restart_requested(self):
+        # A chat /restart or SIGUSR1-initiated planned restart already has
+        # the "restarting" verb + resume-on-next-message hint; skip the
+        # inline reason so the message stays tight.
+        runner = self._fresh_runner()
+        runner._restart_requested = True
+        runner._shutdown_ctx = {"signal": "SIGTERM", "under_systemd": True}
+        assert runner._shutdown_reason_hint() is None
+
+    def test_no_hint_when_ctx_missing(self):
+        runner = self._fresh_runner()
+        # Attribute genuinely absent — mirrors runner state before the
+        # signal handler has fired (or the handler failed to snapshot).
+        assert runner._shutdown_reason_hint() is None
+
+    def test_no_hint_when_ctx_none(self):
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = None
+        assert runner._shutdown_reason_hint() is None
+
+    def test_no_hint_for_unknown_signal(self):
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {"signal": "SIGKILL"}  # never reaches handler in practice
+        assert runner._shutdown_reason_hint() is None
+
+    def test_sigint_ctrl_c(self):
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {"signal": "SIGINT"}
+        assert runner._shutdown_reason_hint() == "terminal interrupt (Ctrl+C)"
+
+    def test_sigterm_under_systemd(self):
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {"signal": "SIGTERM", "under_systemd": True}
+        assert runner._shutdown_reason_hint() == "external stop from systemd"
+
+    def test_sigterm_not_under_systemd(self):
+        runner = self._fresh_runner()
+        runner._shutdown_ctx = {"signal": "SIGTERM", "under_systemd": False}
+        assert runner._shutdown_reason_hint() == "external stop"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_includes_reason_hint(tmp_path, monkeypatch):
+    """SIGTERM under systemd produces a notification with the reason clause."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    # Simulate an unplanned SIGTERM from systemd (e.g. systemctl restart,
+    # apt-daily unattended-upgrade needrestart hook, etc.).
+    runner._restart_requested = False
+    runner._shutdown_ctx = {"signal": "SIGTERM", "under_systemd": True}
+
+    # Force one session into "active" so the active-chat path fires the
+    # message (independent of the home-channel path).
+    runner._snapshot_running_agents = lambda: ["agent:main:telegram:dm:home-42"]  # type: ignore[assignment]
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.called
+    sent_text = adapter.send.call_args[0][1] if len(adapter.send.call_args[0]) > 1 else adapter.send.call_args[1]["text"]
+    assert "external stop from systemd" in sent_text
+    assert "⚠️ Gateway shutting down" in sent_text
+    # The task-interrupted hint must still be there — the reason is
+    # additive, not a replacement.
+    assert "Your current task will be interrupted." in sent_text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_omits_reason_for_chat_restart(tmp_path, monkeypatch):
+    """A chat /restart falls into the planned-restart branch and keeps the
+    original resume-on-next-message message unchanged (no inline reason)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner._restart_requested = True
+    # Even if we had a shutdown ctx (SIGUSR1 via `hermes gateway restart`),
+    # the reason clause should be skipped for planned restarts.
+    runner._shutdown_ctx = {"signal": "SIGUSR1", "under_systemd": True}
+    runner._snapshot_running_agents = lambda: ["agent:main:telegram:dm:home-42"]  # type: ignore[assignment]
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.called
+    sent_text = adapter.send.call_args[0][1] if len(adapter.send.call_args[0]) > 1 else adapter.send.call_args[1]["text"]
+    # No reason clause interpolated between the em-dash and the hint.
+    assert "external stop" not in sent_text
+    assert "terminal interrupt" not in sent_text
+    assert "⚠️ Gateway restarting" in sent_text
+    assert "Send any message after restart" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_omits_reason_when_ctx_absent(tmp_path, monkeypatch):
+    """No `_shutdown_ctx` on the runner → notification falls back to the
+    original short message. Preserves prior behavior for callers that don't
+    go through the signal handler (e.g. unit-under-test that calls
+    `_notify_active_sessions_of_shutdown` directly)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner._restart_requested = False
+    # Explicitly don't set _shutdown_ctx.
+    runner._snapshot_running_agents = lambda: ["agent:main:telegram:dm:home-42"]  # type: ignore[assignment]
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.called
+    sent_text = adapter.send.call_args[0][1] if len(adapter.send.call_args[0]) > 1 else adapter.send.call_args[1]["text"]
+    assert sent_text == "⚠️ Gateway shutting down — Your current task will be interrupted."

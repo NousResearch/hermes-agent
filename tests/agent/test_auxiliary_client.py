@@ -169,6 +169,39 @@ class TestResolveTaskProviderModel:
         assert api_mode is None
 
 
+class TestExplicitProviderUnavailableErrors:
+    def test_vertex_unavailable_does_not_invent_api_key_env(self):
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_for_unavailable_client", return_value=(None, None, None)):
+            with pytest.raises(RuntimeError) as exc_info:
+                call_llm(
+                    task="compression",
+                    provider="vertex",
+                    model="gemini-2.5-flash",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        message = str(exc_info.value)
+        assert "no usable client could be created" in message
+        assert "vertex credentials" in message
+        assert "VERTEX_API_KEY" not in message
+
+    def test_api_key_provider_unavailable_keeps_api_key_guidance(self):
+        with patch("agent.auxiliary_client._get_cached_client", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_for_unavailable_client", return_value=(None, None, None)):
+            with pytest.raises(RuntimeError) as exc_info:
+                call_llm(
+                    task="compression",
+                    provider="gemini",
+                    model="gemini-2.5-flash",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        message = str(exc_info.value)
+        assert "no API key was found" in message
+        assert "GEMINI_API_KEY" in message
+
+
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
 

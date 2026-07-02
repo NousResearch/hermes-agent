@@ -432,9 +432,59 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
 # can still use this dict directly. Kept in sync with _FALLBACK above.
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
 
+
+def _explicit_provider_unavailable_error(provider_id: str) -> RuntimeError:
+    """Return a user-facing error for an explicit provider with no client.
+
+    A ``None`` client from ``resolve_provider_client()`` does not always mean a
+    missing static API key: Vertex uses Google ADC/OAuth, Bedrock uses AWS SDK
+    credentials, and several providers use OAuth/device-code flows.  Keep the
+    old API-key-specific guidance only for registry entries that actually use
+    ``auth_type='api_key'``; otherwise point users at the provider auth/setup
+    path instead of inventing a ``<PROVIDER>_API_KEY`` variable.
+    """
+    provider = (provider_id or "").strip().lower()
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(provider)
+    except Exception:
+        pconfig = None
+
+    profile_auth_type = ""
+    if pconfig is None:
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(provider)
+            profile_auth_type = str(getattr(profile, "auth_type", "") or "")
+        except Exception:
+            profile_auth_type = ""
+
+    auth_type_raw = str(getattr(pconfig, "auth_type", "") or profile_auth_type)
+
+    if auth_type_raw == "api_key":
+        env_vars = [str(v).strip() for v in getattr(pconfig, "api_key_env_vars", ()) if str(v).strip()]
+        env_hint = " or ".join(env_vars) or f"{provider.upper()}_API_KEY"
+        return RuntimeError(
+            f"Provider '{provider}' is set in config.yaml but no API key "
+            f"was found. Set {env_hint}, or switch to a different provider "
+            f"with `hermes model`."
+        )
+
+    auth_type = auth_type_raw.replace("_", " ")
+    auth_hint = f" ({auth_type} credentials)" if auth_type else ""
+    return RuntimeError(
+        f"Provider '{provider}' is set in config.yaml but no usable client "
+        f"could be created{auth_hint}. Check that the provider dependencies "
+        f"are installed and its authentication is configured, or switch to a "
+        f"different provider with `hermes model`."
+    )
+
+
 # Vision-specific model overrides for direct providers.
 # When the user's main provider has a dedicated vision/multimodal model that
-# differs from their main chat model, map it here.  The vision auto-detect
+# differs from its text/chat model, prefer the vision model for image tasks.
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
@@ -5946,11 +5996,7 @@ def call_llm(
                     client, final_model = fb_client, fb_model
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise _explicit_provider_unavailable_error(_explicit)
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —
@@ -6520,11 +6566,7 @@ async def async_call_llm(
                     )
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise _explicit_provider_unavailable_error(_explicit)
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)

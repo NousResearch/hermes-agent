@@ -3560,6 +3560,78 @@ def _try_configured_fallback_for_unavailable_client(
     )
 
 
+def _explicit_provider_unavailable_message(provider: str) -> str:
+    """Explain why an explicit auxiliary provider could not build a client."""
+    explicit = (provider or "").strip().lower()
+    auth_type = ""
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(explicit)
+        if pconfig is not None:
+            auth_type = str(getattr(pconfig, "auth_type", "") or "").strip().lower()
+    except Exception:
+        pass
+
+    if not auth_type:
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(explicit)
+            if profile is not None:
+                auth_type = str(getattr(profile, "auth_type", "") or "").strip().lower()
+        except Exception:
+            pass
+
+    if auth_type == "vertex" or explicit in {"vertex", "google-vertex", "vertex-ai", "gcp-vertex"}:
+        return (
+            f"Provider '{explicit}' is set in config.yaml but provider credentials "
+            "could not be resolved. Vertex uses Google Cloud Application Default "
+            "Credentials (ADC), OAuth, or a service account rather than a static "
+            "API key; run `gcloud auth application-default login`, configure the "
+            "vertex section in config.yaml, ensure google-auth is installed, or "
+            "switch to a different provider with `hermes model`."
+        )
+
+    if auth_type in {"oauth_device_code", "oauth_external"}:
+        return (
+            f"Provider '{explicit}' is set in config.yaml but OAuth credentials "
+            "could not be resolved. Re-authorize the provider with `hermes auth` "
+            "or `hermes model`, ensure any provider dependencies are installed, "
+            "or switch to a different provider."
+        )
+
+    if auth_type == "aws_sdk":
+        return (
+            f"Provider '{explicit}' is set in config.yaml but AWS SDK credentials "
+            "could not be resolved. Configure AWS credentials/SSO/role access and "
+            "the provider region, install required dependencies, or switch to a "
+            "different provider."
+        )
+
+    if auth_type == "external_process":
+        return (
+            f"Provider '{explicit}' is set in config.yaml but its external-process "
+            "credentials could not be resolved. Ensure the provider CLI/helper is "
+            "installed and authenticated, or switch to a different provider."
+        )
+
+    if auth_type and auth_type != "api_key":
+        return (
+            f"Provider '{explicit}' is set in config.yaml but provider credentials "
+            f"for auth_type '{auth_type}' could not be resolved. Configure the "
+            "provider credentials/dependencies, or switch to a different provider."
+        )
+
+    key_env = f"{explicit.upper()}_API_KEY"
+    return (
+        f"Provider '{explicit}' is set in config.yaml but no API key "
+        f"was found. Set the {key_env} environment "
+        f"variable, or switch to a different provider with `hermes model`."
+    )
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key from a fallback-chain entry."""
     explicit = str(entry.get("api_key") or "").strip()
@@ -5946,11 +6018,7 @@ def call_llm(
                     client, final_model = fb_client, fb_model
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise RuntimeError(_explicit_provider_unavailable_message(_explicit))
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —
@@ -6520,11 +6588,7 @@ async def async_call_llm(
                     )
                     resolved_provider = fb_label or resolved_provider
                 else:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                        f"variable, or switch to a different provider with `hermes model`."
-                    )
+                    raise RuntimeError(_explicit_provider_unavailable_message(_explicit))
             if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)

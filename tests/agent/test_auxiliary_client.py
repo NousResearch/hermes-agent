@@ -2047,6 +2047,43 @@ class TestCallLlmPaymentFallback:
         mock_fb.assert_not_called()
 
 
+class TestExplicitProviderUnavailableMessages:
+    """Startup client-build failures should name the provider's credential type."""
+
+    def _call_with_unavailable_provider(self, provider):
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=(provider, "test-model", None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+                   return_value=(None, None, "")):
+            return call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+    def test_vertex_unavailable_mentions_adc_oauth_not_fake_api_key(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._call_with_unavailable_provider("vertex")
+
+        message = str(excinfo.value)
+        assert "VERTEX_API_KEY" not in message
+        assert "GEMINI_API_KEY" not in message
+        assert "API key was found" not in message
+        assert "provider credentials" in message
+        assert "Application Default Credentials" in message
+        assert "OAuth" in message
+        assert "google-auth" in message
+
+    def test_api_key_provider_unavailable_keeps_api_key_guidance(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._call_with_unavailable_provider("zai")
+
+        message = str(excinfo.value)
+        assert "no API key was found" in message
+        assert "ZAI_API_KEY" in message
+
+
 class TestAuxiliaryFallbackLayering:
     """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
 

@@ -8141,6 +8141,22 @@ class GatewayRunner:
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    # Notify the user that the attachment couldn't be delivered.
+                    # Persistent CDN 500s are a known symptom of iLink session
+                    # degradation — a gateway restart recovers the session.
+                    try:
+                        file_name = Path(media_path).name
+                        await adapter.send_message(
+                            chat_id=event.source.chat_id,
+                            text=(
+                                f"⚠️ 文件「{file_name}」发送失败 "
+                                f"({type(e).__name__})\\n"
+                                f"可能需要重启网关恢复会话。"
+                            ),
+                            metadata=_thread_meta,
+                        )
+                    except Exception:
+                        pass
 
             for file_path in non_image_local:
                 try:

@@ -542,23 +542,57 @@ async def _upload_ciphertext(
     *,
     ciphertext: bytes,
     upload_url: str,
+    max_retries: int = 1,
+    retry_delay: float = 2.0,
 ) -> str:
     """Upload encrypted media to the CDN.
 
     Accepts either a constructed CDN URL (from upload_param) or a direct
     upload_full_url — both use POST with the raw ciphertext as the body.
+
+    Retries once on 5xx errors with a short delay.  Persistent 500s are
+    strongly correlated with iLink session degradation (chronic "Server
+    disconnected" on the poll connection) — in that case the CDN upload
+    URLs returned by ``getUploadUrl`` are session-scoped and rejected.
+    A gateway restart (fresh iLink session) is the known recovery path.
     """
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
-        if response.status == 200:
-            encrypted_param = response.headers.get("x-encrypted-param")
-            if encrypted_param:
-                await response.read()
-                return encrypted_param
+    last_status = None
+    for attempt in range(max_retries + 1):
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with session.post(
+            upload_url,
+            data=ciphertext,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=timeout,
+        ) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    return encrypted_param
+                raw = await response.text()
+                raise RuntimeError(
+                    f"CDN upload missing x-encrypted-param header: {raw[:200]}"
+                )
             raw = await response.text()
-            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-        raw = await response.text()
-        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+            last_status = response.status
+            if 500 <= response.status < 600 and attempt < max_retries:
+                logger.warning(
+                    "CDN upload HTTP %d (attempt %d/%d), retrying in %.1fs…",
+                    response.status,
+                    attempt + 1,
+                    max_retries + 1,
+                    retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            raise RuntimeError(
+                f"CDN upload HTTP {response.status}: {raw[:200]}"
+            )
+    raise RuntimeError(
+        f"CDN upload failed after {max_retries + 1} attempts "
+        f"(last status: {last_status})"
+    )
 
 
 async def _download_bytes(
@@ -2030,7 +2064,14 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    # Check event loop compatibility: if the session was created in a different
+    # event loop (e.g. gateway main loop vs send_message worker loop), skip reuse
+    # and fall through to the fresh-session path to avoid "Timeout context manager
+    # should be used inside a task" errors.
+    if (live_adapter is not None
+            and send_session is not None
+            and not send_session.closed
+            and getattr(send_session, '_loop', None) is asyncio.get_running_loop()):
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

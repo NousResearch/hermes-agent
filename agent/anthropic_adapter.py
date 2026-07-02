@@ -1673,12 +1673,12 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
                 fn.get("parameters", {"type": "object", "properties": {}})
             ),
         }
-        # Forward cache_control marker when present on the OpenAI-format
-        # tool dict. Anthropic's tools array supports cache_control on the
-        # last tool to cache the entire schema cross-session.
-        cache_control = t.get("cache_control")
-        if isinstance(cache_control, dict):
-            anthropic_tool["cache_control"] = dict(cache_control)
+        # Do not forward cache_control from OpenAI-format tool dicts here.
+        # Anthropic enforces a hard request-wide maximum of 4 cache_control
+        # blocks across system, messages, and tools. Hermes' prompt-caching
+        # strategy already spends that budget on system + recent messages; a
+        # tool-schema marker smuggled in through a tool/plugin path becomes the
+        # classic fifth marker and triggers HTTP 400.
         result.append(anthropic_tool)
     return result
 
@@ -2439,6 +2439,61 @@ def convert_messages_to_anthropic(
     return system, result
 
 
+def _strip_first_cache_control(value: Any) -> bool:
+    """Remove the first cache_control marker found in a nested request object.
+
+    Mutates ``value`` in place. Returns True if a marker was removed,
+    False if none was found.
+    """
+    if isinstance(value, dict):
+        if isinstance(value.get("cache_control"), dict):
+            value.pop("cache_control", None)
+            return True
+        for child in value.values():
+            if _strip_first_cache_control(child):
+                return True
+    elif isinstance(value, list):
+        for child in value:
+            if _strip_first_cache_control(child):
+                return True
+    return False
+
+
+def _count_cache_control(value: Any) -> int:
+    """Count cache_control markers recursively in an Anthropic request object."""
+    if isinstance(value, dict):
+        return (1 if isinstance(value.get("cache_control"), dict) else 0) + sum(
+            _count_cache_control(v) for k, v in value.items() if k != "cache_control"
+        )
+    if isinstance(value, list):
+        return sum(_count_cache_control(v) for v in value)
+    return 0
+
+
+def _enforce_anthropic_cache_control_budget(kwargs: Dict[str, Any], *, budget: int = 4) -> None:
+    """Ensure native Anthropic requests never exceed cache_control's hard cap.
+
+    Anthropic counts cache_control blocks request-wide, across system,
+    messages, and tools. Prompt caching normally creates exactly four markers
+    (system + three recent messages). If a plugin, tool schema, or replayed
+    message smuggles in extras, the API rejects the whole request with:
+
+        HTTP 400: A maximum of 4 blocks with cache_control may be provided.
+
+    Prefer stripping tools first because tool-schema caching is currently not
+    part of Hermes' budgeted strategy. If the request is still over budget,
+    strip from older messages before touching the system prompt.
+    """
+    if _count_cache_control(kwargs) <= budget:
+        return
+
+    for section in ("tools", "messages", "system"):
+        while _count_cache_control(kwargs) > budget:
+            target = kwargs.get(section)
+            if target is None or not _strip_first_cache_control(target):
+                break
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -2656,6 +2711,8 @@ def build_anthropic_kwargs(
     if _forbids_sampling_params(model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
+
+    _enforce_anthropic_cache_control_budget(kwargs)
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x

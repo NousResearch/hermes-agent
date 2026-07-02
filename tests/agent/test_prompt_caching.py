@@ -1,6 +1,11 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
 
+from agent.anthropic_adapter import (
+    _count_cache_control,
+    build_anthropic_kwargs,
+    convert_tools_to_anthropic,
+)
 from agent.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,
@@ -139,3 +144,73 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+
+class TestAnthropicAdapterCacheBudget:
+    def test_tool_cache_control_is_not_forwarded(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "demo_tool",
+                    "description": "demo",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+        converted = convert_tools_to_anthropic(tools)
+
+        assert converted[0]["name"] == "demo_tool"
+        assert "cache_control" not in converted[0]
+
+    def test_build_kwargs_enforces_request_wide_cache_control_cap(self):
+        marker = {"type": "ephemeral"}
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": "system", "cache_control": marker}]},
+            {"role": "user", "content": [{"type": "text", "text": "one", "cache_control": marker}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "two", "cache_control": marker}]},
+            {"role": "user", "content": [{"type": "text", "text": "three", "cache_control": marker}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "four", "cache_control": marker}]},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "demo_tool",
+                        "description": "demo",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                    "cache_control": marker,
+                }
+            ],
+            max_tokens=1024,
+            reasoning_config=None,
+        )
+
+        # Request-wide budget is respected.
+        assert _count_cache_control(kwargs) <= 4
+
+        # Tools are stripped first: tool-schema caching is not part of the
+        # budgeted placement strategy, so the tool's marker must be gone.
+        assert all(
+            "cache_control" not in tool for tool in kwargs.get("tools", [])
+        )
+
+        # Stripping prefers older messages over newer ones: the most recent
+        # message's marker must survive so prefix-cache hits on the live tail
+        # of the conversation are preserved.
+        last_message = kwargs["messages"][-1]
+        last_block = last_message["content"][-1]
+        assert last_block.get("cache_control") == marker
+
+        # The system prompt is the last thing touched, so it should still
+        # carry its marker when tools + older messages absorbed the overflow.
+        system = kwargs.get("system")
+        if isinstance(system, list) and system:
+            assert system[0].get("cache_control") == marker

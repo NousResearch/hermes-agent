@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -123,6 +124,11 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 17
 
+# Cap on user-controlled FTS5 query input before regex/sanitizer processing.
+# Search queries do not need to be arbitrarily large, and bounding them keeps
+# sanitizer/runtime behavior predictable under adversarial input.
+MAX_FTS5_QUERY_CHARS = 2_048
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -196,6 +202,61 @@ def get_last_init_error() -> Optional[str]:
     successfully (or hasn't been attempted).
     """
     return _last_init_error
+
+
+# Distinctive opening shared by both background-review harness prompts
+# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
+# Matched case-sensitively against the leading content of a user/system message.
+_REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above and update the skill library",
+    "Review the conversation above and consider saving to memory",
+)
+
+
+def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
+    """True when ``msg`` is a persisted background-review harness prompt.
+
+    These are user/system turns the forked skill/memory review agent wrote into
+    a real session in older builds (before the ``_persist_disabled`` isolation
+    fix). They instruct the agent to act as the curator under a hard tool
+    restriction, so replaying them as live history hijacks the session.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("role") not in {"user", "system"}:
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    head = content.lstrip()
+    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
+
+
+def _strip_background_review_harness(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Drop background-review harness messages and the curator-mode assistant
+    reply that immediately followed each one.
+
+    Walk the list once; when a harness user/system message is found, skip it and
+    also skip the next message if it is the assistant turn that answered it.
+    Everything else passes through untouched and in order.
+    """
+    if not messages:
+        return messages
+    out: List[Dict[str, Any]] = []
+    skip_next_assistant = False
+    for msg in messages:
+        if _is_background_review_harness_message(msg):
+            skip_next_assistant = True
+            continue
+        if skip_next_assistant:
+            skip_next_assistant = False
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                # The curator-mode reply to the harness prompt — drop it.
+                continue
+        out.append(msg)
+    return out
 
 
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
@@ -674,6 +735,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    compression_failure_cooldown_until REAL,
+    compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -732,6 +795,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
+    ON sessions(handoff_state, started_at);
 """
 
 FTS_SQL = """
@@ -812,6 +877,16 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Merge fragmented FTS5 segments every N successful writes. The message
+    # triggers append one segment per insert; left unmaintained these grow
+    # into tens of thousands of segments, so every MATCH must scan them all
+    # and every insert pays a growing automerge cost — which lengthens the
+    # write-lock hold time and starves competing writers (gateway + cron
+    # processes share one state.db), surfacing as "database is locked".
+    # 'optimize' is a no-op once the index is already merged, so an idle DB
+    # pays almost nothing; the cadence is deliberately coarse so the one-off
+    # merge cost is amortised far below the checkpoint cadence.
+    _OPTIMIZE_EVERY_N_WRITES = 1000
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1080,10 +1155,12 @@ class SessionDB:
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint.
+                # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
+                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
+                    self._try_optimize_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -1131,6 +1208,22 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
+        except Exception:
+            pass  # Best effort — never fatal.
+
+    def _try_optimize_fts(self) -> None:
+        """Best-effort FTS5 segment merge. Never raises.
+
+        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
+        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
+        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
+        never reach the write path, so this is implicitly skipped for them.
+        Once the index is merged the 'optimize' command is close to free, so
+        the steady-state cost is negligible; the expensive case is only the
+        first merge of a long-neglected index.
+        """
+        try:
+            self.optimize_fts()
         except Exception:
             pass  # Best effort — never fatal.
 
@@ -1497,6 +1590,12 @@ class SessionDB:
         only filling columns that are still NULL, never overwriting values an
         earlier writer already set (so a later bare call with source="unknown"
         can't clobber a real source/model).
+
+        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
+        thread the session was started in) so that gateway ``/resume`` can prove
+        a persisted, now-inactive row belongs to the caller's chat/thread before
+        switching to it (IDOR scoping — without them the ``sessions`` table has
+        no chat/thread to compare).
         """
         def _do(conn):
             conn.execute(
@@ -1721,6 +1820,88 @@ class SessionDB:
                 )
 
         self._execute_write(_do)
+
+    def record_compression_failure_cooldown(
+        self,
+        session_id: str,
+        cooldown_until: float,
+        error: Optional[str] = None,
+    ) -> None:
+        """Persist the active compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = ?, "
+                "compression_failure_error = ? WHERE id = ?",
+                (cooldown_until, error, session_id),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
+
+    def get_compression_failure_cooldown(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the active compression-failure cooldown for ``session_id``."""
+        if not session_id:
+            return None
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT compression_failure_cooldown_until, compression_failure_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        cooldown_until = (
+            row["compression_failure_cooldown_until"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        if cooldown_until is None:
+            return None
+        cooldown_until = float(cooldown_until)
+        if cooldown_until <= now:
+            return None
+        error = (
+            row["compression_failure_error"]
+            if isinstance(row, sqlite3.Row)
+            else row[1]
+        )
+        return {
+            "cooldown_until": cooldown_until,
+            "remaining_seconds": cooldown_until - now,
+            "error": error,
+        }
+
+    def clear_compression_failure_cooldown(self, session_id: str) -> None:
+        """Clear any persisted compression-failure cooldown for a session."""
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = NULL, "
+                "compression_failure_error = NULL WHERE id = ?",
+                (session_id,),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_compression_failure_cooldown(%s) failed: %s",
+                session_id, exc,
+            )
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -1742,6 +1923,35 @@ class SessionDB:
     # the compress() call plus the rotation. ``holder`` identifies the
     # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
     # via ``expires_at`` if the holder process crashed without releasing.
+    def refresh_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend the compression lock lease if ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + ttl_seconds
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE compression_locks SET expires_at = ? "
+                "WHERE session_id = ? AND holder = ? AND expires_at >= ?",
+                (expires_at, session_id, holder, now),
+            )
+            return cur.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "refresh_compression_lock(%s) failed: %s",
+                session_id, exc,
+            )
+            return False
+
     def try_acquire_compression_lock(
         self,
         session_id: str,
@@ -3071,21 +3281,39 @@ class SessionDB:
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
-    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Atomically replace every message for a session.
+    def replace_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        active_only: bool = False,
+    ) -> None:
+        """Atomically replace the stored messages for a session.
 
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
 
-        DESTRUCTIVE: the prior rows are DELETEd (and drop out of the FTS index).
-        For compaction that must preserve the pre-compaction transcript under
-        the same id, use :meth:`archive_and_compact` instead.
+        DESTRUCTIVE by default: every row for the session is DELETEd (and drops
+        out of the FTS index). For compaction that must preserve the
+        pre-compaction transcript under the same id, use
+        :meth:`archive_and_compact` instead.
+
+        Pass ``active_only=True`` to replace ONLY the live (``active = 1``) rows,
+        leaving soft-archived rows (``active = 0`` — e.g. the ``compacted = 1``
+        turns that :meth:`archive_and_compact` keeps on disk for #38763
+        durability, or rewind/undo rows) untouched. Callers that share a session
+        id with an agent already running in-place compaction must use this so a
+        full-history rewrite doesn't wipe the rows the agent deliberately
+        archived. ``message_count``/``tool_call_count`` then track the live set,
+        matching :meth:`archive_and_compact`.
         """
+
+        active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
             conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
             )
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
@@ -3100,6 +3328,20 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def has_archived_messages(self, session_id: str) -> bool:
+        """Return True if the session has any soft-archived (``active = 0``) rows.
+
+        Used by callers (e.g. the ACP adapter's ``_persist``) that must decide
+        whether a full-history :meth:`replace_messages` would destroy durable
+        compaction-archived turns. Cheap existence probe — does not load rows.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND active = 0 LIMIT 1",
+                (session_id,),
+            )
+            return cursor.fetchone() is not None
 
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
@@ -3502,7 +3744,15 @@ class SessionDB:
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                f"{active_clause} ORDER BY timestamp, id",
+                # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
+                # append_message stamps rows with time.time(), which is not
+                # monotonic (WSL2, NTP steps, VM/laptop sleep resume). A later
+                # row can carry an earlier timestamp than its predecessor, and
+                # ORDER BY timestamp would then sort an assistant tool_calls row
+                # after its tool response, breaking tool-call/response adjacency
+                # and triggering an HTTP 400 on replay. This matches get_messages
+                # — see c03acca50 for the original fix.
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -3564,6 +3814,17 @@ class SessionDB:
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)
+        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
+        # skill/memory review that (in older builds, before the _persist_disabled
+        # fix) shared the parent's session_id wrote its harness turn into this
+        # real session. The harness is a user/system message instructing the
+        # agent to "Review the conversation above and update the skill library /
+        # save to memory" under a hard tool restriction; re-loading it as live
+        # history makes the agent adopt the curator role and refuse the user's
+        # actual task. Strip any such harness message AND the curator-mode
+        # assistant reply immediately following it, so a polluted session
+        # resumes clean even if stray rows exist.
+        messages = _strip_background_review_harness(messages)
         return messages
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
@@ -3792,15 +4053,36 @@ class SessionDB:
           matches them as exact phrases instead of splitting on the
           hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
+        # Cap user-controlled FTS input before any regex processing. Search
+        # queries do not need to be arbitrarily large, and bounding them keeps
+        # sanitizer/runtime behavior predictable under adversarial input.
+        query = query[:MAX_FTS5_QUERY_CHARS]
+
         # Step 1: Extract balanced double-quoted phrases and protect them
-        # from further processing via numbered placeholders.
+        # from further processing via numbered placeholders. Do this with a
+        # single linear scan rather than a regex so pathological quote runs
+        # cannot induce backtracking.
         _quoted_parts: list = []
+        pieces: list[str] = []
+        i = 0
+        while i < len(query):
+            ch = query[i]
+            if ch != '"':
+                pieces.append(ch)
+                i += 1
+                continue
+            end = query.find('"', i + 1)
+            if end == -1:
+                # Unmatched quote: replace with whitespace like the old
+                # sanitizer's special-char stripping step.
+                pieces.append(" ")
+                i += 1
+                continue
+            _quoted_parts.append(query[i:end + 1])
+            pieces.append(f"\x00Q{len(_quoted_parts) - 1}\x00")
+            i = end + 1
 
-        def _preserve_quoted(m: re.Match) -> str:
-            _quoted_parts.append(m.group(0))
-            return f"\x00Q{len(_quoted_parts) - 1}\x00"
-
-        sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+        sanitized = "".join(pieces)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters.  ``:`` is
         # FTS5's column-filter operator (``col:term``); since the FTS table has a
@@ -5525,3 +5807,20 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+class AsyncSessionDB:
+    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""
+
+    def __init__(self, db: "SessionDB") -> None:
+        self._db = db
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs):
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded

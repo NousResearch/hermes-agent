@@ -87,7 +87,10 @@ def _sanitize_plugin_name(
     """Validate a plugin name and return the safe target path inside *plugins_dir*.
 
     Raises ``ValueError`` if the name contains path-traversal sequences or would
-    resolve outside the plugins directory.
+    resolve outside the plugins directory.  Direct symlinks whose entry lives
+    inside *plugins_dir* are accepted without resolving their target — this
+    preserves the common developer workflow of symlinking a plugin from a
+    project checkout into ``~/.hermes/plugins/``.
 
     ``allow_subdir=True`` permits a single forward slash inside *name* so
     category-namespaced plugin keys like ``observability/langfuse`` or
@@ -117,7 +120,18 @@ def _sanitize_plugin_name(
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")
 
-    target = (plugins_dir / name).resolve()
+    entry = plugins_dir / name
+
+    # Symlinks: the entry itself lives inside *plugins_dir* (guaranteed by the
+    # string checks above).  Return the unresolved path so callers operate on
+    # the link, not its external target.  This preserves the common developer
+    # workflow of symlinking a plugin from a project checkout into
+    # ``~/.hermes/plugins/``.
+    if entry.is_symlink():
+        return entry
+
+    # Non-symlinks: resolve and verify containment (defense-in-depth).
+    target = entry.resolve()
     plugins_resolved = plugins_dir.resolve()
 
     if target == plugins_resolved:

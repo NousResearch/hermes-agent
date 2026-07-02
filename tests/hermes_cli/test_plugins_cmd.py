@@ -95,6 +95,39 @@ class TestSanitizePluginName:
         target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
         assert target.is_relative_to(tmp_path.resolve())
 
+    # ── symlink handling ──
+
+    def test_symlink_to_external_dir_accepted(self, tmp_path):
+        """Symlinks whose entry lives inside plugins_dir are accepted."""
+        external = tmp_path / "external-project"
+        external.mkdir()
+        (external / "plugin.yaml").write_text("name: my-plugin\n")
+        (tmp_path / "my-plugin").symlink_to(external)
+        target = _sanitize_plugin_name("my-plugin", tmp_path)
+        # Returns the unresolved symlink path, not the target
+        assert target == tmp_path / "my-plugin"
+        assert target.is_symlink()
+
+    def test_symlink_returns_unresolved_path(self, tmp_path):
+        """Symlink result is the link itself, not its resolved target."""
+        external = tmp_path / "project" / "plugin"
+        external.parent.mkdir(parents=True)
+        external.mkdir()
+        (tmp_path / "my-plugin").symlink_to(external)
+        target = _sanitize_plugin_name("my-plugin", tmp_path)
+        assert target != external.resolve()
+        assert target == tmp_path / "my-plugin"
+
+    def test_symlink_with_allow_subdir(self, tmp_path):
+        """Symlinks work with allow_subdir=True."""
+        external = tmp_path / "external-cat" / "plugin"
+        external.parent.mkdir(parents=True)
+        external.mkdir()
+        (tmp_path / "cat").mkdir()
+        (tmp_path / "cat" / "plugin").symlink_to(external)
+        target = _sanitize_plugin_name("cat/plugin", tmp_path, allow_subdir=True)
+        assert target.is_symlink()
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 

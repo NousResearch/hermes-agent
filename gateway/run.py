@@ -17822,12 +17822,115 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker stopped")
 
 
+def _cron_supervisor_alerts_enabled() -> bool:
+    """Whether the supervisor should announce a stall/restart on the home channel.
+
+    Defaults to ``True`` — surfacing the otherwise-silent restart is the entire
+    point of the alert (the 17h stall went unnoticed because nothing announced
+    it). Configurable via ``cron.supervisor_alerts`` in ``config.yaml``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return bool(cron_cfg.get("supervisor_alerts", True))
+    except Exception:
+        # Fail open: a config read error must not silence the alert.
+        return True
+
+
+def _send_cron_supervisor_alert(adapters, loop, stall_age_s: float, threshold_s: float) -> None:
+    """Send a home-channel alert that the cron ticker stalled and was restarted.
+
+    Reuses cron's home-channel delivery path: it resolves each configured home
+    target and sends via the live adapter, hopping onto the gateway event loop
+    with :func:`safe_schedule_threadsafe` (the ticker/supervisor run in worker
+    threads, so the send must be scheduled onto ``loop``).
+
+    This function is fully exception-isolated: any failure — a missing loop,
+    unresolved targets, a hung send — is logged and swallowed. It must NEVER
+    propagate, because the supervisor calls it right after restarting the
+    ticker and a raised exception would kill the watchdog loop.
+    """
+    try:
+        if loop is None or not adapters:
+            logger.warning(
+                "Cron supervisor stall alert skipped: no event loop / adapters available"
+            )
+            return
+
+        from cron.scheduler import (
+            _get_home_target_chat_id,
+            _get_home_target_thread_id,
+            _iter_home_target_platforms,
+        )
+        from agent.async_utils import safe_schedule_threadsafe
+
+        text = (
+            f"⚠️ Cron ticker stalled for {stall_age_s:.0f}s "
+            f"(threshold {threshold_s:.0f}s) — automatically restarted the ticker "
+            f"thread. Scheduled jobs should resume now."
+        )
+
+        sent_any = False
+        for platform in _iter_home_target_platforms():
+            try:
+                chat_id = _get_home_target_chat_id(platform)
+                if not chat_id:
+                    continue
+                adapter = adapters.get(platform)
+                if adapter is None:
+                    continue
+                thread_id = _get_home_target_thread_id(platform)
+                metadata = {"thread_id": thread_id} if thread_id else None
+                future = safe_schedule_threadsafe(
+                    adapter.send(chat_id, text, metadata=metadata),
+                    loop,
+                )
+                if future is None:
+                    continue
+                try:
+                    future.result(timeout=30)
+                    sent_any = True
+                    logger.info(
+                        "Cron supervisor stall alert delivered to %s:%s",
+                        platform, chat_id,
+                    )
+                except TimeoutError:
+                    future.cancel()
+                    logger.warning(
+                        "Cron supervisor stall alert to %s:%s timed out",
+                        platform, chat_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Cron supervisor stall alert to %s:%s failed: %s",
+                        platform, chat_id, e,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Cron supervisor stall alert error for platform %s: %s",
+                    platform, e,
+                )
+
+        if not sent_any:
+            logger.warning(
+                "Cron supervisor stall alert: no home-channel targets resolved"
+            )
+    except Exception as e:
+        # Belt-and-braces: never let anything escape to the supervisor loop.
+        logger.error("Cron supervisor stall alert unexpectedly failed: %s", e)
+
+
 def _cron_ticker_supervisor(
     stop_event: threading.Event,
     restart_ticker,
+    adapters=None,
+    loop=None,
     interval: int = 60,
     stale_multiplier: float = 5.0,
     check_interval: int = 60,
+    alert_cooldown: float = 900.0,
 ):
     """Watchdog that restarts the cron ticker if its heartbeat goes stale.
 
@@ -17840,7 +17943,13 @@ def _cron_ticker_supervisor(
 
     This closes the gap behind the 17h silent-stall incident: previously a hung
     ticker was never detected and cron simply stopped firing while the gateway
-    stayed up.
+    stayed up. On restart we also send a home-channel alert (gated behind
+    ``cron.supervisor_alerts``, default on) so the recovery is no longer silent.
+    A ``alert_cooldown``-second window suppresses repeat alerts so a flapping
+    ticker can't spam the home channel — the restart + log always happen.
+
+    ``adapters`` / ``loop`` are the live gateway adapters and event loop, used
+    only to deliver the alert; they mirror what ``_spawn_cron_ticker`` receives.
     """
     from cron.scheduler import get_ticker_heartbeat_age, ticker_heartbeat_is_stale
 
@@ -17848,6 +17957,7 @@ def _cron_ticker_supervisor(
         "Cron ticker supervisor started (stale after %.0fs)",
         interval * stale_multiplier,
     )
+    last_alert_ts = None
     while not stop_event.is_set():
         stop_event.wait(timeout=check_interval)
         if stop_event.is_set():
@@ -17855,13 +17965,33 @@ def _cron_ticker_supervisor(
         try:
             if ticker_heartbeat_is_stale(interval, stale_multiplier):
                 age = get_ticker_heartbeat_age()
+                threshold = interval * stale_multiplier
                 logger.warning(
                     "Cron ticker heartbeat stale (%.0fs old, > %.0fs threshold) — "
                     "restarting ticker thread",
                     age if age is not None else -1.0,
-                    interval * stale_multiplier,
+                    threshold,
                 )
+                # Recovery is the priority: restart the ticker FIRST so a slow
+                # or hanging alert send can never delay it.
                 restart_ticker()
+                # Then surface the (otherwise silent) restart on the home
+                # channel, subject to the enable flag and the cooldown.
+                if _cron_supervisor_alerts_enabled():
+                    now = time.monotonic()
+                    if last_alert_ts is not None and (now - last_alert_ts) < alert_cooldown:
+                        logger.info(
+                            "Cron supervisor stall alert suppressed (within %.0fs cooldown)",
+                            alert_cooldown,
+                        )
+                    else:
+                        last_alert_ts = now
+                        _send_cron_supervisor_alert(
+                            adapters,
+                            loop,
+                            age if age is not None else -1.0,
+                            threshold,
+                        )
         except Exception as e:
             logger.debug("Cron ticker supervisor error: %s", e)
     logger.info("Cron ticker supervisor stopped")
@@ -18241,6 +18371,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_supervisor_thread = threading.Thread(
         target=_cron_ticker_supervisor,
         args=(cron_stop, _spawn_cron_ticker),
+        kwargs={"adapters": runner.adapters, "loop": _cron_loop},
         daemon=True,
         name="cron-ticker-supervisor",
     )

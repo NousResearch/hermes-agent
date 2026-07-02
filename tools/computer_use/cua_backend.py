@@ -567,6 +567,7 @@ class _CuaDriverSession:
         different task than it was entered in" warning emitted by the
         previous _aenter/_aexit split.
         """
+        import time as _time
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from tools.environments.local import _sanitize_subprocess_env
@@ -574,6 +575,7 @@ class _CuaDriverSession:
         # Build the shutdown event on the loop's thread so the asyncio
         # primitive belongs to the correct loop.
         self._shutdown_event = asyncio.Event()
+        _t0 = _time.monotonic()
 
         try:
             if not cua_driver_binary_available():
@@ -583,6 +585,7 @@ class _CuaDriverSession:
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
             command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
                 args=args,
@@ -594,12 +597,20 @@ class _CuaDriverSession:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+                    _t_init = _time.monotonic()
                     # Populate capabilities + capability_version BEFORE
                     # exposing the session to callers, so the first
                     # tool call already sees them.
                     await self._populate_capabilities(session)
                     self._session = session
                     self._ready_event.set()
+                    logger.info(
+                        "cua-driver session ready in %.1fs "
+                        "(manifest=%.1fs, mcp_init=%.1fs)",
+                        _time.monotonic() - _t0,
+                        _t_manifest - _t0,
+                        _t_init - _t_manifest,
+                    )
                     # Hold the contexts open until stop() / restart asks
                     # us to wind down. Tool calls run as their own tasks
                     # on the same loop and touch self._session directly.
@@ -677,10 +688,10 @@ class _CuaDriverSession:
         self._lifecycle_future = asyncio.run_coroutine_threadsafe(
             self._lifecycle_coro(), loop
         )
-        if not self._ready_event.wait(timeout=15.0):
+        if not self._ready_event.wait(timeout=30.0):
             # Best-effort: signal shutdown if the future is still alive.
             self._signal_shutdown_locked()
-            raise RuntimeError("cua-driver session never reached ready (timeout 15s)")
+            raise RuntimeError("cua-driver session never reached ready (timeout 30s)")
         # If setup failed, the lifecycle coroutine set _setup_error
         # before setting _ready_event. Re-raise it on the caller's thread.
         if self._setup_error is not None:

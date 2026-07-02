@@ -1,7 +1,11 @@
 """Tests for the ChatCompletionsTransport."""
 
-import pytest
+import json
 from types import SimpleNamespace
+
+import httpx
+import pytest
+from openai import OpenAI
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
@@ -1164,3 +1168,149 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestPromptCacheKeyCapability:
+    """Chat Completions cache routing is opt-in and body-safe."""
+
+    @staticmethod
+    def _messages(instructions="You are stable."):
+        return [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": "hello"},
+        ]
+
+    @staticmethod
+    def _tools(name="lookup"):
+        return [{
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "Look something up.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+
+    def _request_body(self, kwargs, *, stream=False):
+        captured = {}
+
+        def handler(request):
+            captured.update(json.loads(request.content))
+            if stream:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        'data: {"id":"chatcmpl_1","object":"chat.completion.chunk",'
+                        '"choices":[{"index":0,"delta":{"content":"ok"},'
+                        '"finish_reason":null}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ),
+                )
+            return httpx.Response(200, json={
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": kwargs["model"],
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+            })
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+            client = OpenAI(
+                api_key="test-key",
+                base_url="https://cache-capable.test/v1",
+                http_client=http_client,
+            )
+            result = client.chat.completions.create(**kwargs, stream=stream)
+            if stream:
+                list(result)
+        return captured
+
+    def test_profile_capability_emits_content_key_in_nonstream_request_body(self, transport):
+        from providers.base import ProviderProfile
+
+        kwargs = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:00:00Z",
+            provider_profile=ProviderProfile(
+                name="cache-capable", supports_prompt_cache_key=True,
+            ),
+        )
+
+        body = self._request_body(kwargs)
+
+        assert body["prompt_cache_key"].startswith("pck_")
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    def test_legacy_capability_emits_same_key_in_streaming_request_body(self, transport):
+        kwargs = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:05:00Z",
+            supports_prompt_cache_key=True,
+        )
+
+        body = self._request_body(kwargs, stream=True)
+
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    @pytest.mark.parametrize("provider", [None, "anthropic", "custom"])
+    def test_default_off_never_leaks_unknown_body_field(self, transport, provider):
+        from providers import get_provider_profile
+
+        kwargs = transport.build_kwargs(
+            model="strict-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:00:00Z",
+            provider_profile=(get_provider_profile(provider) if provider else None),
+        )
+
+        body = self._request_body(kwargs)
+
+        assert "prompt_cache_key" not in kwargs
+        assert "prompt_cache_key" not in body
+
+    def test_explicit_top_level_and_extra_body_overrides_are_preserved(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        top_level = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": "caller-top-level"},
+        )
+        in_extra_body = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"extra_body": {"prompt_cache_key": "caller-extra-body"}},
+        )
+
+        assert top_level["prompt_cache_key"] == "caller-top-level"
+        assert "prompt_cache_key" not in top_level.get("extra_body", {})
+        assert "prompt_cache_key" not in in_extra_body
+        assert in_extra_body["extra_body"]["prompt_cache_key"] == "caller-extra-body"
+
+    def test_cron_ids_share_static_prefix_key_and_content_changes_invalidate(self, transport):
+        def key(session_id, *, instructions="You are stable.", tool_name="lookup"):
+            return transport.build_kwargs(
+                model="cache-model",
+                messages=self._messages(instructions),
+                tools=self._tools(tool_name),
+                session_id=session_id,
+                supports_prompt_cache_key=True,
+            )["prompt_cache_key"]
+
+        first = key("cron_job_2026-07-15T10:00:00Z")
+        second = key("cron_job_2026-07-15T10:05:00Z")
+
+        assert first == second
+        assert first != key("cron_job_2026-07-15T10:05:00Z", instructions="You are different.")
+        assert first != key("cron_job_2026-07-15T10:05:00Z", tool_name="search")

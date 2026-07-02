@@ -9,6 +9,7 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import json
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -16,6 +17,56 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
+    """Return the stable system/developer prefix used for cache routing.
+
+    Chat Completions carries instructions in its message list rather than a
+    separate ``instructions`` field.  Only a leading system/developer message
+    is static by contract; later messages are conversation state and must not
+    split a warm prefix bucket on every turn.
+    """
+    if not messages or not isinstance(messages[0], dict):
+        return ""
+    first = messages[0]
+    if first.get("role") not in {"system", "developer"}:
+        return ""
+    content = first.get("content")
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(content or "")
+
+
+def _add_prompt_cache_key(
+    api_kwargs: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    supports_prompt_cache_key: bool,
+) -> None:
+    """Add a content-addressed key only for an explicitly capable endpoint."""
+    if not supports_prompt_cache_key:
+        return
+
+    # An explicit caller body field is authoritative too.  Do not add a
+    # duplicate top-level field whose SDK merge precedence could overwrite it.
+    extra_body = api_kwargs.get("extra_body")
+    if "prompt_cache_key" in api_kwargs or (
+        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
+    ):
+        return
+
+    # Reuse the Responses transport's single authoritative hash algorithm so
+    # equivalent static prefixes route to the same cache bucket across modes.
+    from agent.transports.codex import _content_cache_key
+
+    cache_key = _content_cache_key(_static_prompt_instructions(messages), tools)
+    if cache_key:
+        api_kwargs["prompt_cache_key"] = cache_key
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -324,6 +375,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             extra_body_additions: dict | None
+            supports_prompt_cache_key: bool — explicit endpoint capability for
+                the top-level Chat Completions request field; defaults off.
         """
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
@@ -506,6 +559,13 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")),
+        )
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -647,6 +707,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 }
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
+
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(profile.supports_prompt_cache_key),
+        )
 
         return api_kwargs
 

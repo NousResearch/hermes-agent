@@ -474,6 +474,151 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_tiered_skills_render_hot_warm_and_cold_names_only(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent import skill_utils
+        skill_utils._external_dirs_cache_clear()
+
+        (tmp_path / "config.yaml").write_text(
+            """
+skills:
+  tiers:
+    enabled: true
+    hot:
+      - hermes-agent
+    warm:
+      - obsidian-memory-graph-protocol
+    cold:
+      - godmode
+""".strip(),
+            encoding="utf-8",
+        )
+        specs = [
+            ("autonomous-ai-agents", "hermes-agent", "Hermes config help"),
+            ("note-taking", "obsidian-memory-graph-protocol", "Graph receipts"),
+            ("red-teaming", "godmode", "Red team prompts"),
+            ("creative", "pixel-art", "Pixel art workflows"),
+        ]
+        for cat, name, desc in specs:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n",
+                encoding="utf-8",
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "## Skills (tiered)" in result
+        assert "hermes-agent: Hermes config help" in result
+        assert "<warm_skills>" in result
+        assert "obsidian-memory-graph-protocol: Graph receipts" in result
+        # Unknown/unlisted enabled skills default warm, not cold.
+        assert "pixel-art: Pixel art workflows" in result
+        # Cold skills keep their names in the index but lose descriptions.
+        assert "<cold_skills>" in result
+        assert "godmode" in result
+        assert "Red team prompts" not in result
+        assert "Cold skills remain visible by name only" in result
+        assert "skill_view" in result
+
+    def test_tiered_skills_preserve_compact_category_contract(self, monkeypatch, tmp_path):
+        """Tiering must not undo names-only compaction for any tier."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent import skill_utils
+        skill_utils._external_dirs_cache_clear()
+
+        (tmp_path / "config.yaml").write_text(
+            """
+skills:
+  tiers:
+    enabled: true
+    hot: [hot-skill]
+    warm: [warm-skill]
+    cold: [cold-skill]
+""".strip(),
+            encoding="utf-8",
+        )
+        specs = [
+            ("hot-skill", "Hot description"),
+            ("warm-skill", "Warm description"),
+            ("cold-skill", "Cold description"),
+        ]
+        for name, desc in specs:
+            d = tmp_path / "skills" / "social-media" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n",
+                encoding="utf-8",
+            )
+
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+
+        assert "social-media [names only]: cold-skill, hot-skill, warm-skill" in result
+        for name, desc in specs:
+            assert name in result
+            assert desc not in result
+        # Demoted entries are rendered once through the compact path, not
+        # duplicated into the warm/cold tier blocks.
+        assert "<warm_skills>" not in result
+        assert "<cold_skills>" not in result
+
+    def test_skill_tiers_disabled_preserves_full_index(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent import skill_utils
+        skill_utils._external_dirs_cache_clear()
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  tiers:\n    enabled: false\n    cold: [godmode]\n",
+            encoding="utf-8",
+        )
+        d = tmp_path / "skills" / "red-teaming" / "godmode"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: godmode\ndescription: Red team prompts\n---\n",
+            encoding="utf-8",
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "## Skills (mandatory)" in result
+        assert "godmode: Red team prompts" in result
+        assert "## Skills (tiered)" not in result
+
+    def test_skill_tier_config_is_part_of_prompt_cache_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent import skill_utils
+        skill_utils._external_dirs_cache_clear()
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n  tiers:\n    enabled: true\n    hot: [hermes-agent]\n",
+            encoding="utf-8",
+        )
+        d = tmp_path / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Hermes config help\n---\n",
+            encoding="utf-8",
+        )
+
+        hot = build_skills_system_prompt()
+        assert "hermes-agent: Hermes config help" in hot
+        assert "<warm_skills>" not in hot
+
+        config_path.write_text(
+            "skills:\n  tiers:\n    enabled: true\n    warm: [hermes-agent]\n",
+            encoding="utf-8",
+        )
+        import os
+        os.utime(config_path, None)
+
+        warm = build_skills_system_prompt()
+        assert "<warm_skills>" in warm
+        assert "- hermes-agent: Hermes config help" in warm
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

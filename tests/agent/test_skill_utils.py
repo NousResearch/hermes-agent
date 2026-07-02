@@ -6,6 +6,7 @@ from agent.skill_utils import (
     extract_skill_conditions,
     get_disabled_skill_names,
     get_external_skills_dirs,
+    get_skill_tiers,
     is_excluded_skill_path,
     is_external_skill_path,
     is_skill_support_path,
@@ -237,6 +238,77 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert found == [scripts_skill / "SKILL.md", templates_skill / "SKILL.md"]
     assert is_skill_support_path(scripts_skill / "SKILL.md") is False
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
+
+
+def test_get_skill_tiers_defaults_disabled(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert get_skill_tiers() == {
+        "enabled": False,
+        "hot": set(),
+        "warm": set(),
+        "cold": set(),
+    }
+
+
+def test_get_skill_tiers_normalizes_config_values(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """
+skills:
+  tiers:
+    enabled: "true"
+    hot: hermes-agent
+    warm:
+      - writing-plans
+      - bounded-build-loop
+    cold:
+      - godmode
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert get_skill_tiers() == {
+        "enabled": True,
+        "hot": {"hermes-agent"},
+        "warm": {"writing-plans", "bounded-build-loop"},
+        "cold": {"godmode"},
+    }
+
+
+def test_get_skill_tiers_cache_invalidates_on_config_edit(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "skills:\n  tiers:\n    enabled: true\n    hot: [old-hot]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert get_skill_tiers()["hot"] == {"old-hot"}
+
+    config_path.write_text(
+        "skills:\n  tiers:\n    enabled: true\n    hot: [new-hot]\n",
+        encoding="utf-8",
+    )
+    import os
+    os.utime(config_path, None)
+
+    assert get_skill_tiers()["hot"] == {"new-hot"}
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

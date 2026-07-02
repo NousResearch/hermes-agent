@@ -392,6 +392,50 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def get_skill_tiers() -> Dict[str, Any]:
+    """Read optional skill-tier rendering config from config.yaml.
+
+    ``skills.tiers`` is a prompt-rendering hint, not an access-control
+    mechanism. It only changes how the default skills index is displayed;
+    ``skill_view`` / ``skills_list`` stay able to reach every enabled skill.
+
+    Shape::
+
+        skills:
+          tiers:
+            enabled: true
+            hot: [hermes-agent]
+            warm: [writing-plans]
+            cold: [godmode]
+
+    Missing or malformed config returns the safe disabled default.
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return {"enabled": False, "hot": set(), "warm": set(), "cold": set()}
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return {"enabled": False, "hot": set(), "warm": set(), "cold": set()}
+
+    tiers_cfg = skills_cfg.get("tiers")
+    if not isinstance(tiers_cfg, dict):
+        return {"enabled": False, "hot": set(), "warm": set(), "cold": set()}
+
+    enabled_raw = tiers_cfg.get("enabled", False)
+    if isinstance(enabled_raw, str):
+        enabled = enabled_raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(enabled_raw)
+
+    return {
+        "enabled": enabled,
+        "hot": _normalize_string_set(tiers_cfg.get("hot")),
+        "warm": _normalize_string_set(tiers_cfg.get("warm")),
+        "cold": _normalize_string_set(tiers_cfg.get("cold")),
+    }
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

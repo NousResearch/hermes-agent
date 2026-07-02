@@ -683,6 +683,25 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Optional prompt-rendering tiers. This only changes the default skills index
+  # injected into the system prompt; it does not disable skills. skills_list and
+  # skill_view can still load every enabled skill, including cold skills.
+  #
+  # enabled: false keeps the classic full skills index.
+  # hot: shown normally in the system prompt.
+  # warm: listed as compact reminders; unknown skills also default to warm when
+  #       tiers are enabled, so new skills are not silently hidden.
+  # cold: names remain visible, but descriptions are omitted to save context.
+  # tiers:
+  #   enabled: false
+  #   hot:
+  #     - hermes-agent
+  #   warm:
+  #     - github-operations
+  #     - writing-plans
+  #   cold:
+  #     - pixel-art
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

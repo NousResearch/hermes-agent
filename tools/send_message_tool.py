@@ -1719,7 +1719,12 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
+            # Respect markdown_support config (msg_type 2 = markdown)
+            use_markdown = bool(extra.get("markdown_support", True))
+            if use_markdown:
+                payload = {"msg_type": 2, "markdown": {"content": message[:4000]}}
+            else:
+                payload = {"content": message[:4000], "msg_type": 0}
 
             # Try channel endpoint first (works for guild channels)
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"

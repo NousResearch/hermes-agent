@@ -1059,17 +1059,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _parse_list_windows_entries(raw_windows)
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
 
@@ -1464,15 +1454,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _parse_list_windows_entries(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

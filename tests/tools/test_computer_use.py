@@ -1542,6 +1542,45 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 100
 
 
+class TestListWindowsNullIds56704:
+    """Linux/WSL list_windows can return null pid/window_id for panel windows."""
+
+    def test_capture_skips_null_ids_and_targets_real_window(self):
+        windows = [
+            {"app_name": "wl-panel", "pid": None, "window_id": 99,
+             "is_on_screen": True, "title": "panel", "z_index": 10},
+            {"app_name": "Terminal", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "bash", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Terminal — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        backend.capture(mode="ax", app=None)
+
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 7
+
+    def test_focus_app_skips_null_ids(self):
+        windows = [
+            {"app_name": "wl-panel", "pid": None, "window_id": 99,
+             "is_on_screen": True, "title": "panel", "z_index": 10},
+            {"app_name": "Terminal", "pid": 100, "window_id": 7,
+             "is_on_screen": True, "title": "bash", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("Terminal")
+
+        assert res.ok is True
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 7
+
+
 class TestFocusAppFilterNoMatch:
     """focus_app(app=X) must return ok=False when X matches nothing —
     not silently target the frontmost window and report ok=True with a

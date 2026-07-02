@@ -382,6 +382,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi")
         'mimo-v2.5-pro'
+
+        >>> normalize_model_for_provider("gemini-3.1-flash-lite", "vertex")
+        'google/gemini-3.1-flash-lite'
+
+        >>> normalize_model_for_provider("google/gemini-3-pro-preview", "vertex")
+        'google/gemini-3-pro-preview'
     """
     name = (model_input or "").strip()
     if not name:
@@ -458,6 +464,17 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         if provider in _LOWERCASE_MODEL_PROVIDERS:
             result = result.lower()
         return result
+
+    # --- Vertex AI: requires 'google/' publisher prefix ---
+    # Bare names like "gemini-3.1-flash-lite" must become
+    # "google/gemini-3.1-flash-lite".  A "vertex/" prefix (e.g. copied from
+    # an old config) is stripped first.  Names already carrying "google/"
+    # are returned unchanged.
+    if provider == "vertex":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if bare.startswith("google/"):
+            return bare
+        return f"google/{bare}"
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:

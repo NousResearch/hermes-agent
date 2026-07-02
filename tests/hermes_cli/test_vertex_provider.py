@@ -98,3 +98,52 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+
+# ---------------------------------------------------------------------------
+# Model name normalization for Vertex AI
+# ---------------------------------------------------------------------------
+
+
+class TestVertexModelNormalization:
+    """Vertex AI requires the 'google/' publisher prefix on all model IDs."""
+
+    @pytest.mark.parametrize(
+        "model_input, expected",
+        [
+            ("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+            ("gemini-2.5-pro", "google/gemini-2.5-pro"),
+            ("gemini-3-flash-preview", "google/gemini-3-flash-preview"),
+        ],
+        ids=["flash-lite", "pro", "flash-preview"],
+    )
+    def test_bare_name_gets_google_prefix(self, model_input, expected):
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        assert normalize_model_for_provider(model_input, "vertex") == expected
+
+    @pytest.mark.parametrize(
+        "model_input",
+        [
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-2.5-pro",
+            "google/gemini-3-pro-preview",
+        ],
+        ids=["flash-lite", "pro", "pro-preview"],
+    )
+    def test_already_prefixed_unchanged(self, model_input):
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        assert normalize_model_for_provider(model_input, "vertex") == model_input
+
+    def test_vertex_prefix_stripped_then_google_added(self):
+        """'vertex/gemini-2.5-flash' → strip 'vertex/' → add 'google/'."""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        assert normalize_model_for_provider("vertex/gemini-2.5-flash", "vertex") == "google/gemini-2.5-flash"
+
+    def test_empty_input_returns_empty(self):
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        assert normalize_model_for_provider("", "vertex") == ""
+        assert normalize_model_for_provider(None, "vertex") == ""

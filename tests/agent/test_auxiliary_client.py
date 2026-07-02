@@ -1523,7 +1523,13 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is fake_client
         assert model == "openai/gpt-5.4-mini"
-        assert mock_resolve.call_count == 1
+        # A DIFFERENT model resolves its own client (model participates in the
+        # cache key). This isolation is what stops two concurrent advisors on
+        # the same provider/base_url/key (e.g. a MoA fan-out) from sharing — and
+        # racing the lifecycle of — one cached client. Same-model reuse is still
+        # a single resolve (verified elsewhere); distinct models => distinct
+        # resolves.
+        assert mock_resolve.call_count == 2
 
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
@@ -2581,6 +2587,8 @@ class TestTransientTransportRetry:
         p1, p2, p3 = self._patches(primary)
         with (
             p1, p2, p3,
+            patch("agent.auxiliary_client._transient_retry_count", return_value=1),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
             patch(
                 "agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
@@ -2592,7 +2600,7 @@ class TestTransientTransportRetry:
         ):
             result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"fallback": True}
-        # Primary tried twice (initial + same-target retry), then fallback.
+        # Primary tried twice (initial + one same-target retry), then fallback.
         assert primary.chat.completions.create.call_count == 2
         assert fb_client.chat.completions.create.call_count == 1
 

@@ -235,3 +235,46 @@ def test_moa_provider_rejected_case_insensitive():
 
     assert cfg["presets"]["p"]["aggregator"]["provider"] != "moa"
     assert cfg["presets"]["p"]["aggregator"] == DEFAULT_MOA_AGGREGATOR
+
+
+def _preset(**extra):
+    base = {
+        "reference_models": [{"provider": "openrouter", "model": "anthropic/claude-opus-4.8"}],
+        "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    }
+    base.update(extra)
+    return {"default_preset": "p", "presets": {"p": base}}
+
+
+def test_reference_max_tokens_defaults_to_none_uncapped():
+    """Unset reference_max_tokens resolves to None (no cap) so existing presets
+    keep their prior uncapped advisor behavior — no silent regression."""
+    p = resolve_moa_preset(_preset(), "p")
+    assert p["reference_max_tokens"] is None
+
+
+def test_reference_max_tokens_positive_value_preserved():
+    """A positive cap flows through resolve_moa_preset to the runtime path."""
+    p = resolve_moa_preset(_preset(reference_max_tokens=600), "p")
+    assert p["reference_max_tokens"] == 600
+
+
+def test_reference_max_tokens_invalid_falls_back_to_none():
+    """Non-positive / non-numeric caps degrade to None (uncapped) rather than
+    clamping advisors to a nonsense value or crashing."""
+    for bad in (0, -5, "abc", "", None):
+        p = resolve_moa_preset(_preset(reference_max_tokens=bad), "p")
+        assert p["reference_max_tokens"] is None, bad
+
+
+def test_reference_max_tokens_string_number_coerced():
+    """A hand-edited config.yaml string like '600' coerces to int."""
+    p = resolve_moa_preset(_preset(reference_max_tokens="600"), "p")
+    assert p["reference_max_tokens"] == 600
+
+
+def test_reference_max_tokens_in_flattened_view():
+    """The flattened compatibility view (dashboard/desktop callers) exposes the
+    active preset's reference_max_tokens."""
+    cfg = normalize_moa_config(_preset(reference_max_tokens=750))
+    assert cfg["reference_max_tokens"] == 750

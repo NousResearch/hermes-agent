@@ -11782,6 +11782,12 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([c, desc])
 
         for name, desc, cat in _TUI_EXTRA:
+            # ``pairs`` are concrete commands; aliases live only in ``canon``.
+            # If a registry alias now owns the same slash text (for example
+            # /compact -> /compress), emitting a TUI extra with that name makes
+            # the catalog internally inconsistent for clients that merge both.
+            if canon.get(name.lower(), name) != name:
+                continue
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []

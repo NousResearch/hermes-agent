@@ -4557,6 +4557,21 @@ def test_commands_catalog_includes_tui_mouse_command():
     assert "/mouse" in tui_pairs
 
 
+def test_commands_catalog_does_not_list_alias_collisions_as_pairs():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+    canon = resp["result"]["canon"]
+
+    assert canon["/compact"] == "/compress"
+    assert "/compact" not in pairs
+    assert "/compact" not in tui_pairs
+
+
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

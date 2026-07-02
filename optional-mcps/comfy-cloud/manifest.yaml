@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: comfy-cloud
+description: Generate images, video, audio, and 3D on Comfy Cloud — ComfyUI workflows, templates, and partner models (Flux, Kling, Veo, ...).
+source: https://docs.comfy.org/agent-tools/cloud
+
+# Comfy Cloud ships a hosted remote MCP server (Streamable HTTP) with native
+# MCP OAuth 2.1 + Dynamic Client Registration — same shape as the linear
+# entry. Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE,
+# token exchange, and refresh — nothing to install locally.
+transport:
+  type: http
+  url: https://cloud.comfy.org/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth (case 1), not a third-party provider
+  # like Google. The MCP client triggers the browser flow on the first
+  # probe / first connect.
+
+# Tool selection at install time:
+# The server exposes ~30 tools across generation (partner_generate,
+# submit_workflow, run_template), job lifecycle (get_job_status, wait_for_job,
+# get_output), asset handling (upload_file, use_previous_output), and
+# discovery (search_templates / search_models / search_nodes). We leave
+# `default_enabled` unset so the install-time checklist starts with
+# everything pre-checked — users prune what they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with your
+  Comfy account. After auth, restart your Hermes session so the Comfy Cloud
+  tools are loaded.
+
+  Discovery tools (search_templates / search_models / search_nodes) work with
+  any Comfy account. Generation tools run on Comfy Cloud and consume credits,
+  so they need a subscription or credit balance — see
+  https://www.comfy.org/cloud for plans.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure comfy-cloud

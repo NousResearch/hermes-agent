@@ -5276,3 +5276,150 @@ class TestDeviceIdRecoveryOnReconnect:
         assert None not in _verify_call.args[0]["@bot:example.org"]
 
         await adapter.disconnect()
+
+
+class TestEncryptionRecoveryOnReconnect:
+    """_encryption must reset to the config-derived value on every connect()
+    call, same as _device_id_unverified — a transient E2EE setup failure must
+    not permanently disable encryption for the adapter's lifetime."""
+
+    @staticmethod
+    def _basic_mock_client():
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123")
+        )
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.crypto = None
+        mock_client.sync_store = mock_sync_store
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}, "next_batch": "s1"})
+        mock_client.get_account_data = AsyncMock(return_value=MagicMock(content={}))
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_flag_recovers_when_second_connect_has_deps(self):
+        """Same adapter: first connect hits a transient _check_e2ee_deps
+        failure (_encryption downgraded to False); second connect must get a
+        fresh attempt, not inherit the stale False from the first."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "e2ee_mode": "optional",
+            },
+        )
+        adapter = MatrixAdapter(config)
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        # --- first connect: deps check fails (transient) → downgraded ---
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=self._basic_mock_client()
+        )
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(matrix_mod, "_create_matrix_session", return_value=MagicMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result1 = await adapter.connect()
+
+        assert result1 is True
+        assert adapter._encryption is False
+        await adapter.disconnect()
+
+        # --- second connect (same adapter instance): deps now available →
+        #     _encryption must be back to True, the config-derived value,
+        #     not stuck at the first connect's downgraded False. Full
+        #     working E2EE mock (mirrors test_connect_with_access_token_and_
+        #     encryption) since this connect now actually reaches the crypto
+        #     setup + device-key-verification path.
+        mock_client2 = MagicMock()
+        mock_client2.mxid = "@bot:example.org"
+        mock_client2.device_id = None
+        mock_client2.state_store = MagicMock()
+        mock_client2.sync_store = MagicMock()
+        mock_client2.crypto = None
+        mock_client2.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123")
+        )
+        mock_client2.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client2.add_event_handler = MagicMock()
+        mock_client2.handle_sync = MagicMock(return_value=[])
+        mock_client2.query_keys = AsyncMock(return_value=MagicMock(device_keys={
+            "@bot:example.org": {"DEV123": MagicMock(keys={"ed25519:DEV123": "fake_ed25519_key"})},
+        }))
+        mock_client2.api = MagicMock()
+        mock_client2.api.token = "syt_test_access_token"
+        mock_client2.api.session = MagicMock()
+        mock_client2.api.session.close = AsyncMock()
+
+        mock_olm2 = MagicMock()
+        mock_olm2.load = AsyncMock()
+        mock_olm2.share_keys = AsyncMock()
+        mock_olm2.share_keys_min_trust = None
+        mock_olm2.send_keys_min_trust = None
+        mock_olm2.account = MagicMock()
+        mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client2)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result2 = await adapter.connect(is_reconnect=True)
+
+        assert result2 is True
+        assert adapter._encryption is True
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_encryption_off_stays_off_across_reconnect(self):
+        """Regression guard: e2ee_mode=off must not be "recovered" into True
+        by the reset — the reset restores the CONFIG-derived value, not a
+        hardcoded True."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": False,
+            },
+        )
+        adapter = MatrixAdapter(config)
+        assert adapter._encryption is False
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=self._basic_mock_client()
+        )
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(matrix_mod, "_create_matrix_session", return_value=MagicMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        result = await adapter.connect()
+
+        assert result is True
+        assert adapter._encryption is False

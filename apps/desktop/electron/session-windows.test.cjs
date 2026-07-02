@@ -4,7 +4,10 @@ const test = require('node:test')
 const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
-  createSessionWindowRegistry
+  createSessionWindowRegistry,
+  secondaryWindowSize,
+  SESSION_WINDOW_MIN_HEIGHT,
+  SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -196,4 +199,33 @@ test('chatWindowWebPreferences passes the preload path through and keeps the har
   assert.equal(prefs.contextIsolation, true)
   assert.equal(prefs.sandbox, true)
   assert.equal(prefs.nodeIntegration, false)
+})
+
+test('secondaryWindowSize inherits the parent size when it is above the minimum', () => {
+  const size = secondaryWindowSize({ width: 1400, height: 900 })
+
+  assert.deepEqual(size, { width: 1400, height: 900 })
+})
+
+test('secondaryWindowSize clamps a smaller parent up to the minimum on each axis', () => {
+  const size = secondaryWindowSize({ width: 300, height: 1000 })
+
+  assert.equal(size.width, SESSION_WINDOW_MIN_WIDTH)
+  assert.equal(size.height, 1000)
+})
+
+test('secondaryWindowSize falls back to the minimum when no source size is given', () => {
+  assert.deepEqual(secondaryWindowSize(undefined), {
+    width: SESSION_WINDOW_MIN_WIDTH,
+    height: SESSION_WINDOW_MIN_HEIGHT
+  })
+})
+
+test('secondaryWindowSize coerces non-finite dimensions to the minimum', () => {
+  const size = secondaryWindowSize({ width: NaN, height: undefined })
+
+  assert.deepEqual(size, {
+    width: SESSION_WINDOW_MIN_WIDTH,
+    height: SESSION_WINDOW_MIN_HEIGHT
+  })
 })

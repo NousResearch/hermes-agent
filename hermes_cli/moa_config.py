@@ -42,6 +42,24 @@ def _coerce_int(value: Any, default: int) -> int:
             return default
 
 
+def _coerce_int_or_none(value: Any) -> int | None:
+    """Coerce to a positive int, or None when unset/blank/invalid/non-positive.
+
+    Used for optional caps (e.g. reference_max_tokens) where None means
+    'no cap' — the safe default that preserves prior uncapped behavior.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return n if n > 0 else None
+
+
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
@@ -66,6 +84,7 @@ def _default_preset() -> dict[str, Any]:
         "reference_temperature": 0.6,
         "aggregator_temperature": 0.4,
         "max_tokens": 4096,
+        "reference_max_tokens": None,
         "enabled": True,
     }
 
@@ -94,6 +113,15 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Optional cap on how much each reference ADVISOR may generate per turn.
+        # None (default) = uncapped: advisors write full-length advice, matching
+        # prior behavior so existing presets are unchanged. Set a value (e.g.
+        # 600) to make advisors give concise advice — the dominant MoA latency
+        # is advisor generation (turn latency correlates ~0.88 with output
+        # tokens), and the aggregator only needs the gist of each advisor's
+        # judgement, so capping roughly halves per-turn wall time. Does NOT cap
+        # the acting aggregator (its output is the user-visible answer).
+        "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
     }
 
 
@@ -139,6 +167,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active.get("reference_max_tokens"),
         "enabled": active["enabled"],
     }
 

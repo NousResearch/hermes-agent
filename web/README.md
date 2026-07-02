@@ -39,17 +39,81 @@ This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a 
 
 ```
 src/
-├── components/ui/   # Reusable UI primitives (Card, Badge, Button, Input, etc.)
-├── lib/
-│   ├── api.ts       # API client — typed fetch wrappers for all backend endpoints
-│   └── utils.ts     # cn() helper for Tailwind class merging
-├── pages/
-│   ├── StatusPage   # Agent status, active/recent sessions
-│   ├── ConfigPage   # Dynamic config editor (reads schema from backend)
-│   └── EnvPage      # API key management with save/clear
-├── App.tsx          # Main layout and navigation
-├── main.tsx         # React entry point
-└── index.css        # Tailwind imports and theme variables
+├── components/              # Shared UI components used across pages
+│   ├── AuthWidget           # OAuth "logged in as" sidebar affordance
+│   ├── AutoField            # Dynamic form field renderer (select/switch/input)
+│   ├── AutomationBlueprints # Automation blueprint browser and launcher
+│   ├── ChatSessionList      # Conversation switcher for the Chat tab
+│   ├── ChatSidebar          # Structured-events panel next to the terminal
+│   ├── LanguageSwitcher     # Locale selector dropdown
+│   ├── Markdown             # Lightweight LLM output renderer
+│   ├── ModelInfoCard        # Model capability and metadata card
+│   ├── ModelPickerDialog    # Fuzzy model search and selection dialog
+│   ├── OAuthLoginModal      # OAuth device-flow login modal
+│   ├── OAuthProvidersCard   # OAuth provider status and management
+│   ├── PlatformsCard        # Connected platform status card with connectivity badges
+│   ├── ProfileScopeBanner   # Amber banner shown when a non-default management profile is active
+│   ├── ProfileSwitcher      # Management profile selector
+│   ├── ReasoningPicker      # Model reasoning effort selector
+│   ├── ScheduleBuilder      # Cron schedule builder UI
+│   ├── SidebarFooter        # Sidebar bottom status and version info
+│   ├── SidebarStatusStrip   # Agent status strip in sidebar
+│   ├── SkillEditorDialog    # Skill create and edit dialog
+│   ├── SlashPopover         # Slash command autocomplete popover
+│   ├── ThemeSwitcher        # Theme and font override picker
+│   ├── ToolCall             # Tool call result display with expand/collapse
+│   └── ToolsetConfigDrawer  # Toolset enable/disable configuration drawer
+├── contexts/                # React contexts and their hooks
+│   ├── PageHeaderProvider   # Page title injection into the app shell header
+│   ├── ProfileProvider      # Active management profile scope
+│   └── SystemActions        # Global system action dispatch and toast feedback
+├── hooks/                   # Standalone React hooks
+│   ├── useModalBehavior     # Escape-key and focus trap for modals
+│   └── useSidebarStatus     # Polling hook for agent status strip
+├── i18n/                    # Internationalisation — 18 locales
+│   ├── types.ts             # Translations interface and Locale union type
+│   ├── context.tsx          # I18nProvider and useI18n hook
+│   └── *.ts                 # Per-locale translation maps (en, zh, ja, ru …)
+├── lib/                     # Pure utilities and API layer
+│   ├── api.ts               # Typed fetch wrappers for all backend endpoints
+│   ├── cron-job.ts          # Cron job form state types and mutation payload helpers
+│   ├── gatewayClient.ts     # WebSocket client for tui_gateway JSON-RPC
+│   ├── fuzzy.ts             # Subsequence scorer for picker filtering
+│   ├── reasoning-effort.ts  # Reasoning-effort normalisation helpers
+│   ├── schedule.ts          # Cron schedule builder helpers
+│   └── utils.ts             # cn() and themedBody helpers for Tailwind
+├── pages/                   # Route-level page components
+│   ├── AnalyticsPage        # Usage analytics and token stats
+│   ├── ChannelsPage         # Notification channel management
+│   ├── ChatPage             # Embedded hermes --tui terminal
+│   ├── ConfigPage           # Dynamic config editor (reads schema from backend)
+│   ├── CronPage             # Scheduled job management
+│   ├── DocsPage             # Documentation viewer
+│   ├── EnvPage              # API key management with save/clear
+│   ├── FilesPage            # Working directory file browser
+│   ├── LogsPage             # Agent log viewer
+│   ├── McpPage              # MCP server management
+│   ├── ModelsPage           # Model catalogue and selection
+│   ├── PairingPage          # Device pairing and access management
+│   ├── PluginsPage          # Dashboard plugin management
+│   ├── ProfileBuilderPage   # Profile creation wizard
+│   ├── ProfilesPage         # Profile list and management
+│   ├── SessionsPage         # Active and recent session list
+│   ├── SkillsPage           # Skills browser and editor
+│   ├── SystemPage           # System health and diagnostics
+│   └── WebhooksPage         # Webhook configuration and management
+├── plugins/                 # Dashboard plugin system
+│   ├── registry.ts          # Plugin SDK exposure and component registry
+│   ├── slots.ts             # Named injection slots (header, sidebar, backdrop)
+│   ├── usePlugins.ts        # Hook — fetches manifests and injects plugin bundles
+│   └── sdk.d.ts             # Public type surface for window.__HERMES_PLUGIN_SDK__
+├── themes/                  # Dashboard theming layer
+│   ├── presets.ts           # Built-in theme definitions
+│   ├── fonts.ts             # Curated UI-font catalog for font override
+│   └── context.tsx          # ThemeProvider and useTheme hook
+├── App.tsx                  # Main layout, routing, and navigation
+├── main.tsx                 # React entry point
+└── index.css                # Tailwind imports and theme variables
 ```
 
 ## Typography & contrast rules

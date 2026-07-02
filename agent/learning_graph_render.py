@@ -16,8 +16,12 @@ stdlib-only.
 from __future__ import annotations
 
 import math
+import sys
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
+
+# strftime day-of-month without leading zero: Linux/macOS use %-d, Windows %#d.
+_DAY_FMT = "%#d" if sys.platform == "win32" else "%-d"
 
 # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 LEAD_IN = 0.06
@@ -73,7 +77,9 @@ def format_date(ts: Optional[float]) -> str:
     if not ts:
         return "unknown"
     try:
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%-d %b %Y")
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime(
+            f"{_DAY_FMT} %b %Y"
+        )
     except (ValueError, OSError, OverflowError):
         return "unknown"
 
@@ -255,7 +261,7 @@ def _period_key(ts: float, granularity: str) -> tuple[int, ...]:
 def _period_label(ts: float, granularity: str) -> str:
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     if granularity == "day":
-        return dt.strftime("%-d %b")
+        return dt.strftime(f"{_DAY_FMT} %b")
     if granularity == "month":
         return dt.strftime("%b %Y")
     return dt.strftime("%Y")

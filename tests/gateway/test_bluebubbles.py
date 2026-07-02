@@ -84,6 +84,18 @@ class TestBlueBubblesHelpers:
         assert "".join(chunks) == "abcdefghij"
         assert all("(" not in chunk for chunk in chunks)
 
+    def test_truncate_message_preserves_trailing_fraction_in_single_chunk(self, monkeypatch):
+        # The base splitter only appends a "(i/total)" indicator when it splits
+        # into multiple chunks; a single-chunk reply is returned verbatim. So a
+        # short reply that genuinely ends in a "(N/M)" fraction must keep it —
+        # the pagination-suffix strip only applies to multi-chunk output.
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.truncate_message("The deal closed (5/10)") == ["The deal closed (5/10)"]
+        assert adapter.truncate_message("Progress (1/1)") == ["Progress (1/1)"]
+        assert adapter.truncate_message("Meeting notes\nAgenda item (2/3)") == [
+            "Meeting notes\nAgenda item (2/3)"
+        ]
+
     @pytest.mark.asyncio
     async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

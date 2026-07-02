@@ -176,3 +176,41 @@ async def test_webhook_session_closed_even_when_agent_run_raises(tmp_path):
     )
     assert row["end_reason"] == "webhook_complete"
     store._db.close()
+
+
+def test_peek_session_id_resolves_bound_key(tmp_path):
+    """SessionStore.peek_session_id returns the session_id bound to a key.
+
+    This is the public, lock-held accessor the webhook close path uses to
+    resolve a session row from its key without reaching into the private
+    ``_entries`` dict.  A missing/unknown key returns None (so the close path
+    debug-logs and no-ops rather than closing the wrong row).
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    config = GatewayConfig(
+        platforms={Platform.WEBHOOK: PlatformConfig(enabled=True)}
+    )
+    store = SessionStore(sessions_dir=sessions_dir, config=config)
+
+    adapter = _make_adapter(
+        {"alerts": {"secret": _INSECURE_NO_AUTH, "prompt": "x", "deliver": "log"}}
+    )
+    source = adapter.build_source(
+        chat_id="webhook:alerts:peek-001",
+        chat_name="webhook/alerts",
+        chat_type="webhook",
+        user_id="webhook:alerts",
+        user_name="alerts",
+    )
+    entry = store.get_or_create_session(source)
+    key = store._generate_session_key(source)
+
+    # Known key → the bound session_id.
+    assert store.peek_session_id(key) == entry.session_id
+    # Unknown key and empty key → None (never a wrong-row close).
+    assert store.peek_session_id("no:such:key") is None
+    assert store.peek_session_id("") is None
+    if store._db is not None:
+        store._db.close()
+

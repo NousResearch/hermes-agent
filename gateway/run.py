@@ -18783,26 +18783,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 adapter,
                                 first_response,
                             )
-                            if _first_text:
+                            _first_caption_used = False
+                            if _first_text and not _first_images and not _first_media_files:
                                 await adapter.send(
                                     source.chat_id,
                                     _first_text,
                                     metadata=_status_thread_metadata,
                                 )
                             for _image_url, _alt_text in _first_images or []:
+                                _caption = _alt_text
+                                if _first_text and not _first_caption_used:
+                                    _caption = f"{_first_text}\n{_alt_text}" if _alt_text else _first_text
+                                    _first_caption_used = True
                                 await adapter.send_image(
                                     chat_id=source.chat_id,
                                     image_url=_image_url,
-                                    caption=_alt_text,
+                                    caption=_caption,
                                     metadata=_status_thread_metadata,
                                 )
                             if _first_media_files:
+                                from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
+                                _IMAGE_EXTS_DIRECT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                                _VIDEO_EXTS_DIRECT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
                                 for _media_path, _is_voice in _first_media_files:
-                                    await adapter.send_document(
-                                        chat_id=source.chat_id,
-                                        file_path=_media_path,
-                                        metadata=_status_thread_metadata,
-                                    )
+                                    _caption = _first_text if (_first_text and not _first_caption_used) else None
+                                    if _caption:
+                                        _first_caption_used = True
+                                    _ext = os.path.splitext(_media_path)[1].lower()
+                                    if _should_send_media_as_audio(source.platform, _ext, _is_voice):
+                                        await adapter.send_voice(
+                                            chat_id=source.chat_id,
+                                            audio_path=_media_path,
+                                            caption=_caption,
+                                            metadata=_status_thread_metadata,
+                                        )
+                                    elif _ext in _VIDEO_EXTS_DIRECT:
+                                        await adapter.send_video(
+                                            chat_id=source.chat_id,
+                                            video_path=_media_path,
+                                            caption=_caption,
+                                            metadata=_status_thread_metadata,
+                                        )
+                                    elif _ext in _IMAGE_EXTS_DIRECT:
+                                        await adapter.send_image_file(
+                                            chat_id=source.chat_id,
+                                            image_path=_media_path,
+                                            caption=_caption,
+                                            metadata=_status_thread_metadata,
+                                        )
+                                    else:
+                                        await adapter.send_document(
+                                            chat_id=source.chat_id,
+                                            file_path=_media_path,
+                                            caption=_caption,
+                                            metadata=_status_thread_metadata,
+                                        )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

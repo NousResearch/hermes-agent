@@ -510,8 +510,10 @@ class TestSendMessageTool:
                 return {"ok": True, "ts": "1782986634.727459"}
 
         class _Session:
+            posts = []
+
             def __init__(self, *args, **kwargs):
-                self.posts = []
+                type(self).posts = []
 
             async def __aenter__(self):
                 return self
@@ -520,7 +522,7 @@ class TestSendMessageTool:
                 return False
 
             def post(self, url, *, headers=None, json=None, **kwargs):
-                self.posts.append((url, json))
+                type(self).posts.append((url, json))
                 return _Resp()
 
         upload_client = MagicMock()
@@ -544,11 +546,12 @@ class TestSendMessageTool:
         )
 
         assert result["success"] is True
+        assert _Session.posts == []
         upload_client.files_upload_v2.assert_awaited_once_with(
             channel="CLX6NJKB9",
             file=str(report),
             filename="diameter.csv.gz",
-            initial_comment="",
+            initial_comment="Attached",
             thread_ts="1782982014.696759",
         )
 
@@ -559,14 +562,20 @@ class TestSendMessageTool:
         report.write_text("rows\n", encoding="utf-8")
 
         class _Session:
+            posts = []
+
             def __init__(self, *args, **kwargs):
-                pass
+                type(self).posts = []
 
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_exc):
                 return False
+
+            def post(self, url, *, headers=None, json=None, **kwargs):
+                type(self).posts.append((url, json))
+                raise AssertionError("text post should not run before media upload")
 
         upload_client = MagicMock()
         upload_client.files_upload_v2 = AsyncMock(
@@ -589,6 +598,7 @@ class TestSendMessageTool:
         )
 
         assert result == {"error": "Slack media upload failed: not_in_channel"}
+        assert _Session.posts == []
 
     def test_resolved_matrix_thread_name_preserves_thread_id(self):
         matrix_cfg = SimpleNamespace(

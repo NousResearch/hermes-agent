@@ -1787,8 +1787,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         agent._loop_detected = False
         agent._loop_detected_reason = ""
         agent._active_loop_detector = build_stream_loop_detector(agent)
+        from agent.loop_detector import build_reasoning_loop_detector
+
+        agent._active_reasoning_loop_detector = build_reasoning_loop_detector(agent)
     except Exception:
         agent._active_loop_detector = None
+        agent._active_reasoning_loop_detector = None
 
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
@@ -2155,6 +2159,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+                # Reasoning-trace loop detection (separate detector, looser
+                # thresholds — reasoning legitimately repeats). On a trip, reuse
+                # the same interrupt/abort path as the content detector; the
+                # conversation loop discards the looped partial and re-prompts.
+                _rld = getattr(agent, "_active_reasoning_loop_detector", None)
+                if _rld is not None and not agent._loop_detected and _rld.feed(reasoning_text):
+                    agent._loop_detected = True
+                    agent._loop_detected_reason = "reasoning " + _rld.reason()
+                    agent._interrupt_requested = True
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 

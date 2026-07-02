@@ -1357,6 +1357,19 @@ DEFAULT_CONFIG = {
         "use_zlib_ratio": False,
         "zlib_ratio_threshold": 0.10,
         "max_retries": 2,
+        # Reasoning-trace loop detection: a SEPARATE detector fed <think>/reasoning
+        # tokens (the content detector never sees them). Default ON with looser
+        # thresholds — reasoning legitimately repeats, so only egregious loops
+        # (e.g. Qwen3 cycling a plan for minutes) trip. Env kill-switch:
+        # HERMES_REASONING_LOOP_DETECTION_ENABLED=0.
+        "reasoning": {
+            "enabled": True,
+            "window_chars": 8000,
+            "consecutive_line_threshold": 10,
+            "block_min_lines": 12,
+            "block_repeat_ratio_threshold": 0.35,
+            "check_every_bytes": 1024,
+        },
     },
 
     "larp_detection": {

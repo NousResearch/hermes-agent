@@ -307,10 +307,104 @@ def build_stream_loop_detector(agent: Any = None) -> Optional[StreamLoopDetector
     return StreamLoopDetector(cfg)
 
 
+# ── Reasoning-trace loop detection ────────────────────────────────────────────
+# The content detector is deliberately never fed reasoning/thinking tokens (they
+# are legitimately repetitive). But quantized local reasoners (Qwen3, Gemma) can
+# loop for MINUTES inside the <think> trace — which the content detector can't see
+# and the thinking-timeout doesn't reliably catch. A SECOND detector, fed reasoning
+# deltas with looser (loop-tolerant) thresholds, catches egregious reasoning loops
+# while leaving normal reasoning alone. Same algorithm — validated to trip on real
+# Qwen reasoning loops (block repetition) and pass on varied reasoning.
+REASONING_DEFAULTS = LoopDetectionConfig(
+    enabled=True,
+    window_chars=8000,                  # reasoning traces run longer
+    consecutive_line_threshold=10,      # reasoning revisits ideas; higher bar
+    block_min_lines=12,
+    block_repeat_ratio_threshold=0.35,  # lower => more repetition required to trip
+    check_every_bytes=1024,
+)
+
+
+def _reasoning_env_override_enabled(default: bool) -> bool:
+    v = os.environ.get("HERMES_REASONING_LOOP_DETECTION_ENABLED")
+    if v is None:
+        return default
+    return v.strip().lower() not in _FALSEY
+
+
+def load_reasoning_loop_detection_config(config: Optional[dict] = None) -> LoopDetectionConfig:
+    """Config for the reasoning-trace detector: ``loop_detection.reasoning`` applied
+    over reasoning-tuned defaults (:data:`REASONING_DEFAULTS`). Env
+    ``HERMES_REASONING_LOOP_DETECTION_ENABLED`` wins over the config flag."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            config = {}
+    section: dict = {}
+    if isinstance(config, dict):
+        outer = config.get("loop_detection")
+        if isinstance(outer, dict) and isinstance(outer.get("reasoning"), dict):
+            section = outer["reasoning"]
+
+    d = REASONING_DEFAULTS
+
+    def _num(key: str, default, cast):
+        try:
+            return cast(section.get(key, default))
+        except Exception:
+            return default
+
+    def _flag(key: str, default: bool) -> bool:
+        val = section.get(key, default)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() not in _FALSEY
+        return bool(val)
+
+    return LoopDetectionConfig(
+        enabled=_reasoning_env_override_enabled(_flag("enabled", d.enabled)),
+        window_chars=max(256, _num("window_chars", d.window_chars, int)),
+        consecutive_line_threshold=max(
+            2, _num("consecutive_line_threshold", d.consecutive_line_threshold, int)
+        ),
+        ngram_size=d.ngram_size,
+        distinct_ngram_ratio_threshold=_num(
+            "distinct_ngram_ratio_threshold", d.distinct_ngram_ratio_threshold, float
+        ),
+        entropy_threshold=_num("entropy_threshold", d.entropy_threshold, float),
+        block_min_lines=max(4, _num("block_min_lines", d.block_min_lines, int)),
+        block_repeat_ratio_threshold=_num(
+            "block_repeat_ratio_threshold", d.block_repeat_ratio_threshold, float
+        ),
+        allowed_min_len=d.allowed_min_len,
+        check_every_bytes=max(256, _num("check_every_bytes", d.check_every_bytes, int)),
+        max_retries=d.max_retries,
+    )
+
+
+def build_reasoning_loop_detector(agent: Any = None) -> Optional[StreamLoopDetector]:
+    """Factory for the reasoning-trace detector; ``None`` when disabled (single
+    ``if`` at the call site -> zero hot-path cost when off). Uses a cached
+    ``agent._reasoning_loop_detection_cfg`` if present."""
+    cfg = getattr(agent, "_reasoning_loop_detection_cfg", None) if agent is not None else None
+    if not isinstance(cfg, LoopDetectionConfig):
+        cfg = load_reasoning_loop_detection_config()
+    if not cfg.enabled:
+        return None
+    return StreamLoopDetector(cfg)
+
+
 __all__ = [
     "StreamLoopDetector",
     "StreamLoopDetected",
     "LoopDetectionConfig",
     "load_loop_detection_config",
     "build_stream_loop_detector",
+    "REASONING_DEFAULTS",
+    "load_reasoning_loop_detection_config",
+    "build_reasoning_loop_detector",
 ]

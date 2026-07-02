@@ -472,6 +472,14 @@ def init_agent(
     except Exception:
         agent._loop_detection_cfg = None
 
+    agent._active_reasoning_loop_detector = None
+    try:
+        from agent.loop_detector import load_reasoning_loop_detection_config
+
+        agent._reasoning_loop_detection_cfg = load_reasoning_loop_detection_config()
+    except Exception:
+        agent._reasoning_loop_detection_cfg = None
+
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
     # NOT set _interrupt_requested; it waits for the current tool batch

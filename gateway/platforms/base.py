@@ -2244,8 +2244,22 @@ def resolve_channel_skills(
 # (DMs are operator-only and unaffected) and redacts anything that still
 # looks like a local absolute filesystem path, regardless of why the earlier
 # cleanup missed it.
+#
+# Two follow-up fixes after review:
+#  - (?<![A-Za-z]) before the drive-letter alternative: without it, the bare
+#    `[A-Za-z]:[\\/]` branch matches the "s:/" inside "https://", corrupting
+#    ordinary URLs in group responses (e.g. "https://..." -> "http[file]").
+#    The lookbehind requires the drive letter NOT be preceded by another
+#    letter, so it only fires at a real token boundary.
+#  - {0,6} trailing "space + token" groups: a bare `[^\s...]+` stops at the
+#    first space, which misses the rest of a path when the username itself
+#    contains a space (e.g. "C:\Users\Jane Roe\file.txt" only redacted up
+#    to "Jane", leaving "Roe\file.txt" exposed). Bounded rather than
+#    unbounded so a real leak followed by ordinary prose doesn't consume the
+#    whole message.
 _LOCAL_ABS_PATH_RE = re.compile(
-    r'''(?:[A-Za-z]:[\\/]|~/|/home/|/Users/)[^\s`"']+'''
+    r'''(?:(?<![A-Za-z])[A-Za-z]:[\\/]|~/|/home/|/Users/)'''
+    r'''[^\s`"']+(?:[ \t][^\s`"']+){0,6}'''
 )
 
 

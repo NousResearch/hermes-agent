@@ -1455,6 +1455,66 @@ class TestNativeAttachmentDelivery:
 
 class TestSetupFilesSlashCommand:
     @pytest.mark.asyncio
+    async def test_allowlist_rejects_before_attachment_download(self, adapter, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
+        envelope = _make_chat_envelope(
+            text="",
+            sender_email="mallory@example.com",
+            attachments=[{
+                "contentType": "image/png",
+                "attachmentDataRef": {"resourceName": "spaces/S/messages/M/attachments/A"},
+            }],
+        )
+        msg = envelope["chat"]["messagePayload"]["message"]
+        env = envelope["chat"]["messagePayload"]
+
+        class FakeRunner:
+            def _is_user_authorized(self, source):
+                return False
+
+            async def handle(self, event):
+                return "should not run"
+
+        runner = FakeRunner()
+        adapter._message_handler = runner.handle
+        adapter._build_message_event = AsyncMock()
+        adapter._download_attachment = AsyncMock()
+
+        await adapter._dispatch_message(msg, env)
+
+        adapter._build_message_event.assert_not_called()
+        adapter._download_attachment.assert_not_called()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_allowlist_preserves_legacy_dispatch(self, adapter, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CHAT_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GOOGLE_CHAT_ALLOW_ALL_USERS", raising=False)
+        envelope = _make_chat_envelope(text="hi", sender_email="new@example.com")
+        msg = envelope["chat"]["messagePayload"]["message"]
+        env = envelope["chat"]["messagePayload"]
+        event = MessageEvent(
+            text="hi",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(
+                chat_id="spaces/S",
+                chat_name="DM",
+                chat_type="dm",
+                user_id="new@example.com",
+                user_name="New",
+            ),
+            raw_message=msg,
+            message_id="spaces/S/messages/M",
+        )
+        adapter._build_message_event = AsyncMock(return_value=event)
+
+        await adapter._dispatch_message(msg, env)
+
+        adapter._build_message_event.assert_awaited_once()
+        adapter.handle_message.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
     async def test_slash_command_intercepted_before_agent(self, adapter):
         """/setup-files is bot-side admin, not agent input. The dispatch
         path must short-circuit and not call handle_message."""

@@ -1270,6 +1270,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         Everything else flows to ``handle_message`` as normal.
         """
         try:
+            if not self._sender_authorized_before_side_effects(msg, envelope):
+                logger.info(
+                    "[GoogleChat] rejecting unauthorized sender before attachment/thread processing"
+                )
+                return
+
             event = await self._build_message_event(msg, envelope)
             if event is None:
                 return
@@ -1299,6 +1305,72 @@ class GoogleChatAdapter(BasePlatformAdapter):
             await self.handle_message(event)
         except Exception:
             logger.exception("[GoogleChat] _dispatch_message failed")
+
+    @staticmethod
+    def _google_chat_auth_env_configured() -> bool:
+        def _env_value(name: str) -> str:
+            try:
+                from hermes_cli.config import get_env_value
+                value = get_env_value(name)
+            except Exception:
+                value = None
+            if value is None:
+                value = os.getenv(name, "")
+            return str(value or "").strip()
+
+        if _env_value("GOOGLE_CHAT_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"}:
+            return False
+        return bool(
+            _env_value("GOOGLE_CHAT_ALLOWED_USERS")
+            or _env_value("GATEWAY_ALLOWED_USERS")
+        )
+
+    def _sender_authorized_before_side_effects(
+        self,
+        msg: Dict[str, Any],
+        envelope: Dict[str, Any],
+    ) -> bool:
+        """Check configured allowlists before downloads or thread-state writes.
+
+        ``handle_message()`` performs the normal gateway authorization, but
+        Google Chat has to download attachments and update its persistent
+        thread-count heuristic while building ``MessageEvent``. When an
+        allowlist is configured, reject unauthorized senders before those
+        side effects happen.
+        """
+        if not self._google_chat_auth_env_configured():
+            return True
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            return True
+
+        space = envelope.get("space") or msg.get("space") or {}
+        space_name = space.get("name") or ""
+        space_type = (space.get("type") or space.get("spaceType") or "").upper()
+        chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
+        sender = msg.get("sender") or {}
+        sender_name = sender.get("name") or ""
+        sender_email = sender.get("email") or ""
+        sender_display = sender.get("displayName") or sender_email or sender_name
+        source = self.build_source(
+            chat_id=space_name,
+            chat_name=space.get("displayName") or space.get("name") or "",
+            chat_type=chat_type,
+            user_id=(sender_email or sender_name),
+            user_name=sender_display,
+            user_id_alt=(sender_name or None),
+        )
+        try:
+            return bool(auth_fn(source))
+        except Exception:
+            logger.debug(
+                "[GoogleChat] early auth check raised for sender %s; preserving legacy flow",
+                sender_email or sender_name or "<unknown>",
+                exc_info=True,
+            )
+            return True
 
     async def _handle_setup_files_command(
         self,

@@ -142,6 +142,20 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+def _ignore_dangling_symlinks(directory: str, names: List[str]) -> List[str]:
+    """Return symlink entries in *directory* whose targets no longer exist."""
+    ignored: list[str] = []
+    base = Path(directory)
+    for name in names:
+        path = base / name
+        try:
+            if path.is_symlink() and not path.exists():
+                ignored.append(name)
+        except OSError:
+            ignored.append(name)
+    return ignored
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -167,7 +181,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
     is_default_source = source_resolved == _get_default_hermes_home().resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
-        ignored: list[str] = []
+        ignored: list[str] = _ignore_dangling_symlinks(directory, names)
         for entry in names:
             # Universal exclusions at any depth.
             if (
@@ -1076,7 +1090,12 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                shutil.copytree(
+                    source_skills,
+                    profile_dir / "skills",
+                    dirs_exist_ok=True,
+                    ignore=_ignore_dangling_symlinks,
+                )
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

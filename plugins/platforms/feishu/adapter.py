@@ -4209,6 +4209,9 @@ class FeishuAdapter(BasePlatformAdapter):
             # Gateway auth fail-closes agent access until approval.
             if not self._allowed_group_users:
                 return None
+            # Wildcard "*" means allow all users.
+            if "*" in self._allowed_group_users:
+                return None
             if not (sender_ids and (sender_ids & self._allowed_group_users)):
                 return "dm_policy_rejected"
             return None

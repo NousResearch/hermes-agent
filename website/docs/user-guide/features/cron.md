@@ -283,20 +283,29 @@ By default, delivered cron output is wrapped with a header and footer so the rec
 
 ```
 Cronjob Response: Morning feeds
+(job_id: abc123def456)
 -------------
 
 <agent output here>
 
-Note: The agent cannot see this message, and therefore cannot respond to it.
+To stop or manage this job, send me a new message (e.g. "stop reminder Morning feeds").
 ```
 
-To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
+**Suppress the wrapper for clean output.** When you want the raw agent output without any header, footer, or metadata, set `cron.wrap_response: false` in your config:
 
 ```yaml
 # ~/.hermes/config.yaml
 cron:
   wrap_response: false
 ```
+
+This is useful when:
+- Delivering structured briefs where the header adds noise (e.g. daily summaries, report exports)
+- Integrating cron output with external systems that expect specific formatting
+- Piping cron results to downstream jobs or processing pipelines
+- Delivering to messaging platforms where the header clutters the UX
+
+With wrapping disabled, the agent's output is delivered exactly as-is — no header, footer, or job metadata. The output is still saved locally for audit.
 
 ### Continuable jobs (reply to a cron delivery)
 

@@ -237,3 +237,56 @@ class TestNormalizeCustomProviderEntry:
         }
         result = _normalize_custom_provider_entry(entry, provider_key="bad")
         assert result is None
+
+
+class TestNormalizeDoesNotMutateInput:
+    """The normalizer must not write alias keys into the caller's dict.
+
+    get_compatible_custom_providers and providers_dict_to_custom_providers
+    pass live sub-dicts from load_config_readonly()'s shared cache; an
+    in-place write violates the cache's no-mutation contract and leaks
+    duplicated alias keys into config.yaml via save_config(load_config()).
+    """
+
+    def test_camel_case_entry_is_not_mutated(self):
+        entry = {
+            "name": "x",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKeyEnv": "MY_KEY",
+        }
+        snapshot = dict(entry)
+        result = _normalize_custom_provider_entry(entry, provider_key="x")
+        assert result is not None
+        assert result["base_url"] == "https://api.example.com/v1"
+        assert entry == snapshot
+
+    def test_api_key_env_alias_entry_is_not_mutated(self):
+        entry = {
+            "name": "x",
+            "base_url": "https://api.example.com/v1",
+            "api_key_env": "MY_KEY",
+        }
+        snapshot = dict(entry)
+        result = _normalize_custom_provider_entry(entry, provider_key="x")
+        assert result is not None
+        assert result["key_env"] == "MY_KEY"
+        assert entry == snapshot
+
+    def test_get_compatible_custom_providers_does_not_mutate_config(self):
+        from hermes_cli.config import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": [
+                {
+                    "name": "ollama",
+                    "baseUrl": "https://ollama.example.com/v1",
+                    "apiKeyEnv": "OLLAMA_KEY",
+                }
+            ]
+        }
+        import copy
+
+        snapshot = copy.deepcopy(config)
+        providers = get_compatible_custom_providers(config)
+        assert providers, "entry should normalize successfully"
+        assert config == snapshot

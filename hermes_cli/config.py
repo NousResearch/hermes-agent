@@ -4468,6 +4468,15 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    # Shallow-copy before the alias normalization below writes into the
+    # entry: callers (get_compatible_custom_providers,
+    # providers_dict_to_custom_providers) pass live sub-dicts from
+    # load_config_readonly()'s shared cache, and mutating those both
+    # violates the cache's no-mutation contract and leaks duplicated
+    # alias keys back into config.yaml through any later
+    # save_config(load_config()) round-trip.
+    entry = dict(entry)
+
     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
         "apiKey": "api_key",

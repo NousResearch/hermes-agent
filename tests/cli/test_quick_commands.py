@@ -1,7 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import os
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from rich.text import Text
 import pytest
 
@@ -245,3 +245,118 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_deep_research_skill_command_bypasses_agent_loop(self):
+        """Gateway /deep-research must not be rewritten into a normal skill prompt."""
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(quick_commands={})
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._handle_deep_research_command = AsyncMock(return_value="deep research started")
+        runner._handle_message_with_agent = AsyncMock(return_value="agent loop")
+
+        event = self._make_event("deep-research", "What is thankless work?")
+        result = await runner._handle_message(event)
+
+        assert result == "deep research started"
+        runner._handle_deep_research_command.assert_awaited_once_with(event)
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deep_research_command_bypasses_active_session_guard(self):
+        """Even a busy/high-context chat should start the detached worker directly."""
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(quick_commands={})
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._handle_deep_research_command = AsyncMock(return_value="deep research started")
+        runner._handle_message_with_agent = AsyncMock(return_value="agent loop")
+
+        event = self._make_event("deep_research", "What is thankless work?")
+        session_key = runner._session_key_for_source(event.source)
+        runner._running_agents[session_key] = object()
+
+        result = await runner._handle_message(event)
+
+        assert result == "deep research started"
+        runner._handle_deep_research_command.assert_awaited_once_with(event)
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deep_research_handler_starts_detached_worker_with_exact_topic_and_target(self, tmp_path, monkeypatch):
+        """The direct handler passes exact topic + explicit origin target to the worker."""
+        import asyncio
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        worker = tmp_path / "deep-research-worker.mjs"
+        worker.write_text("#!/usr/bin/env node\n")
+        monkeypatch.setenv("DEEP_RESEARCH_WORKER", str(worker))
+        monkeypatch.setenv("DEEP_RESEARCH_CDP", "http://127.0.0.1:9999")
+        monkeypatch.setenv("DEEP_RESEARCH_CHROME_PROFILE", str(tmp_path / "profile"))
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._background_tasks = set()
+        calls = []
+
+        async def fake_worker(**kwargs):
+            calls.append(kwargs)
+
+        runner._run_deep_research_worker_detached = fake_worker
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="group:abc123",
+            chat_name="Research Group",
+            chat_type="group",
+            user_id="user-1",
+        )
+        event = MessageEvent(
+            text="@hermes /deep-research What is thankless work?",
+            source=source,
+        )
+
+        result = await runner._handle_deep_research_command(event)
+        await asyncio.gather(*list(runner._background_tasks))
+
+        assert "Deep Research started" in result
+        assert calls, "detached worker was not scheduled"
+        cmd = calls[0]["cmd"]
+        assert cmd[cmd.index("--topic") + 1] == "What is thankless work?"
+        assert cmd[cmd.index("--deliver") + 1] == "signal:group:abc123"
+        assert cmd[cmd.index("--cdp") + 1] == "http://127.0.0.1:9999"
+
+    def test_deep_research_worker_status_summary_hides_local_paths(self):
+        """Fallback status summaries must not expose state/manifest/local paths."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        message = runner._sanitize_deep_research_worker_result(
+            {
+                "job_id": "job-1",
+                "status": "completed_delivery_failed",
+                "research_url": "https://chatgpt.com/c/example",
+                "download_path": "/home/user/.hermes/deep-research/jobs/job-1/exported.md",
+                "markdown_path": "/home/user/.hermes/deep-research/jobs/job-1/result.md",
+                "artifact_filename": "result.md",
+            },
+            0,
+        )
+
+        assert "job-1" in message
+        assert "https://chatgpt.com/c/example" in message
+        assert "result.md" in message
+        assert "/home/user" not in message
+        assert "download_path" not in message
+        assert "markdown_path" not in message

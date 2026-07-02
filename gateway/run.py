@@ -9399,6 +9399,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
+            if _evt_cmd and _evt_cmd.replace("_", "-") == "deep-research":
+                return await self._handle_deep_research_command(event)
+
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
             # interrupt, no queued text.
@@ -9814,6 +9817,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _denied = self._check_slash_access(source, _slash_access_cmd)
             if _denied is not None:
                 return _denied
+
+        if command and command.replace("_", "-") == "deep-research":
+            return await self._handle_deep_research_command(event)
 
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a

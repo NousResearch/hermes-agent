@@ -3903,8 +3903,6 @@ def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
 # number / json falls back to the host or built-in default).
 _UNSET: Any = object()
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
 
 def _coerce_field_value(field: ProviderField, raw: str) -> Any:
     """Coerce a submitted non-secret value to its native JSON type.
@@ -3927,7 +3925,9 @@ def _coerce_field_value(field: ProviderField, raw: str) -> Any:
         return value
 
     if kind == "bool":
-        return value.lower() in _TRUTHY
+        from utils import is_truthy_value
+
+        return is_truthy_value(value)
 
     if kind == "number":
         if not value:
@@ -3965,9 +3965,9 @@ def _serialize_field_value(field: ProviderField, value: Any) -> str:
     if value is None:
         return field.default
     if field.kind == "bool":
-        if isinstance(value, str):
-            return "true" if value.strip().lower() in _TRUTHY else "false"
-        return "true" if value else "false"
+        from utils import is_truthy_value
+
+        return "true" if is_truthy_value(value) else "false"
     if field.kind == "json":
         if isinstance(value, (dict, list)):
             return json.dumps(value)
@@ -3994,30 +3994,29 @@ def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _read_flat_field(field: ProviderField, data: Dict[str, Any]) -> Any:
-    """Return the stored native value, or ``None`` when unset.
+def _read_field(field: ProviderField, sources: tuple, env: Dict[str, str]) -> Any:
+    """Return the stored native value from the first source holding it, or ``None``.
 
-    Presence (``key in data``) decides, not truthiness, so a stored ``False`` or
-    ``0`` survives instead of being mistaken for "unset".
+    Presence (``key in source``) decides, not truthiness, so a stored ``False``
+    or ``0`` survives instead of being mistaken for "unset".
     """
 
-    for source_key in (field.key, *field.aliases):
-        if source_key in data and data[source_key] is not None:
-            return data[source_key]
-    env_on_disk = load_env()
+    for source in sources:
+        for source_key in (field.key, *field.aliases):
+            if source_key in source and source[source_key] is not None:
+                return source[source_key]
     for env_key in field.env_fallbacks:
-        value = env_on_disk.get(env_key)
+        value = env.get(env_key)
         if value:
             return value
     return None
 
 
-def _flat_field_is_set(field: ProviderField, data: Dict[str, Any]) -> bool:
-    env_on_disk = load_env()
+def _field_is_set(field: ProviderField, sources: tuple, env: Dict[str, str]) -> bool:
     for env_key in (field.env_key, *field.env_fallbacks):
-        if env_key and env_on_disk.get(env_key):
+        if env_key and env.get(env_key):
             return True
-    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+    return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
 # — honcho host-block backend —
@@ -4047,75 +4046,69 @@ def _honcho_read_sources() -> tuple[Dict[str, Any], str, Dict[str, Any]]:
     return raw, host, host_block_of(raw, host)
 
 
-def _read_honcho_field(field: ProviderField, raw: Dict[str, Any], host_block: Dict[str, Any]) -> Any:
-    """Return the stored native value for a host-block field, or ``None``.
-
-    Host scope checks the per-profile block before the config root; presence
-    wins over truthiness so ``False``/``0`` survive.
-    """
-
-    sources = (host_block, raw) if field.scope == "host" else (raw,)
-    for source in sources:
-        for source_key in (field.key, *field.aliases):
-            if source_key in source and source[source_key] is not None:
-                return source[source_key]
-    env_on_disk = load_env()
-    for env_key in field.env_fallbacks:
-        value = env_on_disk.get(env_key)
-        if value:
-            return value
-    return None
-
-
-def _honcho_field_is_set(field: ProviderField, raw: Dict[str, Any], host_block: Dict[str, Any]) -> bool:
-    env_on_disk = load_env()
-    for env_key in (field.env_key, *field.env_fallbacks):
-        if env_key and env_on_disk.get(env_key):
-            return True
-    sources = (host_block, raw) if field.scope == "host" else (raw,)
-    return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
-
-
 def _memory_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
     fields: List[Dict[str, Any]] = []
+    env = load_env()
+    is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
 
-    if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
+    if is_honcho:
         raw, host, host_block = _honcho_read_sources()
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (host_block, raw) if field.scope == "host" else (raw,)
     else:
+        host = ""
         data = _read_flat_json(provider)
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (data,)
 
     for field in provider.fields:
         entry = _provider_field_entry(field)
+        sources = sources_for(field)
 
         if field.is_secret:
             entry["value"] = ""  # secrets are write-only over the API
-            if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
-                entry["is_set"] = _honcho_field_is_set(field, raw, host_block)
-            else:
-                entry["is_set"] = _flat_field_is_set(field, data)
+            entry["is_set"] = _field_is_set(field, sources, env)
             fields.append(entry)
             continue
 
-        if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
-            native = _read_honcho_field(field, raw, host_block)
+        native = _read_field(field, sources, env)
+        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
             # Surface the resolved host so the user sees the peer mapping
             # Honcho will actually use when these fields are left blank.
-            if not field.placeholder and field.key in {"workspace", "aiPeer"}:
-                entry["placeholder"] = host
-        else:
-            native = _read_flat_field(field, data)
+            entry["placeholder"] = host
 
         value = _serialize_field_value(field, native)
         if field.kind == "select" and value not in field.allowed_values():
             value = field.default
         entry["value"] = value
-        if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
-            entry["is_set"] = _honcho_field_is_set(field, raw, host_block)
-        else:
-            entry["is_set"] = bool(value)
+        # Presence, not truthiness — a stored False/0 is still "set".
+        entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
 
     return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
+
+
+def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
+    """Apply submitted non-secret fields to their backend dict, in place.
+
+    Only keys present in ``values`` are touched, so a partial save never
+    clobbers fields owned by another surface. ``_UNSET`` clears the key (and
+    its aliases) so it falls back to the host/default mapping.
+    """
+
+    for field in provider.fields:
+        if field.is_secret or field.key not in values:
+            continue
+        target = target_for(field)
+        coerced = _coerce_field_value(field, values[field.key])
+        if coerced is _UNSET:
+            target.pop(field.key, None)
+            for alias in field.aliases:
+                target.pop(alias, None)
+        else:
+            target[field.key] = coerced
 
 
 def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
@@ -4128,16 +4121,8 @@ def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str])
             submitted = (values.get(field.key) or "").strip()
             if submitted and field.env_key:
                 save_env_value(field.env_key, submitted)
-            continue
-        if field.key not in values:
-            continue
-        coerced = _coerce_field_value(field, values[field.key])
-        if coerced is _UNSET:
-            existing.pop(field.key, None)
-            for alias in field.aliases:
-                existing.pop(alias, None)
-        else:
-            existing[field.key] = coerced
+
+    _apply_field_values(provider, values, lambda field: existing)
 
     path = _flat_json_path(provider)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -4183,29 +4168,21 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
         host_block = hosts.setdefault(host_key, existing)
 
         for field in provider.fields:
-            if field.is_secret:
-                submitted = (values.get(field.key) or "").strip()
-                if not submitted:
-                    continue
-                if field.env_key:
-                    save_env_value(field.env_key, submitted)
-                # The client reads the JSON-stored key before the env store, so
-                # persist where honcho setup does — but never overwrite an OAuth
-                # access token; the refresh loop owns that slot.
-                stored = host_block.get(field.key)
-                if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
-                    host_block[field.key] = submitted
+            if not field.is_secret:
                 continue
-            if field.key not in values:
+            submitted = (values.get(field.key) or "").strip()
+            if not submitted:
                 continue
-            target = host_block if field.scope == "host" else cfg
-            coerced = _coerce_field_value(field, values[field.key])
-            if coerced is _UNSET:
-                target.pop(field.key, None)
-                for alias in field.aliases:
-                    target.pop(alias, None)
-            else:
-                target[field.key] = coerced
+            if field.env_key:
+                save_env_value(field.env_key, submitted)
+            # The client reads the JSON-stored key before the env store, so
+            # persist where honcho setup does — but never overwrite an OAuth
+            # access token; the refresh loop owns that slot.
+            stored = host_block.get(field.key)
+            if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+                host_block[field.key] = submitted
+
+        _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, cfg, mode=0o600)

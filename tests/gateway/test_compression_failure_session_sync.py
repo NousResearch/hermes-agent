@@ -170,6 +170,10 @@ def test_failed_turn_still_syncs_compression_session_split(monkeypatch):
     assert result["history_offset"] == 0
     assert session_store.entry.session_id == "session-after-compression"
     assert session_store.save_calls == 1
+    # #55300: the child's gateway peer metadata is recorded on the persist path.
+    assert session_store.peer_records == [
+        ("session-after-compression", SESSION_KEY, source)
+    ]
     runner._sync_telegram_topic_binding.assert_called_once_with(
         source, session_store.entry, reason="agent-run-compression"
     )
@@ -197,6 +201,7 @@ def test_stale_run_does_not_overwrite_new_session_after_compression(monkeypatch)
     assert result["history_offset"] == 0
     assert session_store.entry.session_id == "session-before-compression"
     assert session_store.save_calls == 0
+    assert session_store.peer_records == []
     assert getattr(runner._sync_telegram_topic_binding, "call_count") == 0
 
 
@@ -222,4 +227,5 @@ def test_session_split_sync_skips_when_binding_already_moved(monkeypatch):
     assert result["history_offset"] == 0
     assert session_store.entry.session_id == "fresh-session-after-new"
     assert session_store.save_calls == 0
+    assert session_store.peer_records == []
     assert getattr(runner._sync_telegram_topic_binding, "call_count") == 0

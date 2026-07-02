@@ -504,6 +504,12 @@ class TestContentFilterStallActivatesFallback:
         )
         assert result["final_response"] == "Done on the fallback provider."
         assert result["completed"] is True
+        # #38445: the rebuilt-message restart refunds the discarded primary
+        # attempt (count + budget) before re-issuing on the fallback, so the one
+        # successful fallback call is counted exactly once and exactly one
+        # iteration-budget slot is used (a leaked refund would show 2).
+        assert result["api_calls"] == 1, result["api_calls"]
+        assert loop_agent.iteration_budget.used == 1, loop_agent.iteration_budget.used
 
     def test_tagged_stub_no_fallback_falls_through(self, loop_agent):
         """When no fallback chain is configured, a tagged stub falls through

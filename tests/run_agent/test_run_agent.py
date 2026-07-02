@@ -4001,6 +4001,9 @@ class TestRunConversation:
         assert result["failed"] is True
         assert result["completed"] is False
         assert result["api_calls"] == 0
+        # #38445: the preflight skip refunds the iteration-budget slot too, so
+        # the skipped iteration does not permanently burn a budget unit.
+        assert agent.iteration_budget.used == 0
         assert result["turn_exit_reason"] == "ollama_runtime_context_too_small"
         assert "Ollama loaded `qwen3.5:9b` with only 4,096 tokens" in result["final_response"]
         assert "model.ollama_num_ctx: 65536" in result["final_response"]
@@ -4549,6 +4552,9 @@ class TestRunConversation:
             "role": "assistant",
             "content": "Sure, here's how to do it: first",
         }
+        # #38445: a partial stream delivered real assistant text — that counts
+        # as a successful API call, so the count is NOT refunded here.
+        assert result["api_calls"] == 1, result["api_calls"]
 
     def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
         """An interrupt with no streamed text falls back to the metadata sentinel."""
@@ -4571,6 +4577,9 @@ class TestRunConversation:
         assert result["interrupted"] is True
         assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         assert result["messages"][-1]["role"] == "user"
+        # #38445: no text was delivered before the stop — no usable response this
+        # iteration, so the optimistic count IS refunded.
+        assert result["api_calls"] == 0, result["api_calls"]
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -5689,6 +5698,11 @@ class TestRetryExhaustion:
         agent._cached_system_prompt = "You are helpful."
         agent._use_prompt_caching = False
         agent.tool_delay = 0
+        # LOAD-BEARING: with auto-compaction off, a context-overflow error takes
+        # the terminal "compaction disabled" abort instead of the compression
+        # retry loop. test_context_overflow_compaction_disabled_* relies on this;
+        # tests that need the compression path (e.g. output-cap) must override
+        # ``agent.compression_enabled = True`` explicitly.
         agent.compression_enabled = False
         agent.save_trajectories = False
 
@@ -5831,6 +5845,263 @@ class TestRetryExhaustion:
         # 0 means "refunded", not "never attempted".
         assert agent.client.chat.completions.create.call_count >= 1
 
+    def test_non_retryable_client_error_refunds_api_call_count(self, agent):
+        """#38445 (sibling path): a non-retryable client error aborts the turn
+        immediately — without exhausting retries — so no successful API call was
+        made and the optimistic ``api_call_count`` increment must be refunded.
+
+        A bare ``ValueError`` is treated as a local-validation / non-retryable
+        client error by the loop (``is_local_validation_error``), routing to the
+        terminal abort at conversation_loop's non-retryable handler rather than
+        the retry-exhaustion path guarded by the sibling tests above.
+        """
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.side_effect = ValueError("boom")
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            # No fallback available -> the non-retryable error reaches the terminal
+            # abort (not the fallback-restart continue path).
+            patch.object(agent, "_try_activate_fallback", return_value=False),
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True
+        # #38445: an aborted iteration must not inflate the successful-call count.
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+        # 0 means "refunded", not "never attempted".
+        assert agent.client.chat.completions.create.call_count >= 1
+
+    def test_fallback_success_after_primary_failure_counts_once(self, agent):
+        """#38445: when the primary provider exhausts its retries and a fallback
+        is activated, the retries + fallback all happen within one outer-loop
+        iteration, so the single successful fallback call counts exactly once —
+        the failed primary attempts must not inflate the count to 2.
+        """
+        self._setup_agent(agent)
+        ok_resp = _mock_response(content="Recovered on fallback", finish_reason="stop")
+        # Primary fails every retry (_api_max_retries defaults to 3); fallback is
+        # then activated and the re-issued call succeeds.
+        agent.client.chat.completions.create.side_effect = (
+            [RuntimeError("primary down")] * 3 + [ok_resp]
+        )
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(agent, "_try_activate_fallback", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered on fallback"
+        # One outer iteration -> one increment -> one successful call, despite the
+        # failed primary attempts and the fallback activation.
+        assert result["api_calls"] == 1, result["api_calls"]
+        assert agent._api_call_count == 1
+
+    def test_context_overflow_compaction_disabled_refunds_api_call_count(self, agent):
+        """#38445 (sibling path): when auto-compaction is disabled and the model
+        reports a context overflow, the turn aborts without a successful call, so
+        the optimistic ``api_call_count`` increment must be refunded.
+        """
+        self._setup_agent(agent)  # sets compression_enabled = False
+        agent.client.chat.completions.create.side_effect = Exception(
+            "This model's maximum context length is 8192 tokens"
+        )
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True
+        # Confirms we hit exactly the compaction-disabled overflow abort path.
+        assert result.get("compaction_disabled") is True, result
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+
+    def test_output_cap_error_refunds_api_call_count(self, agent):
+        """#38445 (sibling path): an output-cap 400 (max_tokens over the model's
+        cap) fast-aborts without compression and without a successful call, so
+        the optimistic ``api_call_count`` increment must be refunded.
+        """
+        self._setup_agent(agent)
+        # Compression must be ON so the overflow-classified error reaches the
+        # is_output_cap_error fast-abort instead of the compaction-disabled path.
+        agent.compression_enabled = True
+        agent.client.chat.completions.create.side_effect = Exception(
+            "max_tokens should be <= 8192"
+        )
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True
+        assert "output cap" in (result.get("error", "").lower())
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+
+    def test_interrupt_during_error_handling_refunds_api_call_count(self, agent):
+        """#38445 (sibling path): an interrupt during API-error handling aborts
+        the iteration before any successful response, so the optimistic
+        ``api_call_count`` increment must be refunded (not leaked as a success).
+        """
+        self._setup_agent(agent)
+
+        def _raise_and_interrupt(*a, **k):
+            # Simulate the user interrupting while the (failed) call is being
+            # handled: set the flag, then raise so we enter the except path.
+            agent._interrupt_requested = True
+            raise RuntimeError("boom")
+
+        agent.client.chat.completions.create.side_effect = _raise_and_interrupt
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("interrupted") is True, result
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+
+    def test_prior_success_preserved_when_next_iteration_fails(self, agent):
+        """#38445 accumulation invariant: a banked successful call must survive a
+        later failed iteration. Iteration 1 succeeds (tool call); iteration 2
+        exhausts retries. The count must stay at 1 — not 0 (a refund erasing the
+        prior success) and not 2 (the failed iteration leaking). This is the exact
+        scenario the issue describes and the case a single-iteration test cannot
+        prove.
+        """
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        # First call returns a usable tool-call response (iteration 1 succeeds);
+        # every subsequent call (iteration 2 + its retries/fallback) raises.
+        agent.client.chat.completions.create.side_effect = (
+            [resp1] + [RuntimeError("rate limited")] * 12
+        )
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_hfc,
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("search something")
+        assert result.get("failed") is True
+        # The one successful call is preserved; the failed 2nd iteration refunds.
+        assert result["api_calls"] == 1, result["api_calls"]
+        assert agent._api_call_count == 1
+        assert persisted_counts and persisted_counts[-1] == 1, persisted_counts
+        # Iteration 1 really executed its tool call (guards against a stale
+        # patch path that would make the accumulation assertion vacuous).
+        assert mock_hfc.call_count == 1
+
+    def test_budget_exhausted_consume_failure_refunds_api_call_count(self, agent):
+        """#38445: if iteration_budget.consume() returns False after the optimistic
+        increment (e.g. a concurrent consumer drained a shared budget), the loop
+        breaks before any request — the increment must be refunded.
+        """
+        self._setup_agent(agent)
+        # The budget is rebuilt per-turn inside run_conversation, so patch the
+        # class method (not the instance): remaining stays > 0 so the loop
+        # enters, but consume() fails as if a shared slot was already taken.
+        from agent.iteration_budget import IterationBudget
+        with (
+            patch.object(IterationBudget, "consume", return_value=False),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        # We broke before issuing any request.
+        assert agent.client.chat.completions.create.call_count == 0
+
+    def test_nous_rate_guard_no_fallback_refunds_api_call_count(self, agent):
+        """#38445: when the Nous rate-guard skips the request and no fallback is
+        available, no API call is made — the optimistic count must be refunded
+        (with the iteration-budget slot returned too).
+        """
+        self._setup_agent(agent)
+        agent.provider = "nous"
+        persisted_counts = []
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch("agent.nous_rate_guard.nous_rate_limit_remaining", return_value=300),
+            patch.object(agent, "_try_activate_fallback", return_value=False),
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+        # The request was skipped entirely — the client was never called.
+        assert agent.client.chat.completions.create.call_count == 0
+        # #38445: the rate-guard skip also refunds the iteration-budget slot.
+        assert agent.iteration_budget.used == 0
+
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
 
@@ -5852,6 +6123,11 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "UnboundLocalError" not in result.get("error", "")
         assert "bad messages" in result["error"]
+        # #38445: _build_api_kwargs failing before dispatch is a no-successful-call
+        # iteration — the optimistic count is refunded and no request is issued.
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert agent.client.chat.completions.create.call_count == 0
 
 
 # ---------------------------------------------------------------------------

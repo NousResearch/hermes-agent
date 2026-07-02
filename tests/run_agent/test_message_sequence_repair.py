@@ -288,6 +288,30 @@ def test_repair_orphan_close_is_idempotent():
     assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
 
 
+def test_repair_closes_orphaned_tool_calls_using_call_id_field():
+    """Codex/Responses-style tool_calls key the id as ``call_id`` rather
+    than ``id``. The close pass must use the same call_id||id extractor
+    as sanitize_api_messages, or Codex-shaped orphans go undetected.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"call_id": "cx1", "type": "function",
+                         "function": {"name": "bash", "arguments": "{}"}}]},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "cx1",
+        "name": "bash",
+        "content": "Tool execution was interrupted before a result was returned.",
+    }
+
+
 def test_repair_still_preserves_complete_pair_before_user_redirect():
     """Non-regression: a fully-answered assistant(tool_calls)+tool pair
     followed by a user redirect is the valid 'ongoing dialog' pattern and

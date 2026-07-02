@@ -511,8 +511,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             idx += 1
             continue
         call_ids = [
-            tc.get("id") for tc in (msg.get("tool_calls") or [])
-            if isinstance(tc, dict) and tc.get("id")
+            _ra().AIAgent._get_tool_call_id_static(tc)
+            for tc in (msg.get("tool_calls") or [])
+            if isinstance(tc, dict) and _ra().AIAgent._get_tool_call_id_static(tc)
         ]
         if not call_ids:
             idx += 1
@@ -524,12 +525,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and isinstance(filtered[run_end], dict)
             and filtered[run_end].get("role") == "tool"
         ):
-            answered.add(filtered[run_end].get("tool_call_id"))
+            answered.add((filtered[run_end].get("tool_call_id") or "").strip())
             run_end += 1
         missing = [cid for cid in call_ids if cid not in answered]
         if missing:
             names = {
-                tc.get("id"): ((tc.get("function") or {}).get("name") or "unknown")
+                _ra().AIAgent._get_tool_call_id_static(tc): _ra().AIAgent._get_tool_call_name_static(tc)
                 for tc in (msg.get("tool_calls") or [])
                 if isinstance(tc, dict)
             }
@@ -537,7 +538,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 {
                     "role": "tool",
                     "tool_call_id": cid,
-                    "name": names.get(cid, "unknown"),
+                    "name": names.get(cid) or "unknown",
                     "content": "Tool execution was interrupted before a result was returned.",
                 }
                 for cid in missing

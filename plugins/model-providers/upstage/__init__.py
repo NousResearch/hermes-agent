@@ -33,8 +33,8 @@ def _model_supports_reasoning(model: str | None) -> bool:
     other (incl. future) Solar model as reasoning-capable.
 
     ``None``/empty model → True: the provider default (``fallback_models[0]``,
-    the ``solar-pro`` rolling alias) is reasoning-capable, so an unset model
-    gets the same default-on behaviour.
+    ``solar-pro3``) is reasoning-capable, so an unset model gets the same
+    default-on behaviour.
     """
     m = (model or "").strip().lower()
     return not any(marker in m for marker in _NON_REASONING_MODEL_MARKERS)
@@ -103,10 +103,8 @@ upstage = UpstageProfile(
     base_url="https://api.upstage.ai/v1",
     auth_type="api_key",
     # default_aux_model left empty → auxiliary side tasks use the main model.
-    # entry [0] is the setup default. solar-pro is a rolling alias for the
-    # latest Solar Pro, so the default tracks the current flagship.
+    # entry [0] is the setup default — solar-pro3, the current Solar Pro flagship.
     fallback_models=(
-        "solar-pro",
         "solar-pro3",
     ),
 )

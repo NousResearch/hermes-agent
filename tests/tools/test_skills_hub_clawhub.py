@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import io
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from tools.skills_hub import ClawHubSource, SkillMeta
@@ -15,6 +17,40 @@ class _MockResponse:
 
     def json(self):
         return self._json_data
+
+
+class _MockStreamResponse:
+    def __init__(self, status_code=200, chunks=None, headers=None):
+        self.status_code = status_code
+        self.chunks = chunks or []
+        self.headers = headers or {}
+        self.iterated_chunks = 0
+        self.chunk_sizes = []
+
+    def iter_bytes(self, chunk_size=65536):
+        self.chunk_sizes.append(chunk_size)
+        for chunk in self.chunks:
+            self.iterated_chunks += 1
+            yield chunk
+
+
+class _MockStreamContext:
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _zip_bytes(files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
 
 
 class TestClawHubSource(unittest.TestCase):
@@ -118,6 +154,46 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].name, "self-improving-agent")
         self.assertIn("continuous improvement", results[0].description)
 
+    @patch("tools.skills_hub.httpx.stream")
+    def test_download_zip_streams_archive_and_extracts_text(self, mock_stream):
+        archive = _zip_bytes({"SKILL.md": "# Demo\n"})
+        response = _MockStreamResponse(chunks=[archive[:7], archive[7:]])
+        mock_stream.return_value = _MockStreamContext(response)
+
+        files = self.src._download_zip("demo", "1.0.0")
+
+        self.assertEqual(files, {"SKILL.md": "# Demo\n"})
+        self.assertEqual(response.chunk_sizes, [self.src.ZIP_DOWNLOAD_CHUNK_BYTES])
+        args, kwargs = mock_stream.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertTrue(args[1].endswith("/download"))
+        self.assertEqual(kwargs["params"], {"slug": "demo", "version": "1.0.0"})
+
+    @patch.object(ClawHubSource, "ZIP_DOWNLOAD_MAX_BYTES", 10)
+    @patch("tools.skills_hub.httpx.stream")
+    def test_download_zip_rejects_declared_oversized_archive(self, mock_stream):
+        response = _MockStreamResponse(
+            chunks=[b"not-read"],
+            headers={"content-length": "11"},
+        )
+        mock_stream.return_value = _MockStreamContext(response)
+
+        files = self.src._download_zip("demo", "1.0.0")
+
+        self.assertEqual(files, {})
+        self.assertEqual(response.iterated_chunks, 0)
+
+    @patch.object(ClawHubSource, "ZIP_DOWNLOAD_MAX_BYTES", 10)
+    @patch("tools.skills_hub.httpx.stream")
+    def test_download_zip_stops_when_stream_exceeds_archive_cap(self, mock_stream):
+        response = _MockStreamResponse(chunks=[b"12345", b"678901", b"ignored"])
+        mock_stream.return_value = _MockStreamContext(response)
+
+        files = self.src._download_zip("demo", "1.0.0")
+
+        self.assertEqual(files, {})
+        self.assertEqual(response.iterated_chunks, 2)
+
     @patch("tools.skills_hub.httpx.get")
     def test_search_repairs_poisoned_cache_with_exact_slug_lookup(self, mock_get):
         mock_get.return_value = _MockResponse(
@@ -212,8 +288,13 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.identifier, "self-improving-agent")
         self.assertEqual(meta.tags, ["automation"])
 
+    @patch("tools.skills_hub.httpx.stream")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(
+        self, mock_get, mock_stream
+    ):
+        mock_stream.return_value = _MockStreamContext(_MockStreamResponse(status_code=404))
+
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -246,9 +327,13 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
+        mock_stream.assert_called_once()
 
+    @patch("tools.skills_hub.httpx.stream")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_falls_back_to_versions_list(self, mock_get):
+    def test_fetch_falls_back_to_versions_list(self, mock_get, mock_stream):
+        mock_stream.return_value = _MockStreamContext(_MockStreamResponse(status_code=404))
+
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(status_code=200, json_data={"slug": "caldav-calendar"})
@@ -263,11 +348,17 @@ class TestClawHubSource(unittest.TestCase):
         bundle = self.src.fetch("caldav-calendar")
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
+        mock_stream.assert_called_once()
 
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
+    @patch("tools.skills_hub.httpx.stream")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_blocks_private_raw_url(self, mock_get, mock_safe, _mock_policy):
+    def test_fetch_blocks_private_raw_url(
+        self, mock_get, mock_stream, mock_safe, _mock_policy
+    ):
+        mock_stream.return_value = _MockStreamContext(_MockStreamResponse(status_code=404))
+
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -296,7 +387,8 @@ class TestClawHubSource(unittest.TestCase):
         bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
-        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_get.call_count, 2)
+        mock_stream.assert_called_once()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)

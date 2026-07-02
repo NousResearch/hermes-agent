@@ -348,6 +348,8 @@ export interface SessionInfo {
   output_tokens: number
   /** Parent conversation when this row is a /branch fork. */
   parent_session_id?: null | string
+  /** Parent conversation that spawned this delegate subagent session. */
+  _delegate_from?: null | string
   preview: null | string
   source: null | string
   started_at: number

@@ -11,6 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
+import { rememberedSessionIdForRoute } from '@/lib/remembered-session'
 import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -164,6 +165,7 @@ export function DesktopController() {
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const sessions = useStore($sessions)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
@@ -237,12 +239,16 @@ export function DesktopController() {
     }
   }, [])
 
-  // Remember the open chat so a relaunch reopens it instead of an empty new-chat.
+  // Remember the open parent chat so a relaunch reopens it instead of an empty
+  // new-chat. Delegate subagent sessions are implementation details: if a route
+  // briefly points at one (for example after a Ctrl+C restart), persist the
+  // parent id instead so the next boot resumes the visible conversation.
   useEffect(() => {
-    if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+    const remembered = rememberedSessionIdForRoute(routedSessionId, sessions)
+    if (remembered) {
+      setRememberedSessionId(remembered)
     }
-  }, [routedSessionId])
+  }, [routedSessionId, sessions])
 
   // Restore that chat once, on cold start only (we're at the new-chat route and
   // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch

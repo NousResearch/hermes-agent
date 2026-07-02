@@ -2076,9 +2076,8 @@ class TestApprovalTimeoutIsNotConsent:
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)
-        # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
-        # _is_gateway_approval_context(); a leaked value from a parent cron
-        # process would force the cron path and break these gateway tests.
+        # Leaked HERMES_CRON_SESSION from a parent cron process must not force
+        # the cron approval path when this test exercises gateway behavior.
         os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY

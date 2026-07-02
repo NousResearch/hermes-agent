@@ -332,20 +332,42 @@ def get_auth_url():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
 
-    _ensure_deps()
-    from google_auth_oauthlib.flow import Flow
+    import hashlib
+    import secrets
+    from urllib.parse import urlencode
 
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-        autogenerate_code_verifier=True,
-    )
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
-    _save_pending_auth(state=state, code_verifier=flow.code_verifier)
+    client_data = json.loads(CLIENT_SECRET_PATH.read_text())
+    installed = client_data.get("installed", {})
+    client_id = installed.get("client_id", "")
+
+    if not client_id:
+        print("ERROR: No client_id found in client_secret.json.")
+        sys.exit(1)
+
+    # Generate PKCE values manually — google_auth_oauthlib's
+    # autogenerate_code_verifier can produce verifiers with characters
+    # that Google's stricter parser rejects (e.g. periods), causing
+    # "Code Challenge must be base64 encoded" errors.
+    code_verifier = secrets.token_urlsafe(64)  # ~86 chars, [A-Za-z0-9_-] only
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    state = secrets.token_urlsafe(16)
+
+    _save_pending_auth(state=state, code_verifier=code_verifier)
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": REDIRECT_URI,
+        "scope": " ".join(SCOPES),
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    auth_url = f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
 

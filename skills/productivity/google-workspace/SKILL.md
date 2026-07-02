@@ -327,6 +327,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
+| `Error 400: invalid_request` — "Code Challenge must be base64 encoded" | The `google_auth_oauthlib` library (≤1.3.1) generates code verifiers that Google's stricter parser rejects. Fixed in the setup script as of this patch — the OAuth URL is now constructed manually with a clean `secrets.token_urlsafe()` verifier. If you still hit this, update the skill. |
 
 ## Revoking Access
 

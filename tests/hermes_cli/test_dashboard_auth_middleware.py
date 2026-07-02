@@ -593,3 +593,75 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Password-only providers: auto-SSO must fall through to /login, never 500
+# ---------------------------------------------------------------------------
+
+
+class _PasswordOnlyStub(StubAuthProvider):
+    """Interactive password provider with NO OAuth redirect flow.
+
+    Mirrors plugins/dashboard_auth/basic: supports_password=True,
+    supports_redirect_login=False, start_login raises NotImplementedError.
+    """
+
+    name = "pwstub"
+    display_name = "Password Stub"
+    supports_password = True
+    supports_redirect_login = False
+
+    def start_login(self, *, redirect_uri):
+        raise NotImplementedError(
+            "password-only provider; no OAuth redirect flow"
+        )
+
+
+def test_password_only_single_provider_lands_on_login_not_500(gated_app):
+    """Regression: with a single password-only provider (the self-hosted
+    basic-auth deployment), a fresh browser's FIRST hit to any page used to
+    auto-SSO to /auth/login, whose start_login raised NotImplementedError →
+    raw HTTP 500. The gate must instead fall through to the /login
+    credential form with ``next=`` preserved."""
+    clear_providers()
+    register_provider(_PasswordOnlyStub())
+
+    r = gated_app.get("/sessions", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login?next=%2Fsessions", (
+        f"expected the /login interstitial, got {r.headers['location']}"
+    )
+    # Following the redirect renders the login page — no 500 anywhere.
+    r2 = gated_app.get(r.headers["location"])
+    assert r2.status_code == 200
+    assert "Password Stub" in r2.text
+
+
+def test_auth_login_redirect_backstop_for_password_only_provider(gated_app):
+    """Regression: a direct or stale link to /auth/login?provider=<pw-only>
+    (bookmarks, older clients, other single-provider code paths) must 302 to
+    the /login form rather than surfacing start_login's NotImplementedError
+    as a 500."""
+    clear_providers()
+    register_provider(_PasswordOnlyStub())
+
+    r = gated_app.get(
+        "/auth/login?provider=pwstub&next=%2Flogs", follow_redirects=False
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login?next=%2Flogs"
+
+    r_no_next = gated_app.get(
+        "/auth/login?provider=pwstub", follow_redirects=False
+    )
+    assert r_no_next.status_code == 302
+    assert r_no_next.headers["location"] == "/login"
+
+
+def test_oauth_provider_auto_sso_unchanged(gated_app):
+    """The capability flag defaults True: OAuth providers keep the Phase 1
+    auto-SSO redirect behaviour exactly as before."""
+    r = gated_app.get("/sessions", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/auth/login?provider=stub&next=%2Fsessions"

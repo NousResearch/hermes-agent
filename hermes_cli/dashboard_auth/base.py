@@ -159,6 +159,18 @@ class DashboardAuthProvider(ABC):
     # and are completely unaffected.
     supports_password: bool = False
 
+    # When True, this provider implements the OAuth redirect flow —
+    # ``start_login`` returns a real redirect to an IDP. Password-only
+    # providers set this False so the auto-SSO middleware never bounces an
+    # unauthenticated document load to ``/auth/login`` for them (their
+    # ``start_login`` raises NotImplementedError; the right first hop is
+    # the ``/login`` credential form, which renders immediately and
+    # preserves ``next=``). Mirrors ``supports_password`` /
+    # ``supports_token``: a capability flag the gate consults instead of
+    # guessing. Defaults True because interactive providers have
+    # historically all been OAuth redirect providers.
+    supports_redirect_login: bool = True
+
     # When True, this provider can verify a non-interactive bearer token
     # (``verify_token``) presented on a single request by a service-to-service
     # caller — no login, no cookie, no refresh. This is the generic

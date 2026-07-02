@@ -204,6 +204,10 @@ class BasicAuthProvider(DashboardAuthProvider):
     name = "basic"
     display_name = "Username & Password"
     supports_password = True
+    # No OAuth redirect flow: start_login raises NotImplementedError. This
+    # tells the auto-SSO middleware to fall through to the /login credential
+    # form instead of bouncing to /auth/login (which would 500).
+    supports_redirect_login = False
 
     def __init__(
         self,

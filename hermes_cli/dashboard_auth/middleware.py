@@ -185,6 +185,17 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+
+    # Auto-SSO only makes sense for providers with an OAuth redirect flow.
+    # A password-only provider (supports_redirect_login=False) has no IDP to
+    # bounce to — its start_login raises NotImplementedError — so redirecting
+    # would 500 on the very first unauthenticated page load. Fall through to
+    # the ordinary /login interstitial instead: the credential form renders
+    # immediately and ``next=`` is preserved, which is the correct UX for a
+    # password provider anyway (there is no interstitial click to save).
+    if not getattr(provider, "supports_redirect_login", True):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

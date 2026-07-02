@@ -314,6 +314,11 @@ class GatewayStreamConsumer:
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
+        try:
+            from gateway import keryx_stream as _keryx
+            _keryx.publish_segment(self.adapter, self.chat_id)
+        except Exception:
+            pass
         self._queue.put(_NEW_SEGMENT)
 
     def on_commentary(self, text: str) -> None:
@@ -366,12 +371,22 @@ class GatewayStreamConsumer:
         appears below any tool-progress messages the gateway sent in between.
         """
         if text:
+            try:
+                from gateway import keryx_stream as _keryx
+                _keryx.publish_delta(self.adapter, self.chat_id, text)
+            except Exception:
+                pass
             self._queue.put(text)
         elif text is None:
             self.on_segment_break()
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
+        try:
+            from gateway import keryx_stream as _keryx
+            _keryx.publish_stop(self.adapter, self.chat_id)
+        except Exception:
+            pass
         self._queue.put(_DONE)
 
     # ── Think-block filtering ────────────────────────────────────────
@@ -618,7 +633,15 @@ class GatewayStreamConsumer:
                     or got_segment_break
                     or commentary_text is not None
                 )
-                if not self.cfg.buffer_only:
+                _keryx_buffer_only = self.cfg.buffer_only
+                try:
+                    from gateway import keryx_stream as _keryx
+                    _keryx_buffer_only = _keryx.suppress_protocol_edits(
+                        self.adapter, self.chat_id, self.cfg.buffer_only
+                    )
+                except Exception:
+                    pass
+                if not _keryx_buffer_only:
                     should_edit = should_edit or (
                         (elapsed >= self._current_edit_interval
                             and self._accumulated)

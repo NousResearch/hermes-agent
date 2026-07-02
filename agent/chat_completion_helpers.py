@@ -2016,12 +2016,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # 'stream_options'`), so omit it only for that endpoint.
         if not is_native_gemini_base_url(agent.base_url):
             stream_kwargs["stream_options"] = {"include_usage": True}
-        request_client = _set_request_client(
-            agent._create_request_openai_client(
-                reason="chat_completion_stream_request",
-                api_kwargs=stream_kwargs,
+        if agent.provider == "moa":
+            request_client = None
+            create = agent.client.chat.completions.create
+        else:
+            request_client = _set_request_client(
+                agent._create_request_openai_client(
+                    reason="chat_completion_stream_request",
+                    api_kwargs=stream_kwargs,
+                )
             )
-        )
+            create = request_client.chat.completions.create
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
         last_chunk_time["t"] = time.time()
@@ -2031,7 +2036,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ``request_client_holder["diag"]`` for closure access.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        stream = request_client.chat.completions.create(**stream_kwargs)
+        stream = create(**stream_kwargs)
 
         # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
         # openai-codex aggregator) accept stream=True but still return a

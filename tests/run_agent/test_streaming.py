@@ -694,7 +694,9 @@ class TestStreamingFallback:
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = final_response
-        mock_create.return_value = mock_client
+        mock_create.side_effect = AssertionError(
+            "MoA streaming must use the in-process MoA client, not a request OpenAI client"
+        )
 
         agent = AIAgent(
             model="default",
@@ -707,6 +709,7 @@ class TestStreamingFallback:
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
+        agent.client = mock_client
 
         deltas = []
         agent._stream_callback = lambda text: deltas.append(text)
@@ -717,6 +720,52 @@ class TestStreamingFallback:
         assert response is final_response
         assert agent._disable_streaming is True
         assert deltas == []
+        mock_create.assert_not_called()
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_moa_streaming_uses_virtual_client_facade(self, mock_close, mock_create):
+        """MoA is a virtual provider; streaming must not target moa://local with OpenAI."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="MoA", model="moa-test"),
+            _make_stream_chunk(content=" streamed", finish_reason="stop", model="moa-test"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2)),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.side_effect = AssertionError(
+            "MoA streaming must use the in-process MoA client, not a request OpenAI client"
+        )
+
+        agent = AIAgent(
+            model="default",
+            provider="moa",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent.client = mock_client
+
+        deltas = []
+        agent._stream_callback = lambda text: deltas.append(text)
+
+        response = agent._interruptible_streaming_api_call({"model": "default", "messages": []})
+
+        assert response.choices[0].message.content == "MoA streamed"
+        assert response.choices[0].finish_reason == "stop"
+        assert response.usage.prompt_tokens == 4
+        assert deltas == ["MoA", " streamed"]
+        mock_create.assert_not_called()
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream"] is True
+        assert call_kwargs["stream_options"] == {"include_usage": True}
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

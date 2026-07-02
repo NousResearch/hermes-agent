@@ -54,6 +54,7 @@ from typing import Callable, Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
@@ -423,6 +424,11 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return text
     if _gateway_surface_passes_raw_text(platform):
         return text
+
+    # Cancellation metadata, not assistant prose. ACP/TUI already suppress
+    # this sentinel; chat surfaces should too (#7921).
+    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+        return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):

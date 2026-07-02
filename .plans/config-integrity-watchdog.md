@@ -34,3 +34,15 @@ Replace mutable sidecar with git-backed append-only integrity log stored in the 
 - Changing the canonical model ID (requires user decision)
 - Config integrity for non-config files
 - 1Password integration (future enhancement)
+
+## Outcome
+
+**Shipped:** 2026-07-02 — PR #67 (merged `38d8fdb`)
+
+All 8 issues above are complete. The mutable `.sha256` sidecar is replaced end-to-end:
+
+- `skills/devops/config-integrity-watchdog/` ships `seal.py`, `verify.py`, `restore.py`, and shared `config_integrity.py` core
+- `hermes config seal/verify/restore` CLI commands wired in `hermes_cli/config_integrity_cli.py`
+- 50 tests (29 skill-level + 21 CLI integration) all pass
+- Config Integrity Watchdog cron job (MacBook Pro, `fbe11786e4d1`) confirmed calling `hermes config verify` — verified 2026-07-02
+- `restore_deepseek_config.py` confirmed absent from all machines — fully retired

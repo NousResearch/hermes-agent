@@ -1542,7 +1542,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # of show output so CLI users see them before scrolling through
     # comments / runs.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs)
+    diag_config = {
+        "review_lane_parent_warnings": kb.review_lane_dependency_warnings(
+            conn, [task.id],
+        )
+    }
+    diags = kd.compute_task_diagnostics(task, events, runs, config=diag_config)
     if diags:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")
@@ -1675,6 +1680,11 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     diag_config = kd.config_from_runtime_config(load_config())
 
     with kb.connect_closing() as conn:
+        diag_config = dict(diag_config)
+        seed_ids = [args.task] if getattr(args, "task", None) else None
+        diag_config["review_lane_parent_warnings"] = (
+            kb.review_lane_dependency_warnings(conn, seed_ids)
+        )
         # Either one-task mode or fleet mode.
         if getattr(args, "task", None):
             task = kb.get_task(conn, args.task)

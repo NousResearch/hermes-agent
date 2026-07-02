@@ -748,3 +748,31 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+def test_review_lane_dependency_inversion_diagnostic_from_db_context(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implemented thing", assignee="worker")
+        kb.block_task(conn, source, reason="review-required: needs os-reviewer")
+        review = kb.create_task(
+            conn,
+            title="REVIEW: implemented thing",
+            body=f"Review source {source} and post REVIEW_VERDICT=APPROVE.",
+            assignee="os-reviewer",
+            parents=[source],
+        )
+        task = kb.get_task(conn, review)
+        config = {"review_lane_parent_warnings": kb.review_lane_dependency_warnings(conn, [review])}
+        diags = kd.compute_task_diagnostics(
+            task,
+            kb.list_events(conn, review),
+            kb.list_runs(conn, review),
+            now=1234,
+            config=config,
+        )
+
+    kinds = [d.kind for d in diags]
+    assert "review_lane_dependency_inversion" in kinds
+    diag = next(d for d in diags if d.kind == "review_lane_dependency_inversion")
+    assert diag.data["source_task_id"] == source
+    assert "independent reviewer lane" in diag.detail

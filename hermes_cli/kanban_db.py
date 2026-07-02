@@ -136,6 +136,60 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+# Review-lane diagnostics deliberately recognise only reviewer-ish lanes.  A
+# blocked implementation/landing/remediation parent is a real dependency gate;
+# the deadlock pattern we want to surface is a reviewer child parented to the
+# blocked source it is supposed to review.
+REVIEW_LANE_ASSIGNEE_MARKERS = (
+    "reviewer",
+    "guardian",
+    "review",
+)
+REVIEW_LANE_TEXT_MARKERS = (
+    "review",
+    "review_verdict",
+    "approve_with_notes",
+    "changes_requested",
+    "guardian",
+)
+
+ACTIVE_SERVICE_GATE_STATUSES = {
+    "todo",
+    "scheduled",
+    "ready",
+    "running",
+    "blocked",
+    "review",
+}
+SERVICE_GATE_APPROVAL_STATUSES = ACTIVE_SERVICE_GATE_STATUSES | {"done"}
+TRUE_CRITICAL_LIST_MARKERS = (
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "money",
+    "payment",
+    "payments",
+    "live trading",
+    "production deploy",
+    "prod deploy",
+    "irreversible data",
+    "drop table",
+    "mass delete",
+    "new spend",
+    "gateway restart",
+    "runtime activation",
+    "workforce-scaler",
+    "workforce scaler",
+    "dynamic-spawning activation",
+    "dynamic spawning activation",
+    "guardrail weakening",
+    "guardrail disable",
+    "disable guardrail",
+    "auth/tenant",
+    "tenant live-data",
+)
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -2551,6 +2605,24 @@ def create_task(
         if row:
             return row["id"]
 
+    service_gate_source = _parse_service_gate_source_and_family(title, body)
+    if service_gate_source is not None:
+        source_task_id, gate_family, candidate_text = service_gate_source
+        decision = service_gate_dedupe_decision(
+            conn,
+            source_task_id=source_task_id,
+            gate_family=gate_family,
+            candidate_text=candidate_text,
+        )
+        if not decision["create_escalation"]:
+            add_comment(
+                conn,
+                source_task_id,
+                created_by or "kanban-service-gate",
+                decision["pointer_comment"],
+            )
+            return decision["active_lane"]["task_id"]
+
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2956,6 +3028,270 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
         )
         for r in rows
     ]
+
+
+def _task_search_text(task: Task, comments: Iterable[Comment] = ()) -> str:
+    parts = [task.id, task.title or "", task.body or "", task.assignee or "", task.block_kind or ""]
+    parts.extend(c.body or "" for c in comments)
+    return "\n".join(parts).casefold()
+
+
+def _task_is_review_lane(task: Task) -> bool:
+    assignee = (task.assignee or "").casefold()
+    title_body = f"{task.title or ''}\n{task.body or ''}".casefold()
+    return (
+        any(marker in assignee for marker in REVIEW_LANE_ASSIGNEE_MARKERS)
+        and any(marker in title_body for marker in REVIEW_LANE_TEXT_MARKERS)
+    ) or (
+        (task.title or "").strip().casefold().startswith("review")
+        and any(marker in title_body for marker in REVIEW_LANE_TEXT_MARKERS)
+    )
+
+
+def _task_is_review_required_source(
+    conn: sqlite3.Connection,
+    task: Task,
+    comments: Iterable[Comment],
+) -> bool:
+    if task.status != "blocked":
+        return False
+    text = _task_search_text(task, comments)
+    event_rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind IN "
+        "('blocked', 'dependency_wait', 'block_loop_detected')",
+        (task.id,),
+    ).fetchall()
+    for row in event_rows:
+        text += "\n" + (row["payload"] or "")
+    for run in list_runs(conn, task.id):
+        text += "\n" + (run.summary or "")
+        text += "\n" + (run.error or "")
+    text = text.casefold()
+    return (
+        "review-required" in text
+        or "review required" in text
+        or "review_verdict" in text
+        or "guardian review" in text
+        or "os-reviewer" in text
+    )
+
+
+def review_lane_dependency_warning(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    """Return a warning payload for reviewer children parented to blocked sources.
+
+    The kernel must continue rejecting tasks with unfinished parents.  This
+    helper is read-only advisory logic for dashboards/dry-runs: when a
+    reviewer-looking task's only unfinished parent is the blocked source named
+    in its own review body, the graph likely inverted the review dependency.
+    Implementation/landing/remediation children are intentionally ignored.
+    """
+    task = get_task(conn, task_id)
+    if task is None or not _task_is_review_lane(task):
+        return None
+    parents = parent_ids(conn, task_id)
+    if not parents:
+        return None
+    unfinished: list[Task] = []
+    for parent_id in parents:
+        parent = get_task(conn, parent_id)
+        if parent is not None and parent.status not in ("done", "archived"):
+            unfinished.append(parent)
+    if len(unfinished) != 1:
+        return None
+    source = unfinished[0]
+    source_comments = list_comments(conn, source.id)
+    if not _task_is_review_required_source(conn, source, source_comments):
+        return None
+    task_text = _task_search_text(task)
+    if source.id not in task_text and "source" not in task_text:
+        return None
+    return {
+        "source_task_id": source.id,
+        "source_status": source.status,
+        "source_assignee": source.assignee,
+        "message": (
+            "review task is parented to the blocked review-required source it "
+            "is meant to inspect; create an independent reviewer lane or remove "
+            "the inverted parent edge after checking for duplicate reviews"
+        ),
+    }
+
+
+def review_lane_dependency_warnings(
+    conn: sqlite3.Connection, task_ids: Optional[Iterable[str]] = None,
+) -> dict[str, dict]:
+    ids = list(task_ids) if task_ids is not None else [
+        r["id"] for r in conn.execute("SELECT id FROM tasks WHERE status != 'archived'")
+    ]
+    out: dict[str, dict] = {}
+    for task_id in ids:
+        warning = review_lane_dependency_warning(conn, task_id)
+        if warning:
+            out[task_id] = warning
+    return out
+
+
+def _contains_any_marker(text: str, markers: Iterable[str]) -> bool:
+    folded = text.casefold()
+    return any(marker in folded for marker in markers)
+
+
+def _gate_family_matches(text: str, gate_family: str) -> bool:
+    family = (gate_family or "").strip().casefold()
+    if not family:
+        return True
+    folded = text.casefold()
+    tokens = {family, family.replace("_", "-"), family.replace("-", "_")}
+    return any(
+        token and re.search(rf"(?<![a-z0-9_-]){re.escape(token)}(?![a-z0-9_-])", folded)
+        for token in tokens
+    )
+
+
+def _parse_service_gate_source_and_family(
+    title: Optional[str], body: Optional[str]
+) -> Optional[tuple[str, str, str]]:
+    """Extract source task and gate family from a service-gate task candidate."""
+    candidate_text = f"{title or ''}\n{body or ''}".strip()
+    if not candidate_text or "service-gate" not in candidate_text.casefold():
+        return None
+
+    source_match = re.search(
+        r"\b(?:source|source_task|source_task_id)\s*[:=]\s*(t_[0-9a-fA-F]+)\b",
+        candidate_text,
+    )
+    if source_match is None:
+        source_match = re.search(r"\bsource\s+(t_[0-9a-fA-F]+)\b", candidate_text, re.I)
+    family_match = re.search(
+        r"\bSERVICE-GATE\s+([a-zA-Z0-9][a-zA-Z0-9_-]*)\b",
+        candidate_text,
+        re.I,
+    )
+    if source_match is None or family_match is None:
+        return None
+    return source_match.group(1), family_match.group(1), candidate_text
+
+
+def source_has_true_critical_marker(
+    conn: sqlite3.Connection,
+    source_task_id: str,
+    *,
+    extra_text: str = "",
+) -> bool:
+    source = get_task(conn, source_task_id)
+    if source is None:
+        raise ValueError(f"unknown source task {source_task_id}")
+    text = _task_search_text(source, list_comments(conn, source_task_id)) + "\n" + (extra_text or "")
+    return _contains_any_marker(text, TRUE_CRITICAL_LIST_MARKERS)
+
+
+def find_active_service_gate_lane(
+    conn: sqlite3.Connection,
+    *,
+    source_task_id: str,
+    gate_family: str,
+    include_terminal_approval: bool = False,
+    require_approval_packet: bool = False,
+) -> Optional[dict]:
+    """Find an existing active lane for ``source_task_id`` + gate family.
+
+    This is intentionally conservative: a lane must mention the exact source id
+    and the requested gate family in title/body/comments.  It does not infer from
+    assignee or age, which prevents unrelated critical blockers from being
+    hidden behind a broad de-dup match.
+    """
+    statuses = SERVICE_GATE_APPROVAL_STATUSES if include_terminal_approval else ACTIVE_SERVICE_GATE_STATUSES
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE status != 'archived' AND id != ? ORDER BY created_at DESC, id DESC",
+        (source_task_id,),
+    ).fetchall()
+    for row in rows:
+        task = Task.from_row(row)
+        if task.status not in statuses:
+            continue
+        comments = list_comments(conn, task.id)
+        text = _task_search_text(task, comments)
+        if source_task_id not in text:
+            continue
+        if not _gate_family_matches(text, gate_family):
+            continue
+        if require_approval_packet and not (
+            "approval packet" in text
+            or "approval-packet" in text
+            or "operator approval" in text
+        ):
+            continue
+        return {
+            "task_id": task.id,
+            "status": task.status,
+            "assignee": task.assignee,
+            "title": task.title,
+        }
+    return None
+
+
+def service_gate_dedupe_decision(
+    conn: sqlite3.Connection,
+    *,
+    source_task_id: str,
+    gate_family: str,
+    candidate_text: str = "",
+) -> dict:
+    """Plan whether a service-gate scan should create another escalation.
+
+    Returns a small, serialisable decision packet.  ``create_escalation=False``
+    means callers should add ``pointer_comment`` to the source instead of
+    creating a duplicate card.  True critical-list blockers are never suppressed
+    silently: if no matching approval packet exists, the action is
+    ``create_approval_packet`` rather than generic de-dup suppression.
+    """
+    source = get_task(conn, source_task_id)
+    if source is None:
+        raise ValueError(f"unknown source task {source_task_id}")
+
+    critical = source_has_true_critical_marker(
+        conn, source_task_id, extra_text=candidate_text,
+    )
+    active = find_active_service_gate_lane(
+        conn,
+        source_task_id=source_task_id,
+        gate_family=gate_family,
+        include_terminal_approval=critical,
+        require_approval_packet=critical,
+    )
+    if active:
+        decision = "hold_for_existing_approval_packet" if critical else "dedupe_to_active_lane"
+        pointer = (
+            f"delegated: SERVICE-GATE-DEDUPE source={source_task_id} "
+            f"active_lane={active['task_id']} lane_status={active['status']} "
+            f"owner={active.get('assignee') or '-'} decision=watch "
+            f"next_evidence=follow existing {gate_family} lane "
+            "no_duplicate_escalation=true"
+        )
+        return {
+            "create_escalation": False,
+            "decision": decision,
+            "critical_list_blocker": critical,
+            "active_lane": active,
+            "pointer_comment": pointer,
+        }
+
+    if critical:
+        return {
+            "create_escalation": True,
+            "decision": "create_approval_packet",
+            "critical_list_blocker": True,
+            "active_lane": None,
+            "pointer_comment": None,
+        }
+
+    return {
+        "create_escalation": True,
+        "decision": "create_triage_or_service_gate_lane",
+        "critical_list_blocker": False,
+        "active_lane": None,
+        "pointer_comment": None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -4766,3 +4766,604 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Review-lane and service-gate de-dup helpers (Phase 2F)
+# ---------------------------------------------------------------------------
+
+def test_review_lane_dependency_warning_flags_inverted_reviewer_child(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="ship ACL change", assignee="worker")
+        kb.block_task(conn, source, reason="review-required: guardian eyes before landing")
+        review = kb.create_task(
+            conn,
+            title="REVIEW: ACL change",
+            body=f"Source task {source}; post REVIEW_VERDICT=APPROVE or CHANGES_REQUESTED.",
+            assignee="os-reviewer",
+            parents=[source],
+        )
+
+        warning = kb.review_lane_dependency_warning(conn, review)
+
+    assert warning is not None
+    assert warning["source_task_id"] == source
+    assert warning["source_status"] == "blocked"
+
+
+def test_review_lane_dependency_warning_ignores_implementation_child(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="ship ACL change", assignee="worker")
+        kb.block_task(conn, source, reason="review-required: guardian eyes before landing")
+        impl = kb.create_task(
+            conn,
+            title="IMPLEMENT: reviewed ACL change",
+            body=f"Run only after source {source} is terminal.",
+            assignee="worker",
+            parents=[source],
+        )
+
+        warning = kb.review_lane_dependency_warning(conn, impl)
+
+    assert warning is None
+
+
+def test_service_gate_dedupe_suppresses_duplicate_for_active_lane(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Discord delivery blocked", assignee="pm")
+        lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair",
+            body=f"source={source} delivery-health config-owner repair lane",
+            assignee="infra-optimizer",
+        )
+
+        decision = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="delivery-health",
+            candidate_text="SERVICE-GATE delivery-health scan",
+        )
+
+    assert decision["create_escalation"] is False
+    assert decision["decision"] == "dedupe_to_active_lane"
+    assert decision["active_lane"]["task_id"] == lane
+    assert "SERVICE-GATE-DEDUPE" in decision["pointer_comment"]
+    assert f"active_lane={lane}" in decision["pointer_comment"]
+
+
+def test_service_gate_create_task_writes_pointer_comment_without_duplicate(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Discord delivery blocked", assignee="pm")
+        lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair",
+            body=f"source={source} delivery-health config-owner repair lane",
+            assignee="infra-optimizer",
+        )
+
+        duplicate = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair retry",
+            body=f"source={source} delivery-health duplicate scan",
+            assignee="infra-optimizer",
+            created_by="jarvis-os-pm",
+        )
+        comments = kb.list_comments(conn, source)
+        service_gate_rows = [
+            task
+            for task in kb.list_tasks(conn, include_archived=True)
+            if (task.title or "").startswith("SERVICE-GATE delivery-health")
+        ]
+
+    assert duplicate == lane
+    assert len(service_gate_rows) == 1
+    assert any(
+        comment.author == "jarvis-os-pm"
+        and "SERVICE-GATE-DEDUPE" in comment.body
+        and f"active_lane={lane}" in comment.body
+        and "no_duplicate_escalation=true" in comment.body
+        for comment in comments
+    )
+
+
+def test_service_gate_dedupe_keeps_true_critical_approval_packet(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Need credential approval",
+            body="credentials/secrets rotation requires Frank approval",
+            assignee="pm",
+        )
+        first = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="config-owner",
+            candidate_text="SERVICE-GATE config-owner credentials blocker",
+        )
+        approval = kb.create_task(
+            conn,
+            title="SERVICE-GATE config-owner approval packet",
+            body=f"source={source} config-owner credentials/secrets approval packet",
+            assignee="jarvis-os-pm",
+            initial_status="blocked",
+        )
+        second = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="config-owner",
+            candidate_text="SERVICE-GATE config-owner credentials blocker",
+        )
+
+    assert first["create_escalation"] is True
+    assert first["decision"] == "create_approval_packet"
+    assert first["critical_list_blocker"] is True
+    assert second["create_escalation"] is False
+    assert second["decision"] == "hold_for_existing_approval_packet"
+    assert second["active_lane"]["task_id"] == approval
+
+
+def test_service_gate_create_task_preserves_one_true_critical_approval_packet(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Need credential approval",
+            body="credentials/secrets rotation requires Frank approval",
+            assignee="pm",
+        )
+
+        approval = kb.create_task(
+            conn,
+            title="SERVICE-GATE config-owner approval packet",
+            body=f"source={source} config-owner credentials/secrets approval packet",
+            assignee="jarvis-os-pm",
+            initial_status="blocked",
+        )
+        duplicate = kb.create_task(
+            conn,
+            title="SERVICE-GATE config-owner approval packet retry",
+            body=f"source={source} config-owner credentials/secrets approval packet duplicate",
+            assignee="jarvis-os-pm",
+            initial_status="blocked",
+        )
+        comments = kb.list_comments(conn, source)
+        approval_rows = [
+            task
+            for task in kb.list_tasks(conn, include_archived=True)
+            if "config-owner approval packet" in (task.title or "")
+        ]
+
+    assert duplicate == approval
+    assert len(approval_rows) == 1
+    assert any(
+        "SERVICE-GATE-DEDUPE" in comment.body
+        and f"active_lane={approval}" in comment.body
+        and "no_duplicate_escalation=true" in comment.body
+        for comment in comments
+    )
+
+
+def test_service_gate_dedupe_treats_workforce_scaler_activation_as_critical(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Runtime hold requires operator packet",
+            body="Generic source body without critical-list wording.",
+            assignee="pm",
+        )
+
+        decision = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-hold",
+            candidate_text="SERVICE-GATE runtime-hold workforce-scaler dynamic-spawning activation",
+        )
+        ordinary = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-hold",
+            candidate_text="SERVICE-GATE runtime-hold ordinary retry lane",
+        )
+
+    assert decision["create_escalation"] is True
+    assert decision["decision"] == "create_approval_packet"
+    assert decision["critical_list_blocker"] is True
+    assert ordinary["decision"] == "create_triage_or_service_gate_lane"
+    assert ordinary["critical_list_blocker"] is False
+
+
+def test_service_gate_dedupe_treats_guardrail_weakening_as_critical(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Guardrail boundary repair",
+            body="Generic source body without critical-list wording.",
+            assignee="pm",
+        )
+
+        weakening = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-hold",
+            candidate_text="SERVICE-GATE runtime-hold guardrail weakening request",
+        )
+        disablement = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-hold",
+            candidate_text="SERVICE-GATE runtime-hold disable guardrail request",
+        )
+
+    assert weakening["create_escalation"] is True
+    assert weakening["decision"] == "create_approval_packet"
+    assert weakening["critical_list_blocker"] is True
+    assert disablement["decision"] == "create_approval_packet"
+    assert disablement["critical_list_blocker"] is True
+
+
+def test_phase2f_inverted_reviewer_child_warning_does_not_weaken_parent_claim_gate(kanban_home):
+    """Phase 2F warning is advisory: unfinished parents still block claims."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="landing handoff", assignee="worker")
+        kb.block_task(conn, source, reason="review-required: os-reviewer must approve")
+        review = kb.create_task(
+            conn,
+            title="REVIEW: landing handoff",
+            body=f"Review source {source} and post REVIEW_VERDICT=APPROVE.",
+            assignee="os-reviewer",
+            parents=[source],
+        )
+        # Simulate a stale/dry-run writer accidentally marking the child ready.
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (review,))
+        conn.commit()
+
+        warning = kb.review_lane_dependency_warning(conn, review)
+        claimed = kb.claim_task(conn, review, claimer="test-reviewer")
+        review_after = kb.get_task(conn, review)
+        events = kb.list_events(conn, review)
+
+    assert warning is not None
+    assert warning["source_task_id"] == source
+    assert claimed is None
+    assert review_after is not None
+    assert review_after.status == "todo"
+    assert any(
+        ev.kind == "claim_rejected" and ev.payload == {"reason": "parents_not_done"}
+        for ev in events
+    )
+
+
+def test_phase2f_independent_reviewer_lane_is_claimable_without_parent_warning(kanban_home):
+    """Reviewer lanes linked by source text/comment stay independent and runnable."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="feature implementation", assignee="worker")
+        kb.block_task(conn, source, reason="review-required: guardian review before closure")
+        review = kb.create_task(
+            conn,
+            title="REVIEW: feature implementation",
+            body=f"Independent review lane for source {source}; post REVIEW_VERDICT.",
+            assignee="guardian-reviewer",
+        )
+        kb.add_comment(conn, review, "pm", f"source={source} review-required packet")
+
+        warning = kb.review_lane_dependency_warning(conn, review)
+        claimed = kb.claim_task(conn, review, claimer="test-reviewer")
+        review_after = kb.get_task(conn, review)
+
+    assert warning is None
+    assert claimed is not None
+    assert claimed.id == review
+    assert review_after is not None
+    assert review_after.status == "running"
+
+
+def test_phase2f_service_gate_dedupe_requires_same_source_and_gate_family(kanban_home):
+    """Active lanes suppress duplicates only for the exact source + gate family."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Gateway alert", assignee="pm")
+        other_source = kb.create_task(conn, title="Other alert", assignee="pm")
+        same_source_wrong_family = kb.create_task(
+            conn,
+            title="SERVICE-GATE billing repair",
+            body=f"source={source} billing repair lane",
+            assignee="infra-optimizer",
+        )
+        same_family_wrong_source = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair",
+            body=f"source={other_source} delivery-health repair lane",
+            assignee="infra-optimizer",
+        )
+        matching_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair",
+            body=f"source={source} delivery-health repair lane",
+            assignee="infra-optimizer",
+        )
+
+        no_match = kb.find_active_service_gate_lane(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+        )
+        match = kb.find_active_service_gate_lane(
+            conn,
+            source_task_id=source,
+            gate_family="delivery-health",
+        )
+
+    assert no_match is None
+    assert match is not None
+    assert match["task_id"] == matching_lane
+    assert match["task_id"] not in {same_source_wrong_family, same_family_wrong_source}
+
+
+def test_phase2f_service_gate_dedupe_does_not_match_shared_runtime_token(kanban_home):
+    """Same source still needs the same gate family; shared tokens are too broad."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Runtime alert", assignee="pm")
+        runtime_hold_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime-hold repair",
+            body=f"source={source} runtime-hold repair lane",
+            assignee="infra-optimizer",
+        )
+
+        wrong_family = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+            candidate_text="SERVICE-GATE runtime-owner scan",
+        )
+        same_family = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-hold",
+            candidate_text="SERVICE-GATE runtime-hold scan",
+        )
+
+    assert wrong_family["create_escalation"] is True
+    assert wrong_family["decision"] == "create_triage_or_service_gate_lane"
+    assert wrong_family["active_lane"] is None
+    assert same_family["create_escalation"] is False
+    assert same_family["decision"] == "dedupe_to_active_lane"
+    assert same_family["active_lane"]["task_id"] == runtime_hold_lane
+
+
+def test_phase2f_service_gate_dedupe_does_not_match_gate_family_prefix_or_suffix(kanban_home):
+    """Exact family matching rejects longer families that only share a token prefix."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Runtime owner alert", assignee="pm")
+        suffix_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime-owner-extra repair",
+            body=f"source={source} runtime-owner-extra repair lane",
+            assignee="infra-optimizer",
+        )
+        underscore_suffix_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime_owner_extra repair",
+            body=f"source={source} runtime_owner_extra repair lane",
+            assignee="infra-optimizer",
+        )
+
+        suffix_candidate = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+            candidate_text="SERVICE-GATE runtime-owner scan",
+        )
+        exact_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime_owner repair",
+            body=f"source={source} runtime_owner repair lane",
+            assignee="infra-optimizer",
+        )
+        exact_candidate = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+            candidate_text="SERVICE-GATE runtime-owner scan",
+        )
+
+    assert suffix_candidate["create_escalation"] is True
+    assert suffix_candidate["decision"] == "create_triage_or_service_gate_lane"
+    assert suffix_candidate["active_lane"] is None
+    assert exact_candidate["create_escalation"] is False
+    assert exact_candidate["decision"] == "dedupe_to_active_lane"
+    assert exact_candidate["active_lane"]["task_id"] == exact_lane
+    assert exact_candidate["active_lane"]["task_id"] not in {suffix_lane, underscore_suffix_lane}
+
+
+def test_phase2f_service_gate_dedupe_does_not_bypass_completion_created_cards_or_running_app_gates(kanban_home):
+    """De-dupe is advisory only; existing completion and evidence gates still apply."""
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Build frontend dashboard route",
+            body="Implement apps/web dashboard route component. Running-app VERIFY_PASS is required.",
+            assignee="web-worker",
+        )
+        lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE delivery-health repair",
+            body=f"source={source} delivery-health diagnostics lane",
+            assignee="infra-optimizer",
+        )
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (source,))
+        conn.commit()
+
+        decision = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="delivery-health",
+            candidate_text="SERVICE-GATE delivery-health duplicate scan",
+        )
+        not_completed_from_todo = kb.complete_task(conn, source, summary="deduped but not claimed")
+        task_after_todo_completion = kb.get_task(conn, source)
+
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (source,))
+        conn.commit()
+        claimed = kb.claim_task(conn, source, claimer="web-worker")
+        assert claimed is not None
+        wrong_run_id = int(claimed.current_run_id or 0) + 1
+        not_completed_with_wrong_run = kb.complete_task(
+            conn,
+            source,
+            summary="deduped with stale completion run id",
+            expected_run_id=wrong_run_id,
+        )
+        task_after_wrong_run = kb.get_task(conn, source)
+
+        with pytest.raises(kb.HallucinatedCardsError) as exc_info:
+            kb.complete_task(
+                conn,
+                source,
+                summary="deduped but claimed phantom child",
+                created_cards=["t_deadbeefcafe"],
+            )
+        task_after_phantom = kb.get_task(conn, source)
+        events = kb.list_events(conn, source)
+
+    assert decision["create_escalation"] is False
+    assert decision["decision"] == "dedupe_to_active_lane"
+    assert decision["active_lane"]["task_id"] == lane
+    # The generated pointer is not running-app evidence; the external completion
+    # hook accepts VERIFY_PASS only from current completion input or explicit
+    # RUNNING_APP_VERIFICATION comments.
+    assert "SERVICE-GATE-DEDUPE" in decision["pointer_comment"]
+    assert "VERIFY_PASS" not in decision["pointer_comment"]
+    assert "RUNNING_APP_VERIFICATION" not in decision["pointer_comment"]
+    assert not_completed_from_todo is False
+    assert task_after_todo_completion is not None
+    assert task_after_todo_completion.status == "todo"
+    assert not_completed_with_wrong_run is False
+    assert task_after_wrong_run is not None
+    assert task_after_wrong_run.status == "running"
+    assert exc_info.value.phantom == ["t_deadbeefcafe"]
+    assert task_after_phantom is not None
+    assert task_after_phantom.status == "running"
+    assert any(ev.kind == "completion_blocked_hallucination" for ev in events)
+
+
+def test_phase2f_true_critical_source_requires_explicit_approval_packet_not_generic_lane(kanban_home):
+    """Critical-list blockers surface one approval packet instead of hiding behind repair lanes."""
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Enable gateway runtime activation",
+            body="unapproved gateway/runtime activation requires operator approval",
+            assignee="pm",
+        )
+        repair_lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime-owner repair lane",
+            body=f"source={source} runtime-owner diagnostics repair lane",
+            assignee="infra-optimizer",
+        )
+
+        first = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+            candidate_text="SERVICE-GATE runtime-owner gateway restart blocker",
+        )
+        approval = kb.create_task(
+            conn,
+            title="SERVICE-GATE runtime-owner approval packet",
+            body=f"source={source} runtime-owner gateway restart approval packet",
+            assignee="jarvis-os-pm",
+            initial_status="blocked",
+        )
+        second = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="runtime-owner",
+            candidate_text="SERVICE-GATE runtime-owner gateway restart blocker",
+        )
+
+    assert first["create_escalation"] is True
+    assert first["decision"] == "create_approval_packet"
+    assert first["critical_list_blocker"] is True
+    assert first["active_lane"] is None
+    assert repair_lane != approval
+    assert second["create_escalation"] is False
+    assert second["decision"] == "hold_for_existing_approval_packet"
+    assert second["active_lane"]["task_id"] == approval
+
+
+def test_phase2f_dedupe_does_not_bypass_completion_run_gate(kanban_home):
+    """De-duping an active running-app lane must not let stale completions land."""
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Route changed", assignee="web-worker")
+        claimed = kb.claim_task(conn, source, claimer="web-worker")
+        assert claimed is not None
+        lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE running-app verification",
+            body=f"source={source} running-app VERIFY_FAIL route probe lane",
+            assignee="test-engineer",
+        )
+
+        decision = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="running-app",
+            candidate_text="SERVICE-GATE running-app verify-running-app probe failed",
+        )
+        completed = kb.complete_task(
+            conn,
+            source,
+            summary="stale completion after duplicate running-app lane",
+            expected_run_id=(claimed.current_run_id or 0) + 1,
+        )
+        task_after = kb.get_task(conn, source)
+        events = kb.list_events(conn, source)
+
+    assert decision["create_escalation"] is False
+    assert decision["decision"] == "dedupe_to_active_lane"
+    assert decision["active_lane"]["task_id"] == lane
+    assert "VERIFY_PASS" not in (decision["pointer_comment"] or "")
+    assert completed is False
+    assert task_after is not None
+    assert task_after.status == "running"
+    assert all(ev.kind != "completed" for ev in events)
+
+
+def test_phase2f_dedupe_does_not_bypass_created_cards_gate(kanban_home):
+    """Duplicate service-gate suppression cannot weaken created_cards validation."""
+    phantom_child = "t_deadbeefcafe"
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Review-required source", assignee="worker")
+        kb.claim_task(conn, source, claimer="worker")
+        lane = kb.create_task(
+            conn,
+            title="SERVICE-GATE completion-contract review",
+            body=f"source={source} completion-contract review lane",
+            assignee="guardian-reviewer",
+        )
+
+        decision = kb.service_gate_dedupe_decision(
+            conn,
+            source_task_id=source,
+            gate_family="completion-contract",
+            candidate_text="SERVICE-GATE completion-contract duplicate scan",
+        )
+        with pytest.raises(kb.HallucinatedCardsError) as exc_info:
+            kb.complete_task(
+                conn,
+                source,
+                summary=f"claimed duplicate child {phantom_child}",
+                created_cards=[phantom_child],
+            )
+        task_after = kb.get_task(conn, source)
+        events = kb.list_events(conn, source)
+
+    assert decision["create_escalation"] is False
+    assert decision["decision"] == "dedupe_to_active_lane"
+    assert decision["active_lane"]["task_id"] == lane
+    assert exc_info.value.phantom == [phantom_child]
+    assert task_after is not None
+    assert task_after.status == "running"
+    assert any(ev.kind == "completion_blocked_hallucination" for ev in events)
+    assert all(ev.kind != "completed" for ev in events)

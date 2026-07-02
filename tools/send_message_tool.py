@@ -963,8 +963,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.XMPP:
-            result = await _send_xmpp(pconfig, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SMS:
@@ -1462,27 +1460,6 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 # _send_email moved to plugins/platforms/email/adapter.py::_standalone_send;
 # _send_sms moved to plugins/platforms/sms/adapter.py::_standalone_send. Both
 # wired via standalone_sender_fn, reached through _registry_standalone_send. #41112.
-
-
-async def _send_xmpp(pconfig, chat_id, message):
-    """Send a single XMPP message by spinning up a one-shot adapter.
-
-    Used by cron jobs and the send_message_tool when no gateway adapter is
-    already running. Heavy for chat use, but cheap relative to startup of
-    most other one-shot platform sends.
-    """
-    try:
-        from gateway.platforms.xmpp import send_xmpp_message
-    except ImportError as exc:
-        return _error(f"XMPP module unavailable: {exc}")
-    try:
-        result = await send_xmpp_message(pconfig, chat_id, message)
-        if result.get("success"):
-            return {"success": True, "platform": "xmpp", "chat_id": chat_id,
-                    "message_id": result.get("message_id")}
-        return _error(f"XMPP send failed: {result.get('error')}")
-    except Exception as exc:
-        return _error(f"XMPP send failed: {exc}")
 
 
 # _send_matrix moved to plugins/platforms/matrix/adapter.py::_standalone_send,

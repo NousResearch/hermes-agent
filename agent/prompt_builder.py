@@ -770,15 +770,6 @@ PLATFORM_HINTS = {
         "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
         "and other files as downloadable attachments."
     ),
-    "xmpp": (
-        "You are on an XMPP (Jabber) chat. XMPP clients vary widely; assume "
-        "plain text with light Markdown only. Avoid tables and rich formatting. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
-        "in your response — the adapter uploads via XEP-0363 HTTP File Upload "
-        "and the URL renders inline as a media bubble in modern clients "
-        "(Conversations, Dino, Gajim, Movim). Group chats are MUCs; addressing "
-        "by mentioning the user's nick is conventional but not required."
-    ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. "
         "Feishu renders Markdown in messages — bold, italic, code blocks, and "

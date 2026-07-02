@@ -132,7 +132,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
-    "xmpp":            _TIER_LOW,  # XEP-0308 corrections not implemented in v1 adapter
     "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
     # WhatsApp Cloud API: Meta added message editing in 2023 but the
     # Hermes Cloud adapter doesn't implement edit_message yet, so we

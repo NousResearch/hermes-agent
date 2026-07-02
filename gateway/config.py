@@ -164,7 +164,6 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
-    XMPP = "xmpp"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
     @classmethod
     def _missing_(cls, value):
@@ -489,7 +488,6 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.RELAY: lambda cfg: bool(
         cfg.extra.get("relay_url") or cfg.extra.get("url")
     ),
-    Platform.XMPP: lambda cfg: bool(cfg.extra.get("jid") and cfg.extra.get("password")),
 }
 
 
@@ -1876,39 +1874,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
-
-    # XMPP (Jabber)
-    xmpp_jid = os.getenv("XMPP_JID")
-    xmpp_password = os.getenv("XMPP_PASSWORD")
-    if xmpp_jid and xmpp_password:
-        if Platform.XMPP not in config.platforms:
-            config.platforms[Platform.XMPP] = PlatformConfig()
-        config.platforms[Platform.XMPP].enabled = True
-        extra = config.platforms[Platform.XMPP].extra
-        extra["jid"] = xmpp_jid
-        extra["password"] = xmpp_password
-        xmpp_host = os.getenv("XMPP_HOST")
-        if xmpp_host:
-            extra["host"] = xmpp_host
-        xmpp_port = os.getenv("XMPP_PORT")
-        if xmpp_port:
-            try:
-                extra["port"] = int(xmpp_port)
-            except ValueError:
-                pass
-        xmpp_muc_rooms = os.getenv("XMPP_MUC_ROOMS")
-        if xmpp_muc_rooms:
-            extra["muc_rooms"] = xmpp_muc_rooms
-        xmpp_muc_nick = os.getenv("XMPP_MUC_NICK")
-        if xmpp_muc_nick:
-            extra["muc_nick"] = xmpp_muc_nick
-    xmpp_home = os.getenv("XMPP_HOME_CHANNEL")
-    if xmpp_home and Platform.XMPP in config.platforms:
-        config.platforms[Platform.XMPP].home_channel = HomeChannel(
-            platform=Platform.XMPP,
-            chat_id=xmpp_home,
-            name=os.getenv("XMPP_HOME_CHANNEL_NAME", "Home"),
-        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

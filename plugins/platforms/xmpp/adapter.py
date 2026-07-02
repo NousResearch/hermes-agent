@@ -1,15 +1,17 @@
-"""XMPP (Jabber) platform adapter.
+"""XMPP (Jabber) platform plugin.
 
 Built on slixmpp. Connects to any XMPP server, supports 1:1 chats and MUC
 groupchat, and uses XEP-0363 (HTTP File Upload) for attachments.
 
-Encryption posture (ADR-0002): TLS-to-server only. OMEMO is deferred to a
-follow-up extra (`hermes-agent[xmpp-omemo]`). Adapter logs a startup warning
-to make this explicit.
+Encryption posture: TLS-to-server only. OMEMO is deferred to a follow-up
+extra (`hermes-agent[xmpp-omemo]`). Adapter logs a startup warning to make
+this explicit.
 
-See:
-- gateway/platforms/ADDING_A_PLATFORM.md — integration checklist
-- ../../../docs/adr/0001-xmpp-adapter-architecture.md
+Ships as a bundled platform plugin (zero core changes) — registered via
+``register(ctx)`` per gateway/platforms/ADDING_A_PLATFORM.md. Dependency
+specs live in ``tools/lazy_deps.py`` ("platform.xmpp") and the ``xmpp``
+pyproject extra, matching the other bundled plugins with pip deps
+(matrix, teams, dingtalk, feishu).
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import slixmpp
@@ -97,7 +99,7 @@ class XmppAdapter(BasePlatformAdapter):
     _CONNECT_TIMEOUT_SECS = 20.0
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.XMPP)
+        super().__init__(config, Platform("xmpp"))
         extra = config.extra or {}
 
         self.jid: str = str(extra.get("jid", ""))
@@ -164,9 +166,9 @@ class XmppAdapter(BasePlatformAdapter):
             except Exception:
                 logger.warning("xmpp: failed to register slixmpp plugin %s", plugin)
 
-        # ADR-0001 §5: enforce TLS, refuse plaintext. The load-bearing knob in
-        # current slixmpp is ``enable_plaintext = False`` (with STARTTLS allowed
-        # and Direct-TLS off by default); the legacy ``use_starttls`` /
+        # Enforce TLS, refuse plaintext. The load-bearing knob in current
+        # slixmpp is ``enable_plaintext = False`` (with STARTTLS allowed and
+        # Direct-TLS off by default); the legacy ``use_starttls`` /
         # ``force_starttls`` names are set too so the posture holds across the
         # supported slixmpp range (older releases honored those instead).
         client.enable_starttls = True
@@ -607,3 +609,209 @@ async def send_xmpp_message(
         }
     finally:
         await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------
+# Plugin registration hooks
+# ---------------------------------------------------------------------
+
+def _validate_config(cfg: Any) -> bool:
+    """Minimally configured = JID + password present in extra."""
+    extra = getattr(cfg, "extra", None) or {}
+    return bool(extra.get("jid") and extra.get("password"))
+
+
+def _env_enablement() -> Optional[dict]:
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook BEFORE adapter
+    construction, so ``gateway status`` and ``get_connected_platforms()``
+    reflect env-only configuration without instantiating the slixmpp client.
+    Returns ``None`` when XMPP isn't minimally configured; the caller skips
+    auto-enabling.
+
+    The special ``home_channel`` key in the returned dict is handled by the
+    core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
+    jid = os.getenv("XMPP_JID", "").strip()
+    password = os.getenv("XMPP_PASSWORD", "").strip()
+    if not (jid and password):
+        return None
+    seed: dict = {"jid": jid, "password": password}
+    host = os.getenv("XMPP_HOST", "").strip()
+    if host:
+        seed["host"] = host
+    port = os.getenv("XMPP_PORT", "").strip()
+    if port:
+        try:
+            seed["port"] = int(port)
+        except ValueError:
+            pass
+    muc_rooms = os.getenv("XMPP_MUC_ROOMS", "").strip()
+    if muc_rooms:
+        seed["muc_rooms"] = muc_rooms
+    muc_nick = os.getenv("XMPP_MUC_NICK", "").strip()
+    if muc_nick:
+        seed["muc_nick"] = muc_nick
+    home = os.getenv("XMPP_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("XMPP_HOME_CHANNEL_NAME", "Home"),
+        }
+    return seed
+
+
+async def _standalone_send(
+    pconfig: Any,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> dict:
+    """Out-of-process delivery for cron ``deliver=xmpp`` jobs.
+
+    Opens a one-shot connection, sends, disconnects. XMPP has no threads;
+    ``thread_id`` is accepted and ignored. Media attachments are not sent by
+    the one-shot path (it exists for text notifications) — media-bearing
+    sends go through the live gateway adapter.
+    """
+    try:
+        result = await send_xmpp_message(pconfig, chat_id, message)
+    except Exception as exc:
+        return {"error": f"XMPP send failed: {exc}"}
+    if result.get("success"):
+        return {"success": True, "message_id": result.get("message_id")}
+    return {"error": result.get("error") or "XMPP send failed"}
+
+
+def interactive_setup() -> None:
+    """Interactive `hermes gateway setup` flow for the XMPP platform.
+
+    Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
+    in non-CLI contexts (gateway runtime, tests).
+    """
+    from hermes_cli.setup import (
+        prompt,
+        prompt_yes_no,
+        save_env_value,
+        get_env_value,
+        print_header,
+        print_info,
+        print_warning,
+        print_success,
+    )
+
+    print_header("XMPP (Jabber)")
+    existing_jid = get_env_value("XMPP_JID")
+    if existing_jid:
+        print_info(f"XMPP: already configured (JID: {existing_jid})")
+        if not prompt_yes_no("Reconfigure XMPP?", False):
+            return
+
+    print_info("Connect Hermes to any XMPP server (Prosody, ejabberd, public")
+    print_info("   servers like disroot.org, or your own). Create a dedicated")
+    print_info("   bot account and note its JID and password. TLS is required.")
+    print()
+
+    jid = prompt("Bot JID (e.g. hermes@example.org)", default=existing_jid or "")
+    if not jid or "@" not in jid:
+        print_warning("A JID like user@server is required — skipping XMPP setup")
+        return
+    save_env_value("XMPP_JID", jid.strip())
+
+    password = prompt("XMPP password", password=True)
+    if not password:
+        print_warning("Password is required — skipping XMPP setup")
+        return
+    save_env_value("XMPP_PASSWORD", password)
+
+    host = prompt(
+        "Server host (optional, leave blank for SRV/JID-domain lookup)",
+        default=get_env_value("XMPP_HOST") or "",
+    )
+    if host:
+        save_env_value("XMPP_HOST", host.strip())
+    port = prompt("Port (default 5222)", default=get_env_value("XMPP_PORT") or "")
+    if port:
+        try:
+            save_env_value("XMPP_PORT", str(int(port)))
+        except ValueError:
+            print_warning("Invalid port — using default 5222")
+
+    muc_rooms = prompt(
+        "MUC rooms to join (comma-separated, optional — e.g. team@conference.example.org/hermes)",
+        default=get_env_value("XMPP_MUC_ROOMS") or "",
+    )
+    if muc_rooms:
+        save_env_value("XMPP_MUC_ROOMS", muc_rooms.strip())
+
+    allowed = prompt(
+        "Allowed sender bare JIDs (comma-separated — empty denies all DMs)",
+        default=get_env_value("XMPP_ALLOWED_USERS") or "",
+    )
+    if allowed:
+        save_env_value("XMPP_ALLOWED_USERS", allowed.strip())
+    else:
+        print_warning(
+            "No allowed users configured — the bot will reject all DMs until "
+            "XMPP_ALLOWED_USERS is set (or XMPP_ALLOW_ALL_USERS=true)."
+        )
+
+    home = prompt(
+        "Home channel JID for cron/notification delivery (optional)",
+        default=get_env_value("XMPP_HOME_CHANNEL") or "",
+    )
+    if home:
+        save_env_value("XMPP_HOME_CHANNEL", home.strip())
+
+    print_success("XMPP configured")
+    print_info("Note: OMEMO is not yet supported — messages are TLS-encrypted "
+               "to the server but visible to the server operator.")
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="xmpp",
+        label="XMPP (Jabber)",
+        adapter_factory=lambda cfg: XmppAdapter(cfg),
+        check_fn=check_xmpp_requirements,
+        validate_config=_validate_config,
+        is_connected=_validate_config,
+        required_env=["XMPP_JID", "XMPP_PASSWORD"],
+        install_hint="pip install 'hermes-agent[xmpp]' (slixmpp; lazy-installed on first use)",
+        setup_fn=interactive_setup,
+        # Env-driven auto-configuration: seeds PlatformConfig.extra with
+        # jid/password/host/port/muc_rooms + home_channel so env-only setups
+        # show up in gateway status without instantiating the adapter.
+        env_enablement_fn=_env_enablement,
+        # Cron home-channel delivery: deliver=xmpp routes to XMPP_HOME_CHANNEL.
+        cron_deliver_env_var="XMPP_HOME_CHANNEL",
+        # Out-of-process cron delivery. Without this hook, deliver=xmpp cron
+        # jobs fail with "No live adapter" when cron runs separately from the
+        # gateway.
+        standalone_sender_fn=_standalone_send,
+        # Auth env vars for _is_user_authorized() integration
+        allowed_users_env="XMPP_ALLOWED_USERS",
+        allow_all_env="XMPP_ALLOW_ALL_USERS",
+        # XMPP stanza size limits are server-policy, not protocol; the base
+        # adapter's default chunking is sufficient.
+        max_message_length=0,
+        pii_safe=False,
+        emoji="💬",
+        allow_update_command=True,
+        # LLM guidance
+        platform_hint=(
+            "You are on an XMPP (Jabber) chat. XMPP clients vary widely; assume "
+            "plain text with light Markdown only. Avoid tables and rich formatting. "
+            "You can send media files natively: include MEDIA:/absolute/path/to/file "
+            "in your response — the adapter uploads via XEP-0363 HTTP File Upload "
+            "and the URL renders inline as a media bubble in modern clients "
+            "(Conversations, Dino, Gajim, Movim). Group chats are MUCs; addressing "
+            "by mentioning the user's nick is conventional but not required."
+        ),
+    )

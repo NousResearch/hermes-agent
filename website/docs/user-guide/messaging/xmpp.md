@@ -8,8 +8,8 @@ description: "Run a Hermes agent on any XMPP server — Prosody, ejabberd, publi
 
 Hermes connects to XMPP through the [`slixmpp`](https://lab.louiz.org/poezio/slixmpp) library. XMPP is an open, federated chat protocol — pick any server (run your own with [Prosody](https://prosody.im/) or [ejabberd](https://www.ejabberd.im/), or use a public provider like [disroot.org](https://disroot.org/) or [jabber.org](https://www.jabber.org/)) and the bot reaches you over standard 1:1 chats and MUC group rooms.
 
-:::info Optional dependency
-The XMPP adapter requires the `[xmpp]` extra:
+:::info Bundled plugin
+XMPP ships as a bundled platform plugin (`plugins/platforms/xmpp/`) — it's auto-discovered, with no enablement step. The `slixmpp` dependency lazy-installs on first use; to pre-install it explicitly:
 
 ```bash
 pip install 'hermes-agent[xmpp]'
@@ -121,7 +121,7 @@ All standard gateway slash commands work over XMPP:
 
 **`xmpp_auth_failed`** — JID or password is wrong, or the server requires SCRAM-SHA-256 with channel binding and your password store doesn't have the right format. Double-check by logging into the same account from a regular client first.
 
-**`xmpp_connect_failed`** — usually DNS / firewall. Set `XMPP_HOST` explicitly to bypass SRV lookup.
+**`xmpp_connect_timeout`** — usually DNS / firewall. Set `XMPP_HOST` explicitly to bypass SRV lookup.
 
 **`HTTP upload (XEP-0363) failed`** — your server's `http_file_share` (Prosody) or `mod_http_upload` (ejabberd) module isn't enabled, or the file exceeds the configured size limit. Check the server admin panel; defaults are usually 10–50 MB.
 

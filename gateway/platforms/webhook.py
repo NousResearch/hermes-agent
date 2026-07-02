@@ -64,7 +64,7 @@ _PROFILE_REJECTED = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
-    "matrix", "xmpp", "mattermost", "homeassistant", "email", "dingtalk",
+    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
     "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
     "qqbot", "yuanbao",
 }

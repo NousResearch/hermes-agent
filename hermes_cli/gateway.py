@@ -4646,36 +4646,6 @@ _PLATFORMS = [
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
     },
-    {
-        "key": "xmpp",
-        "label": "XMPP (Jabber)",
-        "emoji": "💬",
-        "token_var": "XMPP_JID",
-        "setup_instructions": [
-            "1. Get an XMPP account on any server (Prosody, ejabberd, public",
-            "   servers like disroot.org or jabber.org, or your own).",
-            "2. Note your JID — looks like 'hermes@example.org' — and password.",
-            "3. The adapter requires TLS; almost every modern server supports it.",
-            "4. (Optional) For group chats, list MUC rooms in XMPP_MUC_ROOMS.",
-        ],
-        "vars": [
-            {"name": "XMPP_JID", "prompt": "JID (e.g. hermes@example.org)", "password": False,
-             "help": "Your bot's full JID. The user@server part — no resource."},
-            {"name": "XMPP_PASSWORD", "prompt": "XMPP password", "password": True,
-             "help": "Sent over TLS only. Use an account-specific password if your provider supports it."},
-            {"name": "XMPP_HOST", "prompt": "Server host (optional, leave blank for SRV)", "password": False,
-             "help": "Override the SRV lookup if your server hostname differs from the JID domain."},
-            {"name": "XMPP_PORT", "prompt": "Server port (default 5222)", "password": False,
-             "help": "Standard client port is 5222 with STARTTLS. Use 5223 for direct TLS."},
-            {"name": "XMPP_MUC_ROOMS", "prompt": "MUC rooms to join (comma-separated, optional)", "password": False,
-             "help": "e.g. team@conference.example.org,announce@conference.example.org/hermes"},
-            {"name": "XMPP_HOME_CHANNEL", "prompt": "Home channel JID for cron delivery (optional)", "password": False,
-             "help": "JID where scheduled tasks deliver results by default."},
-            {"name": "XMPP_ALLOWED_USERS", "prompt": "Allowed sender JIDs (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Only bare JIDs in this list can talk to the bot. Leave blank to deny all."},
-        ],
-    },
     # Email and SMS moved to plugins/platforms/{email,sms}/ — setup metadata
     # discovered dynamically via the platform registry entries registered by
     # plugins/platforms/{email,sms}/adapter.py::register(). #41112.

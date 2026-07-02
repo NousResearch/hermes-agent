@@ -155,7 +155,6 @@ def _configured_platforms() -> list[str]:
         "email": "EMAIL_ADDRESS",
         "sms": "TWILIO_ACCOUNT_SID",
         "matrix": "MATRIX_HOMESERVER_URL",
-        "xmpp": "XMPP_JID",
         "mattermost": "MATTERMOST_URL",
         "homeassistant": "HASS_TOKEN",
         "dingtalk": "DINGTALK_CLIENT_ID",

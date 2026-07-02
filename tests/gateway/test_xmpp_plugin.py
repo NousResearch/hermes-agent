@@ -1,17 +1,17 @@
-"""Tests for XMPP platform adapter.
+"""Tests for the XMPP platform adapter plugin.
 
-These tests encode the contract for the XMPP gateway adapter and were
-written before the implementation. Running pytest before M2 lands will
-produce predictable failures (no Platform.XMPP, no XmppAdapter, no
-wiring) — that's the TDD signal.
+The adapter ships as a bundled platform plugin under
+``plugins/platforms/xmpp/`` and registers through the platform registry —
+see gateway/platforms/ADDING_A_PLATFORM.md (Plugin Path). These tests cover:
 
-See:
-- ROADMAP.md (project root) — M1 lists each test by name
-- docs/adr/0001-xmpp-adapter-architecture.md — design contract
-- gateway/platforms/ADDING_A_PLATFORM.md — upstream integration checklist
+1. adapter init / config parsing (JID, allowlists, MUC rooms)
+2. inbound stanza → MessageEvent dispatch (DM, MUC, self-echo, authz)
+3. outbound send routing (chat vs groupchat), typing, XEP-0363 uploads
+4. TLS posture on connect (plaintext refused)
+5. fatal-error handling / reconnect signalling (issue #28919)
+6. register() metadata + env-enablement + standalone-send hook shapes
 """
 import asyncio
-import inspect
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -21,6 +21,13 @@ from unittest.mock import MagicMock, AsyncMock, patch
 slixmpp = pytest.importorskip("slixmpp")
 
 from gateway.config import Platform, PlatformConfig
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+# Load plugins/platforms/xmpp/adapter.py under plugin_adapter_xmpp so it
+# cannot collide with sibling platform-plugin tests in the same xdist worker.
+_xmpp = load_plugin_adapter("xmpp")
+
+XmppAdapter = _xmpp.XmppAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +59,6 @@ def _make_xmpp_adapter(monkeypatch, jid="hermes@example.org", password="pw", **e
     """Construct an XmppAdapter with sensible test defaults."""
     monkeypatch.setenv("XMPP_ALLOWED_USERS", extra.pop("allowed_users", ""))
     monkeypatch.setenv("XMPP_ALLOW_ALL_USERS", extra.pop("allow_all", ""))
-    from gateway.platforms.xmpp import XmppAdapter
     config = PlatformConfig()
     config.enabled = True
     config.extra = {
@@ -63,48 +69,60 @@ def _make_xmpp_adapter(monkeypatch, jid="hermes@example.org", password="pw", **e
     return XmppAdapter(config)
 
 
+class _CaptureCtx:
+    """Capture the kwargs the plugin passes to ctx.register_platform()."""
+    def __init__(self):
+        self.kwargs = None
+
+    def register_platform(self, **kwargs):
+        self.kwargs = kwargs
+
+
 # ---------------------------------------------------------------------------
-# Config loading
+# Env enablement (replaces the pre-plugin _apply_env_overrides integration)
 # ---------------------------------------------------------------------------
 
-class TestXmppConfigLoading:
-    def test_apply_env_overrides_loads_xmpp(self, monkeypatch):
+class TestXmppEnvEnablement:
+    def test_env_enablement_seeds_extra(self, monkeypatch):
         monkeypatch.setenv("XMPP_JID", "hermes@example.org")
         monkeypatch.setenv("XMPP_PASSWORD", "secret")
+        for var in ("XMPP_HOST", "XMPP_PORT", "XMPP_MUC_ROOMS", "XMPP_MUC_NICK",
+                    "XMPP_HOME_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
+        seed = _xmpp._env_enablement()
+        assert seed is not None
+        assert seed["jid"] == "hermes@example.org"
+        assert seed["password"] == "secret"
+        assert "host" not in seed
+        assert "home_channel" not in seed
 
-        assert Platform.XMPP in config.platforms
-        xc = config.platforms[Platform.XMPP]
-        assert xc.enabled is True
-        assert xc.extra["jid"] == "hermes@example.org"
-        assert xc.extra["password"] == "secret"
-
-    def test_xmpp_requires_both_jid_and_password(self, monkeypatch):
+    def test_env_enablement_requires_both_jid_and_password(self, monkeypatch):
         monkeypatch.setenv("XMPP_JID", "hermes@example.org")
-        # XMPP_PASSWORD intentionally unset
         monkeypatch.delenv("XMPP_PASSWORD", raising=False)
+        assert _xmpp._env_enablement() is None
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.XMPP not in config.platforms
-
-    def test_xmpp_optional_host_and_port(self, monkeypatch):
+    def test_env_enablement_optional_host_port_and_home(self, monkeypatch):
         monkeypatch.setenv("XMPP_JID", "hermes@example.org")
         monkeypatch.setenv("XMPP_PASSWORD", "secret")
         monkeypatch.setenv("XMPP_HOST", "xmpp.example.org")
         monkeypatch.setenv("XMPP_PORT", "5223")
+        monkeypatch.setenv("XMPP_HOME_CHANNEL", "me@example.org")
+        monkeypatch.setenv("XMPP_HOME_CHANNEL_NAME", "Reports")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        xc = config.platforms[Platform.XMPP]
-        assert xc.extra["host"] == "xmpp.example.org"
-        assert xc.extra["port"] == 5223
+        seed = _xmpp._env_enablement()
+        assert seed["host"] == "xmpp.example.org"
+        assert seed["port"] == 5223
+        # The special home_channel key becomes a HomeChannel on the
+        # PlatformConfig via the core env-enablement hook.
+        assert seed["home_channel"] == {"chat_id": "me@example.org", "name": "Reports"}
+
+    def test_env_enablement_ignores_bad_port(self, monkeypatch):
+        monkeypatch.setenv("XMPP_JID", "hermes@example.org")
+        monkeypatch.setenv("XMPP_PASSWORD", "secret")
+        monkeypatch.setenv("XMPP_PORT", "not-a-port")
+        seed = _xmpp._env_enablement()
+        assert "port" not in seed
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +133,7 @@ class TestXmppAdapterInit:
     def test_init_parses_basic_config(self, monkeypatch):
         adapter = _make_xmpp_adapter(monkeypatch)
         assert adapter.jid == "hermes@example.org"
-        assert adapter.platform == Platform.XMPP
+        assert adapter.platform == Platform("xmpp")
 
     def test_init_parses_allowlist(self, monkeypatch):
         adapter = _make_xmpp_adapter(
@@ -126,8 +144,8 @@ class TestXmppAdapterInit:
         assert len(adapter.allowed_users) == 2
 
     def test_init_does_not_construct_slixmpp_client(self, monkeypatch):
-        # Per ADR-0001: connect() instantiates the client; __init__ must not.
-        # Keeps unit tests cheap and makes the connect lifecycle observable.
+        # connect() instantiates the client; __init__ must not. Keeps unit
+        # tests cheap and makes the connect lifecycle observable.
         adapter = _make_xmpp_adapter(monkeypatch)
         assert adapter.client is None
 
@@ -170,9 +188,9 @@ class TestXmppMessageDispatch:
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         assert event.text == "hello"
-        assert event.source.platform == Platform.XMPP
+        assert event.source.platform == Platform("xmpp")
         assert event.source.chat_type == "dm"
-        # Bare JID per ADR-0001: resources don't fracture sessions.
+        # Bare JID: resources don't fracture sessions.
         assert event.source.chat_id == "alice@example.org"
         assert event.source.user_id == "alice@example.org"
 
@@ -384,7 +402,7 @@ class TestXmppGetChatInfo:
 
 
 # ---------------------------------------------------------------------------
-# Connect: TLS posture (ADR-0001 §5)
+# Connect: TLS posture
 # ---------------------------------------------------------------------------
 
 class TestXmppConnectTLSPosture:
@@ -399,13 +417,13 @@ class TestXmppConnectTLSPosture:
         )
 
         with patch(
-            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ) as ctor:
             ok = await adapter.connect()
             assert ok is True
             assert ctor.called
-            # ADR-0001 §5: plaintext must be refused. Assert the knob slixmpp
-            # actually honors (enable_plaintext / enable_starttls); the legacy
+            # Plaintext must be refused. Assert the knob slixmpp actually
+            # honors (enable_plaintext / enable_starttls); the legacy
             # force_starttls attribute is inert in current slixmpp.
             assert fake_client.enable_plaintext is False
             assert fake_client.enable_starttls is True
@@ -426,67 +444,106 @@ class TestXmppSessionSourceRoundtrip:
         )
         from gateway.session import SessionSource
         roundtripped = SessionSource.from_dict(src.to_dict())
-        assert roundtripped.platform == Platform.XMPP
+        # Platform("xmpp") resolves via the bundled-plugin pseudo-member
+        # (identity-stable through Platform._missing_).
+        assert roundtripped.platform == Platform("xmpp")
         assert roundtripped.chat_id == "alice@example.org"
         assert roundtripped.chat_type == "dm"
         assert roundtripped.user_id == "alice@example.org"
 
 
 # ---------------------------------------------------------------------------
-# 16-step integration wiring (ADDING_A_PLATFORM.md)
+# Plugin registration contract (replaces the pre-plugin core wiring tests)
 # ---------------------------------------------------------------------------
 
-class TestXmppIntegrationWiring:
-    """Verifies the global wiring required by ADDING_A_PLATFORM.md.
-
-    These read source via inspect rather than executing the integration
-    points, which keeps the tests fast and side-effect-free.
+class TestXmppRegistration:
+    """The plugin hooks replace every core integration point the built-in
+    path required (authz maps, cron delivery, send_message routing, prompt
+    hints, setup wizard, status display) — assert each hook is wired.
     """
 
-    def test_platform_enum_has_xmpp(self):
-        assert Platform.XMPP.value == "xmpp"
+    def _registered_kwargs(self):
+        ctx = _CaptureCtx()
+        _xmpp.register(ctx)
+        assert ctx.kwargs is not None
+        return ctx.kwargs
 
-    def test_authorization_maps_present(self):
-        # Authorization (``_is_user_authorized`` / ``_get_unauthorized_dm_behavior``)
-        # lives in the ``gateway.authz_mixin`` mixin that the gateway runner
-        # composes in. XMPP must be registered in those maps so
-        # XMPP_ALLOWED_USERS / XMPP_ALLOW_ALL_USERS gate inbound senders.
-        from gateway import authz_mixin
-        src = inspect.getsource(authz_mixin)
-        assert "XMPP_ALLOWED_USERS" in src
-        assert "XMPP_ALLOW_ALL_USERS" in src
+    def test_register_platform_name_resolves_in_enum(self):
+        kw = self._registered_kwargs()
+        assert kw["name"] == "xmpp"
+        # Bundled plugin dir makes Platform("xmpp") a valid, identity-stable
+        # pseudo-member.
+        assert Platform("xmpp") is Platform("xmpp")
+        assert Platform("xmpp").value == "xmpp"
 
-    def test_adapter_factory_creates_xmpp(self):
-        from gateway import run
-        src = inspect.getsource(run)
-        assert "Platform.XMPP" in src
-        assert "from gateway.platforms.xmpp" in src
+    def test_register_wires_authorization_envs(self):
+        kw = self._registered_kwargs()
+        assert kw["allowed_users_env"] == "XMPP_ALLOWED_USERS"
+        assert kw["allow_all_env"] == "XMPP_ALLOW_ALL_USERS"
 
-    def test_send_message_tool_routes_xmpp(self):
-        from tools import send_message_tool as smt_module
-        src = inspect.getsource(smt_module)
-        assert '"xmpp"' in src or "'xmpp'" in src
-        assert "Platform.XMPP" in src
+    def test_register_wires_cron_delivery(self):
+        kw = self._registered_kwargs()
+        assert kw["cron_deliver_env_var"] == "XMPP_HOME_CHANNEL"
+        assert callable(kw["standalone_sender_fn"])
+        assert asyncio.iscoroutinefunction(kw["standalone_sender_fn"])
 
-    def test_cron_scheduler_routes_xmpp(self):
-        from cron import scheduler
-        src = inspect.getsource(scheduler)
-        assert '"xmpp"' in src or "'xmpp'" in src
+    def test_register_wires_env_enablement_and_setup(self):
+        kw = self._registered_kwargs()
+        assert kw["env_enablement_fn"] is _xmpp._env_enablement
+        assert callable(kw["setup_fn"])
+        assert kw["required_env"] == ["XMPP_JID", "XMPP_PASSWORD"]
 
-    def test_platform_hints_include_xmpp(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-        assert "xmpp" in PLATFORM_HINTS
+    def test_register_provides_platform_hint(self):
+        kw = self._registered_kwargs()
+        hint = kw["platform_hint"]
+        assert "XMPP" in hint
+        assert "XEP-0363" in hint
 
-    def test_status_display_lists_xmpp(self):
-        from hermes_cli import status
-        src = inspect.getsource(status)
-        assert "XMPP" in src or "xmpp" in src
-        assert "XMPP_JID" in src
+    def test_validate_config_requires_jid_and_password(self):
+        kw = self._registered_kwargs()
+        validate = kw["validate_config"]
+        assert validate(PlatformConfig(extra={"jid": "a@b", "password": "x"})) is True
+        assert validate(PlatformConfig(extra={"jid": "a@b"})) is False
+        assert validate(PlatformConfig()) is False
+        # is_connected shares the same "credentials present" definition.
+        assert kw["is_connected"] is validate
 
-    def test_gateway_setup_wizard_includes_xmpp(self):
-        from hermes_cli import gateway as gw
-        src = inspect.getsource(gw)
-        assert '"xmpp"' in src or "'xmpp'" in src
+    def test_adapter_factory_builds_adapter(self, monkeypatch):
+        monkeypatch.setenv("XMPP_ALLOWED_USERS", "")
+        monkeypatch.setenv("XMPP_ALLOW_ALL_USERS", "")
+        kw = self._registered_kwargs()
+        adapter = kw["adapter_factory"](
+            PlatformConfig(extra={"jid": "hermes@example.org", "password": "pw"})
+        )
+        assert isinstance(adapter, XmppAdapter)
+        assert adapter.jid == "hermes@example.org"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_success_shape(self, monkeypatch):
+        ok = AsyncMock(return_value={"success": True, "message_id": "m1", "error": None})
+        monkeypatch.setattr(_xmpp, "send_xmpp_message", ok)
+        result = await _xmpp._standalone_send(
+            PlatformConfig(), "alice@example.org", "hi"
+        )
+        assert result == {"success": True, "message_id": "m1"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_error_shape(self, monkeypatch):
+        fail = AsyncMock(return_value={"success": False, "error": "auth failed"})
+        monkeypatch.setattr(_xmpp, "send_xmpp_message", fail)
+        result = await _xmpp._standalone_send(
+            PlatformConfig(), "alice@example.org", "hi"
+        )
+        assert result == {"error": "auth failed"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_never_raises(self, monkeypatch):
+        boom = AsyncMock(side_effect=RuntimeError("socket exploded"))
+        monkeypatch.setattr(_xmpp, "send_xmpp_message", boom)
+        result = await _xmpp._standalone_send(
+            PlatformConfig(), "alice@example.org", "hi"
+        )
+        assert "error" in result and "socket exploded" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +580,7 @@ class TestXmppFatalErrorHandling:
             side_effect=lambda ev, handler: events.append(ev)
         )
         with patch(
-            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ):
             await adapter.connect()
         assert "failed_all_auth" in events
@@ -539,7 +596,7 @@ class TestXmppFatalErrorHandling:
             side_effect=lambda *a, **k: adapter._session_ready.set()
         )
         with patch(
-            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ):
             assert await adapter.connect(is_reconnect=True) is True
 
@@ -617,7 +674,7 @@ class TestXmppFatalErrorHandling:
             side_effect=lambda *a, **k: adapter._session_ready.set()
         )
         with patch(
-            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ):
             ok = await adapter.connect()
         assert ok is True
@@ -635,7 +692,7 @@ class TestXmppFatalErrorHandling:
         fake_client = MagicMock()
         fake_client.connect = MagicMock(return_value=None)  # never fires session_start
         with patch(
-            "gateway.platforms.xmpp.slixmpp.ClientXMPP", return_value=fake_client
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
         ):
             ok = await adapter.connect()
         assert ok is False
@@ -648,9 +705,8 @@ class TestXmppFatalErrorHandling:
         # The gateway calls these by the BasePlatformAdapter keyword names
         # (audio_path/video_path/file_path/image_path). A renamed positional
         # arg raises TypeError and the attachment silently never delivers.
-        from unittest.mock import AsyncMock as _AsyncMock
         adapter = _make_xmpp_adapter(monkeypatch)
-        adapter._upload_and_send = _AsyncMock(return_value=MagicMock(success=True))
+        adapter._upload_and_send = AsyncMock(return_value=MagicMock(success=True))
         f = tmp_path / "media.bin"
         f.write_bytes(b"data")
         await adapter.send_voice(chat_id="a@example.org", audio_path=str(f))

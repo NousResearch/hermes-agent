@@ -4044,6 +4044,75 @@ class TestEditMessage:
 
 
 # ---------------------------------------------------------------------------
+# TestDeleteMessage
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteMessage:
+    """Verify that delete_message() calls Slack's chat.delete API safely."""
+
+    @pytest.mark.asyncio
+    async def test_delete_message_calls_chat_delete(self, adapter):
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.delete_message("C123", "1234.5678")
+
+        assert result is True
+        adapter._app.client.chat_delete.assert_awaited_once_with(
+            channel="C123",
+            ts="1234.5678",
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_message_uses_workspace_specific_client(self, adapter):
+        workspace_client = MagicMock()
+        workspace_client.chat_delete = AsyncMock(return_value={"ok": True})
+        adapter._channel_team["C999"] = "T999"
+        adapter._team_clients["T999"] = workspace_client
+
+        result = await adapter.delete_message("C999", "1712345678.000100")
+
+        assert result is True
+        workspace_client.chat_delete.assert_awaited_once_with(
+            channel="C999",
+            ts="1712345678.000100",
+        )
+        adapter._app.client.chat_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_message_returns_false_when_not_connected(self, adapter):
+        adapter._app = None
+
+        assert await adapter.delete_message("C123", "1234.5678") is False
+
+    @pytest.mark.asyncio
+    async def test_delete_message_is_best_effort_on_api_error(self, adapter):
+        adapter._app.client.chat_delete = AsyncMock(side_effect=RuntimeError("missing_scope"))
+
+        result = await adapter.delete_message("C123", "1234.5678")
+
+        assert result is False
+        adapter._app.client.chat_delete.assert_awaited_once_with(
+            channel="C123",
+            ts="1234.5678",
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_message_returns_false_when_slack_response_not_ok(self, adapter):
+        adapter._app.client.chat_delete = AsyncMock(
+            return_value={"ok": False, "error": "cant_delete_message"},
+        )
+
+        result = await adapter.delete_message("C123", "1234.5678")
+
+        assert result is False
+        adapter._app.client.chat_delete.assert_awaited_once_with(
+            channel="C123",
+            ts="1234.5678",
+        )
+
+
+# ---------------------------------------------------------------------------
 # TestEditMessageStreamingPipeline
 # ---------------------------------------------------------------------------
 

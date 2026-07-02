@@ -412,7 +412,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             existing_path = result.stdout.strip().splitlines()[0]
             # Allow overwriting our own wrappers
             expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
-            if existing_path == str(expected):
+            if _is_path_match(existing_path, str(expected)):
                 try:
                     content = expected.read_text()
                     if "hermes -p" in content:
@@ -427,9 +427,49 @@ def check_alias_collision(name: str) -> Optional[str]:
 
 
 def _is_wrapper_dir_in_path() -> bool:
-    """Check if ~/.local/bin is in PATH."""
+    """Check if the wrapper directory is in PATH."""
+    import sys as _sys
     wrapper_dir = str(_get_wrapper_dir())
-    return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    if _sys.platform == "win32":
+        # Normalize: case-insensitive + forward/backward slash agnostic
+        bs = chr(92)  # backslash
+        wd = wrapper_dir.lower().replace("/", bs).rstrip(bs)
+        return any(
+            p.lower().replace("/", bs).rstrip(bs) == wd
+            for p in path_entries
+        )
+    return wrapper_dir in path_entries
+
+def _get_path_guidance() -> str:
+    """Return platform-appropriate instructions for adding wrapper dir to PATH."""
+    wrapper_dir = _get_wrapper_dir()
+    if sys.platform == "win32":
+        wrapper_str = str(wrapper_dir)
+        # Git Bash (MSYS) form: C:\Users\x\.local\bin -> /c/Users/x/.local/bin
+        # (a raw C:\ path can't go in bash's colon-separated $PATH).
+        drive, rest = os.path.splitdrive(wrapper_str)
+        if drive.endswith(":"):
+            msys_str = "/" + drive[:-1].lower() + rest.replace("\\", "/")
+        else:
+            msys_str = wrapper_str.replace("\\", "/")
+        return (
+            f"  Add to your User PATH (PowerShell, then restart the terminal):\n"
+            f'    [Environment]::SetEnvironmentVariable("Path",\n'
+            f'      [Environment]::GetEnvironmentVariable("Path","User") + ";{wrapper_str}", "User")\n'
+            f"\n"
+            f"  Or add to ~/.bashrc for Git Bash:\n"
+            f'    export PATH="{msys_str}:$PATH"\n'
+        )
+    return f'  Add to your shell config (~/.bashrc or ~/.zshrc):\n' \
+           f'    export PATH="$HOME/.local/bin:$PATH"'
+
+
+def _is_path_match(existing: str, expected: str) -> bool:
+    """Compare paths for wrapper collision, case-insensitive on Windows."""
+    if sys.platform == "win32":
+        return existing.lower() == expected.lower()
+    return existing == expected
 
 
 def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
@@ -458,7 +498,23 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     if is_windows:
         wrapper_path = wrapper_dir / f"{canon}.bat"
         try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
+            # Resolve absolute path to hermes.exe for reliable invocation.
+            # The path comes from shutil.which (not user input) and profile is
+            # already normalized, so there is no injection surface; the quoted
+            # ``set`` stores the value literally.
+            hermes_cmd = shutil.which("hermes") or shutil.which("hermes.exe") or "hermes.exe"
+            bat_content = (
+                f"@echo off\r\n"
+                f":: Hermes profile wrapper - auto-generated, do not edit\r\n"
+                f":: hermes -p {profile}\r\n"
+                f"setlocal\r\n"
+                f'set "HERMES_CMD={hermes_cmd}"\r\n'
+                f'"%HERMES_CMD%" -p {profile} %*\r\n'
+                f"endlocal & exit /b %errorlevel%\r\n"
+            )
+            # newline="" so the explicit \r\n are not re-translated to \r\r\n
+            # by text-mode newline handling on Windows.
+            wrapper_path.write_text(bat_content, newline="")
             return wrapper_path
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")

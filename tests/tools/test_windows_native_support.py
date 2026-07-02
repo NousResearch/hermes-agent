@@ -733,23 +733,28 @@ class TestCronSchedulerBashResolution:
     """cron.scheduler must NOT hardcode /bin/bash — .sh scripts need a
     dynamically-resolved bash so Windows (Git Bash) works."""
 
-    def test_source_uses_shutil_which_for_bash(self):
+    def test_source_delegates_to_find_bash(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
-        # The old hardcoded path should be gone as the sole bash source.
-        # It may still appear as a POSIX fallback after shutil.which(), so
-        # we check for the shutil.which call near the .sh/.bash branch.
-        assert 'shutil.which("bash")' in source, (
-            "cron.scheduler must resolve bash dynamically via shutil.which"
+        # cron.scheduler delegates bash resolution to the shared
+        # tools.environments.local._find_bash helper (which prefers Git
+        # for Windows bash over WSL bash and raises a clear RuntimeError
+        # when bash is missing) instead of an inline shutil.which lookup.
+        assert "_find_bash" in source, (
+            "cron.scheduler must resolve bash dynamically via "
+            "tools.environments.local._find_bash"
         )
 
     def test_error_message_when_bash_missing(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
-        # The graceful-failure message must mention "bash not found" so
-        # Windows users without Git Bash see an actionable error instead
-        # of a WinError 2 traceback.
-        assert "bash not found" in source.lower()
+        # The graceful-failure path must catch _find_bash's RuntimeError
+        # and prefix it with the script name so Windows users without
+        # Git Bash see an actionable error instead of a WinError 2
+        # traceback (the RuntimeError message itself carries the
+        # install-Git-for-Windows guidance).
+        assert "Cannot run .sh/.bash script" in source
+        assert "except RuntimeError" in source
 
 
 # ---------------------------------------------------------------------------

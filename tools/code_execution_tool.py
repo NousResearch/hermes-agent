@@ -24,7 +24,7 @@ Architecture (two transports):
 In both cases, only the script's stdout is returned to the LLM; intermediate
 tool results never enter the context window.
 
-Platform: Linux / macOS only (Unix domain sockets for local). Disabled on Windows.
+Platform: Linux, macOS, and Windows (TCP fallback on Windows).
 Remote execution additionally requires Python 3 in the terminal backend.
 """
 
@@ -208,7 +208,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
 
 def check_sandbox_requirements() -> bool:
-    """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
+    """Code execution sandbox requires Python 3.8+ (any platform)."""
     if not SANDBOX_AVAILABLE:
         return False
     return True

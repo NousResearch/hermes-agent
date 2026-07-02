@@ -4064,8 +4064,12 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"fi"
         )
         try:
+            # macOS-only path (launchd), but use dynamic bash resolution
+            # for consistency and to avoid hardcoded path assumptions.
+            from tools.environments.local import _find_bash
+            _bash = _find_bash()
             subprocess.Popen(
-                ["/bin/bash", "-c", reload_script],
+                [_bash, "-c", reload_script],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -6022,7 +6026,8 @@ def _configure_platform(platform: dict) -> None:
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
     required = entry.required_env if entry else []
     if required:
-        print_info(f"  Set these env vars in ~/.hermes/.env: {', '.join(required)}")
+        from hermes_constants import display_hermes_home
+        print_info(f"  Set these env vars in {display_hermes_home()}/.env: {', '.join(required)}")
     else:
         print_info(
             f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}"
@@ -6607,6 +6612,13 @@ def _gateway_command_inner(args):
             launchd_install(force)
         elif is_windows():
             from hermes_cli import gateway_windows
+
+            # Warn if Linux-only flags were passed
+            if system or run_as_user:
+                print_warning(
+                    "--system and --run-as-user are Linux-only flags, ignored on Windows. "
+                    "Windows Scheduled Tasks always run as the current user."
+                )
 
             gateway_windows.install(
                 force=force,

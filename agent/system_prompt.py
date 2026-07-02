@@ -380,10 +380,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass
 
     # Active-profile hint — names the Hermes profile the agent is running
-    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
-    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
-    # for the lifetime of the agent — profile name doesn't change
-    # mid-session, so this doesn't break the prompt cache.
+    # under so it doesn't conflate the default profile's dirs with
+    # the active profile's. Deterministic for the lifetime of the agent
+    # — profile name doesn't change mid-session, so this doesn't break
+    # the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
     # for the matching tool-side guard.
     try:
@@ -391,21 +391,37 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    # Platform-aware Hermes root path ("~/AppData/Local/hermes" on native
+    # Windows, "~/.hermes" on POSIX).  Uses the DEFAULT root, not the
+    # current HERMES_HOME — in profile mode HERMES_HOME is already
+    # <root>/profiles/<name>, and the hint below appends /profiles/…
+    # and /skills/ etc. relative to the root.
+    try:
+        from pathlib import Path as _Path
+        from hermes_constants import get_default_hermes_root
+        _root = get_default_hermes_root()
+        try:
+            _hermes_home = "~/" + _root.relative_to(_Path.home()).as_posix()
+        except ValueError:
+            _hermes_home = _root.as_posix()
+    except Exception:
+        _hermes_home = "~/.hermes"
+    _profiles_root = _hermes_home
     if active_profile == "default":
         stable_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            f"Active Hermes profile: default. Other profiles (if any) live "
+            f"under {_profiles_root}/profiles/<name>/. Each profile has its own "
+            f"skills/, plugins/, cron/, and memories/ that affect a different "
+            f"session than this one. Do not modify another profile's "
+            f"skills/plugins/cron/memories unless the user explicitly directs "
+            f"you to."
         )
     else:
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"and writes {_profiles_root}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {_hermes_home}/skills/, {_hermes_home}/plugins/, "
+            f"{_hermes_home}/cron/, {_hermes_home}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

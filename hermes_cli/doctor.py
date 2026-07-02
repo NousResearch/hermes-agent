@@ -1419,10 +1419,16 @@ def run_doctor(args):
                     # Check if the link dir is on PATH
                     _path_dirs = os.environ.get("PATH", "").split(os.pathsep)
                     if str(_cmd_link_dir) not in _path_dirs:
-                        check_warn(
-                            f"{_cmd_link_display} is not on your PATH",
-                            "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
-                        )
+                        if sys.platform == "win32":
+                            check_warn(
+                                f"{_cmd_link_display} is not on your PATH",
+                                "(add it to your User PATH via System Properties or PowerShell)"
+                            )
+                        else:
+                            check_warn(
+                                f"{_cmd_link_display} is not on your PATH",
+                                "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
+                            )
                         manual_issues.append(f"Add {_cmd_link_display} to your PATH")
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")

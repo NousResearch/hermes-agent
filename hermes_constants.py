@@ -631,11 +631,13 @@ def _legacy_path_has_content(path: Path) -> bool:
 def display_hermes_home() -> str:
     """Return a user-friendly display string for the current HERMES_HOME.
 
-    Uses ``~/`` shorthand for readability::
+    Uses ``~/`` shorthand for readability with **forward slashes** for
+    cross-platform consistency::
 
         default:  ``~/.hermes``
         profile:  ``~/.hermes/profiles/coder``
         custom:   ``/opt/hermes-custom``
+        windows:  ``~/AppData/Local/hermes``
 
     Use this in **user-facing** print/log messages instead of hardcoding
     ``~/.hermes``.  For code that needs a real ``Path``, use
@@ -643,9 +645,11 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        rel = home.relative_to(Path.home())
+        # Normalize to forward slashes for cross-platform consistency
+        return "~/" + rel.as_posix()
     except ValueError:
-        return str(home)
+        return home.as_posix()
 
 
 def secure_parent_dir(path: Path) -> None:

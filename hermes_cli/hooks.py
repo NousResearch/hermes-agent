@@ -55,7 +55,8 @@ def _cmd_list(_args) -> None:
     specs = shell_hooks.iter_configured_hooks(load_config())
 
     if not specs:
-        print("No shell hooks configured in ~/.hermes/config.yaml.")
+        from hermes_constants import display_hermes_home
+        print(f"No shell hooks configured in {display_hermes_home()}/config.yaml.")
         print("See `hermes hooks --help` or")
         print("    website/docs/user-guide/features/hooks.md")
         print("for the config schema and worked examples.")

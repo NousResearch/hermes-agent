@@ -2080,15 +2080,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
-        if _bash is None:
-            return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
-                "or rewrite the script as Python (.py)."
-            )
+        from tools.environments.local import _find_bash
+        try:
+            _bash = _find_bash()
+        except RuntimeError as e:
+            return False, f"Cannot run .sh/.bash script {path.name!r}: {e}"
         argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]

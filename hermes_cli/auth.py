@@ -2954,7 +2954,8 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
         save_env_value("HERMES_SPOTIFY_REDIRECT_URI", redirect_uri_hint)
 
     print()
-    print("Saved HERMES_SPOTIFY_CLIENT_ID to ~/.hermes/.env")
+    from hermes_constants import display_hermes_home
+    print(f"Saved HERMES_SPOTIFY_CLIENT_ID to {display_hermes_home()}/.env")
     print()
     return raw
 

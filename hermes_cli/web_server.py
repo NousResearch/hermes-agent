@@ -15526,8 +15526,8 @@ async def pty_ws(ws: WebSocket) -> None:
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
+    # PTY bridge unavailable (dependency missing on this platform).
+    # Tell the client and close cleanly rather than pretending the feature works.
     if not _PTY_BRIDGE_AVAILABLE:
         await ws.send_text(
             "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "

@@ -151,7 +151,7 @@ def build_gateway_parser(
 
     # gateway install
     gateway_install = gateway_subparsers.add_parser(
-        "install", help="Install gateway as a systemd/launchd background service"
+        "install", help="Install gateway as a background service (systemd, launchd, or Windows Scheduled Task)"
     )
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument(

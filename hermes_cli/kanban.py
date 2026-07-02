@@ -1254,7 +1254,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
         for name in profiles:
             print(f"  {name}")
     else:
-        print("No profiles found under ~/.hermes/profiles/.")
+        from hermes_constants import display_hermes_home
+        print(f"No profiles found under {display_hermes_home()}/profiles/.")
         print("Create one with `hermes -p <name> setup` before assigning tasks.")
     print()
     print("Next step: start the gateway so ready tasks actually get picked up.")

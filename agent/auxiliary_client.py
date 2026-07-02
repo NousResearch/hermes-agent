@@ -5751,9 +5751,11 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
+        _is_openrouter = base_url_host_matches(_effective_base, "openrouter.ai")
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
+            or _is_openrouter
         ):
             kwargs["max_tokens"] = max_tokens
 

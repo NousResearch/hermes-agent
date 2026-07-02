@@ -38,6 +38,25 @@
 const path = require('node:path')
 const fs = require('node:fs')
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function desktopVersionInfo(desktopRoot) {
+  let desktopVersion = '0.0.0'
+  try {
+    desktopVersion = require(path.join(desktopRoot, 'package.json')).version || desktopVersion
+  } catch {
+    // Best-effort; rcedit still stamps the name/icon when package metadata is unavailable.
+  }
+
+  const versionParts = desktopVersion.split('.').map(part => Number.parseInt(part, 10))
+  while (versionParts.length < 4) versionParts.push(0)
+  const fileVersion = versionParts.slice(0, 4).map(part => (Number.isFinite(part) ? part : 0)).join('.')
+
+  return { desktopVersion, fileVersion }
+}
+
 // Stamp the Hermes icon + identity onto `exe`. Resolves on success, throws on
 // failure. `desktopRoot` defaults to this script's package root so the icon and
 // the rcedit dependency resolve regardless of cwd.
@@ -62,23 +81,49 @@ async function stampExeIdentity(exe, desktopRoot = path.resolve(__dirname, '..')
     throw new Error(`unexpected rcedit export shape: ${typeof mod} keys=${Object.keys(mod)}`)
   }
 
+  const { desktopVersion, fileVersion } = desktopVersionInfo(desktopRoot)
+
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
 
-  await rcedit(exe, {
+  const options = {
     icon,
+    'file-version': fileVersion,
+    'product-version': fileVersion,
     'version-string': {
       ProductName: 'Hermes',
       FileDescription: 'Hermes',
       CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+      LegalCopyright: 'Copyright (c) 2026 Nous Research',
+      InternalName: 'Hermes.exe',
+      OriginalFilename: 'Hermes.exe',
+      FileVersion: desktopVersion,
+      ProductVersion: desktopVersion
     }
-  })
+  }
+
+  let lastError = null
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    try {
+      await rcedit(exe, options)
+      lastError = null
+      break
+    } catch (err) {
+      lastError = err
+      if (attempt === 10) break
+      console.warn(`[set-exe-identity] rcedit failed (attempt ${attempt}/10): ${err.message}; retrying...`)
+      await sleep(500 * attempt)
+    }
+  }
+
+  if (lastError) {
+    throw lastError
+  }
 
   console.log('[set-exe-identity] done — Hermes icon + identity stamped')
 }
 
-module.exports = { stampExeIdentity }
+module.exports = { desktopVersionInfo, stampExeIdentity }
 
 // CLI entry point: `node scripts/set-exe-identity.cjs <exe>`.
 if (require.main === module) {

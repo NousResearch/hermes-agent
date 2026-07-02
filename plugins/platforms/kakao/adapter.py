@@ -839,7 +839,7 @@ class KakaoAdapter(BasePlatformAdapter):
                         )
                     return resp.status
         except Exception as exc:
-            logger.warning("Kakao: callback POST error: %s", exc)
+            logger.warning("Kakao: callback POST error: %s", exc, exc_info=True)
             return None
 
     # ------------------------------------------------------------------

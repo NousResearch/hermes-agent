@@ -155,7 +155,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   }
 
   // Selecting a model row restores that model's remembered preset onto the
-  // session (effort/fast), gated by capability. Unset → Hermes defaults.
+  // session (effort/fast), gated by capability. A dimension with NO explicit
+  // preset is skipped — the session keeps its current value. Forcing the
+  // medium default here clobbered a thinking level the user had just set
+  // (set low → pick a model → back to medium/stale), which made every model
+  // change a "set thinking, pick model, set thinking again" dance.
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
     const preset = modelPresets[modelPresetKey(provider.slug, family.id)] ?? {}
@@ -172,8 +176,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
-        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+        effort: (caps?.reasoning ?? true) ? preset.effort : undefined,
+        fast: (caps?.fast ?? false) ? preset.fast : undefined
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
     )

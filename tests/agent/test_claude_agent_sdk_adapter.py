@@ -69,6 +69,18 @@ class _FakeResultMessage:
         self.errors = errors
 
 
+class _FakeUserMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeToolResultBlock:
+    def __init__(self, tool_use_id, content, is_error=None):
+        self.tool_use_id = tool_use_id
+        self.content = content
+        self.is_error = is_error
+
+
 class _FakeStreamEvent:
     def __init__(self, event, parent_tool_use_id=None):
         self.uuid = "ev-1"
@@ -97,6 +109,8 @@ def _make_fake_sdk(*, assistant_blocks, result_kwargs, capture=None, stream_even
         ToolUseBlock=_FakeToolUseBlock,
         HookMatcher=_FakeHookMatcher,
         StreamEvent=_FakeStreamEvent,
+        UserMessage=_FakeUserMessage,
+        ToolResultBlock=_FakeToolResultBlock,
         query=_query,
         tool=lambda name, desc, schema: (lambda fn: {"name": name, "schema": schema, "fn": fn}),
         create_sdk_mcp_server=lambda *, name, version, tools: {"name": name, "tools": tools},
@@ -435,7 +449,8 @@ def test_refusal_maps_to_content_filter(monkeypatch):
 # ---------------------------------------------------------------------------
 def _streaming_agent(**over):
     """Agent double with live-progress consumers attached."""
-    seen = {"text": [], "tools": [], "gen": [], "reasoning": [], "flushes": 0}
+    seen = {"text": [], "tools": [], "gen": [], "reasoning": [], "flushes": 0,
+            "start_cb": [], "complete_cb": []}
 
     def _delta_cb(text):
         if text is None:
@@ -446,6 +461,12 @@ def _streaming_agent(**over):
     def _tool_progress(ev, name, preview, args):
         seen["tools"].append((ev, name, preview, args))
 
+    def _tool_start(tc_id, name, args):
+        seen["start_cb"].append((tc_id, name, args))
+
+    def _tool_complete(tc_id, name, args, result):
+        seen["complete_cb"].append((tc_id, name, args, result))
+
     agent = _agent(
         stream_delta_callback=_delta_cb,
         _has_stream_consumers=lambda: True,
@@ -453,6 +474,8 @@ def _streaming_agent(**over):
         _fire_reasoning_delta=lambda t: seen["reasoning"].append(t),
         _fire_tool_gen_started=lambda name: seen["gen"].append(name),
         tool_progress_callback=_tool_progress,
+        tool_start_callback=_tool_start,
+        tool_complete_callback=_tool_complete,
         reasoning_callback=lambda t: None,
         **over,
     )
@@ -466,12 +489,15 @@ def _stream_events():
         _FakeStreamEvent({"type": "content_block_delta",
                           "delta": {"type": "text_delta", "text": "lo"}}),
         _FakeStreamEvent({"type": "content_block_start",
-                          "content_block": {"type": "tool_use", "name": "mcp__hermes__terminal"}}),
+                          "content_block": {"type": "tool_use", "name": "mcp__hermes__terminal",
+                                            "id": "tu-99"}}),
         _FakeStreamEvent({"type": "content_block_delta",
                           "delta": {"type": "input_json_delta", "partial_json": '{"command": "gh '}}),
         _FakeStreamEvent({"type": "content_block_delta",
                           "delta": {"type": "input_json_delta", "partial_json": 'pr list"}'}}),
         _FakeStreamEvent({"type": "content_block_stop"}),
+        # SDK executes the tool and echoes its result back into the loop.
+        _FakeUserMessage([_FakeToolResultBlock("tu-99", "PR list output")]),
         _FakeStreamEvent({"type": "content_block_delta",
                           "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
         # Subagent event — must be ignored (would interleave with top-level).
@@ -503,6 +529,10 @@ def test_stream_bridge_fires_live_callbacks(monkeypatch):
     assert (ev, name) == ("tool.started", "terminal")
     assert args == {"command": "gh pr list"}
     assert "gh pr list" in (preview or "")
+    # The desktop/TUI gateway channel got the authoritative start (id + args)
+    # and the completion resolving the chip.
+    assert seen["start_cb"] == [("tu-99", "terminal", {"command": "gh pr list"})]
+    assert seen["complete_cb"] == [("tu-99", "terminal", {"command": "gh pr list"}, "PR list output")]
     # The open display segment was flushed before tool chrome.
     assert seen["flushes"] == 1
     # Streaming was requested from the SDK.

@@ -513,12 +513,15 @@ class _StreamBridge:
             or getattr(agent, "tool_gen_callback", None) is not None
         )
         self._wants_reasoning = getattr(agent, "reasoning_callback", None) is not None
-        # Current tool_use block being streamed: (display_name, [json chunks]).
-        # tool.started is fired at content_block_stop, once the input JSON is
+        # Current tool_use block being streamed: (id, display_name, [json chunks]).
+        # The start callbacks fire at content_block_stop, once the input JSON is
         # complete, so the progress bubble can show WHAT the tool ran (command,
         # path, query…) — not just the tool name.
-        self._pending_tool: Optional[str] = None
+        self._pending_tool: Optional[tuple] = None  # (tool_use_id, display_name)
         self._pending_json: List[str] = []
+        # tool_use_id → (display_name, display_args) for completing the chip
+        # when the SDK later reports the tool result.
+        self._started_tools: Dict[str, tuple] = {}
 
     @property
     def active(self) -> bool:
@@ -540,7 +543,7 @@ class _StreamBridge:
         if etype == "content_block_start":
             block = event.get("content_block") or {}
             if block.get("type") == "tool_use":
-                self._on_tool_start(str(block.get("name") or ""))
+                self._on_tool_start(str(block.get("name") or ""), str(block.get("id") or ""))
         elif etype == "content_block_delta":
             delta = event.get("delta") or {}
             dtype = delta.get("type")
@@ -559,11 +562,11 @@ class _StreamBridge:
         elif etype == "content_block_stop":
             self._on_tool_stop()
 
-    def _on_tool_start(self, tool_name: str) -> None:
+    def _on_tool_start(self, tool_name: str, tool_use_id: str = "") -> None:
         agent = self._agent
         # Hybrid tools arrive as "mcp__hermes__<name>" — show the bare name.
         display = tool_name.rsplit("__", 1)[-1] if tool_name else "tool"
-        self._pending_tool = display
+        self._pending_tool = (tool_use_id or f"sdk-{uuid.uuid4().hex[:12]}", display)
         self._pending_json = []
         if self._wants_text:
             # Close the open streaming display segment so tool chrome doesn't
@@ -583,15 +586,13 @@ class _StreamBridge:
             gen(display)
 
     def _on_tool_stop(self) -> None:
-        """Fire tool.started with the tool's real args once its input is complete."""
-        name, self._pending_tool = self._pending_tool, None
+        """Fire the start callbacks with the tool's real args once its input is complete."""
+        pending, self._pending_tool = self._pending_tool, None
         raw = "".join(self._pending_json)
         self._pending_json = []
-        if name is None:
+        if pending is None:
             return
-        progress = getattr(self._agent, "tool_progress_callback", None)
-        if progress is None:
-            return
+        tool_use_id, name = pending
         try:
             args = json.loads(raw) if raw.strip() else {}
         except ValueError:
@@ -605,10 +606,42 @@ class _StreamBridge:
             preview = build_tool_preview(name, display_args)
         except Exception:
             display_args, preview = args, None
+        self._started_tools[tool_use_id] = (name, display_args)
+        # Desktop/TUI gateways render tool chips from tool_start_callback (id +
+        # args → "Running command: <cmd>"); messaging gateways render bubbles
+        # from tool_progress_callback. Fire both, like the native executor.
+        start_cb = getattr(self._agent, "tool_start_callback", None)
+        if start_cb is not None:
+            try:
+                start_cb(tool_use_id, name, display_args)
+            except Exception:
+                logger.debug("claude_agent_sdk: tool-start callback raised", exc_info=True)
+        progress = getattr(self._agent, "tool_progress_callback", None)
+        if progress is not None:
+            try:
+                progress("tool.started", name, preview, display_args)
+            except Exception:
+                logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
+
+    def handle_tool_result(self, tool_use_id: str, content: Any, is_error: Any = None) -> None:
+        """Resolve a started tool chip when the SDK reports the tool's result."""
+        name, display_args = self._started_tools.pop(tool_use_id, (None, None))
+        if name is None:
+            return
+        complete_cb = getattr(self._agent, "tool_complete_callback", None)
+        if complete_cb is None:
+            return
+        if isinstance(content, str):
+            result_text = content
+        else:
+            try:
+                result_text = json.dumps(content, ensure_ascii=False, default=str)
+            except Exception:
+                result_text = str(content)
         try:
-            progress("tool.started", name, preview, display_args)
+            complete_cb(tool_use_id, name, display_args or {}, result_text)
         except Exception:
-            logger.debug("claude_agent_sdk: tool-progress callback raised", exc_info=True)
+            logger.debug("claude_agent_sdk: tool-complete callback raised", exc_info=True)
 
 
 async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBridge] = None) -> Dict[str, Any]:
@@ -618,6 +651,8 @@ async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBrid
     TextBlock = getattr(sdk, "TextBlock", None)
     ThinkingBlock = getattr(sdk, "ThinkingBlock", None)
     StreamEvent = getattr(sdk, "StreamEvent", None)
+    UserMessage = getattr(sdk, "UserMessage", None)
+    ToolResultBlock = getattr(sdk, "ToolResultBlock", None)
 
     assistant_text: List[str] = []
     thinking_text: List[str] = []
@@ -640,6 +675,22 @@ async def _collect_query(sdk, prompt: str, options, bridge: Optional[_StreamBrid
                     bridge.handle(getattr(message, "event", None) or {})
                 except Exception:
                     logger.debug("claude_agent_sdk: stream bridge error", exc_info=True)
+            continue
+        if UserMessage is not None and isinstance(message, UserMessage):
+            # Tool results echoing back into the SDK loop — resolve the
+            # matching tool chip (never part of the collected result).
+            if bridge is not None:
+                content = getattr(message, "content", None)
+                for block in content if isinstance(content, list) else []:
+                    if ToolResultBlock is not None and isinstance(block, ToolResultBlock):
+                        try:
+                            bridge.handle_tool_result(
+                                getattr(block, "tool_use_id", "") or "",
+                                getattr(block, "content", None),
+                                getattr(block, "is_error", None),
+                            )
+                        except Exception:
+                            logger.debug("claude_agent_sdk: tool-result bridge error", exc_info=True)
             continue
         if isinstance(message, AssistantMessage):
             for block in getattr(message, "content", []) or []:

@@ -461,3 +461,96 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+def test_stream_event_translation_with_prefix_stripping_and_suffix_finalization():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+
+    # Event 1: Streaming arguments first chunk (no finishReason)
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    assert len(chunks1) == 1
+    # Should be stripped of closing trailing quote and brace
+    assert chunks1[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc'
+
+    # Event 2: Streaming arguments second chunk with finishReason
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abcdef"}}}
+                    ]
+                },
+                "finishReason": "STOP"
+            }
+        ]
+    }
+
+    chunks2 = translate_stream_event(event2, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    # Event 2 should emit 'def"}' because it is final and includes the suffix
+    tool_deltas = [c.choices[0].delta.tool_calls[0].function.arguments for c in chunks2 if c.choices[0].delta.tool_calls]
+    assert any("def" in d for d in tool_deltas)
+    assert "".join(tool_deltas) == 'def"}'
+
+
+def test_stream_event_translation_parallel_calls_with_disappearing_parts():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+
+    # Event 1: First tool call streams (preceded by a text/thought part)
+    event1 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "Thinking..."},
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks1 = translate_stream_event(event1, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    # The tool call should be at index 0 because it's the first tool call
+    tc1 = chunks1[-1].choices[0].delta.tool_calls[0]
+    assert tc1.index == 0
+    assert tc1.function.arguments == '{"q": "abc'
+
+    # Event 2: Disappearing text part, first tool call completes and second tool call starts
+    event2 = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
+                        {"functionCall": {"name": "search", "args": {"q": "xyz"}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks2 = translate_stream_event(event2, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    # Event 2 should:
+    # 1. Emit an empty delta for first tool call (since it has same args as event1 and is not final)
+    # 2. Emit '{"q": "xyz' for second tool call at index 1 (since it's a new parallel tool call)
+    tool_chunks = [c for c in chunks2 if c.choices[0].delta.tool_calls]
+    assert len(tool_chunks) == 2
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].function.arguments == ""
+    assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
+    assert tool_chunks[1].choices[0].delta.tool_calls[0].function.arguments == '{"q": "xyz'

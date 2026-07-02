@@ -105,11 +105,29 @@ export type LogsSnapshot = {
 
 const API_URL = (import.meta.env.VITE_HERMES_MINIAPP_API_URL ?? "").replace(/\/$/, "");
 
+// Runtime guardrail: the read-only surface is enumerated here, so no code path
+// (present or future) can reach an action endpoint through requestJson.
+// Backend route absence stays the real security boundary; this narrows the
+// client. Kept in sync by test_telegram_miniapp_frontend_guardrails.py.
+const ALLOWED_API_PATHS = new Set([
+  "/api/auth/telegram",
+  "/api/logout",
+  "/api/me",
+  "/api/status",
+  "/api/capabilities",
+  "/api/approvals",
+  "/api/sessions",
+  "/api/logs",
+]);
+
 export function hasMiniAppApi(isTelegramRuntime = false): boolean {
   return API_URL.length > 0 || (import.meta.env.PROD && isTelegramRuntime);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!ALLOWED_API_PATHS.has(path)) {
+    throw new Error(`Mini App API path is not allowlisted: ${path}`);
+  }
   const response = await fetch(`${API_URL}${path}`, {
     credentials: "include",
     ...init,

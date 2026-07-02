@@ -493,6 +493,69 @@ def test_rate_limiter_evicts_stale_minute_buckets():
     assert set(limiter._counts) == {("auth:a", 1)}
 
 
+def test_session_expires_after_ttl_and_requires_reauth():
+    current_time = [1_700_000_100]
+    settings = MiniAppSettings(
+        bot_token=BOT_TOKEN,
+        allowed_users={"777"},
+        session_ttl_seconds=60,
+        now=lambda: current_time[0],
+    )
+    client = make_client(settings=settings)
+    auth = client.post(
+        "/api/auth/telegram",
+        json={"initData": build_init_data(auth_date=1_700_000_000)},
+        headers={"origin": "http://127.0.0.1:5175"},
+    )
+    assert auth.status_code == 200
+
+    assert client.get("/api/me").status_code == 200
+
+    current_time[0] += 61
+    expired = client.get("/api/me")
+    assert expired.status_code == 401
+
+
+def test_local_mode_csrf_posture_missing_origin_is_allowed_by_design():
+    """Lock the loopback CSRF posture as an explicit, reviewed decision.
+
+    A cross-site HTML form POST may omit the Origin header and local mode lets
+    it through the origin guard. That is intentional and safe today: auth
+    requires unforgeable Telegram initData in a JSON body, logout only drops
+    the caller's own session, and no state-changing action endpoints exist.
+    Revisit before any action endpoint ships (see M18 action-gate spec).
+    """
+    client = make_client()
+
+    auth = client.post(
+        "/api/auth/telegram",
+        json={"initData": build_init_data(auth_date=1_700_000_000)},
+    )
+    assert auth.status_code == 200
+
+    # Browser-level CSRF backstop: the local-mode session cookie must stay
+    # HttpOnly + SameSite=Lax so cross-site form POSTs do not carry it.
+    set_cookie = auth.headers.get("set-cookie", "")
+    assert "httponly" in set_cookie.lower()
+    assert "samesite=lax" in set_cookie.lower()
+
+    # HTML forms cannot send application/json; a real cross-site form POST is
+    # rejected by body validation even though it passes the origin guard.
+    form_attempt = client.post(
+        "/api/auth/telegram",
+        data={"initData": "forged"},
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert form_attempt.status_code == 422, "body validation must reject form bodies, not a 5xx"
+
+    # Without the session cookie, a missing-Origin logout is unauthorized.
+    anonymous = make_client()
+    assert anonymous.post("/api/logout").status_code == 401
+
+    logout = client.post("/api/logout")
+    assert logout.status_code == 200
+
+
 def test_rate_limiter_is_thread_safe_across_bucket_rollover():
     limiter = RateLimiter()
     errors: list[Exception] = []

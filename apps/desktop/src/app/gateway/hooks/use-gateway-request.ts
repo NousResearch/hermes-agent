@@ -7,6 +7,17 @@ import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gate
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
+// This client's source label, threaded to the backend on session-originating
+// RPCs so turns from the desktop app are attributed to "desktop" rather than
+// the shared "tui" default. The backend sanitizes it (see
+// tui_gateway.server._sanitize_client_source).
+const CLIENT_SOURCE = 'desktop'
+
+// RPC methods that MINT or (RE)ATTACH a session and therefore build an agent
+// whose platform should carry the client label. Other methods (steer, title,
+// usage, …) act on an existing session and ignore a `source` field.
+const SESSION_ORIGIN_METHODS = new Set(['session.create', 'session.resume'])
+
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
   const gatewayRef = useRef<HermesGateway | null>(null)
@@ -101,8 +112,19 @@ export function useGatewayRequest() {
         throw new Error('Hermes gateway unavailable')
       }
 
+      // Tag session-originating calls with this client so the backend records
+      // the turn's platform/source as "desktop" instead of the shared "tui"
+      // default (the desktop app, dashboard, and Ink TUI all drive the same
+      // JSON-RPC server). Only stamp when the caller hasn't set an explicit
+      // source, and only on the methods that mint/attach a session — every
+      // other RPC ignores the field.
+      const outbound =
+        SESSION_ORIGIN_METHODS.has(method) && params.source === undefined
+          ? { ...params, source: CLIENT_SOURCE }
+          : params
+
       try {
-        return await gateway.request<T>(method, params, timeoutMs, signal)
+        return await gateway.request<T>(method, outbound, timeoutMs, signal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
@@ -128,7 +150,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        return recovered.request<T>(method, outbound, timeoutMs, signal)
       }
     },
     [ensureGatewayOpen]

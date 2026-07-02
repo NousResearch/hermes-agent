@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1206,6 +1207,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # id — pass it through so the upgrade continues that session
                 # instead of starting a fresh one under the same key.
                 kw = {"session_db": session_db}
+                # The deferred build happens turns after session.create/resume,
+                # so carry the originating client (desktop/dashboard/…) off the
+                # session dict rather than losing it to the "tui" default.
+                kw["source"] = _session_source(current)
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
                 resume_overrides = current.get("resume_runtime_overrides")
@@ -1473,6 +1478,31 @@ def _display_session_cwd(session: dict | None) -> str:
         _persist_session_git_meta(session, healed)
 
     return healed
+
+
+# A client (Ink stdio, desktop app, dashboard SPA, future mobile) may name
+# itself via the ``source`` param on session.create/resume so telemetry and the
+# blackbox ``platform`` dimension can tell them apart — they all share this one
+# JSON-RPC server, so without a self-declared label every client records as
+# "tui". The label is free-form (new clients name themselves; no central enum to
+# keep in sync — see the "fixed set of platform names goes stale" note below),
+# but it flows into a persisted DB dimension, so it is sanitized to a short
+# slug and anything malformed/absent falls back to "tui" (the stdio default).
+_CLIENT_SOURCE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,23}$")
+
+
+def _sanitize_client_source(raw: object) -> str:
+    """Normalize a client-declared source label; fall back to ``tui``.
+
+    Untrusted client input feeds a persisted ``source``/``platform`` value, so
+    accept only a genuine ``str`` (a JSON-RPC ``true``/``0`` is not a source
+    label — guard with ``isinstance`` so ``True`` can't coerce to ``"true"``),
+    lowercase, strip, and require a conservative slug; anything else → ``tui``.
+    """
+    if not isinstance(raw, str):
+        return "tui"
+    label = raw.strip().lower()
+    return label if _CLIENT_SOURCE_RE.match(label) else "tui"
 
 
 def _session_source(session: dict | None) -> str:
@@ -4036,6 +4066,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             # session set). See the cross-session-contamination note in
             # _apply_model_switch.
             model_override=session.get("model_override"),
+            # Preserve the originating client (desktop/dashboard/…) across /new.
+            source=_session_source(session),
         )
     finally:
         _clear_session_context(tokens)
@@ -4184,6 +4216,7 @@ def _make_agent(
     provider_override: str | None = None,
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
+    source: str | None = None,
 ):
     from run_agent import AIAgent
 
@@ -4326,7 +4359,10 @@ def _make_agent(
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
-        platform="tui",
+        # Which client drove this session (desktop / dashboard / mobile / tui).
+        # Sanitized at the RPC edge; ``None`` (stdio Ink, internal rebuilds)
+        # keeps the historical "tui" default so nothing regresses.
+        platform=_sanitize_client_source(source),
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -4347,6 +4383,7 @@ def _init_session(
     cols: int = 80,
     cwd: str | None = None,
     session_db=None,
+    source: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -4373,6 +4410,11 @@ def _init_session(
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
+            # Originating client (desktop/dashboard/mobile/tui). Keeps this
+            # session dict's source in step with the agent's platform so a turn's
+            # HERMES_SESSION_SOURCE (DB-row source) and blackbox platform agree.
+            # None (stdio Ink, internal rebuilds) → the historical "tui" default.
+            "source": _sanitize_client_source(source),
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
@@ -4876,7 +4918,7 @@ def _(rid, params: dict) -> dict:
     except Exception:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
-    source = str(params.get("source") or "tui").strip() or "tui"
+    source = _sanitize_client_source(params.get("source"))
     _enable_gateway_prompts()
 
     # ``profile`` (app-global remote mode): a new chat started under a non-launch
@@ -5506,6 +5548,12 @@ def _(rid, params: dict) -> dict:
                 target,
                 session_id=target,
                 session_db=db,
+                # Prefer the client's declared source on this resume; else keep
+                # the label the session was persisted with (never silently
+                # relabel a desktop/dashboard session to "tui" on resume).
+                source=_sanitize_client_source(
+                    params.get("source") or found.get("source")
+                ),
                 **stored_runtime_overrides,
             )
         finally:
@@ -5556,6 +5604,9 @@ def _(rid, params: dict) -> dict:
                     cols=cols,
                     cwd=profile_resume_cwd,
                     session_db=db,
+                    source=_sanitize_client_source(
+                        params.get("source") or found.get("source")
+                    ),
                 )
             finally:
                 if init_home_token is not None:
@@ -7876,11 +7927,28 @@ def _(rid, params: dict) -> dict:
     try:
         tokens = _set_session_context(new_key)
         try:
-            agent = _make_agent(new_sid, new_key, session_id=new_key)
+            agent = _make_agent(
+                new_sid,
+                new_key,
+                session_id=new_key,
+                # A branch inherits its parent's client label unless the caller
+                # names one explicitly, so a forked chat stays attributed to the
+                # desktop/dashboard it was branched from.
+                source=_sanitize_client_source(
+                    params.get("source") or _session_source(session)
+                ),
+            )
         finally:
             _clear_session_context(tokens)
         _init_session(
-            new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
+            new_sid,
+            new_key,
+            agent,
+            list(history),
+            cols=session.get("cols", 80),
+            source=_sanitize_client_source(
+                params.get("source") or _session_source(session)
+            ),
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease

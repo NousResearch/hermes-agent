@@ -39,13 +39,18 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
-// Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
+// Positional jumps — ⌃1…⌃9 on macOS, mirroring profiles' ⌘1…⌘9. Off macOS
+// `ctrl` folds to `mod` (see `canonicalizeCombo`), which would collapse onto the
+// profile slots' ⌘1…⌘9 and — since profiles are indexed first, first-wins — leave
+// every session slot dead (a real Ctrl+N would switch profiles instead). So ship
+// ⌥1…⌥9 there: `alt+N` is unused in the table (only `mod+alt+N` drives profiles
+// 10-18) and doesn't fold onto anything. Mirrors the `composer.voice` precedent.
 export const SESSION_SLOT_COUNT = 9
 
 const SESSION_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: SESSION_SLOT_COUNT }, (_, i) => ({
   id: `session.slot.${i + 1}`,
   category: 'session' as const,
-  defaults: [`ctrl+${i + 1}`]
+  defaults: [IS_MAC ? `ctrl+${i + 1}` : `alt+${i + 1}`]
 }))
 
 export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [

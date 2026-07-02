@@ -1348,12 +1348,16 @@ export const shouldPassThroughToGlobalHandler = (
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
+  isIdleExitHotkey(input, key) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||
   key.pageDown ||
   key.escape ||
   isVoiceToggleKey(key, input, voiceRecordKey)
+
+export const isIdleExitHotkey = (input: string, key: Key): boolean =>
+  input.toLowerCase() === 'd' && ((key.ctrl && !key.meta && key.super !== true) || isActionMod(key))
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

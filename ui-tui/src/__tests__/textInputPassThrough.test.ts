@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
+import {
+  isIdleExitHotkey,
+  shouldPassThroughToGlobalHandler,
+  shouldPreserveCtrlJNewline
+} from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
@@ -44,9 +48,20 @@ describe('shouldPassThroughToGlobalHandler', () => {
   it('always passes through non-voice global control keys', () => {
     expect(shouldPassThroughToGlobalHandler('c', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('d', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ escape: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+  })
+})
+
+describe('isIdleExitHotkey', () => {
+  it('recognizes Ctrl+D as an idle exit hotkey', () => {
+    expect(isIdleExitHotkey('d', key({ ctrl: true }))).toBe(true)
+  })
+
+  it('does not treat plain d as an idle exit hotkey', () => {
+    expect(isIdleExitHotkey('d', key())).toBe(false)
   })
 })

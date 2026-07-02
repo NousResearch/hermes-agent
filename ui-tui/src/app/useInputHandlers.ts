@@ -24,18 +24,38 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
+const IDLE_EXIT_CONFIRM_MS = 2000
+
+interface IdleHotkeyExitConfirmation {
+  hotkeyLabel?: string
+  lastPressedAt: { current: number }
+  now?: () => number
+  timeoutMs?: number
+}
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
-  requestDashboardNewSession?: () => void
+  requestDashboardNewSession?: () => void,
+  confirmation?: IdleHotkeyExitConfirmation
 ) {
   if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
     requestDashboardNewSession?.()
 
     return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+  }
+
+  if (confirmation) {
+    const now = confirmation.now?.() ?? Date.now()
+    const timeoutMs = confirmation.timeoutMs ?? IDLE_EXIT_CONFIRM_MS
+
+    if (!confirmation.lastPressedAt.current || now - confirmation.lastPressedAt.current > timeoutMs) {
+      confirmation.lastPressedAt.current = now
+
+      return actions.sys(`press ${confirmation.hotkeyLabel ?? 'the exit hotkey'} again to exit`)
+    }
   }
 
   return actions.die()
@@ -105,6 +125,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
   const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
+  const idleExitConfirmAtRef = useRef(0)
 
   // Wheel accel ported from claude-code: inter-event timing drives step size,
   // direction flips reset. wheelStep (WHEEL_SCROLL_STEP) is the base; final
@@ -541,13 +562,22 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'd')) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      if (cState.input || cState.inputBuf.length) {
+        return
+      }
+
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        { hotkeyLabel: isMac ? 'Cmd+D' : 'Ctrl+D', lastPressedAt: idleExitConfirmAtRef }
+      )
     }
 
     if (isAction(key, ch, 'l')) {

@@ -834,8 +834,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: route ALL sends through the native adapter so text is
+    # encrypted in E2EE rooms too (issue: text-only sends arrived with a red
+    # padlock because they took the raw-HTTP standalone path). The adapter
+    # reuses the live gateway's E2EE session when available (#46310) and falls
+    # back to an encryption-aware ephemeral adapter for standalone/cron. ---
+    if platform == Platform.MATRIX:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -979,8 +983,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SMS:
             result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
-        elif platform == Platform.MATRIX:
-            result = await _registry_standalone_send("matrix", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
             result = await _registry_standalone_send("dingtalk", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.FEISHU:

@@ -90,6 +90,8 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API",
     signup_url="https://platform.deepseek.com/",
     fallback_models=(
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
         "deepseek-chat",
         "deepseek-reasoner",
     ),

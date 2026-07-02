@@ -3874,10 +3874,16 @@ class GatewaySlashCommandsMixin:
             # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
 
             lines.append(t("gateway.usage.header_session"))
             lines.append(t("gateway.usage.label_model", model=agent.model))
             lines.append(t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}"))
+            if cache_read_tokens:
+                lines.append(t("gateway.usage.label_cache_read", count=f"{cache_read_tokens:,}"))
+            if cache_write_tokens:
+                lines.append(t("gateway.usage.label_cache_write", count=f"{cache_write_tokens:,}"))
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))

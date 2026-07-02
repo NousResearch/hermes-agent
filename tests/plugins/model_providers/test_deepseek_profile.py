@@ -205,3 +205,13 @@ class TestDeepSeekAuxModel:
     def test_consumer_api_returns_non_empty(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("deepseek") != ""
+
+
+class TestDeepSeekFallbackModels:
+    def test_profile_fallback_models_include_current_v4_and_legacy_aliases(self, deepseek_profile):
+        assert deepseek_profile.fallback_models == (
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        )

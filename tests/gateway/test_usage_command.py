@@ -86,10 +86,10 @@ class TestUsageCachedAgent:
         assert "50,000" in result  # total
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
+        # Cost reporting stays omitted; nonzero cache buckets are visible.
         assert "$" not in result
-        assert "Cache read" not in result
-        assert "Cache write" not in result
+        assert "Cache read tokens: 5,000" in result
+        assert "Cache write tokens: 2,000" in result
         assert "Cost" not in result
 
     @pytest.mark.asyncio

@@ -8322,6 +8322,28 @@ def test_get_usage_safe_when_active_count_raises(monkeypatch):
     assert usage["model"] == "x"
 
 
+def test_get_usage_includes_nonzero_cache_buckets(monkeypatch):
+    import tools.async_delegation as ad_mod
+
+    class _CacheAgent(_BareAgent):
+        session_cache_read_tokens = 800
+        session_cache_write_tokens = 200
+
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    usage = server._get_usage(_CacheAgent())
+    assert usage["cache_read"] == 800
+    assert usage["cache_write"] == 200
+
+
+def test_get_usage_omits_zero_cache_buckets(monkeypatch):
+    import tools.async_delegation as ad_mod
+
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    usage = server._get_usage(_BareAgent())
+    assert "cache_read" not in usage
+    assert "cache_write" not in usage
+
+
 def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
     """#48305: switching models from the TUI must NOT destroy sibling keys under
     `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses

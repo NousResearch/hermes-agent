@@ -17741,7 +17741,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     image/audio/document cache + expired ``hermes debug share`` pastes
     once per hour.
     """
-    from cron.scheduler import tick as cron_tick
+    from cron.scheduler import run_cron_tick_once
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
 
@@ -17753,10 +17753,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
     while not stop_event.is_set():
-        try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        # run_cron_tick_once records the liveness heartbeat at the top of the
+        # tick (before any job work) and swallows/logs any exception, so a
+        # single failing tick can never kill this loop or make it look dead.
+        run_cron_tick_once(verbose=False, adapters=adapters, loop=loop)
 
         tick_count += 1
 
@@ -17820,6 +17820,51 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
+
+
+def _cron_ticker_supervisor(
+    stop_event: threading.Event,
+    restart_ticker,
+    interval: int = 60,
+    stale_multiplier: float = 5.0,
+    check_interval: int = 60,
+):
+    """Watchdog that restarts the cron ticker if its heartbeat goes stale.
+
+    The ticker records a liveness heartbeat at the top of every tick
+    (cron.scheduler.record_ticker_heartbeat). If that heartbeat is older than
+    ``stale_multiplier`` tick intervals, the ticker thread has almost certainly
+    wedged (a hung delivery, a stuck job, a pool that never drained). We log a
+    warning and call ``restart_ticker`` to spin up a fresh ticker thread; the
+    file lock inside tick() prevents the old and new threads from overlapping.
+
+    This closes the gap behind the 17h silent-stall incident: previously a hung
+    ticker was never detected and cron simply stopped firing while the gateway
+    stayed up.
+    """
+    from cron.scheduler import get_ticker_heartbeat_age, ticker_heartbeat_is_stale
+
+    logger.info(
+        "Cron ticker supervisor started (stale after %.0fs)",
+        interval * stale_multiplier,
+    )
+    while not stop_event.is_set():
+        stop_event.wait(timeout=check_interval)
+        if stop_event.is_set():
+            break
+        try:
+            if ticker_heartbeat_is_stale(interval, stale_multiplier):
+                age = get_ticker_heartbeat_age()
+                logger.warning(
+                    "Cron ticker heartbeat stale (%.0fs old, > %.0fs threshold) — "
+                    "restarting ticker thread",
+                    age if age is not None else -1.0,
+                    interval * stale_multiplier,
+                )
+                restart_ticker()
+        except Exception as e:
+            logger.debug("Cron ticker supervisor error: %s", e)
+    logger.info("Cron ticker supervisor stopped")
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
@@ -18173,15 +18218,34 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+    _cron_loop = asyncio.get_running_loop()
+    # Mutable holder so the supervisor can swap in a fresh ticker thread if the
+    # current one wedges. daemon=True: a hung old thread is abandoned, not joined.
+    _cron_ticker_holder = {"thread": None}
+
+    def _spawn_cron_ticker() -> None:
+        t = threading.Thread(
+            target=_start_cron_ticker,
+            args=(cron_stop,),
+            kwargs={"adapters": runner.adapters, "loop": _cron_loop},
+            daemon=True,
+            name="cron-ticker",
+        )
+        _cron_ticker_holder["thread"] = t
+        t.start()
+
+    _spawn_cron_ticker()
+
+    # Self-healing watchdog: restarts the ticker if its heartbeat goes stale
+    # (the 17h silent-stall failure mode). Runs in its own daemon thread.
+    cron_supervisor_thread = threading.Thread(
+        target=_cron_ticker_supervisor,
+        args=(cron_stop, _spawn_cron_ticker),
         daemon=True,
-        name="cron-ticker",
+        name="cron-ticker-supervisor",
     )
-    cron_thread.start()
-    
+    cron_supervisor_thread.start()
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -18189,10 +18253,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
-    # Stop cron ticker cleanly
+
+    # Stop cron ticker + supervisor cleanly
     cron_stop.set()
-    cron_thread.join(timeout=5)
+    _current_ticker = _cron_ticker_holder.get("thread")
+    if _current_ticker is not None:
+        _current_ticker.join(timeout=5)
+    cron_supervisor_thread.join(timeout=5)
 
     # Close MCP server connections
     try:

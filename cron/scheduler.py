@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -42,6 +44,100 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Ticker liveness heartbeat + self-healing support.
+#
+# The gateway drives cron from a single background thread (see
+# gateway.run._start_cron_ticker). Historically that loop called tick()
+# inline with no liveness signal and no watchdog: if a tick blocked forever
+# (a hung delivery send, a stuck job, a pool that never drained) the thread
+# wedged and cron silently stopped firing while the gateway itself stayed up.
+# One incident ran ~17h with no jobs firing and no error surfaced.
+#
+# record_ticker_heartbeat() is called at the TOP of every loop iteration,
+# BEFORE any job work, so the heartbeat measures the loop's own liveness —
+# not whether individual jobs succeed. A supervisor (gateway side) watches
+# the heartbeat age and restarts the ticker thread if it goes stale.
+# ---------------------------------------------------------------------------
+_ticker_heartbeat_lock = threading.Lock()
+_ticker_heartbeat = {"monotonic": None, "wall": None, "count": 0}
+
+
+def record_ticker_heartbeat() -> None:
+    """Record that the cron ticker loop is alive (called at the top of each tick).
+
+    Uses a monotonic clock for age math (immune to wall-clock jumps) and also
+    stashes a human-readable wall timestamp for logs/diagnostics. Best-effort
+    file mirror lets operators inspect ticker liveness without attaching to the
+    process.
+    """
+    with _ticker_heartbeat_lock:
+        _ticker_heartbeat["monotonic"] = time.monotonic()
+        _ticker_heartbeat["wall"] = _hermes_now().isoformat()
+        _ticker_heartbeat["count"] += 1
+        count = _ticker_heartbeat["count"]
+        wall = _ticker_heartbeat["wall"]
+
+    # Best-effort persisted mirror — never let heartbeat bookkeeping raise into
+    # the ticker loop.
+    try:
+        lock_dir, _ = _get_lock_paths()
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        (lock_dir / ".ticker_heartbeat").write_text(
+            json.dumps({"wall": wall, "count": count}), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def get_ticker_heartbeat_age() -> Optional[float]:
+    """Return seconds since the last recorded ticker heartbeat, or None if never set."""
+    with _ticker_heartbeat_lock:
+        mono = _ticker_heartbeat["monotonic"]
+    if mono is None:
+        return None
+    return time.monotonic() - mono
+
+
+def reset_ticker_heartbeat() -> None:
+    """Clear the heartbeat state (used by tests to start from a known state)."""
+    with _ticker_heartbeat_lock:
+        _ticker_heartbeat["monotonic"] = None
+        _ticker_heartbeat["wall"] = None
+        _ticker_heartbeat["count"] = 0
+
+
+def ticker_heartbeat_is_stale(interval: float, multiplier: float = 5.0) -> bool:
+    """Whether the ticker heartbeat is older than ``multiplier`` tick intervals.
+
+    Returns False when no heartbeat has been recorded yet (the ticker may not
+    have started) so a supervisor doesn't thrash before the first tick.
+    """
+    age = get_ticker_heartbeat_age()
+    if age is None:
+        return False
+    return age > max(interval, 0.0) * multiplier
+
+
+def run_cron_tick_once(verbose: bool = False, adapters=None, loop=None) -> int:
+    """Run a single cron tick with heartbeat + exception isolation.
+
+    This is the loop body the gateway ticker thread should call each interval.
+    The heartbeat is recorded FIRST, before any job work, so a hung or failing
+    job cannot make the loop look dead. Any exception escaping ``tick()`` is
+    logged and swallowed so a single bad tick can never kill the ticker thread.
+    """
+    record_ticker_heartbeat()
+    try:
+        return tick(verbose=verbose, adapters=adapters, loop=loop)
+    except Exception:
+        # Escaped exceptions used to be logged at DEBUG and effectively lost.
+        # Log with traceback at ERROR so a recurring tick failure is visible,
+        # then continue — the next tick still fires.
+        logger.exception("Cron tick raised; loop continues to next interval")
+        return 0
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -511,6 +607,12 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
+# Upper bound (seconds) on the standalone delivery send. This send runs inline
+# on the ticker's tick path, so an unbounded platform HTTP call could wedge the
+# whole cron ticker — a delivery that never returns must fail as an error, not
+# hang forever.
+_DELIVERY_TIMEOUT = 60
+
 
 def _send_media_via_adapter(
     adapter,
@@ -731,8 +833,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            # Standalone path: run the async send in a fresh event loop (safe from any thread).
+            # Bound the send with a timeout — this runs inline on the ticker's tick
+            # path, so a platform whose HTTP send never returns would otherwise wedge
+            # the whole cron ticker (the 17h silent-stall failure mode).
+            def _bounded_send_coro():
+                return asyncio.wait_for(
+                    _send_to_platform(
+                        platform, pconfig, chat_id, cleaned_delivery_content,
+                        thread_id=thread_id, media_files=media_files,
+                    ),
+                    timeout=_DELIVERY_TIMEOUT,
+                )
+
+            coro = _bounded_send_coro()
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -742,8 +856,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
+                    future = pool.submit(lambda: asyncio.run(_bounded_send_coro()))
+                    result = future.result(timeout=_DELIVERY_TIMEOUT + 5)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)

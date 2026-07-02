@@ -2548,3 +2548,131 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestTickerHeartbeatAndSupervisor:
+    """Regression coverage for the 17h silent-stall incident.
+
+    The cron ticker used to run tick() inline with no liveness signal and no
+    watchdog: a hung tick wedged the thread and cron silently stopped firing
+    while the gateway stayed up. These tests lock in the three guarantees of
+    the fix: per-tick exception isolation, a heartbeat that measures loop
+    liveness (not job success), and a supervisor that restarts a wedged ticker.
+    """
+
+    def setup_method(self):
+        from cron.scheduler import reset_ticker_heartbeat
+        reset_ticker_heartbeat()
+
+    def teardown_method(self):
+        from cron.scheduler import reset_ticker_heartbeat
+        reset_ticker_heartbeat()
+
+    def test_tick_exception_does_not_kill_loop(self, tmp_path):
+        """An exception escaping tick() is swallowed so the next tick still fires."""
+        from cron import scheduler
+
+        calls = {"n": 0}
+
+        def boom(*args, **kwargs):
+            calls["n"] += 1
+            raise RuntimeError("job execution exploded")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.tick", side_effect=boom):
+            # First tick raises internally but run_cron_tick_once must not.
+            assert scheduler.run_cron_tick_once(verbose=False) == 0
+            # Loop would call it again next interval — it still runs.
+            assert scheduler.run_cron_tick_once(verbose=False) == 0
+
+        assert calls["n"] == 2
+
+    def test_heartbeat_recorded_before_tick_even_when_job_hangs(self, tmp_path):
+        """Heartbeat is written at the top of the tick, before job work, so a
+        hung/failing job still leaves a fresh heartbeat behind."""
+        from cron import scheduler
+
+        observed = {}
+
+        def hang_then_fail(*args, **kwargs):
+            # Heartbeat must already be fresh by the time job work runs.
+            observed["age_during_tick"] = scheduler.get_ticker_heartbeat_age()
+            raise TimeoutError("job hung")
+
+        assert scheduler.get_ticker_heartbeat_age() is None
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.tick", side_effect=hang_then_fail):
+            scheduler.run_cron_tick_once(verbose=False)
+
+        # Heartbeat was recorded before the (failing) tick body ran.
+        assert observed["age_during_tick"] is not None
+        assert observed["age_during_tick"] < 5.0
+        # And it remains fresh afterward.
+        assert scheduler.get_ticker_heartbeat_age() < 5.0
+
+    def test_heartbeat_stale_detection(self):
+        from cron import scheduler
+
+        # No heartbeat yet -> never considered stale (ticker may not have started).
+        assert scheduler.ticker_heartbeat_is_stale(interval=60, multiplier=5) is False
+
+        scheduler.record_ticker_heartbeat()
+        # Fresh heartbeat -> not stale.
+        assert scheduler.ticker_heartbeat_is_stale(interval=60, multiplier=5) is False
+
+        # Simulate an aged heartbeat.
+        with patch("cron.scheduler.get_ticker_heartbeat_age", return_value=10_000.0):
+            assert scheduler.ticker_heartbeat_is_stale(interval=60, multiplier=5) is True
+
+    def test_supervisor_restarts_stale_ticker(self):
+        """When the heartbeat is stale, the supervisor calls the restart callback."""
+        import threading
+        from gateway.run import _cron_ticker_supervisor
+
+        stop_event = threading.Event()
+        restarts = {"n": 0}
+
+        def fake_restart():
+            restarts["n"] += 1
+            stop_event.set()  # exit the supervisor loop after one restart
+
+        with patch("cron.scheduler.ticker_heartbeat_is_stale", return_value=True):
+            _cron_ticker_supervisor(
+                stop_event,
+                fake_restart,
+                interval=60,
+                stale_multiplier=5.0,
+                check_interval=0,
+            )
+
+        assert restarts["n"] == 1
+
+    def test_supervisor_does_not_restart_when_healthy(self):
+        """A fresh heartbeat must not trigger a restart."""
+        import threading
+        from gateway.run import _cron_ticker_supervisor
+
+        stop_event = threading.Event()
+        restarts = {"n": 0}
+
+        def fake_restart():
+            restarts["n"] += 1
+
+        call_count = {"n": 0}
+
+        def not_stale(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                stop_event.set()  # end the loop after a couple of healthy checks
+            return False
+
+        with patch("cron.scheduler.ticker_heartbeat_is_stale", side_effect=not_stale):
+            _cron_ticker_supervisor(
+                stop_event,
+                fake_restart,
+                interval=60,
+                stale_multiplier=5.0,
+                check_interval=0,
+            )
+
+        assert restarts["n"] == 0

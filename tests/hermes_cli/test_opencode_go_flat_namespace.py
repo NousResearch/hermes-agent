@@ -27,14 +27,14 @@ from hermes_cli.model_normalize import normalize_model_for_provider
 from hermes_cli.model_switch import switch_model
 
 
-# Live catalog opencode-go currently returns from /v1/models (snapshot).
+# Representative opencode-go flat-namespace catalog used by tests.
 _OPENCODE_GO_LIVE = [
-    "minimax-m2.7", "minimax-m2.5",
-    "kimi-k2.6", "kimi-k2.5",
-    "glm-5.1", "glm-5",
+    "glm-5.2", "glm-5.1", "glm-5",
+    "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+    "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni",
+    "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+    "minimax-m2.7", "minimax-m3", "minimax-m2.5",
     "deepseek-v4-pro", "deepseek-v4-flash",
-    "qwen3.6-plus", "qwen3.5-plus",
-    "mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5-pro", "mimo-v2.5",
 ]
 
 

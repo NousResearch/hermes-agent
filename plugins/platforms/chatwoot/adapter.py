@@ -779,7 +779,8 @@ class ChatwootAdapter(BasePlatformAdapter):
             return None
         url = self._contacts_endpoint(account_id, contact_id)
         try:
-            async with self._session.get(url, headers=self._headers()) as resp:
+            # Contacts API is not authorized for Agent Bots — use the agent/user token.
+            async with self._session.get(url, headers=self._headers(use_agent_token=True)) as resp:
                 if 200 <= resp.status < 300:
                     data = await resp.json()
                     if isinstance(data, dict):
@@ -803,7 +804,7 @@ class ChatwootAdapter(BasePlatformAdapter):
         url = self._contacts_endpoint(account_id, contact_id)
         try:
             async with self._session.put(
-                url, json=fields, headers=self._headers()
+                url, json=fields, headers=self._headers(use_agent_token=True)
             ) as resp:
                 if 200 <= resp.status < 300:
                     return True
@@ -849,7 +850,7 @@ class ChatwootAdapter(BasePlatformAdapter):
         url = f"{self._contacts_endpoint(account_id, contact_id)}/labels"
         try:
             async with self._session.post(
-                url, json={"labels": labels}, headers=self._headers()
+                url, json={"labels": labels}, headers=self._headers(use_agent_token=True)
             ) as resp:
                 if 200 <= resp.status < 300:
                     return True
@@ -997,3 +998,10 @@ def register(ctx) -> None:
             "time, after which you stay silent until handed control back."
         ),
     )
+
+    # Inject the current CRWD member's user_id into each turn so the coach can
+    # call crwd_db user lookups directly (no get_user round-trip). Best-effort;
+    # no-ops off Chatwoot or when the id can't be resolved.
+    from plugins.platforms.chatwoot import coach_context
+
+    ctx.register_hook("pre_llm_call", coach_context.member_context_hook)

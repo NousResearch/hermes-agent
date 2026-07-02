@@ -90,7 +90,7 @@ def test_build_contact_fields_maps_expected():
         "city": "Frederick", "country": "US", "state": "Maryland",
     }
     custom = fields["custom_attributes"]
-    assert custom["crwd_user_id"] == "69e273fb1d163ce2fd86754c"
+    assert custom["joincrwd_user_id"] == "69e273fb1d163ce2fd86754c"
     assert custom["crwd_synced_at"] == "2026-07-02T00:00:00+00:00"
     assert custom["crwd_instagram"] == "https://instagram.com/1.estefania"
     assert custom["crwd_tiktok"] == "https://tiktok.com/@creolepride"

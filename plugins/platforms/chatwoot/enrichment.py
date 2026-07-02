@@ -275,7 +275,7 @@ def build_contact_fields(
         if val:
             additional[dst] = val
 
-    custom: Dict[str, Any] = {"crwd_user_id": str(user.get("_id"))}
+    custom: Dict[str, Any] = {"joincrwd_user_id": str(user.get("_id"))}
     custom["crwd_synced_at"] = synced_at or datetime.now(timezone.utc).isoformat()
     for key in ("bio", "gender", "dob", "status", "postal_code"):
         val = _nonempty(user.get(key))

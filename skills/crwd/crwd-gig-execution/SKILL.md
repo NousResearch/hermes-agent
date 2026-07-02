@@ -25,8 +25,10 @@ skill (proof is just the tail of doing the gig).
 
 1. **Confirm the gig and its type** (live vs online) with `crwd_db` `get_gig_details`.
 2. **Surface the exact product + buy link.** Use `get_user_products` (the member's approved
-   products for their gigs — product name + `product_url`). Give them the real link, don't
-   describe it vaguely.
+   products for their gigs — product name + `product_url`). The current member's CRWD
+   `user_id` is provided in context (a `[CRWD member]` line) — pass it straight through;
+   `get_user_products` and `get_user_receipts` both take that `user_id`. Only use `get_user`
+   for a different person. Give them the real link, don't describe it vaguely.
 3. **Live gig steps:** go to the store (see `crwd-store-locator` if they need to find it),
    buy the product, and **call out any special requirement precisely** — e.g. *two purchases
    with two different payment methods* means two separate transactions and two receipts.

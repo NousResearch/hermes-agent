@@ -27,9 +27,11 @@ Find gigs and explain them against the member's **real** data — not in the abs
 2. **A specific gig by name/text:** `get_gig_details` (fuzzy-matches, returns ranked
    candidates with an `_id`). **Confirm the right `_id`** before you quote details or use it
    elsewhere — if two candidates are close, ask which one they mean.
-3. **Their gigs / approval state:** `get_user_gigs` (needs the member's `users._id` — get it
-   with `get_user` by email/phone if you only have that). This shows the campaigns they're an
-   active member of and their membership status.
+3. **Their gigs / approval state:** `get_user_gigs`. The current member's CRWD `user_id` is
+   provided to you in context (a `[CRWD member]` line) — pass it straight through as `user_id`.
+   Only fall back to `get_user` (by email/phone) if that line isn't present or you're looking
+   up a **different** person. This shows the campaigns they're an active member of and their
+   membership status.
 4. Explain the flow against their **actual** state, not generically: browse → apply →
    **get approved** → perform → submit proof → get paid. If they're waiting on approval, say
    that; if approved, point them at what to do next (`crwd-gig-execution`).

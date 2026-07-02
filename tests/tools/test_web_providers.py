@@ -418,7 +418,6 @@ class TestDispatchersTriggerPluginDiscovery:
             result = json.loads(asyncio.run(
                 web_tools.web_extract_tool(
                     ["https://example.com"],
-                    use_llm_processing=False,
                 )
             ))
 

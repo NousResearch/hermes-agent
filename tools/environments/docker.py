@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local import (
+    _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _is_hermes_internal_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,18 +325,27 @@ def find_docker() -> Optional[str]:
 #       preserved. Omitted entirely when the container starts as a
 #       non-root user via --user, since no privilege drop is needed
 #       in that mode.
-# Block privilege escalation and limit PIDs.
+# Block privilege escalation.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
+#
+# Note: ``--pids-limit`` is *not* in this list — it lives in ``resource_args``
+# and is gated on ``_cgroup_limits_available(image)`` because it requires the
+# ``pids`` cgroup controller to be delegated, which is not the case on hosts
+# such as unprivileged LXCs. ``--cpus``/``--memory`` are gated for the same
+# reason.
 _BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges",
-    "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
 ]
+
+# Default per-container PID limit. Applied as ``--pids-limit`` only when the
+# cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
+_DEFAULT_PIDS_LIMIT = "256"
 
 # /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
 # mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
@@ -431,6 +443,59 @@ def _resolve_host_user_spec() -> Optional[str]:
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
+_cgroup_limits_ok: Optional[bool] = None  # cached result across instances
+
+
+def _cgroup_limits_available(image: str) -> bool:
+    """Probe whether cgroup resource limits work in this environment.
+
+    Tests ``--cpus``, ``--memory`` and ``--pids-limit`` together by spawning
+    a throwaway container from *image* (the same sandbox image we are about
+    to use for real, so no extra pull and no dependency on a public
+    registry). The container runs ``sleep 0`` — sleep is guaranteed to be
+    present because the sandbox itself uses ``sleep 2h`` as its long-lived
+    entrypoint.
+
+    On hosts where the corresponding cgroup controllers are not delegated
+    to this process (typical inside unprivileged LXCs and some rootless
+    setups) these flags cause every container start to fail with ``OCI
+    runtime error`` / exit 126. The probe runs once per process and the
+    result — which is host-wide, not image-specific — is cached.
+    """
+    global _cgroup_limits_ok
+    if _cgroup_limits_ok is not None:
+        return _cgroup_limits_ok
+
+    docker_exe = find_docker()
+    if not docker_exe or not image:
+        _cgroup_limits_ok = False
+        return False
+
+    try:
+        result = subprocess.run(
+            [docker_exe, "run", "--rm",
+             "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
+             image, "sleep", "0"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        _cgroup_limits_ok = result.returncode == 0
+        if not _cgroup_limits_ok:
+            logger.warning(
+                "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
+                "available in this environment. Containers will run without "
+                "CPU, memory or PID limits. To enable, delegate the cpu, "
+                "memory and pids cgroup controllers to this container. "
+                "Probe stderr: %s",
+                (result.stderr or "").strip()[:500],
+            )
+    except Exception as e:
+        _cgroup_limits_ok = False
+        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", e)
+
+    return _cgroup_limits_ok
 
 
 def _ensure_docker_available() -> None:
@@ -555,12 +620,17 @@ class DockerEnvironment(BaseEnvironment):
         # Fail fast if Docker is not available.
         _ensure_docker_available()
 
-        # Build resource limit args
+        # Build resource limit args (gated by cgroup availability probe so
+        # they degrade gracefully on hosts without controller delegation,
+        # e.g. unprivileged LXCs). The probe runs once per process and is
+        # cached host-wide.
         resource_args = []
-        if cpu > 0:
+        if cpu > 0 and _cgroup_limits_available(image):
             resource_args.extend(["--cpus", str(cpu)])
-        if memory > 0:
+        if memory > 0 and _cgroup_limits_available(image):
             resource_args.extend(["--memory", f"{memory}m"])
+        if _cgroup_limits_available(image):
+            resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])
@@ -925,8 +995,13 @@ class DockerEnvironment(BaseEnvironment):
             pass
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
-        # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        # keys are filtered. Also strip Hermes-internal dynamic secrets
+        # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) that the
+        # name-based blocklist doesn't cover — see _is_hermes_internal_secret.
+        _implicit_forward = {
+            k for k in passthrough_keys if not _is_hermes_internal_secret(k)
+        }
+        forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)

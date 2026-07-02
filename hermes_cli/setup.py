@@ -93,6 +93,11 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
+    "vertex": [
+        "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-2.5-pro", "google/gemini-2.5-flash",
+    ],
     "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
@@ -1531,10 +1536,11 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    if mode.lower() in {"off", "new", "all", "verbose", "log"}:
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()

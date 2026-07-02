@@ -19,7 +19,7 @@ specific tool's schema on demand.
 The tools that make up Hermes' core capability set (`terminal`,
 `read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
 `browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, `send_message`, and the rest of
+`delegate_task`, `session_search`, and the rest of
 `_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
 non-core plugin tools are eligible for deferral.
 :::

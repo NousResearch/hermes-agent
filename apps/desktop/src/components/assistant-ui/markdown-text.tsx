@@ -27,6 +27,7 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
+  downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
@@ -129,21 +130,50 @@ async function mediaSrc(path: string): Promise<string> {
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+function useOpenMediaFile(path: string) {
+  const [openFailed, setOpenFailed] = useState(false)
+
+  const open = () => {
+    if (window.hermesDesktop && isRemoteGateway()) {
+      setOpenFailed(false)
+      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+    } else {
+      openExternalLink(mediaExternalUrl(path))
+    }
+  }
+
+  return { open, openFailed }
+}
+
+function OpenMediaFailedNote({ name }: { name: string }) {
   return (
-    <button
-      className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
-      onClick={() => void window.hermesDesktop?.openExternal(mediaExternalUrl(path))}
-      type="button"
-    >
-      Open {kind} file
-    </button>
+    <span className="mt-1 block text-xs text-muted-foreground">
+      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
+    </span>
+  )
+}
+
+function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+  const { open, openFailed } = useOpenMediaFile(path)
+
+  return (
+    <span className="block">
+      <button
+        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+        onClick={open}
+        type="button"
+      >
+        Open {kind} file
+      </button>
+      {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
+    </span>
   )
 }
 
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -153,6 +183,15 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
+
+    if (kind === 'file') {
+      setFailed(true)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
@@ -178,7 +217,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [path])
+  }, [kind, path])
 
   if (kind === 'image' && src) {
     return (
@@ -214,16 +253,19 @@ function MediaAttachment({ path }: { path: string }) {
   }
 
   return (
-    <a
-      className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-      href="#"
-      onClick={event => {
-        event.preventDefault()
-        openExternalLink(mediaExternalUrl(path))
-      }}
-    >
-      {failed ? `Open ${name}` : `Loading ${name}...`}
-    </a>
+    <span className="wrap-anywhere">
+      <a
+        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          open()
+        }}
+      >
+        {failed ? `Open ${name}` : `Loading ${name}...`}
+      </a>
+      {openFailed && <OpenMediaFailedNote name={name} />}
+    </span>
   )
 }
 

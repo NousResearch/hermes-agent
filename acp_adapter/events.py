@@ -154,14 +154,20 @@ def make_tool_progress_cb(
         queue.append(tc_id)
 
         snapshot = None
-        if name in {"write_file", "patch", "skill_manage"}:
+        if name in {"read_file", "write_file", "patch", "skill_manage"}:
             try:
                 from agent.display import capture_local_edit_snapshot
 
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+        meta_entry = {"args": args, "snapshot": snapshot}
+        if name == "read_file":
+            from pathlib import Path
+            rp = args.get("path", "")
+            if rp:
+                meta_entry["_read_path"] = str(Path(rp).resolve())
+        tool_call_meta[tc_id] = meta_entry
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
@@ -251,6 +257,30 @@ def make_step_cb(
                     tool_call_ids[tool_name] = queue
                 if tool_name and queue:
                     tc_id = queue.popleft()
+
+                    # For terminal: build composite snapshot from read_file snapshots
+                    # accumulated during this turn. read_file entries are still in
+                    # tool_call_meta (not yet popped).
+                    if tool_name == "terminal":
+                        known: dict[str, str | None] = {}
+                        for tc, m in list(tool_call_meta.items()):
+                            rp = m.get("_read_path")
+                            if rp:
+                                snap = m.get("snapshot")
+                                if snap is not None and hasattr(snap, "before") and rp in snap.before:
+                                    known[rp] = snap.before[rp]
+                        if known:
+                            from pathlib import Path
+                            from agent.display import LocalEditSnapshot
+                            tool_call_meta.setdefault(tc_id, {})["snapshot"] = LocalEditSnapshot(
+                                paths=[Path(p) for p in known],
+                                before=known,
+                            )
+                            logger.debug(
+                                "terminal composite snapshot: %d paths from %d reads",
+                                len(known), sum(1 for m in tool_call_meta.values() if m.get("_read_path")),
+                            )
+
                     meta = tool_call_meta.pop(tc_id, {})
                     update = build_tool_complete(
                         tc_id,

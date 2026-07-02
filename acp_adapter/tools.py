@@ -990,7 +990,10 @@ def _build_tool_complete_content(
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
 
-    if tool_name == "skill_manage":
+    # All file-modifying tools: extract unified diff and send as ACP diff blocks.
+    # This gives CCH GUI (and any ACP consumer) proper oldText/newText for
+    # inline diff rendering and Edits tab counts.
+    if tool_name in {"write_file", "patch", "skill_manage", "terminal"}:
         try:
             from agent.display import extract_edit_diff
 

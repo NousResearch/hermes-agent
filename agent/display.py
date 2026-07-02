@@ -730,7 +730,7 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
 
 
 def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
-    """Resolve local filesystem targets for write-capable tools."""
+    """Resolve local filesystem targets for write-capable and read tools."""
     if not isinstance(function_args, dict):
         return []
 
@@ -739,6 +739,10 @@ def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> lis
         return [_resolved_path(path)] if path else []
 
     if tool_name == "patch":
+        path = function_args.get("path")
+        return [_resolved_path(path)] if path else []
+
+    if tool_name == "read_file":
         path = function_args.get("path")
         return [_resolved_path(path)] if path else []
 
@@ -820,7 +824,7 @@ def extract_edit_diff(
             if isinstance(diff, str) and diff.strip():
                 return diff
 
-    if tool_name not in {"write_file", "patch", "skill_manage"}:
+    if tool_name not in {"write_file", "patch", "skill_manage", "terminal"}:
         return None
     if not _result_succeeded(result):
         return None

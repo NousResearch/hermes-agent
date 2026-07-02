@@ -199,6 +199,68 @@ class TestStdioPidTracking:
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
 
+    def test_run_stdio_reaps_orphans_before_spawn(self):
+        """_run_stdio kills orphaned PIDs from prior failed attempts (#57355)."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pids,
+            _stdio_pgids,
+            _lock,
+            MCPServerTask,
+        )
+        from unittest.mock import patch, MagicMock, AsyncMock
+
+        # Seed an orphan PID that belongs to a prior failed connection.
+        fake_pid = 999999997
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+
+        server = MCPServerTask.__new__(MCPServerTask)
+        server.name = "test-zombie-reap"
+        server._ready = MagicMock()
+        server._shutdown_event = MagicMock()
+        server._shutdown_event.is_set.return_value = True
+        server._reconnect_event = MagicMock()
+        server._sampling = None
+        server._elicitation = None
+        server._registered_tool_names = []
+
+        config = {"command": "echo", "args": ["hello"]}
+
+        import asyncio
+
+        async def _run():
+            # _run_stdio should reap orphans before it gets to the
+            # stdio_client spawn.  Patch the OSV check (local import)
+            # and stdio_client so no real subprocess is spawned.
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._build_safe_env", return_value={}), \
+                 patch("tools.mcp_tool._resolve_stdio_command",
+                       return_value=("echo", {})), \
+                 patch("tools.mcp_tool._write_stderr_log_header"), \
+                 patch("tools.mcp_tool._get_mcp_stderr_log",
+                       return_value=None), \
+                 patch("tools.mcp_tool.check_package_for_malware",
+                       return_value=None, create=True), \
+                 patch("tools.osv_check.check_package_for_malware",
+                       return_value=None):
+                # Patch stdio_client to raise so the test exits quickly
+                cm = MagicMock()
+                cm.__aenter__ = AsyncMock(side_effect=RuntimeError("test"))
+                cm.__aexit__ = AsyncMock(return_value=False)
+                with patch("tools.mcp_tool.stdio_client", return_value=cm):
+                    try:
+                        await server._run_stdio(config)
+                    except Exception:
+                        pass
+
+        asyncio.run(_run())
+
+        # The orphan must have been reaped before the spawn attempt.
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
 
 # ---------------------------------------------------------------------------
 # Fix 2b: stdio descendant reaping via process group (issue #23799)

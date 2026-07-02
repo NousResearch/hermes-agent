@@ -219,6 +219,46 @@ class TestMcpAdd:
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
+    def test_add_client_credentials(self, capsys, monkeypatch):
+        """--auth client_credentials writes the oauth block + secret to .env."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("hudu_list_companies", "list companies")],
+        )
+        # client_id + scope come from flags; only the secret is prompted.
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._prompt",
+            lambda q, password=False, default="": "s3cr3t" if "secret" in q.lower() else default,
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")  # accept all tools
+
+        from hermes_cli.mcp_config import cmd_mcp_add, get_env_value
+
+        cmd_mcp_add(
+            _make_args(
+                name="gw",
+                url="https://gw/mcp",
+                auth="client_credentials",
+                client_id="mcp-gateway",
+                scope="profile",
+            )
+        )
+
+        import yaml
+
+        from hermes_cli.config import get_config_path, load_config
+
+        srv = load_config()["mcp_servers"]["gw"]
+        assert srv["auth"] == "oauth"
+        assert srv["oauth"]["grant"] == "client_credentials"
+        assert srv["oauth"]["client_id"] == "mcp-gateway"
+        assert srv["oauth"]["scope"] == "profile"
+        # The secret is stored as a ${VAR} reference in config.yaml (resolved from
+        # .env at load time) — the literal secret never lands in config.yaml.
+        raw = yaml.safe_load(get_config_path().read_text())
+        assert raw["mcp_servers"]["gw"]["oauth"]["client_secret"] == "${MCP_GW_CLIENT_SECRET}"
+        assert get_env_value("MCP_GW_CLIENT_SECRET") == "s3cr3t"
+
     def test_add_stdio_server(self, tmp_path, capsys, monkeypatch):
         """Add a stdio server."""
         fake_tools = [FakeTool("search", "Search repos")]

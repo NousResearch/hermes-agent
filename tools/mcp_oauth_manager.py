@@ -530,6 +530,16 @@ class MCPOAuthManager:
             return None
 
         cfg = dict(entry.oauth_config or {})
+
+        # Headless M2M grant (client_credentials): no browser, no callback, no
+        # interactivity gate. The SDK's provider mints on the first 401 and
+        # re-mints on expiry (client_credentials — no refresh_token) inside
+        # its own httpx auth flow, so nothing extra is needed here.
+        from tools.mcp_oauth import build_m2m_provider, is_m2m_grant
+
+        if is_m2m_grant(cfg):
+            return build_m2m_provider(server_name, entry.server_url, cfg)
+
         storage = HermesTokenStorage(server_name)
 
         if not _is_interactive() and not storage.has_cached_tokens():
@@ -555,6 +565,19 @@ class MCPOAuthManager:
             callback_handler=_wait_for_callback,
             timeout=float(cfg.get("timeout", 300)),
         )
+
+    def is_m2m(self, server_name: str) -> bool:
+        """True when this server uses a headless machine-to-machine grant.
+
+        Used to tailor the auth-failure message: an M2M server has no browser
+        ``hermes mcp login`` flow, so prompting for one would be wrong.
+        """
+        entry = self._entries.get(server_name)
+        if entry is None:
+            return False
+        from tools.mcp_oauth import is_m2m_grant
+
+        return is_m2m_grant(entry.oauth_config)
 
     def remove(self, server_name: str) -> None:
         """Evict the provider from cache AND delete tokens from disk.

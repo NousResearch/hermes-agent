@@ -289,3 +289,39 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+
+### Machine-to-machine (`client_credentials`)
+
+The interactive flow above needs a human at first connect. For a **headless**
+deployment (a daemon/gateway with no browser), set `oauth.grant:
+client_credentials` to use the SDK's client-credentials extension: the client
+authenticates with a client ID + shared secret — no browser, no callback. Keep
+the secret in a secret store and reference it via `${VAR}`; never inline it.
+
+You can also add this server with the CLI wizard:
+`hermes mcp add gateway --url https://gateway.internal/mcp --auth client_credentials`
+(it prompts for the client ID, secret, and scope).
+
+```yaml
+mcp_servers:
+  gateway:
+    url: "https://gateway.internal/mcp"
+    auth: oauth
+    oauth:
+      grant: client_credentials
+      client_id: "my-client"
+      client_secret: "${MCP_GATEWAY_CLIENT_SECRET}"   # from ~/.hermes/.env — never inline
+      scope: "profile"
+      # token_endpoint_auth_method: client_secret_basic   # or client_secret_post (default: basic)
+```
+
+Behavior:
+- Fully headless: no browser, no local callback server, no interactivity gate
+- The token is a client-credentials access token, **re-minted automatically on
+  expiry** — the SDK re-runs the exchange on a 401 (no `refresh_token` required)
+- The authorization server is discovered from the MCP server's protected-resource
+  metadata (RFC 9728) — no token endpoint to configure by hand
+- Requires `mcp>=1.26`; otherwise the server fails to connect with a clear error
+- The secret is referenced (env var), never stored in config
+- If a *freshly minted* token is rejected, the error points at the client
+  credentials / scopes / gateway policy — there is no interactive re-auth

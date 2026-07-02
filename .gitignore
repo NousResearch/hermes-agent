@@ -1,8 +1,20 @@
+<<<<<<< HEAD
 .DS_Store
 /venv/
 /venv.old/
 /_pycache/
 *.pyc*
+=======
+# Hermes runtime state and secrets
+.hermes/
+.env
+*.env
+vars.toml
+config/*.local.*
+config/secrets.*
+
+# Python/cache/log outputs
+>>>>>>> cdaa0c32b (chore: ignore local vars config)
 __pycache__/
 .venv/
 .venv

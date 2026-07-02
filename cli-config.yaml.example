@@ -572,6 +572,41 @@ max_concurrent_sessions: null
 group_sessions_per_user: true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message

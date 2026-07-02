@@ -64,9 +64,10 @@ def capture(server):
 # seconds when the GIL is contended by concurrent agent turns.
 
 FRONTEND_POLLED_RPCS = [
-    "session.list",   # loads session list — SQLite query
-    "pet.info",       # petdex poll — file/network read
-    "process.list",   # background process status — process registry scan
+    "session.list",          # loads session list — SQLite query
+    "pet.info",              # petdex poll — file/network read
+    "process.list",          # background process status — process registry scan
+    "setup.runtime_check",   # readiness probe — provider/config/runtime imports
 ]
 
 

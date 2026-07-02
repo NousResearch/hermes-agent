@@ -1951,6 +1951,13 @@ class MCPServerTask:
         if _MCP_LOGGING_CALLBACK_SUPPORTED:
             sampling_kwargs["logging_callback"] = self._make_logging_callback()
 
+        # Reap any orphaned subprocesses from a prior failed connection
+        # attempt before spawning a new one.  Without this, each retry in
+        # the run() reconnect loop spawns a fresh process pair while the
+        # previous failed pair lingers — leading to rapid zombie
+        # accumulation (see #57355).
+        _kill_orphaned_mcp_children()
+
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
         new_pids: set = set()
